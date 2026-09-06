@@ -4,9 +4,16 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash
 #
-# Installs the build toolchain and the GPU SDKs, builds Crucible with loadable
-# runtimes, pre-builds the GPU runtime this machine wants, and puts the binary
-# on your PATH. Safe to re-run: it upgrades in place.
+#   curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
+#
+# Installs the program: the build toolchain, a compile, `crucible` and
+# `crucible-gui` on your PATH, and the directories they keep their files in.
+# Nothing else. No compute runtime and no models -- Crucible manages its own
+# runtimes from the settings screen, on the machine that will run them, so an
+# installer that guessed at a GPU SDK was doing work the program does better
+# and asking questions it does not need the answers to.
+#
+# Safe to re-run: it upgrades in place.
 
 set -euo pipefail
 
@@ -14,9 +21,6 @@ REPO_URL="https://github.com/mattsaund/Crucible.git"
 RAW_URL="https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh"
 
 BRANCH="main"
-# Which GPU SDK to install, so that runtime can be built from the settings
-# screen later. It is not "which runtime to install" -- Crucible installs none.
-RUNTIME="auto"   # auto | cpu | cuda | vulkan | metal
 
 # The desktop application. Built by default: Crucible is two faces over one
 # engine, and someone who runs the one-line install should get both of them.
@@ -28,19 +32,6 @@ RUNTIME="auto"   # auto | cpu | cuda | vulkan | metal
 # this on cannot cost anyone their install. --no-gui skips it outright.
 WITH_GUI=1
 
-# Which backends the settings screen will offer, which is not the same list on
-# every platform: Metal exists only on Apple hardware and CUDA has not existed
-# there since 2018. Kept in step with backend_available_here() in
-# src/runtime/backend.cpp.
-if [ "$(uname -s)" = "Darwin" ]; then
-    BACKEND_LIST="CPU, Metal and Vulkan"
-else
-    BACKEND_LIST="CPU, CUDA and Vulkan"
-fi
-
-# Must match CRUCIBLE_LLAMA_TAG in cmake/CrucibleDependencies.cmake: a runtime
-# built from a different tag would load and then crash on the first tensor.
-LLAMA_TAG="b10678"
 PREFIX=""
 INSTALL_DEPS=1
 ASSUME_YES=0
@@ -153,24 +144,41 @@ term_cols() {
     if [ -z "$TERM_COLS" ]; then
         local cols=""
         if [ "$IS_TTY" = 1 ]; then
-            cols="$(tput cols 2>/dev/null || true)"
+            # Asked of the terminal device, not of stdout.
+            #
+            # This runs inside `$( )`, where stdout is a pipe -- and `tput cols`
+            # measures stdout. Given a pipe it falls back to terminfo, which
+            # says 80 for an xterm whatever the window is actually doing, and
+            # COLUMNS is not exported to a non-interactive shell to correct it.
+            # So on any window narrower than 80 every bar ran off the right
+            # edge, wrapped onto a second row, and could no longer be erased by
+            # the one-row erase -- leaving a dead bar behind at every phase.
+            # `stty size </dev/tty` reads the terminal itself and does not care
+            # what stdout is.
+            cols="$( { stty size </dev/tty; } 2>/dev/null | awk '{print $2}')"
+            case "$cols" in ''|*[!0-9]*) cols="$(tput cols 2>/dev/null || true)" ;; esac
         fi
         case "$cols" in ''|*[!0-9]*) cols="${COLUMNS:-80}" ;; esac
         case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
+        # A terminal that reports nonsense is worse than one that reports
+        # nothing: a width of 0 makes every reserve negative.
+        [ "$cols" -lt 20 ] && cols=80
         TERM_COLS="$cols"
     fi
     printf '%s' "$TERM_COLS"
 }
 
-# Trim a label so the whole status line fits on one terminal row.
+# Trim a label to `width` columns.
 #
-# A wrapped line is not cosmetic: the block is erased by moving the cursor up a
-# fixed number of rows, and a line that wrapped occupies two of them -- so one
-# long label would leave the erase off by a row and litter the screen.
+# A wrapped line is not cosmetic: the bar is erased by moving the cursor up
+# exactly one row, and a line that wrapped occupies two -- so one long label
+# leaves the erase a row short and strands that bar on screen for good. The
+# caller works out how much room there is; this only has to keep to it, and it
+# has no floor of its own for that reason. Nothing is drawn at all below one
+# column, which is the terminal nobody can be helped on.
 fit_label() {
-    local label="$1" reserved="$2" width
-    width=$(( $(term_cols) - reserved ))
-    [ "$width" -lt 8 ] && width=8
+    local label="$1" width="$2"
+    [ "$width" -lt 1 ] && return 0
     if [ "${#label}" -gt "$width" ]; then
         printf '%s…' "${label:0:$((width - 1))}"
     else
@@ -186,6 +194,10 @@ bar_width() {
     cols="$(term_cols)"
     [ "$cols" -lt 70 ] && width=14
     [ "$cols" -lt 50 ] && width=8
+    # Below forty columns the bar and its furniture fill the row on their own,
+    # leaving nothing for the label -- and a row with no room left in it is a
+    # row the next character wraps off the end of.
+    [ "$cols" -lt 40 ] && width=4
     printf '%s' "$width"
 }
 
@@ -277,8 +289,38 @@ block_draw() {
         return 0
     fi
 
-    [ "$PHASE_START" -ge 0 ] && elapsed=" $C_DIM($((SECONDS - PHASE_START))s)$C_RESET"
-    label="$(fit_label "$PHASE_LABEL" $(( $(bar_width) + 22 )))"
+    # The clock is part of the line, so it is part of what has to be reserved.
+    # It was not, and a long label plus " (12s)" ran off the right edge -- and a
+    # bar that has wrapped onto a second row cannot be taken back by a one-row
+    # erase, so every phase with a long label left a dead bar stranded above the
+    # live one. Two of them on an 80-column terminal, which is the ordinary case.
+    #
+    # 22 is the fixed furniture: four spaces, "install", two spaces, the bar's
+    # own trailing " 100%", two more spaces, the spinner glyph and the space
+    # before the label. The extra column on top is slack -- a line that exactly
+    # fills the width only stays on one row on a terminal that defers the wrap,
+    # and not all of them do.
+    local seconds=""
+    local clock=""
+    if [ "$PHASE_START" -ge 0 ]; then
+        seconds="$((SECONDS - PHASE_START))"
+        clock=" (${seconds}s)"
+        elapsed=" $C_DIM(${seconds}s)$C_RESET"
+    fi
+    # What is left of the row once the bar and its fixed furniture are drawn.
+    # 22 is that furniture: four spaces, "install", two spaces, the bar's own
+    # trailing " 100%", two more spaces, the spinner glyph and the space before
+    # the label. The extra column is slack.
+    local room=$(( $(term_cols) - $(bar_width) - 23 ))
+
+    # On a tight row the clock is the first thing to go. The label says what is
+    # happening; the clock only says how long it has been happening, and four
+    # columns of label is already almost nothing.
+    if [ "$room" -lt $(( ${#clock} + 4 )) ]; then
+        clock=""
+        elapsed=""
+    fi
+    label="$(fit_label "$PHASE_LABEL" $(( room - ${#clock} )))"
 
     # Erase and redraw in a single write. Two separate printfs would leave the
     # terminal briefly showing an erased bar, which reads as a flicker on every
@@ -304,6 +346,12 @@ note() {
 # --------------------------------------------------------------------------
 
 # Begin one of the five parts.
+#
+# It prints nothing. The part used to announce itself with an `==> [3/5]`
+# heading, which meant the one bar had five headings scrolling above it and the
+# install read as a list of things that had happened rather than as one thing
+# happening. The part being worked on is named beside the bar, which is the
+# only place it needs to be.
 step() {
     # Close the previous part out at 100% first: the phases of a part do not
     # always add up to it (an optional dependency may be skipped), and leaving
@@ -322,9 +370,6 @@ step() {
     PHASE_SPAN=0
     PHASE_LABEL="$*"
     PHASE_START=-1
-    printf '\n%s==>%s %s[%d/%d]%s %s%s%s\n' \
-        "$C_CYN" "$C_RESET" "$C_DIM" "$STEP_NUM" "$STEP_TOTAL" "$C_RESET" \
-        "$C_BOLD" "$*" "$C_RESET"
     block_draw
 }
 
@@ -429,14 +474,26 @@ STEP_WEIGHTS=(0 2 26 2 8 62)
 
 # Everything the installer says goes through note(), warnings included.
 #
-# A warning written straight to stderr while the two-bar block is on screen
-# would land under it and leave the cursor arithmetic a row out, so the display
-# and the message would both be wrong from then on. Only die() writes to stderr
+# A warning written straight to stderr while the bar is on screen would land
+# under it and leave the cursor arithmetic a row out, so the display and the
+# message would both be wrong from then on. Only die() writes to stderr
 # directly, and it retires the block first because it is the last thing said.
-info()  { note "    $*"; }
-muted() { note "    $C_DIM$*$C_RESET"; }
+#
+# While the bar is up, the bar is all there is. info(), ok() and muted() are
+# running commentary -- what was detected, what was installed, what a phase
+# achieved -- and every one of them was already said by the label beside the
+# bar, in the moment it was true. Printing them as well turned a one-line
+# display into forty lines of scrollback with a bar at the bottom of it, which
+# is not a progress bar, it is a log with a bar in it. They still speak in the
+# dry run and the uninstaller, where there is no bar to speak for them.
+#
+# warn() is exempt on purpose: it says something is not as asked -- a desktop
+# app that cannot be built here, a package that would not install -- and that
+# has to reach the screen whatever else is on it.
+info()  { if [ "$PROGRESS_ON" != 1 ]; then note "    $*"; fi; }
+muted() { if [ "$PROGRESS_ON" != 1 ]; then note "    $C_DIM$*$C_RESET"; fi; }
 warn()  { note "$C_YEL !! $C_RESET $*"; }
-ok()    { note "    ${C_GRN}✓${C_RESET} $*"; }
+ok()    { if [ "$PROGRESS_ON" != 1 ]; then note "    ${C_GRN}✓${C_RESET} $*"; fi; }
 die()   { block_clear; show_cursor; printf '\n%serror:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 banner() {
@@ -450,7 +507,7 @@ cat <<'ART'
       ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
       ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
       ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   Crucible
-      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local forge: experts on demand, projects that cook
+      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
       ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
       ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
       ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁
@@ -466,12 +523,11 @@ usage() {
     cat <<EOF
 usage: install.sh [options]
 
-  --gpu MODE       which GPU SDK to install so that runtime can be built
-                   later from the settings screen. No runtime is installed
-                   either way.  cuda | vulkan | metal | cpu | auto  (default: auto)
-                   auto detects your hardware and picks the best backend
-                   it can actually build for -- always metal on macOS, where
-                   it is the only one and needs no SDK.
+  Installs the program and nothing else: crucible, crucible-gui, and the
+  directories they keep their files in. Compute runtimes are not an installer's
+  business -- Crucible builds one on demand from its settings screen, on the
+  machine that will run it.
+
   --prefix DIR     install location (default: /usr/local with sudo,
                    otherwise ~/.local)
   --branch NAME    git branch to build (default: main)
@@ -485,9 +541,11 @@ usage: install.sh [options]
                    kept so an explicit --gui still means what it says.
   --no-deps        do not install system packages
   -y, --yes        assume yes; never prompt
-  --check          report what would be installed and which runtime is chosen
-                   would be chosen, then exit without changing anything
-  --uninstall      remove an installed crucible
+  --check          report what would be installed, then exit without
+                   changing anything
+  --uninstall      remove Crucible and everything it installed: both
+                   programs, the libraries, the menu entry, the config, the
+                   folder-trust list, the models, the runtimes and the history
   -h, --help       this message
 
   Windows has its own one-command installer:
@@ -495,8 +553,8 @@ usage: install.sh [options]
 
 examples:
   curl -fsSL $RAW_URL | bash
-  curl -fsSL $RAW_URL | bash -s -- --gpu vulkan
-  ./install.sh --prefix ~/.local --gpu cpu
+  curl -fsSL $RAW_URL | bash -s -- --uninstall
+  ./install.sh --prefix ~/.local
   ./install.sh --no-gui
 EOF
 }
@@ -508,8 +566,6 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --gui)       WITH_GUI=1;       shift ;;
         --no-gui)    WITH_GUI=0;       shift ;;
-        --gpu)       RUNTIME="${2:-}";    shift 2 ;;
-        --gpu=*)     RUNTIME="${1#*=}";   shift ;;
         --prefix)    PREFIX="${2:-}"; shift 2 ;;
         --prefix=*)  PREFIX="${1#*=}";shift ;;
         --branch)    BRANCH="${2:-}"; shift 2 ;;
@@ -524,11 +580,6 @@ while [ $# -gt 0 ]; do
         *) die "unknown option '$1' (try --help)" ;;
     esac
 done
-
-case "$RUNTIME" in
-    auto|cuda|vulkan|metal|cpu) ;;
-    *) die "--gpu must be one of: auto, cuda, vulkan, metal, cpu" ;;
-esac
 
 # --------------------------------------------------------------------------
 # Prompting
@@ -835,208 +886,55 @@ ensure_cmake() {
 }
 
 # --------------------------------------------------------------------------
-# GPU backend selection
-# --------------------------------------------------------------------------
-
-# Minimum CUDA toolkit that can generate code for a given compute capability.
-# Getting this wrong is not a warning at build time -- it is a GPU that silently
-# cannot be used, which is exactly what happens if you pair a Blackwell card
-# with the CUDA 12.0 most distributions still ship.
-cuda_required_for_cap() {
-    local cap="$1" major minor
-    major="${cap%%.*}"; minor="${cap#*.}"
-    if   [ "$major" -ge 12 ]; then echo "12.8"
-    elif [ "$major" -ge 10 ]; then echo "12.8"
-    elif [ "$major" -eq 9  ]; then echo "12.0"
-    elif [ "$major" -eq 8 ] && [ "$minor" -ge 9 ]; then echo "11.8"
-    elif [ "$major" -eq 8 ]; then echo "11.1"
-    else echo "11.0"; fi
-}
-
-version_ge() {
-    # true when $1 >= $2, comparing major.minor numerically
-    local a_major="${1%%.*}" a_minor="${1#*.}" b_major="${2%%.*}" b_minor="${2#*.}"
-    a_minor="${a_minor%%.*}"; b_minor="${b_minor%%.*}"
-    [ "$a_major" -gt "$b_major" ] && return 0
-    [ "$a_major" -lt "$b_major" ] && return 1
-    [ "${a_minor:-0}" -ge "${b_minor:-0}" ]
-}
-
-nvcc_version() {
-    command -v nvcc >/dev/null 2>&1 || return 1
-    nvcc --version 2>/dev/null | grep -oE 'release [0-9]+\.[0-9]+' | awk '{print $2}' | head -1
-}
-
-apt_cuda_candidate() {
-    [ "$PKG" = "apt" ] || return 1
-    apt-cache policy nvidia-cuda-toolkit 2>/dev/null \
-        | awk '/Candidate:/ {print $2}' | grep -oE '^[0-9]+\.[0-9]+' | head -1
-}
-
-CUDA_NOTE=""
-
-decide_backend() {
-    local caps cap required="" highest="0.0" have_nvidia=0 detected
-
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        caps="$(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader 2>/dev/null || true)"
-        if [ -n "$caps" ]; then
-            have_nvidia=1
-            while IFS= read -r line; do
-                [ -n "$line" ] || continue
-                info "GPU: $line"
-                cap="$(printf '%s' "$line" | awk -F', ' '{print $2}' | tr -d ' ')"
-                [ -n "$cap" ] || continue
-                version_ge "$cap" "$highest" && highest="$cap"
-            done <<< "$caps"
-            required="$(cuda_required_for_cap "$highest")"
-        fi
-    fi
-
-    if [ "$RUNTIME" != "auto" ]; then
-        # A request the platform cannot honour is refused here rather than
-        # three phases later, where it would surface as a missing package. The
-        # pairs are absolute: NVIDIA has shipped no macOS driver since 2018,
-        # and Metal exists nowhere else.
-        if [ "$OS" = "Darwin" ] && [ "$RUNTIME" = "cuda" ]; then
-            die "CUDA has no macOS driver; use --gpu metal (or --gpu cpu)"
-        fi
-        if [ "$OS" != "Darwin" ] && [ "$RUNTIME" = "metal" ]; then
-            die "Metal is macOS only; use --gpu cuda, --gpu vulkan or --gpu cpu"
-        fi
-        info "GPU SDK: $RUNTIME (requested)"
-        return
-    fi
-
-    # On a Mac there is exactly one answer. Metal ships with the operating
-    # system, so there is no SDK to install and nothing to detect -- the only
-    # question is whether the command line tools are there, which
-    # detect_platform_macos has already asked.
-    if [ "$OS" = "Darwin" ]; then
-        RUNTIME="metal"
-        info "GPU SDK: Metal (built in; nothing to install)"
-        return
-    fi
-
-    if [ "$have_nvidia" = 0 ]; then
-        # No NVIDIA card. Vulkan still covers AMD and Intel GPUs.
-        if [ "$PKG" != "unknown" ]; then
-            RUNTIME="vulkan"
-            info "no NVIDIA GPU detected; installing the Vulkan SDK (covers AMD and Intel)"
-        else
-            RUNTIME="cpu"
-        fi
-        return
-    fi
-
-    # An NVIDIA card is present. Prefer CUDA, but only if a toolkit new enough
-    # for the newest card is actually obtainable.
-    local available=""
-    available="$(nvcc_version || true)"
-    [ -n "$available" ] || available="$(apt_cuda_candidate || true)"
-
-    if [ -n "$available" ] && version_ge "$available" "$required"; then
-        RUNTIME="cuda"
-        info "CUDA $available covers compute capability $highest; offering the CUDA toolkit"
-    else
-        RUNTIME="vulkan"
-        detected="${available:-none}"
-        CUDA_NOTE="Your newest GPU is compute capability ${highest}, which needs CUDA >= ${required}.
-    The CUDA toolkit available here is ${detected}, which cannot build for it, so
-    the Vulkan SDK goes in instead -- Vulkan works on all of your GPUs via the
-    driver, and it is one of the runtimes the settings screen offers.
-    For CUDA, install a newer toolkit from developer.nvidia.com/cuda-downloads;
-    the CUDA runtime then becomes available in settings with no reinstall."
-        warn "CUDA ${detected} is too old for compute capability ${highest} (needs ${required}); using Vulkan"
-    fi
-}
-
-# --------------------------------------------------------------------------
 # Dependencies
 # --------------------------------------------------------------------------
 PKGS_BASE=()
-PKGS_VULKAN=()
-PKGS_CUDA=()
 PKGS_GUI=()
 
-# Which packages this distribution needs for the chosen backend. Split out from
-# the install so --check can report them without touching anything.
+# Which packages this distribution needs. Two lists, and only two: a C++
+# toolchain, and the headers the desktop app links against. There used to be a
+# Vulkan SDK and a CUDA toolkit here as well -- several gigabytes of them, in
+# the CUDA case -- installed so that a GPU runtime could be *built later*. The
+# program installs its own SDKs when you ask it for a runtime, on the machine
+# that will run it, so this was fetching a compiler for a compile that may
+# never happen.
+#
+# Split out from the install so --check can report them without touching
+# anything.
 resolve_packages() {
-    PKGS_BASE=(); PKGS_VULKAN=(); PKGS_CUDA=(); PKGS_GUI=()
+    PKGS_BASE=(); PKGS_GUI=()
     case "$PKG" in
         apt)    PKGS_BASE=(build-essential cmake git pkg-config curl ca-certificates)
-                # spirv-headers is the one that is easy to miss: ggml's Vulkan
-                # backend does find_package(SPIRV-Headers CONFIG REQUIRED), and
-                # without it the build dies at configure time with an error
-                # naming a CMake package rather than anything installable.
-                PKGS_VULKAN=(glslc libvulkan-dev spirv-headers)
-                PKGS_CUDA=(nvidia-cuda-toolkit)
                 # The desktop app. GLFW itself is preferred from the system;
                 # these are what it needs either way, and what building it from
                 # source needs when the distribution has no package.
                 PKGS_GUI=(libgl1-mesa-dev libglfw3-dev libx11-dev libxrandr-dev
                           libxinerama-dev libxcursor-dev libxi-dev) ;;
         dnf)    PKGS_BASE=(gcc-c++ make cmake git pkgconf-pkg-config curl)
-                PKGS_VULKAN=(glslc vulkan-loader-devel spirv-headers-devel)
-                PKGS_CUDA=(cuda-toolkit)
                 PKGS_GUI=(mesa-libGL-devel glfw-devel libX11-devel libXrandr-devel
                           libXinerama-devel libXcursor-devel libXi-devel) ;;
         pacman) PKGS_BASE=(base-devel cmake git curl)
-                PKGS_VULKAN=(shaderc vulkan-headers vulkan-icd-loader spirv-headers)
-                PKGS_CUDA=(cuda)
                 PKGS_GUI=(mesa glfw libx11 libxrandr libxinerama libxcursor libxi) ;;
         zypper) PKGS_BASE=(gcc-c++ make cmake git-core curl)
-                PKGS_VULKAN=(shaderc vulkan-devel spirv-headers)
-                PKGS_CUDA=(cuda)
                 PKGS_GUI=(Mesa-libGL-devel libglfw-devel libX11-devel libXrandr-devel
                           libXinerama-devel libXcursor-devel libXi-devel) ;;
         # macOS: the compiler, git, curl and OpenGL all come with the system
         # or the command line tools. Only cmake is actually missing, and GLFW
         # is built from source because Homebrew's is not always there.
         brew)   PKGS_BASE=(cmake)
-                PKGS_VULKAN=()
-                PKGS_CUDA=()
                 PKGS_GUI=() ;;
     esac
     return 0
 }
 
-# Are all of `$@` installable on this distribution?
-packages_available() {
-    local p
-    for p in "$@"; do
-        pkg_available "$p" || return 1
-    done
-    return 0
-}
-
-# Install what a runtime will need, before there is a runtime.
-#
-# Crucible installs no compute runtime at all -- you pick one from the settings
-# screen, and it is compiled there. That build has to work without root,
-# because asking for a sudo password from inside a TUI is a bad idea and a
-# worse implementation. So this is the one moment where root is already at
-# hand, and it is where the SDKs those builds need go in.
+# What the build needs, and nothing more: a C++ toolchain, and the headers the
+# desktop app links against.
 install_dependencies() {
     resolve_packages
 
-    phase 40 "installing the build toolchain"
+    phase 65 "installing the build toolchain"
     pkg_install ${PKGS_BASE[@]+"${PKGS_BASE[@]}"} || die "could not install the build toolchain"
     phase_end
-
-    # The Vulkan SDK goes in without asking: it is a few megabytes, and it is
-    # the difference between the Vulkan runtime being offered in settings and
-    # being greyed out with "glslc is not installed".
-    if [ "${#PKGS_VULKAN[@]}" -gt 0 ] && [ "$RUNTIME" != "cpu" ]; then
-        phase 30 "installing the Vulkan SDK"
-        if packages_available ${PKGS_VULKAN[@]+"${PKGS_VULKAN[@]}"}; then
-            pkg_install ${PKGS_VULKAN[@]+"${PKGS_VULKAN[@]}"} ||
-                warn "the Vulkan SDK did not install; Vulkan runtimes cannot be built"
-        else
-            warn "no Vulkan SDK packages on this distribution; Vulkan runtimes cannot be built"
-        fi
-        phase_end
-    fi
 
     # The desktop app's dependencies. Small -- a few megabytes of headers --
     # but they are the one thing Crucible needs from the system beyond a
@@ -1054,7 +952,7 @@ install_dependencies() {
     # Skipped entirely on macOS, where PKGS_GUI is empty because OpenGL comes
     # with the system.
     if [ "$WITH_GUI" = "1" ] && [ "${#PKGS_GUI[@]}" -gt 0 ]; then
-        phase 20 "installing the desktop app's dependencies"
+        phase 35 "installing the desktop app's dependencies"
         local gui_have=() gui_missing=() gui_pkg
         for gui_pkg in ${PKGS_GUI[@]+"${PKGS_GUI[@]}"}; do
             if pkg_available "$gui_pkg"; then
@@ -1073,33 +971,6 @@ install_dependencies() {
             warn "none of the desktop packages are on this distribution"
         fi
         phase_end
-    fi
-
-    # CUDA is different in kind: several gigabytes, and useless without an
-    # NVIDIA card. It is only offered when the hardware asked for it, and it is
-    # the only dependency here that is a question rather than a decision.
-    if [ "$RUNTIME" = "cuda" ]; then
-        if ! packages_available ${PKGS_CUDA[@]+"${PKGS_CUDA[@]}"}; then
-            warn "the CUDA toolkit is not packaged here; the Vulkan runtime covers this card"
-            RUNTIME="vulkan"
-            return 0
-        fi
-        if command -v nvcc >/dev/null 2>&1; then
-            return 0
-        fi
-        muted "the CUDA toolkit is a large download (often 2-4 GB)"
-        muted "without it, only the Vulkan and CPU runtimes can be built later"
-        if confirm "Install the CUDA toolkit now?" y; then
-            phase 30 "installing the CUDA toolkit"
-            pkg_install ${PKGS_CUDA[@]+"${PKGS_CUDA[@]}"} || {
-                warn "the CUDA toolkit failed to install; the Vulkan runtime covers this card"
-                RUNTIME="vulkan"
-            }
-            phase_end
-        else
-            info "skipping CUDA -- install it later and the runtime becomes available in settings"
-            RUNTIME="vulkan"
-        fi
     fi
     return 0
 }
@@ -1301,10 +1172,9 @@ build_and_install() {
     # The first configure clones llama.cpp and FTXUI, so it is slow and has no
     # percentage of its own.
     # No GPU backend is compiled in. Crucible is built with ggml's loadable
-    # backends, so CUDA and Vulkan are files the settings screen manages rather
-    # than a decision frozen here -- which is the whole point of this install
-    # producing something you can change your mind about later.
-    phase 12 "configuring (loadable runtimes)"
+    # backends, so a compute backend is a file the settings screen manages
+    # rather than a decision frozen here.
+    phase 12 "configuring"
     spinner_start
     run_configure
     spinner_stop
@@ -1433,8 +1303,6 @@ build_and_install() {
         ok "added Crucible to the application menu"
     fi
 
-    seed_runtime_source "$build_dir"
-
     if [ -z "${KEEP_BUILD_LOG:-}" ]; then
         rm -f "$BUILD_LOG"
         BUILD_LOG=""
@@ -1442,40 +1310,18 @@ build_and_install() {
 }
 
 # --------------------------------------------------------------------------
-# Runtimes
+# Where Crucible keeps its files
 #
-# Crucible ships with the CPU runtime and builds GPU ones on demand, from the
-# settings screen. Both of those need a llama.cpp checkout at the exact tag the
-# binary was built against -- and the build we just did already downloaded one.
-# Copying it here means adding a runtime later needs no network at all.
+# Created by the installer so the first run opens onto directories that are
+# already there, and so `--uninstall` has one place to look. Nothing is put in
+# them: no models, and no compute runtime. Both are the program's to manage.
 # --------------------------------------------------------------------------
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/crucible"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/crucible"
+MODELS_DIR="$DATA_DIR/models"
 
-seed_runtime_source() {
-    local build_dir="$1"
-    local fetched="$build_dir/_deps/llama-src"
-    local target="$DATA_DIR/runtime-src"
-
-    [ -d "$fetched" ] || return 0
-    if [ -f "$target/CMakeLists.txt" ]; then
-        return 0
-    fi
-
-    phase 6 "saving the llama.cpp source for future runtimes"
-    spinner_start
-    mkdir -p "$DATA_DIR"
-    rm -rf "$target"
-    # Without .git this is a fraction of the size and still builds.
-    local copied=0
-    cp -r "$fetched" "$target" 2>/dev/null && copied=1
-    spinner_stop
-    if [ "$copied" = 1 ]; then
-        rm -rf "$target/.git"
-        phase_end "runtime source ready ($(du -sh "$target" 2>/dev/null | cut -f1))"
-    else
-        phase_end
-        warn "could not copy the llama.cpp source; adding a runtime later will re-download it"
-    fi
+make_directories() {
+    mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$MODELS_DIR" 2>/dev/null || true
     return 0
 }
 
@@ -1489,7 +1335,7 @@ rm_path() {
 
 uninstall() {
     banner
-    printf '\n%s==>%s %sRemoving Crucible%s\n' "$C_CYN" "$C_RESET" "$C_BOLD" "$C_RESET"
+    printf '\n%s==>%s %sRemoving Crucible%s\n\n' "$C_CYN" "$C_RESET" "$C_BOLD" "$C_RESET"
 
     # Every prefix an install could have used, each named once. PREFIX is
     # normally one of the other two, and asking the same directory twice would
@@ -1503,8 +1349,13 @@ uninstall() {
         prefixes+=("$p")
     done
 
-    # The binary's own uninstaller is the real one: it knows every path this
-    # install put down, and it asks the three questions.
+    local cfg="$CONFIG_DIR"
+    local dat="$DATA_DIR"
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/crucible"
+
+    # The binary's own uninstaller is the real one: it knows the prefix it was
+    # installed into, which may be neither of the two guessed at above, and it
+    # removes the same set of things this does.
     #
     # It is run for every prefix that has one, not just the first. A machine
     # with a system install and a user install had the second one left behind,
@@ -1519,20 +1370,27 @@ uninstall() {
             "$exe" --uninstall --yes || status=$?
         elif have_tty; then
             # stdin has to be the terminal. Under the documented one-liner --
-            # `curl ... | install.sh | bash -s -- --uninstall` -- stdin is the
-            # installer script still being read, so the binary's questions were
-            # answered with lines of shell, every one of them taken as "no",
-            # and it reported "Done." having removed nothing at all.
+            # `curl ... | bash -s -- --uninstall` -- stdin is the installer
+            # script still being read, so the binary's question was answered
+            # with a line of shell and taken as "no", and it reported "Done."
+            # having removed nothing at all.
             "$exe" --uninstall < /dev/tty || status=$?
         else
             # Nothing to ask on. Uninstalling was the explicit request and the
-            # answer to each question defaults to yes, which is what confirm()
-            # does in the same situation.
-            muted "no terminal to ask on; removing everything"
+            # answer defaults to yes, which is what confirm() does in the same
+            # situation.
             "$exe" --uninstall --yes || status=$?
         fi
+        # A run that succeeded and left its own binary on disk is one where the
+        # answer was no. Nothing else here is ours to remove -- and without
+        # this the sweep below would go on to delete the whole prefix, which
+        # is precisely what was just declined.
+        if [ "$status" -eq 0 ] && [ -e "$exe" ]; then
+            info "nothing was removed"
+            exit 0
+        fi
         # Only a run that succeeded speaks for its prefix. One that could not
-        # ask its questions has settled nothing, and the sweep below has to
+        # ask its question has settled nothing, and the sweep below has to
         # finish the job rather than treat the binary's presence as consent.
         if [ "$status" -eq 0 ]; then
             handled+=("$p")
@@ -1541,56 +1399,62 @@ uninstall() {
         fi
     done
 
-    # Whatever the binary could not speak for: a prefix with no binary in it, and
-    # a prefix whose binary was there but could not finish. Where its own
-    # uninstaller did run, its answers stand and this leaves the prefix alone.
-    local found=0 name settled entry
+    # Whatever the binary could not speak for: a prefix with no binary in it,
+    # and a prefix whose binary was there but could not finish. Where its own
+    # uninstaller did run it has already taken everything below, so this only
+    # covers what it could not reach.
+    local sweep=() name entry
     for p in "${prefixes[@]}"; do
-        settled=0
+        local settled=0
         for seen in ${handled[@]+"${handled[@]}"}; do
             [ "$seen" = "$p" ] && { settled=1; break; }
         done
         [ "$settled" = 1 ] && continue
         for name in crucible crucible-gui crucible-routebench; do
-            if [ -e "$p/bin/$name" ]; then rm_path "$p/bin/$name"; found=1; fi
+            [ -e "$p/bin/$name" ] && sweep+=("$p/bin/$name")
         done
-        # llama.cpp's shared libraries, and any runtime that shipped beside them.
-        if [ -d "$p/lib/crucible" ]; then rm_path "$p/lib/crucible"; found=1; fi
-        # The application-menu entry and its icon. Left behind, the menu goes on
-        # offering a Crucible that is no longer installed.
+        # llama.cpp's shared libraries, the application-menu entry and its
+        # icon. Left behind, the menu goes on offering a Crucible that is no
+        # longer installed.
+        [ -d "$p/lib/crucible" ] && sweep+=("$p/lib/crucible")
         for entry in "$p/share/applications/crucible.desktop" \
                      "$p/share/icons/hicolor/scalable/apps/crucible.svg"; do
-            if [ -e "$entry" ]; then rm_path "$entry"; found=1; fi
+            [ -e "$entry" ] && sweep+=("$entry")
         done
     done
 
-    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/crucible"
-    local dat="${XDG_DATA_HOME:-$HOME/.local/share}/crucible"
-    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/crucible"
-
-    # Nothing has asked the three questions yet -- there was no binary anywhere,
-    # or the one that was there could not finish. Ask them here: answering yes
-    # has to leave as little behind as answering yes there.
+    # The user's own files, and the installer's source checkout inside them.
+    # Only ours to remove when no binary spoke for its prefix -- one that did
+    # has already asked about these and acted on the answer.
     if [ "${#handled[@]}" -eq 0 ]; then
-        [ "$found" = 1 ] || info "no installed crucible found"
-        if [ -d "$cache" ]; then rm_path "$cache"; fi
-        if [ -d "$cfg" ] && confirm "Remove your configuration and folder-trust list?" y; then
-            rm_path "$cfg"
-        fi
-        if [ -d "$dat" ] && confirm "Remove the models, runtimes, history and logs too?" y; then
-            rm_path "$dat"
-        fi
-    fi
-
-    # Say what survived rather than claiming success over the top of it. The
-    # config and the data are only reported when nothing was asked about them,
-    # since a directory kept on purpose is not litter.
-    local left=0 leftover entry
-    if [ "${#handled[@]}" -eq 0 ]; then
-        for leftover in "$cfg" "$dat" "$cache"; do
-            [ -e "$leftover" ] && { warn "still present: $leftover"; left=1; }
+        for entry in "$cfg" "$dat" "$cache"; do
+            [ -e "$entry" ] && sweep+=("$entry")
         done
     fi
+
+    # One question, and it names everything. It used to be three -- programs,
+    # then configuration, then models and history -- which made a full removal
+    # a thing you had to agree to three times and a partial one the easiest
+    # outcome to get by accident. "Uninstall" means uninstall.
+    if [ "${#sweep[@]}" -gt 0 ]; then
+        info "this will remove:"
+        for entry in "${sweep[@]}"; do
+            muted "$entry"
+        done
+        printf '\n'
+        if ! confirm "Remove Crucible and everything above?" y; then
+            info "nothing was removed"
+            exit 0
+        fi
+        for entry in "${sweep[@]}"; do
+            rm_path "$entry"
+        done
+    elif [ "${#handled[@]}" -eq 0 ]; then
+        info "no installed crucible found"
+    fi
+
+    # Say what survived rather than claiming success over the top of it.
+    local left=0 leftover
     for p in "${prefixes[@]}"; do
         for name in crucible crucible-gui crucible-routebench; do
             [ -e "$p/bin/$name" ] && { warn "still present: $p/bin/$name"; left=1; }
@@ -1600,6 +1464,9 @@ uninstall() {
                      "$p/share/icons/hicolor/scalable/apps/crucible.svg"; do
             [ -e "$entry" ] && { warn "still present: $entry"; left=1; }
         done
+    done
+    for leftover in "$cfg" "$dat" "$cache"; do
+        [ -e "$leftover" ] && { warn "still present: $leftover"; left=1; }
     done
     [ "$left" = 1 ] && exit 1
     [ "$rc" -eq 0 ] || exit "$rc"
@@ -1646,8 +1513,6 @@ run_check() {
         "$C_CYN" "$C_RESET" "$C_BOLD" "$C_RESET"
 
     detect_platform
-    printf '\n'
-    decide_backend
     INSTALL_DEPS="$saved_deps"
 
     printf '\n'
@@ -1662,12 +1527,7 @@ run_check() {
     if [ "$INSTALL_DEPS" = 1 ]; then
         resolve_packages
         info "toolchain  : ${PKGS_BASE[*]:-none}"
-        info "vulkan sdk : ${PKGS_VULKAN[*]:-none available}"
-        if [ "$RUNTIME" = "cuda" ]; then
-            info "cuda sdk   : ${PKGS_CUDA[*]:-none available}  (you will be asked first)"
-        else
-            muted "cuda sdk   : skipped -- no NVIDIA card that a packaged CUDA can build for"
-        fi
+        info "desktop    : ${PKGS_GUI[*]:-none needed}"
     else
         muted "(package installation disabled with --no-deps)"
     fi
@@ -1689,17 +1549,10 @@ run_check() {
     fi
     WITH_GUI="$gui_before"
     info "libraries  : $PREFIX/lib/crucible"
-    info "config     : ${XDG_CONFIG_HOME:-$HOME/.config}/crucible/config.json"
-    info "runtime dir: ${XDG_DATA_HOME:-$HOME/.local/share}/crucible/runtimes"
-    info "runtimes   : none -- you choose one from the settings screen"
-    muted "Compute backends are loadable: $BACKEND_LIST can be added or"
-    muted "removed at any time from the settings screen, without rebuilding."
-
-    if [ -n "$CUDA_NOTE" ]; then
-        printf '\n'
-        warn "About the GPU backend:"
-        printf '    %s\n' "$CUDA_NOTE"
-    fi
+    info "config     : $CONFIG_DIR"
+    info "models     : $MODELS_DIR"
+    muted "No compute runtime is installed. Crucible builds one on demand from"
+    muted "its settings screen, on the machine that will run it."
     printf '\n'
     exit 0
 }
@@ -1713,11 +1566,8 @@ main() {
     progress_begin
 
     step "Checking your system"
-    phase 50 "detecting the platform"
+    phase 100 "detecting the platform"
     detect_platform
-    phase_end
-    phase 50 "looking for a GPU"
-    decide_backend
     phase_end
 
     if [ "$INSTALL_DEPS" = 1 ]; then
@@ -1746,58 +1596,28 @@ main() {
     verify_gui_prerequisites
     build_and_install
 
-    # Create the models directory now, so the first run has somewhere obvious to
-    # put GGUFs rather than reporting a path that does not exist yet.
-    local models_dir="${XDG_DATA_HOME:-$HOME/.local/share}/crucible/models"
-    mkdir -p "$models_dir" 2>/dev/null || true
+    # The directories the program keeps its files in, so the first run opens
+    # onto somewhere that exists rather than reporting a path that does not.
+    make_directories
 
     progress_end
 
     printf '\n%s%s  Crucible is installed.%s\n\n' "$C_GRN" "$C_BOLD" "$C_RESET"
-    printf '    binary   : %s\n' "$PREFIX/bin/crucible"
+    printf '    crucible      %s\n' "$PREFIX/bin/crucible"
     # WITH_GUI is whatever survived the dependency step, so this reports what
     # was actually built rather than what was asked for.
     if [ "$WITH_GUI" = "1" ]; then
-        printf '    desktop  : %s\n' "$PREFIX/bin/crucible-gui"
-        if [ -f "$PREFIX/share/applications/crucible.desktop" ]; then
-            printf '    menu     : %s\n' "Crucible (in your applications menu)"
-        fi
+        printf '    crucible-gui  %s\n' "$PREFIX/bin/crucible-gui"
     else
-        printf '    desktop  : %snot installed%s\n' "$C_YEL" "$C_RESET"
+        printf '    crucible-gui  %snot installed%s\n' "$C_YEL" "$C_RESET"
     fi
-    printf '    models   : %s\n' "$models_dir"
-    printf '    config   : %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/crucible/config.json"
-    printf '    runtimes : %snone yet%s\n' "$C_YEL" "$C_RESET"
-
-    if [ -n "$CUDA_NOTE" ]; then
-        printf '\n'
-        warn "About the GPU backend:"
-        printf '    %s\n' "$CUDA_NOTE"
-    fi
+    printf '    config        %s\n' "$CONFIG_DIR"
+    printf '    models        %s\n' "$MODELS_DIR"
 
     path_advice
 
-    cat <<EOF
-
-  ${C_BOLD}Next:${C_RESET} Crucible installs with no compute runtime and no models.
-  Both are yours to choose.
-
-    1. run ${C_BOLD}crucible${C_RESET}, press ${C_BOLD}ctrl-e${C_RESET} and open ${C_BOLD}Runtimes${C_RESET}. Pick CPU, CUDA or
-       Vulkan and press enter -- it is compiled here, which takes a few
-       minutes, and nothing can load a model until one is installed
-    2. put your .gguf files in ${C_BOLD}$models_dir${C_RESET}
-    3. back in settings, assign a model to the delegator and to each expert
-       seat you want, then ${C_BOLD}ctrl-s${C_RESET} to save
-    4. cd into any project and run ${C_BOLD}crucible${C_RESET}
-
-  A good delegator is any small instruct model, around 1B parameters.
-  Check how well one routes before committing to it:
-
-    ${C_BOLD}crucible-routebench <your-model.gguf>${C_RESET}
-
-  To remove Crucible later:  ${C_BOLD}crucible --uninstall${C_RESET}
-
-EOF
+    printf '\n  To remove it:  %scurl -fsSL %s | bash -s -- --uninstall%s\n\n' \
+        "$C_BOLD" "$RAW_URL" "$C_RESET"
 }
 
 # Sourcing with CRUCIBLE_INSTALL_LIB=1 loads the helpers without running anything,

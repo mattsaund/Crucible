@@ -47,38 +47,6 @@ check_eq() {
 echo "install.sh logic tests"
 echo
 
-echo "  version_ge"
-check     "12.8 >= 12.0"  version_ge 12.8 12.0
-check     "12.0 >= 12.0"  version_ge 12.0 12.0
-check_not "12.0 >= 12.8"  version_ge 12.0 12.8
-check     "13.0 >= 12.8"  version_ge 13.0 12.8
-check_not "11.8 >= 12.0"  version_ge 11.8 12.0
-check     "3.28 >= 3.24"  version_ge 3.28 3.24
-check_not "3.22 >= 3.24"  version_ge 3.22 3.24
-check     "3.5  >= 3.5"   version_ge 3.5 3.5
-# Minor versions must compare numerically, not as text: "3.9" > "3.10" only if
-# you are comparing strings.
-check     "3.10 >= 3.9"   version_ge 3.10 3.9
-check_not "3.9 >= 3.10"   version_ge 3.9 3.10
-
-echo "  cuda_required_for_cap"
-# Blackwell (RTX 50-series) is the case that catches people out: the toolkit
-# most distributions ship cannot target it at all.
-check_eq "sm_120 Blackwell" "$(cuda_required_for_cap 12.0)" "12.8"
-check_eq "sm_90  Hopper"    "$(cuda_required_for_cap 9.0)"  "12.0"
-check_eq "sm_89  Ada"       "$(cuda_required_for_cap 8.9)"  "11.8"
-check_eq "sm_86  Ampere"    "$(cuda_required_for_cap 8.6)"  "11.1"
-check_eq "sm_75  Turing"    "$(cuda_required_for_cap 7.5)"  "11.0"
-
-echo "  the toolkit a distro ships must be rejected for newer cards"
-# The exact situation on a machine with an RTX 5060 Ti and Ubuntu's CUDA 12.0.
-check_not "CUDA 12.0 cannot build for sm_120" \
-    version_ge "12.0" "$(cuda_required_for_cap 12.0)"
-check     "CUDA 12.8 can build for sm_120" \
-    version_ge "12.8" "$(cuda_required_for_cap 12.0)"
-check     "CUDA 12.0 is fine for an RTX 4070" \
-    version_ge "12.0" "$(cuda_required_for_cap 8.9)"
-
 echo "  cmake_version_ok"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -95,36 +63,35 @@ check_not "a missing cmake is rejected" cmake_version_ok "$TMP/definitely-not-he
 # --------------------------------------------------------------------------
 # Package lists
 #
-# The Vulkan build fails at configure time without SPIR-V headers, several
-# minutes in, with an error naming a CMake package rather than anything you
-# can install. That was a real bug; this is the check that it stays fixed.
+# Two lists, and only two. A Vulkan SDK and a CUDA toolkit used to be installed
+# here as well -- gigabytes of CUDA, on a machine that might never ask for a
+# GPU runtime -- so that a runtime could be built later. The program installs
+# what a runtime needs when you ask it for one, on the machine that will run
+# it, so the installer has no business fetching a compiler for a compile that
+# may never happen.
 # --------------------------------------------------------------------------
 echo
 echo "  resolve_packages"
 
-PKG=apt RUNTIME=vulkan resolve_packages
-check     "apt vulkan includes spirv-headers" \
-          grep -q "spirv-headers" <<< "${PKGS_VULKAN[*]}"
-check     "apt vulkan includes glslc" \
-          grep -q "glslc" <<< "${PKGS_VULKAN[*]}"
-check     "apt vulkan includes libvulkan-dev" \
-          grep -q "libvulkan-dev" <<< "${PKGS_VULKAN[*]}"
+for manager in apt dnf pacman zypper brew; do
+    PKG="$manager" resolve_packages
+    check_not "$manager names no Vulkan SDK" \
+              grep -qiE "vulkan|spirv|glslc|shaderc" <<< "${PKGS_BASE[*]} ${PKGS_GUI[*]}"
+    check_not "$manager names no CUDA toolkit" \
+              grep -qi "cuda" <<< "${PKGS_BASE[*]} ${PKGS_GUI[*]}"
+done
+
+PKG=apt resolve_packages
 check     "apt base includes a compiler" \
           grep -q "build-essential" <<< "${PKGS_BASE[*]}"
-
-for manager in dnf pacman zypper; do
-    PKG="$manager" resolve_packages
-    check "$manager vulkan names a SPIR-V headers package" \
-          grep -qi "spirv" <<< "${PKGS_VULKAN[*]}"
-    check "$manager names a CUDA package" \
-          test -n "${PKGS_CUDA[*]}"
-done
+check     "apt names the desktop app's headers" \
+          grep -q "libgl1-mesa-dev" <<< "${PKGS_GUI[*]}"
 
 # resolve_packages ends in a `case`, and a stray non-zero exit there would
 # abort the caller under `set -e`. This is the bug that once silently killed
 # --check, so it is pinned.
-PKG=apt RUNTIME=cpu resolve_packages
-check_eq  "resolve_packages succeeds for a CPU install" "$?" "0"
+PKG=apt resolve_packages
+check_eq  "resolve_packages succeeds" "$?" "0"
 
 # --------------------------------------------------------------------------
 # The application-menu entry
@@ -284,9 +251,14 @@ check     "and defines the sweep it points at" \
 echo
 echo "  llama tag"
 # A runtime built from a different llama.cpp tag would load and then crash on
-# the first tensor, so the installer's tag must match the one CMake pins.
-CMAKE_TAG="$(grep -oE 'CRUCIBLE_LLAMA_TAG b[0-9]+' "$HERE/../cmake/CrucibleDependencies.cmake" | awk '{print $2}')"
-check_eq  "install.sh pins the tag CMake pins" "$LLAMA_TAG" "$CMAKE_TAG"
+# the first tensor. The installer used to carry a copy of the tag so it could
+# seed a llama.cpp checkout for the in-app runtime builder; it does not deal in
+# runtimes at all now, so there is one place the tag is written down and one
+# place it is read.
+check_not "the installer does not carry a copy of the llama tag" \
+          grep -q "LLAMA_TAG" "$HERE/../install.sh"
+check     "CMake pins it" \
+          grep -qE 'CRUCIBLE_LLAMA_TAG b[0-9]+' "$HERE/../cmake/CrucibleDependencies.cmake"
 
 # The same tag is compiled into the binary for the in-app runtime builder.
 check     "CMakeLists passes the tag to the compiler" \
@@ -439,6 +411,49 @@ check_not "GGML_BACKEND_DIR is not set" \
           grep -q "^ *set(GGML_BACKEND_DIR" "$HERE/../cmake/CrucibleDependencies.cmake"
 
 echo
+echo "  the bar stays on one row"
+
+# A bar that wraps can never be erased. The redraw moves the cursor up exactly
+# one row, so a line that took two leaves the older bar stranded -- and a
+# display whose whole point is that there is one of it printed a fresh dead bar
+# at every phase, three of them on an ordinary 80-column terminal.
+#
+# Two things caused it, and both are pinned below. The elapsed clock was not
+# counted in the room reserved for the label; and term_cols asked `tput cols`,
+# which measures stdout -- and this is called from inside `$( )`, where stdout
+# is a pipe, so tput fell back to terminfo's 80 whatever the window was really
+# doing. Every window narrower than 80 wrapped every bar.
+#
+# Measured rather than read: the line is drawn and its columns counted.
+bar_line_width() {   # columns, label, seconds on the clock
+    ( IS_TTY=1; PROGRESS_ON=1; BLOCK_SHOWN=0; TERM_COLS="$1"
+      PHASE_LABEL="$2"; PHASE_START=0; SECONDS="$3"
+      STEP_NUM=5; STEP_PCT=50
+      block_draw \
+        | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\n' | wc -m | tr -d ' ' )
+}
+
+# Longer than any terminal here, so fit_label is doing real work, and a clock
+# wide enough that forgetting it cannot be hidden by rounding.
+BAR_LABEL="fetching https://github.com/mattsaund/Crucible.git into the cache"
+for _cols in 30 40 50 60 72 80 100 132; do
+    _drawn="$(bar_line_width "$_cols" "$BAR_LABEL" 100000)"
+    check "at $_cols columns the bar fits, clock and all ($_drawn)" \
+          test "$_drawn" -lt "$_cols"
+done
+# A short label must not be padded out to the edge either -- a phase with no
+# clock yet is the common case and it has to leave the row alone as well.
+check "a short label draws a short line" \
+      test "$(bar_line_width 80 "configuring" 0)" -lt 80
+
+check     "the room left for the label has the clock taken out of it" \
+          grep -qF -- 'fit_label "$PHASE_LABEL" $(( room - ${#clock} ))' "$HERE/../install.sh"
+check     "and on a row too tight for both, the clock is what goes" \
+          grep -qF -- 'if [ "$room" -lt $(( ${#clock} + 4 )) ]; then' "$HERE/../install.sh"
+check     "the width comes from the terminal, not from stdout" \
+          grep -qF -- 'stty size </dev/tty' "$HERE/../install.sh"
+
+echo
 echo "  bars"
 IS_TTY=0
 check     "a bar renders its percentage" \
@@ -566,7 +581,7 @@ check     "the header check runs even under --no-deps" \
 check     "the install verifies the desktop binary actually landed" \
           grep -qF '[ ! -x "$PREFIX/bin/crucible-gui" ]' "$HERE/../install.sh"
 check     "and says so when the desktop app was not installed" \
-          grep -q "desktop  : %snot installed" "$HERE/../install.sh"
+          grep -q "crucible-gui  %snot installed" "$HERE/../install.sh"
 
 # Windows: switches default to false, so the opt-out is the switch and the
 # build flag has to be derived from it rather than read directly.
@@ -617,9 +632,11 @@ check     "there is a Windows installer" \
           test -f "$HERE/../install.ps1"
 check     "it takes the same options the shell one does" \
           grep -q 'param(' "$HERE/../install.ps1"
-for opt in Gpu Prefix Gui Uninstall Check; do
+for opt in Prefix Gui Uninstall Check; do
     check "  -$opt" grep -q "\\\$$opt" "$HERE/../install.ps1"
 done
+check_not "and no longer takes a GPU SDK to install" \
+          grep -q -- '-Gpu\|\$Gpu' "$HERE/../install.ps1"
 # It must not build a runtime either: that decision is the same on every
 # platform, and it belongs to the settings screen.
 check_not "it does not build a GPU runtime" \
@@ -670,10 +687,18 @@ check     "a runtime build turns off BLAS and Accelerate" \
 check     "a runtime build turns off Metal unless Metal is what was asked for" \
           grep -q "kind != BackendKind::Metal" "$HERE/../src/runtime/builder.cpp"
 
-check     "the llama.cpp source is still kept, so a later build needs no network" \
-          grep -q "seed_runtime_source" "$HERE/../install.sh"
-check     "the summary says no runtime is installed" \
-          grep -q "runtimes : .*none yet" "$HERE/../install.sh"
+# The installer used to copy the llama.cpp checkout the build had already
+# fetched into the data directory, so that building a runtime later needed no
+# network. It was still runtime work in an installer that does not install
+# runtimes, and it left several hundred megabytes on disk for a compile that
+# might never be asked for. The program fetches its own source when you ask it
+# for a runtime.
+check_not "the installer seeds no llama.cpp checkout" \
+          grep -q "seed_runtime_source\|runtime-src" "$HERE/../install.sh"
+check_not "and its summary no longer reports a runtime that was never installed" \
+          grep -q "runtimes :" "$HERE/../install.sh"
+check_not "nor a \"next steps\" list telling you to go and build one" \
+          grep -q "open .*Runtimes.*Pick CPU" "$HERE/../install.sh"
 
 echo "  failure reporting"
 
@@ -728,22 +753,10 @@ check_not "no bash 4+ syntax the Mac's shell cannot parse" \
           "$HERE/../tests/test_uninstall.sh"
 
 # An empty array expanded as "${arr[@]}" is an unbound variable in 3.2 -- so
-# the Mac, where PKGS_VULKAN and PKGS_CUDA are both empty, is the one machine
-# where it fires. ${arr[@]+"${arr[@]}"} is the portable spelling.
+# the Mac, where PKGS_GUI is empty, is the one machine where it fires.
+# ${arr[@]+"${arr[@]}"} is the portable spelling.
 check_not "no bare \"\${arr[@]}\" expansion (empty arrays are fatal in bash 3.2)" \
           grep -qE '[^+]"[$][{]PKGS_[A-Z]*\[@\][}]"' "$HERE/../install.sh"
-
-runtime_for() {
-    ( OS="$1"; RUNTIME="$2"; decide_backend >/dev/null 2>&1; printf '%s' "$RUNTIME" )
-}
-
-check_eq "a Mac asked for auto gets Metal" "$(runtime_for Darwin auto)" "metal"
-check_eq "a Mac may ask for Metal outright" "$(runtime_for Darwin metal)" "metal"
-# die exits non-zero, so the subshell prints nothing at all.
-check_eq "CUDA on a Mac is refused, not attempted" "$(runtime_for Darwin cuda)" ""
-check_eq "Metal off a Mac is refused, not attempted" "$(runtime_for Linux metal)" ""
-check     "the refusal names what to use instead" \
-          grep -q -- "use --gpu metal (or --gpu cpu)" "$HERE/../install.sh"
 
 echo
 echo "  the crucible component carries the libraries the binary links against"
@@ -783,6 +796,112 @@ else
 fi
 
 echo
+echo "  the installer installs the program, and only the program"
+
+ROOT="$HERE/.."
+
+# It used to detect the GPU, pick a backend, install a Vulkan SDK on every
+# machine and offer several gigabytes of CUDA on some -- all so that a runtime
+# could be compiled later, from the settings screen, by the program. None of
+# that is an installer's work: which backend to build is a question that can
+# only be answered on the machine at the moment it is asked, and the program
+# asks it there. What is left is a compile and a copy.
+for _gone in decide_backend cuda_required_for_cap nvcc_version apt_cuda_candidate \
+             seed_runtime_source CUDA_NOTE PKGS_VULKAN PKGS_CUDA RUNTIME BACKEND_LIST; do
+    check_not "install.sh no longer carries $_gone" \
+              grep -q "$_gone" "$ROOT/install.sh"
+done
+check_not "and takes no --gpu option to argue about" \
+          grep -q -- "--gpu" "$ROOT/install.sh"
+check_not "it does not go looking for a graphics card" \
+          grep -q "nvidia-smi" "$ROOT/install.sh"
+check_not "the Windows installer does not either" \
+          grep -q "Win32_VideoController\|Resolve-Runtime" "$ROOT/install.ps1"
+
+# The program's own SDK advice is what replaced all of it: refuse before the
+# build rather than fail inside it, and name the command for the package
+# manager this machine actually has.
+check     "the program names the tool each backend needs" \
+          grep -q "required_tool" "$ROOT/src/runtime/backend.cpp"
+check     "and the command that would install it" \
+          grep -q "install_hint" "$ROOT/include/crucible/runtime/backend.hpp"
+
+# What it does install: the program, and the directories the program will use.
+check     "the installer creates the directories the program keeps files in" \
+          grep -q "^make_directories() {" "$ROOT/install.sh"
+for _dir in CONFIG_DIR DATA_DIR MODELS_DIR; do
+    check "  $_dir" grep -qF -- "\"\$$_dir\"" "$ROOT/install.sh"
+done
+check     "and the Windows one creates the same three" \
+          grep -q 'New-Item .*-Path \$ConfigDir, \$DataDir, \$ModelsDir' "$ROOT/install.ps1"
+
+echo
+echo "  one progress bar, and nothing else"
+
+# The bar used to have five step headings scrolling above it and a running
+# commentary under each -- what was detected, what was installed, what every
+# phase achieved. All of it was already said by the label beside the bar, in
+# the moment it was true.
+check_not "a part no longer announces itself with a heading" \
+          grep -q '==>%s %s\[%d/%d\]' "$ROOT/install.sh"
+check     "the running commentary is silent while the bar is up" \
+          grep -q 'info()  { if \[ "$PROGRESS_ON" != 1 \]' "$ROOT/install.sh"
+check     "so is the per-phase 'done' line" \
+          grep -q 'ok()    { if \[ "$PROGRESS_ON" != 1 \]' "$ROOT/install.sh"
+# A warning is exempt: it says something is not as asked -- a desktop app that
+# cannot be built here -- and that has to reach the screen whatever is on it.
+check     "a warning still gets through" \
+          grep -q 'warn()  { note ' "$ROOT/install.sh"
+check     "Windows draws one bar too" \
+          grep -q "function Show-Bar" "$ROOT/install.ps1"
+# Same trap, same fix: a bar padded to a width the window does not have wraps,
+# and a wrapped bar can never be rewritten in place.
+check     "and measures the console rather than assuming a width" \
+          grep -q 'RawUI.WindowSize.Width' "$ROOT/install.ps1"
+check_not "with no hard-coded row width left to be wrong about" \
+          grep -qE "PadRight\(78\)|' \* 78" "$ROOT/install.ps1"
+check     "and keeps its notes quiet while it is up" \
+          grep -q 'if (-not \$script:BarShown) { Write-Host "    \$Message"' "$ROOT/install.ps1"
+
+# The closing text. No "Next:" list -- it told you to go and build a runtime,
+# put models somewhere and assign them, which is the program's first-run job
+# and not something to read once at the end of an install and then scroll past.
+check_not "no next-steps list at the end of the install" \
+          grep -q "Next:" "$ROOT/install.sh"
+check_not "and no note about a GPU backend it did not install" \
+          grep -q "About the GPU backend" "$ROOT/install.sh"
+
+echo
+echo "  install and uninstall are each one line"
+
+# Symmetry is the point: whatever you typed to put it there, the same command
+# with --uninstall takes it away -- including from a machine where the binary
+# is too broken to uninstall itself.
+check     "the installer documents its own uninstall one-liner" \
+          grep -qF -- 'bash -s -- --uninstall' "$ROOT/install.sh"
+check     "and prints it when the install finishes" \
+          grep -qF -- 'To remove it:' "$ROOT/install.sh"
+check     "the README gives the same two lines" \
+          grep -qF -- 'bash -s -- --uninstall' "$ROOT/README.md"
+check     "including the PowerShell spelling, which iex cannot express alone" \
+          grep -qF -- 'scriptblock]::Create((irm' "$ROOT/README.md"
+check     "and the Windows installer prints it too" \
+          grep -qF -- 'scriptblock]::Create((irm' "$ROOT/install.ps1"
+
+echo
+echo "  the tagline"
+
+# One sentence, in four places, and they have to agree.
+TAGLINE="a local LLM engine that delegates."
+for _where in install.sh install.ps1 src/app/cli.cpp README.md; do
+    check "$_where carries the tagline" \
+          grep -qF -- "$TAGLINE" "$ROOT/$_where"
+done
+check_not "and nowhere still says the old one" \
+          grep -rqF -- "a local forge" "$ROOT/install.sh" "$ROOT/install.ps1" \
+               "$ROOT/src" "$ROOT/README.md"
+
+echo
 echo "  one mark, and it is a flame"
 
 # The program used to be drawn as a crucible: a pot on a stand with a fire under
@@ -795,12 +914,14 @@ echo "  one mark, and it is a flame"
 # file that carried it, and every place that shows a mark shows the same one.
 ROOT="$HERE/.."
 
-# The pot's rim and its stand. Distinctive enough that no ordinary line of
-# prose, shell or C++ contains them, and the pieces most likely to be left
-# behind by a half-finished edit.
-# This file is excluded because it is the one place the vessel is still written
-# down: the patterns above are what it is looking for.
-for _art in ",-----------," "'-----------'" "\\_______/" "(/^\\)"; do
+# The pot's rim and its stand, and the flame that was drawn out of slashes and
+# parentheses after it. Distinctive enough that no ordinary line of prose, shell
+# or C++ contains them, and the pieces most likely to be left behind by a
+# half-finished edit.
+# This file is excluded because it is the one place they are still written down:
+# the patterns above are what it is looking for.
+for _art in ",-----------," "'-----------'" "\\_______/" "(/^\\)" \
+            "( (  ) )" "\\__/" "\\ \\/ /" "(  /\\  )"; do
     check_not "no file still draws \"$_art\"" \
               grep -rqF --exclude=test_install.sh -- "$_art" \
                    "$ROOT/src" "$ROOT/include" "$ROOT/tests" \
@@ -818,13 +939,16 @@ for _where in install.sh install.ps1 src/app/cli.cpp README.md; do
           grep -qF -- "$FLAME_ROW" "$ROOT/$_where"
 done
 
-# The terminal sprite is the one place that does not, and deliberately: it has
-# to animate, and it has to survive a terminal with no Unicode font. It draws
-# the same flame in ASCII, and "( (  ) )" is its lit inner tongue -- the one row
-# of that drawing that could not be anything else.
-check     "the terminal sprite draws its own ASCII flame" \
-          grep -qF -- "( (  ) )" "$ROOT/src/ui/widgets/flame_sprite.cpp"
-check_not "and does not paste the braille one into a sprite that has to animate" \
+# The terminal sprite is the fifth place, and the one that cannot paste: it has
+# to animate, and it has to sit in the nine columns a roster of seats leaves
+# beside it. So it carries the same drawing resampled rather than the rows
+# above -- braille either way, and a hash-filled silhouette for the terminal
+# whose font has no braille in it.
+check     "the terminal sprite is drawn in braille too" \
+          grep -q "⣿" "$ROOT/src/ui/widgets/flame_sprite.cpp"
+check     "and falls back to hashes rather than to boxes" \
+          grep -qF -- "#########" "$ROOT/src/ui/widgets/flame_sprite.cpp"
+check_not "it is not the full-size drawing pasted in, which would not fit" \
           grep -qF -- "$FLAME_ROW" "$ROOT/src/ui/widgets/flame_sprite.cpp"
 
 # Braille is not ASCII, so both faces have to put the console into UTF-8 before

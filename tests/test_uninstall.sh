@@ -2,9 +2,14 @@
 # Safety tests for `crucible --uninstall`.
 #
 # Uninstall is the only destructive thing Crucible does, and a clean reinstall
-# test depends on it actually being clean: yes to everything must leave nothing
-# behind, and each answer must be independent. Pinned down by running the real
-# binary against a sandboxed HOME rather than by reading the code.
+# test depends on it actually being clean: one yes must leave nothing behind,
+# and one no must leave everything. Pinned down by running the real binary
+# against a sandboxed HOME rather than by reading the code.
+#
+# There used to be three questions -- programs, then config, then models and
+# data -- and a test here for each combination. One question now takes
+# everything, so what is pinned is that it really does take everything, and
+# that declining takes nothing.
 
 set -uo pipefail
 
@@ -118,16 +123,17 @@ echo
 
 echo "  declining leaves everything in place"
 ROOT="$(setup declining)"
-run_uninstall "$ROOT" 'n\nn\nn\n'
+run_uninstall "$ROOT" 'n\n'
 check "binary kept"           "$(exists "$ROOT/bin/crucible")"            "yes"
 check "desktop app kept"      "$(exists "$ROOT/bin/crucible-gui")"         "yes"
 check "config kept"           "$(exists "$ROOT/cfg/crucible/config.json")" "yes"
 check "models kept"           "$(count_models "$ROOT")"                  "2"
 
-echo "  yes to everything leaves nothing behind"
-# What a clean reinstall test needs: one pass, nothing left to tidy up by hand.
+echo "  one yes leaves nothing behind"
+# What a clean reinstall test needs: one pass, one answer, nothing left to tidy
+# up by hand.
 ROOT="$(setup everything)"
-run_uninstall "$ROOT" 'y\ny\ny\n'
+run_uninstall "$ROOT" 'y\n'
 check "binary removed"        "$(exists "$ROOT/bin/crucible")"            "no"
 check "config removed"        "$(exists "$ROOT/cfg/crucible")"            "no"
 check "data removed"          "$(exists "$ROOT/dat/crucible")"            "no"
@@ -141,7 +147,7 @@ check "runtime source removed" "$(exists "$ROOT/dat/crucible/runtime-src")" "no"
 check "project history removed" "$(exists "$ROOT/dat/crucible/projects")" "no"
 check "cache removed"         "$(exists "$ROOT/cache/crucible")"          "no"
 
-echo "  -y answers yes to every question"
+echo "  -y answers the question"
 ROOT="$(setup assume_yes)"
 run_uninstall "$ROOT" '' -y
 check "binary removed"        "$(exists "$ROOT/bin/crucible")"            "no"
@@ -157,16 +163,21 @@ check "runtime source removed" "$(exists "$ROOT/dat/crucible/runtime-src")" "no"
 check "project history removed" "$(exists "$ROOT/dat/crucible/projects")" "no"
 check "cache removed"         "$(exists "$ROOT/cache/crucible")"          "no"
 
-echo "  each answer is independent: keep the config, drop the rest"
-ROOT="$(setup partial)"
-run_uninstall "$ROOT" 'y\nn\ny\n'
-check "binary removed"        "$(exists "$ROOT/bin/crucible")"            "no"
-check "config kept"           "$(exists "$ROOT/cfg/crucible/config.json")" "yes"
-check "data removed"          "$(exists "$ROOT/dat/crucible")"            "no"
+echo "  there is no half-uninstall to land in by accident"
+# The old three questions made "programs gone, config and models left" the
+# result of two keystrokes, and it is the one outcome nobody wants: a machine
+# with no Crucible on it and Crucible's files all over it. One answer decides
+# the lot, so a single "yes" has to reach the config and the models too.
+ROOT="$(setup no_partial)"
+run_uninstall "$ROOT" 'y\n'
+check "config removed"        "$(exists "$ROOT/cfg/crucible")"            "no"
+check "models removed"        "$(count_models "$ROOT")"                  "0"
+check "nothing is left in the prefix" \
+      "$(ls "$ROOT/bin" "$ROOT/lib" 2>/dev/null | grep -c crucible)"     "0"
 
-echo "  keeping the binary is possible"
-ROOT="$(setup keep_binary)"
-run_uninstall "$ROOT" 'n\nn\nn\n'
+echo "  and no half-answer either: one no keeps the models"
+ROOT="$(setup keep_everything)"
+run_uninstall "$ROOT" 'n\n'
 check "binary kept"           "$(exists "$ROOT/bin/crucible")"            "yes"
 check "models kept"           "$(count_models "$ROOT")"                  "2"
 
@@ -186,7 +197,7 @@ check "an unreadable prompt fails rather than reporting success" "$?" "1"
 # And with a terminal -- which is what install.sh now hands it -- the same
 # install comes apart completely. This is the one-liner's real path.
 ROOT="$(setup delegated)"
-run_uninstall "$ROOT" 'y\ny\ny\n'
+run_uninstall "$ROOT" 'y\n'
 check "binary removed"        "$(exists "$ROOT/bin/crucible")"            "no"
 check "desktop app removed"   "$(exists "$ROOT/bin/crucible-gui")"        "no"
 check "config removed"        "$(exists "$ROOT/cfg/crucible")"            "no"
@@ -203,6 +214,12 @@ check "the delegation redirects stdin from the terminal" \
       "$(greps '--uninstall < /dev/tty')" "yes"
 check "with no terminal at all it answers yes rather than silently nothing" \
       "$(greps '"$exe" --uninstall --yes || status=$?')" "yes"
+# The script's own sweep, for a prefix with no binary in it, asks once and
+# names everything -- the same bargain the binary offers.
+check "the shell sweep asks one question, not three" \
+      "$(greps 'Remove Crucible and everything above?')" "yes"
+check "and the question covers the config and the data as well" \
+      "$(greps 'for entry in "$cfg" "$dat" "$cache"; do')" "yes"
 # A machine with both a system and a user install had the second one left
 # behind, on PATH, pointing at libraries the first pass had just deleted.
 check "every prefix is uninstalled, not just the first" \
@@ -217,6 +234,11 @@ check "the terminal test opens /dev/tty rather than stat-ing it" \
 # must not read the binary still being there as the user declining.
 check "a failed delegation falls back to the sweep" \
       "$(greps 'if [ "$status" -eq 0 ]; then')" "yes"
+# And the mirror of it. A delegation that finished and left its own binary
+# behind is one where the answer was no -- so the sweep must not then delete
+# the whole prefix, which is exactly what was just declined.
+check "a declined delegation stops rather than sweeping" \
+      "$(greps 'if [ "$status" -eq 0 ] && [ -e "$exe" ]; then')" "yes"
 echo "  a bare install with nothing to remove does not fail"
 ROOT="$SANDBOX/bare"
 mkdir -p "$ROOT/bin" "$ROOT/cfg" "$ROOT/dat"

@@ -2,20 +2,24 @@
 //
 // The flame.
 //
-// It is drawn as whole frames rather than as a template with markers punched
-// into it. The sprite that came before this one was a crucible -- a pot, a
-// stand, and a fire above them -- and only the fire ever moved, so substituting
-// three fixed-width markers into a constant vessel was the cheap way to animate
-// it. Now the whole mark is the fire, and what changes between moods is how
-// much of the canvas it fills, which no amount of marker substitution expresses.
+// The same drawing as packaging/flame.txt -- the mark the banner, both
+// installers and the README print -- resampled onto a character grid small
+// enough to sit beside the roster. It is braille: eight dots to a cell, which
+// at nine cells across is an eighteen-dot canvas, and that is enough resolution
+// for the curl of the tail to survive. Nothing here is drawn by hand.
+//
+// Whole frames per mood rather than a template with markers punched into it.
+// What changes between moods is how much of the canvas the flame fills -- the
+// full plume while tokens are coming out, banked to an ember at rest, gone out
+// with smoke over a cold foot when something has failed -- and no amount of
+// marker substitution expresses that. It is the point of the sprite: how hard
+// it is burning is how hard the machine is working, so a glance at the corner
+// of the screen answers "is it doing anything" without reading a word.
 //
 // Every frame is padded to the same width and height at render time, so the
 // expert panel never reflows and the flame never slides sideways as it burns.
-// The foot is the one part that does not move: fire grows upward from where it
-// is lit.
-//
-// The silhouette is the one src/gui/theme.cpp draws and packaging/crucible.svg
-// carries, at the resolution a character grid allows.
+// The plume grows and shrinks about a fixed centre line, which is what keeps it
+// from wandering across the column as the engine changes state.
 #include "crucible/ui/widgets/flame_sprite.hpp"
 
 #include <array>
@@ -26,140 +30,279 @@
 namespace crucible::ui {
 namespace {
 
-// --- the full flame, 13 columns by 7 rows ---------------------------------
+using FullFrame    = std::array<const char*, 7>;
+using CompactFrame = std::array<const char*, 5>;
+
+// --- the flame, in braille -------------------------------------------------
 //
-// Two frames per mood. The flicker is a waver in one row rather than a jump in
+// Two frames per mood. The flicker is a lean in the tip rather than a jump in
 // the whole shape: a mark that leaps about is one you cannot sit next to, and
-// the model load these states cover can run for a minute.
+// the model load these states cover can run for a minute. Blank cells are
+// U+2800, not spaces, so a line is exactly as many columns as it looks.
 
-using FullFrame = std::array<const char*, 7>;
-
-// Full plume, inner tongue lit. The only state that reaches the top row.
+// Full plume. The only state that reaches the top row.
 constexpr std::array<FullFrame, 2> kFullTalking{{
-    {{R"(      /\)",
-      R"(     /  \)",
-      R"(    (    ))",
-      R"(   (  /\  ))",
-      R"(   ( (  ) ))",
-      R"(    \ \/ /)",
-      R"(     \__/)"}},
-    {{R"(      /\)",
-      R"(     (  ))",
-      R"(    (    ))",
-      R"(   (  /\  ))",
-      R"(   ( )  ( ))",
-      R"(    \ \/ /)",
-      R"(     \__/)"}},
+    {{R"(⠀⠀⠀⠸⣦⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⢰⣿⣷⡄⠀⠀)",
+      R"(⠀⠀⣄⣿⠟⣿⣿⠀⠀)",
+      R"(⠀⣰⣿⡟⢁⣿⣿⣿⡀)",
+      R"(⣾⣿⡏⠀⠘⢹⣿⣿⠇)",
+      R"(⢿⣿⠀⠀⠀⠀⢻⡯⠀)",
+      R"(⠈⠛⠧⣀⠀⠠⠛⠁⠀)"}},
+    {{R"(⠀⠀⠀⠀⢷⡄⠀⠀⠀)",
+      R"(⠀⠀⠀⢀⣿⣷⣆⠀⠀)",
+      R"(⠀⠀⢠⣸⡏⣿⣿⡄⠀)",
+      R"(⠀⣠⣾⡟⢁⣿⣿⣿⡂)",
+      R"(⣾⣿⡏⠀⠘⢹⣿⣿⠇)",
+      R"(⢿⣿⠀⠀⠀⠀⢻⡯⠀)",
+      R"(⠈⠛⠧⣀⠀⠠⠛⠁⠀)"}},
 }};
 
-// Routing, loading, thinking: burning steadily, no tongue. Deliberately calm --
-// the status bubble underneath says which of the three it is, in words rather
-// than in glyphs nobody can tell apart.
+// Routing, loading, thinking: burning steadily, two thirds of the canvas.
+// Deliberately calm -- the status bubble underneath says which of the three it
+// is, in words rather than in glyphs nobody can tell apart.
 constexpr std::array<FullFrame, 2> kFullWorking{{
-    {{"",
-      "",
-      R"(      /\)",
-      R"(     /  \)",
-      R"(    (    ))",
-      R"(    \    /)",
-      R"(     \__/)"}},
-    {{"",
-      "",
-      R"(      /\)",
-      R"(     (  ))",
-      R"(    (    ))",
-      R"(    \    /)",
-      R"(     \__/)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠈⣦⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⣰⣿⣷⠀⠀⠀)",
+      R"(⠀⠀⣴⡿⢹⣿⣷⠀⠀)",
+      R"(⠀⣿⣿⠀⠈⢻⡿⠀⠀)",
+      R"(⠀⠈⠻⡄⠀⡼⠃⠀⠀)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⣳⡀⠀⠀⠀)",
+      R"(⠀⠀⠀⣠⡿⣿⡀⠀⠀)",
+      R"(⠀⠀⣴⡿⢣⣿⣷⠀⠀)",
+      R"(⠀⣿⣿⠀⠈⢻⡿⠀⠀)",
+      R"(⠀⠈⠻⡄⠀⡼⠃⠀⠀)"}},
 }};
 
 // Banked, not out. An ember flicks off the tip every second or so -- enough
 // movement that an idle flame still looks lit, and little enough that it is not
 // asking to be watched.
 constexpr std::array<FullFrame, 2> kFullIdle{{
-    {{"", "", "", "",
-      R"(      /\)",
-      R"(     /  \)",
-      R"(     \__/)"}},
-    {{"", "", "",
-      R"(      ')",
-      R"(      /\)",
-      R"(     /  \)",
-      R"(     \__/)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⣵⡄⠀⠀⠀)",
+      R"(⠀⠀⢀⣼⢫⣷⡀⠀⠀)",
+      R"(⠀⠀⠘⢧⠀⠽⠀⠀⠀)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠠⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⣸⡄⠀⠀⠀)",
+      R"(⠀⠀⢀⣴⢫⣿⡀⠀⠀)",
+      R"(⠀⠀⠘⢧⠀⠽⠀⠀⠀)"}},
 }};
 
 // Gone out: smoke drifting off a cold foot. The one state the sprite shows by
 // taking something away rather than by adding movement.
 constexpr std::array<FullFrame, 2> kFullError{{
-    {{"", "",
-      R"(      ~)",
-      R"(     ~)",
-      R"(      ~)",
-      "",
-      R"(     \__/)"}},
-    {{"", "",
-      R"(     ~)",
-      R"(      ~)",
-      R"(     ~)",
-      "",
-      R"(     \__/)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠂⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠐⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠂⠀⠀⠀⠀)",
+      R"(⠀⠀⠰⣄⠀⠖⠀⠀⠀)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠈⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠁⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠈⠀⠀⠀⠀)",
+      R"(⠀⠀⠰⣄⠀⠖⠀⠀⠀)"}},
 }};
 
-// --- the compact flame, 11 columns by 5 rows -------------------------------
+// --- the compact flame -----------------------------------------------------
 //
-// A crop in spirit rather than in fact: the same shape with the waist taken
-// out, because at five rows there is no room for both a taper and a belly.
-
-using CompactFrame = std::array<const char*, 5>;
-
+// Seven cells by five, for the terminal that is too short for the full one.
+// The same drawing at a smaller scale rather than a crop: a flame with its top
+// sawn off reads as a bush.
 constexpr std::array<CompactFrame, 2> kCompactTalking{{
-    {{R"(    /\)",
-      R"(   /  \)",
-      R"(  ( /\ ))",
-      R"(  ( \/ ))",
-      R"(   \__/)"}},
-    {{R"(    /\)",
-      R"(   (  ))",
-      R"(  ( /\ ))",
-      R"(  ( \/ ))",
-      R"(   \__/)"}},
+    {{R"(⠀⠀⠈⣦⠀⠀⠀)",
+      R"(⠀⠀⣰⣿⣷⠀⠀)",
+      R"(⠀⣴⡿⢹⣿⣷⠀)",
+      R"(⣿⣿⠀⠈⢻⡿⠀)",
+      R"(⠈⠻⡄⠀⡼⠃⠀)"}},
+    {{R"(⠀⠀⠀⣳⡀⠀⠀)",
+      R"(⠀⠀⣠⡿⣿⡀⠀)",
+      R"(⠀⣴⡿⢣⣿⣷⠀)",
+      R"(⣿⣿⠀⠈⢻⡿⠀)",
+      R"(⠈⠻⡄⠀⡼⠃⠀)"}},
 }};
 
 constexpr std::array<CompactFrame, 2> kCompactWorking{{
-    {{"",
-      R"(    /\)",
-      R"(   /  \)",
-      R"(   (  ))",
-      R"(   \__/)"}},
-    {{"",
-      R"(    /\)",
-      R"(   (  ))",
-      R"(   (  ))",
-      R"(   \__/)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⡀⠀⠀⠀)",
+      R"(⠀⠀⢠⣿⡆⠀⠀)",
+      R"(⠀⣤⡟⠸⣿⠄⠀)",
+      R"(⠀⠹⣄⠀⠟⠀⠀)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⣄⠀⠀⠀)",
+      R"(⠀⠀⢀⣿⣆⠀⠀)",
+      R"(⠀⣤⡟⠹⣿⠄⠀)",
+      R"(⠀⠹⣄⠀⠟⠀⠀)"}},
 }};
 
 constexpr std::array<CompactFrame, 2> kCompactIdle{{
-    {{"", "",
-      R"(    /\)",
-      R"(   /  \)",
-      R"(   \__/)"}},
-    {{"",
-      R"(    ')",
-      R"(    /\)",
-      R"(   /  \)",
-      R"(   \__/)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⢀⣾⡆⠀⠀)",
+      R"(⠀⠀⢿⠈⠟⠀⠀)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⢀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⢀⣼⡆⠀⠀)",
+      R"(⠀⠀⢿⠈⠟⠀⠀)"}},
 }};
 
 constexpr std::array<CompactFrame, 2> kCompactError{{
+    {{R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠄⠀⠀⠀)",
+      R"(⠀⠀⠀⠠⠀⠀⠀)",
+      R"(⠀⠰⣄⠀⠖⠀⠀)"}},
+    {{R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠀⠀⠀)",
+      R"(⠀⠀⠀⠐⠀⠀⠀)",
+      R"(⠀⠀⠀⠀⠂⠀⠀)",
+      R"(⠀⠰⣄⠀⠖⠀⠀)"}},
+}};
+
+// --- the flame, in plain ASCII ---------------------------------------------
+//
+// For `ui.unicode = false`, and for the terminal whose font has no braille
+// block -- where the drawing above comes out as a column of empty boxes, which
+// is worse than a coarse mark. It is the same silhouette filled with hashes at
+// one cell per pixel, so the shape carries even though the detail cannot: a
+// character cell is twice as tall as it is wide, which leaves seven rows to say
+// what twenty-eight dots said above.
+//
+// Two glyphs are not the flame and are not hashes: `'` is the ember the idle
+// state flicks off, and `~` is smoke. Both are one column wide everywhere.
+constexpr std::array<FullFrame, 2> kFullAsciiTalking{{
+    {{R"(    #)",
+      R"(    ###)",
+      R"(   ####)",
+      R"(  ######)",
+      R"(#########)",
+      R"(########)",
+      R"(  #####)"}},
+    {{R"(    ##)",
+      R"(    ###)",
+      R"(   #####)",
+      R"(  ######)",
+      R"(#########)",
+      R"(########)",
+      R"(  #####)"}},
+}};
+
+constexpr std::array<FullFrame, 2> kFullAsciiWorking{{
     {{"",
-      R"(    ~)",
+      "",
+      R"(    #)",
+      R"(   ###)",
+      R"(  #####)",
+      R"( #######)",
+      R"(  #####)"}},
+    {{"",
+      "",
+      R"(    ##)",
+      R"(    ###)",
+      R"(  ######)",
+      R"( #######)",
+      R"(  #####)"}},
+}};
+
+constexpr std::array<FullFrame, 2> kFullAsciiIdle{{
+    {{"",
+      "",
+      "",
+      "",
+      R"(    #)",
+      R"(  ####)",
+      R"(  ####)"}},
+    {{"",
+      "",
+      R"(    ')",
+      "",
+      R"(    #)",
+      R"(  ####)",
+      R"(  ####)"}},
+}};
+
+constexpr std::array<FullFrame, 2> kFullAsciiError{{
+    {{"",
+      "",
       R"(   ~)",
       "",
-      R"(   \__/)"}},
-    {{"",
-      R"(   ~)",
       R"(    ~)",
       "",
-      R"(   \__/)"}},
+      R"(  ####)"}},
+    {{"",
+      R"(    ~)",
+      "",
+      R"(     ~)",
+      "",
+      "",
+      R"(  ####)"}},
+}};
+
+constexpr std::array<CompactFrame, 2> kCompactAsciiTalking{{
+    {{R"(   #)",
+      R"(  ###)",
+      R"( #####)",
+      R"(#######)",
+      R"( #####)"}},
+    {{R"(   ##)",
+      R"(   ###)",
+      R"( ######)",
+      R"(#######)",
+      R"( #####)"}},
+}};
+
+constexpr std::array<CompactFrame, 2> kCompactAsciiWorking{{
+    {{"",
+      R"(   #)",
+      R"(  ###)",
+      R"( #####)",
+      R"( ####)"}},
+    {{"",
+      R"(   ##)",
+      R"(   ##)",
+      R"( #####)",
+      R"( ####)"}},
+}};
+
+constexpr std::array<CompactFrame, 2> kCompactAsciiIdle{{
+    {{"",
+      "",
+      "",
+      R"(   #)",
+      R"(  ###)"}},
+    {{"",
+      R"(   ')",
+      "",
+      R"(   ##)",
+      R"(  ###)"}},
+}};
+
+constexpr std::array<CompactFrame, 2> kCompactAsciiError{{
+    {{R"(  ~)",
+      "",
+      R"(   ~)",
+      "",
+      R"( ####)"}},
+    {{R"(   ~)",
+      "",
+      R"(  ~)",
+      "",
+      R"( ####)"}},
 }};
 
 /// How fast a mood flickers, in frames per alternation.
@@ -176,26 +319,42 @@ std::size_t period(Mood mood) {
     }
 }
 
-/// The two frames for a mood, at whichever size is in play.
+/// The frame to draw, as a pointer into the tables above.
 ///
-/// Returned as pointers into the tables above rather than copied: these are
-/// constant for the life of the program and a sprite is re-rendered every frame.
-const char* const* frame_for(Mood mood, std::size_t tick, bool compact) {
+/// Returned as a pointer rather than copied: these are constant for the life of
+/// the program and a sprite is re-rendered every frame.
+const char* const* frame_for(Mood mood, std::size_t tick, bool compact, bool unicode) {
     const std::size_t which = (tick / period(mood)) % 2;
     if (compact) {
         switch (mood) {
-            case Mood::Idle:    return kCompactIdle[which].data();
-            case Mood::Talking: return kCompactTalking[which].data();
-            case Mood::Error:   return kCompactError[which].data();
-            default:            return kCompactWorking[which].data();
+            case Mood::Idle:    return unicode ? kCompactIdle[which].data()
+                                               : kCompactAsciiIdle[which].data();
+            case Mood::Talking: return unicode ? kCompactTalking[which].data()
+                                               : kCompactAsciiTalking[which].data();
+            case Mood::Error:   return unicode ? kCompactError[which].data()
+                                               : kCompactAsciiError[which].data();
+            default:            return unicode ? kCompactWorking[which].data()
+                                               : kCompactAsciiWorking[which].data();
         }
     }
     switch (mood) {
-        case Mood::Idle:    return kFullIdle[which].data();
-        case Mood::Talking: return kFullTalking[which].data();
-        case Mood::Error:   return kFullError[which].data();
-        default:            return kFullWorking[which].data();
+        case Mood::Idle:    return unicode ? kFullIdle[which].data() : kFullAsciiIdle[which].data();
+        case Mood::Talking: return unicode ? kFullTalking[which].data()
+                                           : kFullAsciiTalking[which].data();
+        case Mood::Error:   return unicode ? kFullError[which].data()
+                                           : kFullAsciiError[which].data();
+        default:            return unicode ? kFullWorking[which].data()
+                                           : kFullAsciiWorking[which].data();
     }
+}
+
+/// Columns, not bytes: a braille cell is three bytes and one column wide.
+std::size_t columns(std::string_view line) {
+    std::size_t width = 0;
+    for (const char byte : line) {
+        width += (static_cast<unsigned char>(byte) & 0xC0U) != 0x80U ? 1 : 0;
+    }
+    return width;
 }
 
 }  // namespace
@@ -203,7 +362,7 @@ const char* const* frame_for(Mood mood, std::size_t tick, bool compact) {
 FlameSprite::FlameSprite(bool unicode) : unicode_(unicode) {}
 
 std::vector<std::string> FlameSprite::render(Mood mood, std::size_t tick, bool compact) const {
-    const char* const* frame = frame_for(mood, tick, compact);
+    const char* const* frame = frame_for(mood, tick, compact, unicode_);
     const std::size_t  rows  = static_cast<std::size_t>(height(compact));
     const std::size_t  cols  = static_cast<std::size_t>(width(compact));
 
@@ -212,27 +371,14 @@ std::vector<std::string> FlameSprite::render(Mood mood, std::size_t tick, bool c
     for (std::size_t r = 0; r < rows; ++r) {
         std::string line = frame[r];
 
-        // Padded to a constant width. FTXUI sizes a vbox to its widest child,
-        // so ragged lines would make the panel breathe in and out by a column
-        // as the flame changes height. Done before the substitution below,
-        // while every line is still one byte per column.
-        if (line.size() < cols) {
-            line.append(cols - line.size(), ' ');
-        }
-
-        // Smoke is the one glyph with a rounder form worth having, and it is a
-        // one-for-one swap so the padding above still holds. The flame itself
-        // stays ASCII in both modes: slashes and parentheses are drawn by every
-        // font there is, and a mark that comes out as boxes on a machine whose
-        // font lacks the box-drawing diagonals is worse than one drawn plainly
-        // everywhere.
-        if (unicode_) {
-            for (std::size_t i = 0; i < line.size(); ++i) {
-                if (line[i] == '~') {
-                    line.replace(i, 1, "\u2248");
-                    i += std::string_view("\u2248").size() - 1;
-                }
-            }
+        // Padded out to a constant width. FTXUI sizes a vbox to its widest
+        // child, so ragged lines would make the panel breathe in and out by a
+        // column as the flame changes height. The ASCII frames are written
+        // without their trailing run of spaces, because a trailing space is
+        // what an editor silently eats; the braille ones carry blank cells and
+        // are already full width.
+        for (std::size_t drawn = columns(line); drawn < cols; ++drawn) {
+            line.push_back(' ');
         }
         lines.push_back(std::move(line));
     }

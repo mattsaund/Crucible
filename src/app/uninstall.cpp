@@ -2,9 +2,18 @@
 //
 // Removing Crucible.
 //
-// The three questions are separate on purpose, so a partial uninstall is
-// possible -- but answering yes to all of them must leave nothing behind, which
-// is what a clean reinstall test depends on.
+// One question, and it takes everything: both programs, the libraries under
+// them, the application-menu entry, the configuration, the folder-trust list,
+// the models directory, the compute runtimes built into it, the project
+// history and the caches.
+//
+// It used to ask three -- programs, then configuration, then models and data --
+// so that a partial uninstall was possible. In practice that made a full
+// removal something you had to agree to three times and a half-removal the
+// easiest outcome to reach by accident, and it left the one thing an
+// uninstaller is for, "this machine is now as it was", as the least likely
+// result. Uninstall means uninstall. The list is printed before the question,
+// so what is about to go is on screen while it is still being asked.
 #include "crucible/app/uninstall.hpp"
 
 #include "crucible/util/platform.hpp"
@@ -21,6 +30,7 @@
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/subprocess.hpp"
 
 namespace crucible {
 namespace {
@@ -52,15 +62,15 @@ std::uintmax_t directory_size(const std::filesystem::path& dir) {
     return total;
 }
 
-/// The three questions.
+/// The question.
 ///
 /// A question that cannot be read is not an answer of "no". Treating it as one
 /// is how `curl ... | bash -s -- --uninstall` came to print "Done." having
 /// removed nothing: stdin there is the installer script still being read, so
-/// the first question swallowed a line of shell and every one after it hit end
-/// of input -- and each was recorded as the user declining. install.sh now
-/// hands the binary the terminal, and an input that gives out anyway is
-/// reported rather than quietly deciding to keep everything.
+/// the question swallowed a line of shell and then hit end of input -- and that
+/// was recorded as the user declining. install.sh now hands the binary the
+/// terminal, and an input that gives out anyway is reported rather than
+/// quietly deciding to keep everything.
 struct Prompter {
     bool assume_yes   = false;
     bool unanswerable = false;
@@ -205,6 +215,46 @@ std::vector<std::filesystem::path> desktop_files(const std::filesystem::path& bi
     return found;
 }
 
+/// Tell the desktop the menu entry is gone.
+///
+/// Removing crucible.desktop is not the whole job on Linux: the entry is also
+/// written into <share>/applications/mimeinfo.cache and the icon into
+/// <share>/icons/hicolor/icon-theme.cache, and until those are rebuilt the
+/// application menu goes on offering a Crucible that is not there. The caches
+/// are shared with every other application in the prefix, so they are
+/// regenerated rather than deleted.
+///
+/// Both tools are optional and neither failing is worth a word: the entry is
+/// off disk either way, and every desktop rebuilds these on the next login.
+/// The install runs the same pair for the same reason, in the other direction.
+void refresh_desktop_caches(const std::filesystem::path& binary) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    if (binary.empty()) {
+        return;
+    }
+    const std::filesystem::path share = binary.parent_path().parent_path() / "share";
+    const std::vector<std::vector<std::string>> commands{
+        {"update-desktop-database", (share / "applications").string()},
+        {"gtk-update-icon-cache", "-qtf", (share / "icons" / "hicolor").string()},
+    };
+    for (const std::vector<std::string>& argv : commands) {
+        if (!util::on_path(argv.front())) {
+            continue;
+        }
+        util::Subprocess child;
+        std::string      error;
+        if (child.start(argv, {}, {}, error)) {
+            std::string line;
+            while (child.read_line(line)) {
+            }
+            child.wait();
+        }
+    }
+#else
+    (void)binary;
+#endif
+}
+
 /// <prefix>/lib/crucible -- llama.cpp's shared libraries and the runtimes that
 /// shipped with the install. The binary alone is not the whole program any
 /// more, so removing it without these would leave most of the bytes behind.
@@ -226,166 +276,111 @@ int run_uninstall(bool assume_yes) {
     const std::filesystem::path models  = paths::models_dir();
     const std::filesystem::path libs    = library_dir(binary);
     const std::filesystem::path cache   = cache_dir();
-    const std::vector<std::filesystem::path> programs  = companion_programs(binary);
-    const std::vector<std::filesystem::path> beside    = companion_libraries(binary);
-    const std::vector<std::filesystem::path> desktop   = desktop_files(binary);
+    const std::vector<std::filesystem::path> programs = companion_programs(binary);
+    const std::vector<std::filesystem::path> beside   = companion_libraries(binary);
+    const std::vector<std::filesystem::path> desktop  = desktop_files(binary);
+
+    // Everything to be removed, gathered before anything is said about it, so
+    // the list on screen is exactly the list that will be acted on.
+    std::vector<std::filesystem::path> targets;
+    const auto take = [&targets](const std::filesystem::path& path) {
+        std::error_code ec;
+        if (!path.empty() && std::filesystem::exists(path, ec)) {
+            targets.push_back(path);
+        }
+    };
 
     std::cout << "\n  Uninstalling Crucible\n\n";
 
-    if (!binary.empty()) {
-        std::cout << "  binary   " << binary.string() << "\n";
-    }
-    if (std::filesystem::exists(config)) {
-        std::cout << "  config   " << config.string() << "\n";
+    take(binary);
+    if (!binary.empty() && std::filesystem::exists(binary)) {
+        std::cout << "  program  " << binary.string() << "\n";
     }
     for (const std::filesystem::path& program : programs) {
+        take(program);
         std::cout << "  program  " << program.string() << "\n";
     }
     for (const std::filesystem::path& lib : beside) {
+        take(lib);
         std::cout << "  library  " << lib.string() << "\n";
     }
-    for (const std::filesystem::path& entry : desktop) {
-        std::cout << "  desktop  " << entry.string() << "\n";
-    }
     if (!libs.empty()) {
-        std::cout << "  runtime  " << libs.string() << "  ("
+        take(libs);
+        std::cout << "  library  " << libs.string() << "  ("
                   << format::bytes(directory_size(libs)) << ")\n";
     }
+    for (const std::filesystem::path& entry : desktop) {
+        take(entry);
+        std::cout << "  desktop  " << entry.string() << "\n";
+    }
+    if (std::filesystem::exists(config)) {
+        take(config);
+        std::cout << "  config   " << config.string() << "\n";
+    }
     if (std::filesystem::exists(data)) {
+        take(data);
         std::cout << "  data     " << data.string() << "  ("
                   << format::bytes(directory_size(data)) << ")\n";
     }
     if (!cache.empty() && std::filesystem::exists(cache)) {
+        take(cache);
         std::cout << "  cache    " << cache.string() << "  ("
                   << format::bytes(directory_size(cache)) << ")\n";
     }
 
+    if (targets.empty()) {
+        std::cout << "  nothing found to remove.\n\n";
+        return 0;
+    }
+
+    // The models are called out by name because they are the one thing here
+    // Crucible did not put on disk -- they are files the user downloaded, they
+    // are the largest thing in the list, and a reinstall does not bring them
+    // back. Everything else is derived and comes back with the next install.
     const std::vector<ModelFile> found = scan_models(models);
     if (!found.empty()) {
-        std::cout << "  models   " << found.size() << " file"
-                  << (found.size() == 1 ? "" : "s") << " in " << models.string() << "\n";
+        std::cout << "\n  The data directory holds " << found.size() << " model file"
+                  << (found.size() == 1 ? "" : "s") << " ("
+                  << format::bytes(directory_size(models)) << ") that you supplied.\n";
     }
     std::cout << "\n";
 
-    // --- the binary --------------------------------------------------------
+    if (!prompt.ask("Remove Crucible and everything above?", true)) {
+        // A prompt that gave out is not the same as a refusal, and the caller
+        // has to be able to tell them apart: install.sh falls back to its own
+        // sweep for the first and leaves well alone for the second.
+        if (prompt.unanswerable) {
+            std::cout << "\n  There was no answer to read, so nothing was removed.\n"
+                         "  Run this from a terminal, or pass -y to answer yes.\n\n";
+            return 1;
+        }
+        std::cout << "\n  Nothing was removed.\n\n";
+        return 0;
+    }
+
+    // Unlinking a running executable is fine on Linux and macOS: the kernel
+    // keeps the inode alive until this process exits.
     bool removed_binary = false;
-    bool dropped_programs = false;
-    if (!binary.empty() && std::filesystem::exists(binary)) {
-        if (prompt.ask("Remove crucible, crucible-gui and their libraries?", true)) {
-            dropped_programs = true;
-            // Unlinking a running executable is fine on Linux: the kernel keeps
-            // the inode alive until this process exits.
-            removed_binary = remove_path(binary);
-            if (removed_binary) {
-                std::cout << "  removed " << binary.string() << "\n";
-            }
-            // Everything else the install put down goes with it. The desktop
-            // app and the developer tool are the same install, and the shared
-            // libraries under them are useless once any of it is gone.
-            for (const std::filesystem::path& program : programs) {
-                if (remove_path(program)) {
-                    std::cout << "  removed " << program.string() << "\n";
-                }
-            }
-            for (const std::filesystem::path& lib : beside) {
-                if (remove_path(lib)) {
-                    std::cout << "  removed " << lib.string() << "\n";
-                }
-            }
-            for (const std::filesystem::path& entry : desktop) {
-                if (remove_path(entry)) {
-                    std::cout << "  removed " << entry.string() << "\n";
-                }
-            }
-            if (!libs.empty() && remove_path(libs)) {
-                std::cout << "  removed " << libs.string() << "\n";
-            }
-            if (!cache.empty() && std::filesystem::exists(cache) && remove_path(cache)) {
-                std::cout << "  removed " << cache.string() << "\n";
-            }
+    for (const std::filesystem::path& target : targets) {
+        if (remove_path(target)) {
+            std::cout << "  removed " << target.string() << "\n";
+            removed_binary = removed_binary || target == binary;
         }
     }
-
-    // --- configuration -----------------------------------------------------
-    bool dropped_config = false;
-    if (std::filesystem::exists(config)) {
-        if (prompt.ask("Remove your configuration and folder-trust list?", true)) {
-            dropped_config = true;
-            if (remove_path(config)) {
-                std::cout << "  removed " << config.string() << "\n";
-            }
-        } else {
-            std::cout << "  kept    " << config.string() << "\n";
-        }
-    }
-
-    // --- models and data ---------------------------------------------------
-    // Crucible ships no models, so everything in this directory was put there
-    // by the user -- which is why it is a question of its own and not folded
-    // into the one above. Answering yes does remove it, -y included: a clean
-    // reinstall test depends on yes meaning yes.
-    bool dropped_data = false;
-    if (std::filesystem::exists(data)) {
-        if (!found.empty()) {
-            std::cout << "\n  The models directory holds " << found.size()
-                      << " model file" << (found.size() == 1 ? "" : "s") << " ("
-                      << format::bytes(directory_size(models)) << ") that you supplied.\n";
-        }
-        // This is also where the GPU runtimes the user built live, along with
-        // the llama.cpp source they were built from and the project history.
-        if (prompt.ask("Remove the models, runtimes, history and logs too?", true)) {
-            dropped_data = true;
-            if (remove_path(data)) {
-                std::cout << "  removed " << data.string() << "\n";
-            }
-        } else {
-            std::cout << "  kept    " << data.string() << "\n";
-        }
+    if (!desktop.empty()) {
+        refresh_desktop_caches(binary);
     }
 
     // --- what is actually left ---------------------------------------------
     //
-    // The promise of this command is that yes to everything leaves nothing
-    // behind, and the only honest way to make that claim is to look. Only the
-    // things the user agreed to remove are checked: something kept on purpose
-    // is not litter, and reporting it as such would train people to ignore
-    // this list.
+    // The promise of this command is that it leaves nothing behind, and the
+    // only honest way to make that claim is to look.
     std::vector<std::filesystem::path> left;
-    const auto survived = [&left](const std::filesystem::path& path) {
+    for (const std::filesystem::path& target : targets) {
         std::error_code ec;
-        if (!path.empty() && std::filesystem::exists(path, ec)) {
-            left.push_back(path);
+        if (std::filesystem::exists(target, ec)) {
+            left.push_back(target);
         }
-    };
-    if (dropped_programs) {
-        survived(binary);
-        for (const std::filesystem::path& program : programs) {
-            survived(program);
-        }
-        for (const std::filesystem::path& lib : beside) {
-            survived(lib);
-        }
-        for (const std::filesystem::path& entry : desktop) {
-            survived(entry);
-        }
-        survived(libs);
-        survived(cache);
-    }
-    if (dropped_config) {
-        survived(config);
-    }
-    if (dropped_data) {
-        survived(data);
-    }
-
-    // A prompt that gave out is not a clean run, whatever is or is not left on
-    // disk. Saying so -- and failing -- is the only way the caller can tell this
-    // apart from a user who genuinely answered no to everything.
-    if (prompt.unanswerable) {
-        std::cout << "\n  There was no answer to read, so nothing further was removed.\n"
-                     "  Run this from a terminal, or pass -y to answer yes to"
-                     " everything.\n\n";
-        return 1;
     }
 
     if (!left.empty()) {

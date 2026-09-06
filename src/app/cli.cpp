@@ -22,7 +22,7 @@ constexpr const char* kBanner = R"(
       ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
       ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
       ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   Crucible )" CRUCIBLE_VERSION R"(
-      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local forge: experts on demand, projects that cook
+      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
       ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
       ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
       ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁

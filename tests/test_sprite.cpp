@@ -34,6 +34,37 @@ std::size_t columns(const std::string& line) {
     return width;
 }
 
+/// The line split into columns, so a braille cell can be compared as one glyph.
+std::vector<std::string> glyphs(const std::string& line) {
+    std::vector<std::string> out;
+    for (const char byte : line) {
+        if ((static_cast<unsigned char>(byte) & 0xC0U) != 0x80U) {
+            out.emplace_back();
+        }
+        out.back().push_back(byte);
+    }
+    return out;
+}
+
+/// A column with nothing drawn in it. Braille pads with U+2800, the blank
+/// braille cell, rather than with a space -- it is a glyph, not whitespace.
+bool blank(const std::string& glyph) { return glyph == " " || glyph == "\u2800"; }
+
+/// Twice the midpoint of the drawn part of a line, in columns, or -1 for an
+/// empty line. Doubled so a flame two columns wide has an exact centre.
+int twice_centre(const std::string& line) {
+    const std::vector<std::string> cols = glyphs(line);
+    int first = -1;
+    int last  = -1;
+    for (std::size_t i = 0; i < cols.size(); ++i) {
+        if (!blank(cols[i])) {
+            first = first < 0 ? static_cast<int>(i) : first;
+            last  = static_cast<int>(i);
+        }
+    }
+    return first < 0 ? -1 : first + last;
+}
+
 }  // namespace
 
 TEST(every_frame_is_the_same_size) {
@@ -57,17 +88,47 @@ TEST(every_frame_is_the_same_size) {
     }
 }
 
-TEST(the_foot_of_the_flame_never_moves) {
-    // Fire grows upward from where it is lit. If the base drifted with the
-    // mood, the mark would slide up and down the panel every time the engine
-    // changed state.
-    for (const bool compact : {false, true}) {
-        const FlameSprite sprite(true);
-        const std::string foot = sprite.render(Mood::Talking, 0, compact).back();
-        for (const Mood mood : all_moods()) {
-            for (std::size_t tick = 0; tick < 64; ++tick) {
-                const std::vector<std::string> lines = sprite.render(mood, tick, compact);
-                CHECK_EQ(lines.back(), foot);
+TEST(the_flicker_never_moves_the_foot) {
+    // The two frames of a mood differ in the lean of the tip. If they differed
+    // at the base as well, the mark would rock from side to side once a second
+    // -- which is a far worse thing to sit next to than a still one.
+    for (const bool unicode : {false, true}) {
+        for (const bool compact : {false, true}) {
+            const FlameSprite sprite(unicode);
+            for (const Mood mood : all_moods()) {
+                const std::string foot = sprite.render(mood, 0, compact).back();
+                for (std::size_t tick = 0; tick < 64; ++tick) {
+                    // Bound to a local: CHECK_EQ takes its arguments by const
+                    // reference, and .back() on the temporary vector would leave
+                    // one dangling.
+                    const std::vector<std::string> lines = sprite.render(mood, tick, compact);
+                    CHECK_EQ(lines.back(), foot);
+                }
+            }
+        }
+    }
+}
+
+TEST(the_flame_stands_on_the_bottom_row_and_stays_centred) {
+    // Fire grows upward from where it is lit, and the plume grows and shrinks
+    // about a fixed centre line rather than drifting across the column. Both
+    // are what keep the mark still while the engine changes state -- the flame
+    // gets shorter, it does not wander off.
+    //
+    // Within half a column of centre: the canvas is an odd number of columns
+    // wide and the drawing is not symmetric, so an exact match is not a thing
+    // that can be asked for.
+    for (const bool unicode : {false, true}) {
+        for (const bool compact : {false, true}) {
+            const FlameSprite sprite(unicode);
+            const int middle = FlameSprite::width(compact) - 1;  // doubled, as below
+            for (const Mood mood : all_moods()) {
+                for (std::size_t tick = 0; tick < 64; ++tick) {
+                    const std::vector<std::string> lines = sprite.render(mood, tick, compact);
+                    const int centre = twice_centre(lines.back());
+                    CHECK(centre >= 0);
+                    CHECK(centre >= middle - 1 && centre <= middle + 1);
+                }
             }
         }
     }
@@ -91,16 +152,42 @@ TEST(the_flame_is_taller_the_harder_the_engine_is_working) {
     CHECK(top(Mood::Loading) < top(Mood::Idle));
 }
 
-TEST(nothing_left_of_the_crucible_that_used_to_stand_here) {
-    // The mark was a pot on a stand with a fire under it. It is a flame now,
-    // everywhere -- the window, the launcher icon, the banner and this. The
-    // stand's rim is the piece that would survive a half-finished edit.
+TEST(nothing_is_drawn_out_of_slashes_any_more) {
+    // The sprite used to be assembled by hand out of slashes and parentheses,
+    // first as a crucible -- a pot on a stand -- and then as a flame of the
+    // same construction. Both are gone: the frames are packaging/flame.txt
+    // resampled, in braille where the terminal can take it and in hashes where
+    // it cannot. These are the pieces a half-finished edit would leave behind.
+    for (const bool unicode : {false, true}) {
+        const FlameSprite sprite(unicode);
+        for (const bool compact : {false, true}) {
+            for (const Mood mood : all_moods()) {
+                for (const std::string& line : sprite.render(mood, 0, compact)) {
+                    for (const char* shard : {"/", "\\", "(", ")", "_", "-"}) {
+                        CHECK(line.find(shard) == std::string::npos);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(the_flame_is_the_one_from_packaging_flame_txt) {
+    // Braille, at eight dots to a cell. Not a check that the drawing is right
+    // -- no test can be -- but a check that it is still the braille drawing and
+    // not something typed in over the top of it.
     const FlameSprite sprite(true);
     for (const bool compact : {false, true}) {
         for (const Mood mood : all_moods()) {
             for (const std::string& line : sprite.render(mood, 0, compact)) {
-                CHECK(line.find("---") == std::string::npos);
-                CHECK(line.find("___") == std::string::npos);
+                for (const std::string& glyph : glyphs(line)) {
+                    CHECK(glyph.size() == 3);
+                    const auto code =
+                        static_cast<unsigned>((static_cast<unsigned char>(glyph[0]) & 0x0FU) << 12U |
+                                              (static_cast<unsigned char>(glyph[1]) & 0x3FU) << 6U |
+                                              (static_cast<unsigned char>(glyph[2]) & 0x3FU));
+                    CHECK(code >= 0x2800U && code <= 0x28FFU);
+                }
             }
         }
     }

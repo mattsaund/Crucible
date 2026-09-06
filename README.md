@@ -4,7 +4,7 @@
    ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
    ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
    ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   C R U C I B L E
-   ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local forge: experts on demand, projects that cook
+   ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
    ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
    ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
    ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁
@@ -55,14 +55,14 @@ you made — with `/newexpert`, the desktop app's Experts page, or by writing an
 entry in the config file. A filled-in roster looks like this:
 
 ```
-                    /\                    ◇ Mathematics
-                   /  \                   ◇ Programming
-                  (    )       Crucible   ◆ Physics ────────┐
-                 (  /\  )           ◆     ◇ Chemistry       │
-                 ( (  ) )                 ◇ Biology         │
-                  \ \/ /                  ◇ Engineering ────┘
-                   \__/                   ◇ Philosophy
-                                          ◇ Sociology
+                                          ◇ Mathematics
+                    ⠀⠀⠀⠸⣦⠀⠀⠀⠀             ◇ Programming
+                    ⠀⠀⠀⢰⣿⣷⡄⠀⠀             ◆ Physics ────────┐
+                    ⠀⠀⣄⣿⠟⣿⣿⠀⠀  Crucible   ◇ Chemistry       │
+                    ⠀⣰⣿⡟⢁⣿⣿⣿⡀         ◆   ◇ Biology         │
+                    ⣾⣿⡏⠀⠘⢹⣿⣿⠇             ◇ Engineering ────┘
+                    ⢿⣿⠀⠀⠀⠀⢻⡯⠀             ◇ Philosophy
+                    ⠈⠛⠧⣀⠀⠠⠛⠁⠀             ◇ Sociology
                                           ◇ Language
 ```
 
@@ -70,9 +70,11 @@ Until you add one the panel simply says so, and the delegator has nobody to
 route to.
 
 The flame says what the machine is doing — an ember when idle, burning steadily
-while a model is loading, and the full mark with its inner tongue lit while
-tokens are coming out. The line joins Crucible to whichever expert the
-delegation chose.
+while a model is loading, the full plume while tokens are coming out, and smoke
+over a cold foot when something has failed. It is the mark at the top of this
+file, resampled onto a character grid; a terminal with no braille in its font
+gets the same silhouette in hashes instead. The line joins Crucible to whichever
+expert the delegation chose.
 
 ### Making your own
 
@@ -243,7 +245,7 @@ one self-contained binary that links the core library directly.
 
 ```
 ┌──────────────┬────────────────────────────────────────────┐
-│  /\ CRUCIBLE │  you                                       │
+│  ⢱⣆ CRUCIBLE │  you                                       │
 │     idle     │  why does the JIT swap cost so little?     │
 │              │                                            │
 │  PROJECT     │  Programming · 1.00 · router model         │
@@ -314,9 +316,13 @@ terminal program alone. On Linux the desktop app needs OpenGL and a few X11
 development headers, which the installer adds; where those are unavailable it
 says so and builds the terminal program rather than failing.
 
-Neither installs a GPU runtime: Crucible compiles one on demand from its
-settings screen, because a backend has to match the machine it will run on and
-a ten-minute compile does not belong in an installer.
+It installs the program and the directories the program keeps its files in.
+Nothing else — no compute runtime, and no models. Crucible builds a runtime on
+demand from its settings screen, on the machine that will run it: a backend has
+to match the hardware it is compiled for, and that is a question the program can
+answer at the moment it matters and an installer can only guess at.
+
+While it runs there is one line on screen, and it is a progress bar.
 
 > **On platform support.** Linux is what Crucible is developed and tested on.
 > macOS is regularly built and run. Windows is written and reviewed but has not
@@ -327,38 +333,44 @@ a ten-minute compile does not belong in an installer.
 
 ## Uninstalling
 
-**Uninstalling**
-
-```sh
-crucible --uninstall
-```
-
-If the binary is already gone, the installer can clean up instead:
+One command as well, and it is the installer's.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
 ```
 
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1))) -Uninstall
+```
+
+`crucible --uninstall` does the same thing from an install that still works;
+the one-liner is what to reach for when it does not.
+
+It asks once, listing everything it is about to remove, and then removes all of
+it: both programs, the libraries under them, the application-menu entry, your
+configuration, the folder-trust list, the models directory, the runtimes you
+built, the project history and the caches. Pass `-y` to skip the question.
+
+**The models are yours and go with the rest.** They are the one thing in that
+list Crucible did not put on disk, and a reinstall does not bring them back — so
+if you want to keep a few gigabytes of GGUFs, move them out of
+`~/.local/share/crucible/models` before you run it.
+
 ### Installer options
 
-You do not need to install runtimes before installing Crucible. The program has a built in runtime manager.
-
-If you want to install runtimes with the initial install, pass options after `--`:
-
 ```sh
-curl -fsSL .../install.sh | bash -s -- --gpu vulkan --prefix ~/.local
+curl -fsSL .../install.sh | bash -s -- --prefix ~/.local
 ```
 
 | option | |
 |---|---|
-| `--gpu cuda\|vulkan\|metal\|cpu\|auto` | which GPU SDK to install (default `auto`; `metal` on a Mac, and `cuda` is refused there) |
 | `--prefix DIR` | install location (default `/usr/local`, or `~/.local` without sudo) |
 | `--no-gui` | build only the terminal program; the desktop app is built by default |
 | `--jobs N` | parallel build jobs |
 | `--check` | report what would happen, change nothing, never ask for sudo |
 | `--no-deps` | do not install system packages |
 | `-y`, `--yes` | never prompt |
-| `--uninstall` | remove Crucible (leaves your config and models) |
+| `--uninstall` | remove Crucible and everything it installed |
 
 ---
 
@@ -366,7 +378,12 @@ curl -fsSL .../install.sh | bash -s -- --gpu vulkan --prefix ~/.local
 
 Crucible supports `CUDA`, `Vulkan`, `Metal` and `CPU` runtimes.
 
-They are stored in `~/.local/share/crucible/runtimes`.
+They are stored in `~/.local/share/crucible/runtimes`, and they are entirely the
+program's business — the installer does not touch them. Pick one from the
+settings screen and it is compiled here, against the same llama.cpp the binary
+was built from. If the SDK it needs is not installed, it says so before it
+starts and gives you the exact command for your package manager, rather than
+failing five minutes into a build.
 
 ## Multiple GPUs
 
@@ -715,9 +732,11 @@ packaging/          the mark, and the application-menu entry
 │                   generated from theme.cpp's own control points
 └── crucible.desktop.in   the XDG entry, with the installed path filled in
 
-The terminal program draws the flame a third way: `src/ui/widgets/flame_sprite.cpp`
-redraws it in plain ASCII, at four heights, because that one has to animate and
-has to survive a terminal with no Unicode font.
+The terminal program draws it a third way: `src/ui/widgets/flame_sprite.cpp`
+carries the same drawing resampled to nine columns by seven rows, at four
+heights, because that one has to animate and has to fit beside a roster of
+seats. It is braille too, with the same silhouette in hashes behind it for the
+terminal whose font has no braille in it.
 
 ## Roadmap
 

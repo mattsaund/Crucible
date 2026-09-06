@@ -210,7 +210,7 @@ void SettingsView::build_rows() {
                      nullptr, nullptr, nullptr, &config_.ui.show_experts, {}});
     rows_.push_back({Kind::Bool, "Show reasoning", "keep a thinking model's working on screen",
                      nullptr, nullptr, nullptr, &config_.ui.show_reasoning, {}});
-    rows_.push_back({Kind::Bool, "Unicode glyphs", "off draws the panel in plain ASCII",
+    rows_.push_back({Kind::Bool, "Unicode glyphs", "off draws the flame and the panel in plain ASCII",
                      nullptr, nullptr, nullptr, &config_.ui.unicode, {}});
 
     // Last, so it sees the finished list.

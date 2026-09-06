@@ -8,8 +8,16 @@
 // worker thread and publishes progress the settings screen polls.
 //
 // It deliberately does *not* install system packages. That needs root, and a
-// TUI is the wrong place to ask for it; install.sh puts the SDKs in place, and
-// what is missing is reported as advice instead.
+// TUI is the wrong place to ask for it -- so a missing SDK is reported as
+// advice, with the exact command for the package manager this machine has
+// (see install_hint in runtime/backend.hpp), and the build is refused before
+// it starts rather than failed several minutes in.
+//
+// The installer does not put the SDKs in place either. It used to -- a Vulkan
+// SDK on every machine and an offer of several gigabytes of CUDA -- against
+// the possibility that a runtime would be built later. Which backend to build,
+// and therefore which SDK is wanted, is a question that can only be answered
+// on the machine at the moment it is asked, and this is where it is asked.
 #pragma once
 
 #include <atomic>
