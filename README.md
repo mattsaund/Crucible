@@ -13,101 +13,27 @@
    ⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⠀⠀⠀⠀
 ```
 
-**A local AI engine that delegates, and then keeps working.**
+**Crucible** is a local LLM engine that uses delegation and circular computing to improve the performace of local AI models. 
 
-Two things, in one program.
+**Delegation**
+Crucible uses an LLM to analyze the given prompt, and delegate it to a specifically trained expert that the user provides. Essentially, having 10 30 billion parameter models specifically trained on seperate subjects would outperform 1 30 billion parameter MoE model. Crucible uses JIT loading so models are not loaded at the same time. 
 
-**It delegates.** You bring a set of small, specialised models. A tiny
-*delegator* reads your prompt, names the expert it belongs to, and that expert
-is loaded just in time to answer it. One model is resident at a time, so the
-memory you need is the largest expert rather than the sum of them.
-
-**It cooks.** Give it a goal and a length of time instead of a question, and it
-works on the project on disk: reads files, changes them, runs them, reads the
-failure, changes them again, for as long as you gave it. When the time is up it
-makes a finishing pass to leave things in a state that runs, and writes down
-what it did.
-
-Both faces are the same program. `crucible` is a terminal application;
-`crucible-gui` is a desktop one. They share an engine, a config file and a
-history — an expert added in one is there in the other.
+**Circular Computing**
+the user can set a specific end goal and have the entire system, delegator and experts, work on the same prompt or project over and over again. Each pass, the project improves. You can have this run for as long as you want.
 
 ---
-
-## Why
-
-A single local model has to fit on your hardware, so it is always smaller than
-you would like. Ten specialised models plus a delegator do not: only one is
-resident at a time, so ten 30B experts occupy the space of one and behave more
-like a 300B model than any of them could alone. The cost is a load per swap,
-which is the trade the whole design is built around.
-
-And a question is not the only shape work comes in. Most of what you want from a
-model on your own machine is not one answer — it is an afternoon of small
-changes to something that already exists. That is what a cook is.
-
----
-
 ## The experts
 
-No experts ship. A new install has an empty roster, and every seat on it is one
-you made — with `/newexpert`, the desktop app's Experts page, or by writing an
-entry in the config file. A filled-in roster looks like this:
+Crucible is 100% BYO model. You need to specifically train experts in subjects and load them into Crucible using the `/newexpert` command on the CLI tool, or in the settings of the GUI application.
 
-```
-                                          ◇ Mathematics
-                    ⠀⠀⠀⠸⣦⠀⠀⠀⠀             ◇ Programming
-                    ⠀⠀⠀⢰⣿⣷⡄⠀⠀             ◆ Physics ────────┐
-                    ⠀⠀⣄⣿⠟⣿⣿⠀⠀  Crucible   ◇ Chemistry       │
-                    ⠀⣰⣿⡟⢁⣿⣿⣿⡀         ◆   ◇ Biology         │
-                    ⣾⣿⡏⠀⠘⢹⣿⣿⠇             ◇ Engineering ────┘
-                    ⢿⣿⠀⠀⠀⠀⢻⡯⠀             ◇ Philosophy
-                    ⠈⠛⠧⣀⠀⠠⠛⠁⠀             ◇ Sociology
-                                          ◇ Language
-```
+Setting up an expert is easy. You name it, describe what it is trained in, and the delegator model will take care of the routing, keywords, and backend work to link the expert into the system.
 
-Until you add one the panel simply says so, and the delegator has nobody to
-route to.
-
-The flame says what the machine is doing — an ember when idle, burning steadily
-while a model is loading, the full plume while tokens are coming out, and smoke
-over a cold foot when something has failed. It is the mark at the top of this
-file, resampled onto a character grid; a terminal with no braille in its font
-gets the same silhouette in hashes instead. The line joins Crucible to whichever
-expert the delegation chose.
-
-### Making your own
-
-```
-/newexpert
-```
-
-opens two boxes: a name, and what the expert is trained in. That is all you are
-asked for. The id, the four-character chip, and the keyword set the model-free
-router scores with are derived from what you typed. The worked examples the
-delegator routes on are written **by the delegator itself** — two example
-questions per seat is worth seven points of routing accuracy on the benchmark
-(89% to 96%), and it is the one input a description cannot stand in for.
-
-```
-/ejectexpert chemistry
-```
-
-removes one. Nothing is ever put back: eject a seat and it stays ejected.
-
-A new expert is routable the moment it exists. Point it at a GGUF from
-`/settings` and it starts answering; leave it empty and prompts routed to it are
-redirected to whichever seat you nominated as the **default expert** — or, if
-you nominated none, to any filled one, with the transcript saying so.
-
-There is no built-in catch-all. Crucible used to ship a tenth seat called
-Fallback that the delegator was forbidden from naming; with a roster you own,
-"a general-purpose model for anything that does not fit" is just an expert you
-add and then nominate in `/settings`.
+You get rid of an expert by ejecting it. Either `/ejectexpert [expert name]` in the CLI tool or in the settings of the GUI application.
 
 ---
-
 ## Cooking
+
+You can have Crucible **Cook** on a specific task for an arbitrary amount of time. This gives the local models the ability to improve opon itself over and over again.
 
 ```
 /cook fix the failing tests and tidy up the parser
@@ -116,8 +42,6 @@ add and then nominate in `/settings`.
 ```
 
 A cook is a goal. It runs until the work is done or until you `/stop` it.
-
-The expert works one action at a time, and you watch it happen:
 
 ```
 cook ▸ fix the bug in calc.py so that test_calc.py passes
@@ -140,10 +64,7 @@ It can stop and ask you something, and the next thing you type answers it:
      type an answer and press enter
 ```
 
-**One cook, several experts.** The expert that writes the code is not the one
-that should write the documentation, so a cook does not hold one for the whole
-hour. Finishing a piece of work prompts for the next one, and that line goes
-back through the delegator:
+The delegator stays active and can handoff work to another expert mid cook
 
 ```
      done     fixed the sign error and confirmed the test passes
@@ -151,25 +72,6 @@ back through the delegator:
      note     Programming handed over to Language
      write    updated README.md  +18
 ```
-
-The previous model is freed before the next is loaded, so the peak is still the
-larger of the two and never their sum. An expert can also hand over mid-piece
-with `HANDOFF: <the next work>`. If nobody else can take it, the one already
-loaded carries on — a worse specialist finishing the job beats no job.
-
-**`/stop` is not cancel.** It stops the cook taking new work and runs a
-finishing pass whose only job is to leave the project in a state that runs —
-finish a half-made edit, repair what broke, check it starts. `Ctrl-C` is still
-there for "stop now".
-
-`/cooks` lists what every past cook in this project changed and how long it
-took. The journal is written as the cook runs, not at the end, so a cook killed
-at minute fifty can still tell you what it did.
-
-> A finished cook that wrote no files says so, in red, under its own summary.
-> The summary is the expert's account of itself; the journal is the fact. They
-> disagree more often than you would like.
-
 ### The workshop
 
 Cooking needs the workshop, and the workshop is **off until you turn it on**, in
@@ -732,46 +634,8 @@ packaging/          the mark, and the application-menu entry
 │                   generated from theme.cpp's own control points
 └── crucible.desktop.in   the XDG entry, with the installed path filled in
 
-The terminal program draws it a third way: `src/ui/widgets/flame_sprite.cpp`
-carries the same drawing resampled to nine columns by seven rows, at four
-heights, because that one has to animate and has to fit beside a roster of
-seats. It is braille too, with the same silhouette in hashes behind it for the
-terminal whose font has no braille in it.
-
-## Roadmap
-
-- [x] JIT model host, router, expert-panel TUI, streaming, cancellation
-- [x] Models directory, and every setting editable in the app
-- [x] Routing benchmark, and a delegator prompt tuned against it
-- [x] A nominated default expert for prompts the delegator cannot place
-- [x] Loadable runtimes — install and remove CUDA / Vulkan / CPU from settings
-- [x] Token counts per turn, session and project, with a live tok/s readout
-- [x] Multi-GPU splitting: even by memory, or a priority order you set
-- [x] `/resume` — per-project conversation history
-- [x] **A roster you own** — `/newexpert` and `/ejectexpert`, with the delegator
-      writing its own worked examples for a new seat
-- [x] **Agentic tools** — file read/write, shell, web search, sandboxed to one
-      root and off until switched on
-- [x] **Cooking** — a goal and a budget instead of a question, with a journal of
-      what changed
-- [x] **A desktop app** — the same engine, a different face, with a project
-      picker, rendered markdown and a resizable sidebar
-- [x] **Handover mid-cook** — the next piece of work goes back through the
-      delegator, so a cook can pass from a code expert to a writing one
-- [ ] **Sandbox `RUN`** — bubblewrap on Linux, seatbelt on macOS, so a command
-      is confined the way a file path already is
-- [ ] **Compile Crucible on Windows** — the platform code is written; nobody has
-      built it there yet
-- [ ] Prefix caching so an unchanged conversation is not re-ingested every turn
-- [x] **Diffs in the cook journal** — a write records what changed, not only
-      that something did, and both faces expand a step to show it
-- [ ] Predictive preloading of the likely next expert
-- [ ] Fine-tuned 1B Crucible router to replace the off-the-shelf one
-- [ ] Curated subject experts, offered as a download you opt into — never bundled
-
----
-
-**AI Policy**
+___
+## AI Policy
 
 I am open to AI and agentic coding, but the code written needs to follow specific guidelines:
 1. MUST be human readable, acceptable variable/function names.
@@ -779,7 +643,6 @@ I am open to AI and agentic coding, but the code written needs to follow specifi
 3. Contributer MUST look at/document code and code changes. you need to understand the code that is being written.
 
 ---
-
 ## License
 
 MIT — see [LICENSE](LICENSE). Every dependency Crucible links is MIT too, and
