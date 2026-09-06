@@ -21,6 +21,65 @@ Crucible uses an LLM to analyze the given prompt, and delegate it to a specifica
 **Circular Computing**
 the user can set a specific end goal and have the entire system, delegator and experts, work on the same prompt or project over and over again. Each pass, the project improves. You can have this run for as long as you want.
 
+___
+## Install
+
+One command.
+
+**Linux and macOS**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
+```
+
+This single line installer installs both the CLI and the GUI interface. it does not install any runtimes or models.
+
+___
+## Uninstalling
+
+One command as well.
+
+```
+crucible --uninstall
+```
+
+If the binaries are gone you can uninstall and clean up with this command
+
+**Linux and macOS**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
+```
+
+**Windows**
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1))) -Uninstall
+```
+
+___
+## Installer options
+
+```sh
+curl -fsSL .../install.sh | bash -s -- --prefix ~/.local
+```
+
+| option | |
+|---|---|
+| `--prefix DIR` | install location (default `/usr/local`, or `~/.local` without sudo) |
+| `--no-gui` | build only the terminal program; the desktop app is built by default |
+| `--jobs N` | parallel build jobs |
+| `--check` | report what would happen, change nothing, never ask for sudo |
+| `--no-deps` | do not install system packages |
+| `-y`, `--yes` | never prompt |
+| `--uninstall` | remove Crucible and everything it installed |
+
 ---
 ## The experts
 
@@ -72,7 +131,9 @@ The delegator stays active and can handoff work to another expert mid cook
      note     Programming handed over to Language
      write    updated README.md  +18
 ```
-### The workshop
+
+___
+## The workshop
 
 Cooking needs the workshop, and the workshop is **off until you turn it on**, in
 `/settings` under TOOLS. It is what lets an expert act on a project rather than
@@ -121,7 +182,6 @@ negotiate a tool schema, and Crucible cannot know which model is in the seat. A
 convention every model can follow beats one only the tool-trained models can.
 
 ---
-
 ## The desktop app
 
 ```sh
@@ -194,88 +254,6 @@ headers. An install that cannot find them builds the terminal program and says
 so.
 
 ---
-
-## Install
-
-One command, on any of the three.
-
-**Linux and macOS**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash
-```
-
-**Windows** (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
-```
-
-Either one installs **both** faces — `crucible` for the terminal and
-`crucible-gui` for the desktop — along with the build tools they need, and
-re-running it upgrades in place. Pass `--no-gui` (`-NoGui` on Windows) for the
-terminal program alone. On Linux the desktop app needs OpenGL and a few X11
-development headers, which the installer adds; where those are unavailable it
-says so and builds the terminal program rather than failing.
-
-It installs the program and the directories the program keeps its files in.
-Nothing else — no compute runtime, and no models. Crucible builds a runtime on
-demand from its settings screen, on the machine that will run it: a backend has
-to match the hardware it is compiled for, and that is a question the program can
-answer at the moment it matters and an installer can only guess at.
-
-While it runs there is one line on screen, and it is a progress bar.
-
-> **On platform support.** Linux is what Crucible is developed and tested on.
-> macOS is regularly built and run. Windows is written and reviewed but has not
-> been compiled on a Windows machine — the platform-specific parts (process
-> spawning, the config directories, the resource meter) are new and unproven
-> there. If you are on Windows, expect to be the first person to find the
-> problems, and please report them.
-
-## Uninstalling
-
-One command as well, and it is the installer's.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
-```
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1))) -Uninstall
-```
-
-`crucible --uninstall` does the same thing from an install that still works;
-the one-liner is what to reach for when it does not.
-
-It asks once, listing everything it is about to remove, and then removes all of
-it: both programs, the libraries under them, the application-menu entry, your
-configuration, the folder-trust list, the models directory, the runtimes you
-built, the project history and the caches. Pass `-y` to skip the question.
-
-**The models are yours and go with the rest.** They are the one thing in that
-list Crucible did not put on disk, and a reinstall does not bring them back — so
-if you want to keep a few gigabytes of GGUFs, move them out of
-`~/.local/share/crucible/models` before you run it.
-
-### Installer options
-
-```sh
-curl -fsSL .../install.sh | bash -s -- --prefix ~/.local
-```
-
-| option | |
-|---|---|
-| `--prefix DIR` | install location (default `/usr/local`, or `~/.local` without sudo) |
-| `--no-gui` | build only the terminal program; the desktop app is built by default |
-| `--jobs N` | parallel build jobs |
-| `--check` | report what would happen, change nothing, never ask for sudo |
-| `--no-deps` | do not install system packages |
-| `-y`, `--yes` | never prompt |
-| `--uninstall` | remove Crucible and everything it installed |
-
----
-
 ## Runtimes
 
 Crucible supports `CUDA`, `Vulkan`, `Metal` and `CPU` runtimes.
