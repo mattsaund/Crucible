@@ -20,10 +20,46 @@
 #include "crucible/engine/route_policy.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
+#include "crucible/tools/workshop.hpp"
 #include "crucible/runtime/registry.hpp"
 
 namespace crucible {
 namespace {
+
+/// How many times one chat turn may act on the project before it has to answer.
+///
+/// Higher than the search ceiling and counting a different thing. Reading a
+/// file, rewriting it and running the tests is three rounds of honest work; the
+/// same number of searches is a model going round in circles. Bounded all the
+/// same, because a turn that never writes an answer is a turn the person who
+/// asked gets nothing from.
+constexpr int kToolRounds = 12;
+
+/// Is this verb an action on the project, rather than an answer to the cook
+/// loop or a web search?
+///
+/// SEARCH has its own path below. ASK, DONE and HANDOFF are how a cook ends a
+/// piece of work and are not offered to a chat turn at all -- if one arrives
+/// anyway it falls through to being shown, which is the right outcome: a model
+/// that writes "DONE: fixed it" has said something to the reader.
+bool is_project_verb(tools::ToolKind kind) {
+    switch (kind) {
+        case tools::ToolKind::List:
+        case tools::ToolKind::Read:
+        case tools::ToolKind::Write:
+        case tools::ToolKind::Run:
+        case tools::ToolKind::Note:
+            return true;
+        case tools::ToolKind::None:
+        case tools::ToolKind::Search:
+        case tools::ToolKind::Ask:
+        case tools::ToolKind::Done:
+        case tools::ToolKind::Handoff:
+            break;
+    }
+    return false;
+}
+
 
 using Clock = std::chrono::steady_clock;
 
@@ -639,6 +675,19 @@ void Engine::handle(const Request& request) {
         // it cannot will offer to, which is worse than not having the tool.
         messages.front().content += tools::tool_instructions();
     }
+
+    // The same tools a cook gets, in an ordinary chat turn.
+    //
+    // There used to be a line here: cooking could change the project and
+    // chatting could only talk about it. That was never a distinction anybody
+    // asked for -- "fix the typo in README" is a sentence, not a goal worth
+    // starting a cook for, and the answer to it is the edit. What separates the
+    // two is how long they run and how they end, not what they may touch.
+    //
+    // The permission is the folder, answered once, in the terms it is about.
+    const tools::WorkshopSettings workshop = workshop_for(project_root_);
+    messages.front().content +=
+        tools::workshop_instructions(workshop, tools::ToolAudience::Chat);
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         const std::size_t keep = kHistoryTurns * 2;
@@ -662,9 +711,17 @@ void Engine::handle(const Request& request) {
     // look something up, and the number of times it may do that is bounded --
     // an expert that reads results and searches again is being useful, one that
     // does it eight times is stuck. See tools/web_search.hpp.
-    const int rounds = config_.tools.web_search
-                           ? std::max(1, config_.tools.search_rounds + 1)
-                           : 1;
+    //
+    // With the workshop the ceiling is higher and it is a different thing being
+    // counted: reading a file, changing it and running the tests is three
+    // rounds of honest work, where three searches is a model going in circles.
+    int rounds = 1;
+    if (config_.tools.web_search) {
+        rounds = std::max(rounds, config_.tools.search_rounds + 1);
+    }
+    if (workshop.enabled) {
+        rounds = std::max(rounds, kToolRounds);
+    }
     std::vector<std::string> already_searched;
     for (int round = 0; round < rounds; ++round) {
         bool        first_answer = true;
@@ -738,6 +795,53 @@ void Engine::handle(const Request& request) {
         if (pass.cancelled || round + 1 >= rounds) {
             break;
         }
+
+        // --- did it reach for the project? ---------------------------------
+        //
+        // Checked before the search, because SEARCH is one of the verbs
+        // parse_tool_call recognises and the search path below has bookkeeping
+        // of its own -- rounds, repeats, the last-search warning -- that the
+        // file verbs do not want.
+        if (const std::optional<tools::ToolCall> call =
+                workshop.enabled ? tools::parse_tool_call(answer, reasoning)
+                                 : std::nullopt;
+            call && is_project_verb(call->kind)) {
+            // The verb and what it is being pointed at, which is the useful
+            // half. Not "<expert> is <verb>ing": the verbs are nouns as much as
+            // verbs here and half of them come out as "noteing" or "runing".
+            std::string doing = std::string(tools::tool_kind_name(call->kind)) + " "
+                              + call->argument;
+            if (doing.size() > 64) {
+                doing.resize(64);
+                doing += "\u2026";
+            }
+            state_.set_mood(Mood::Thinking, doing);
+            if (wake_) {
+                wake_();
+            }
+
+            const tools::ToolResult result = tools::run_tool(
+                *call, workshop, tools::SearchSettings{},
+                [this] { return cancel_.load(std::memory_order_relaxed); });
+            state_.add_action(turn, result.summary);
+
+            // The call was a request, not an answer, and must not be left
+            // sitting above the reply that replaces it.
+            state_.set_reply(turn, {});
+            messages.push_back({"assistant", answer});
+
+            std::string handback = result.output;
+            if (round + 2 >= rounds) {
+                handback += "\n\nThat was the last action available this turn. Write "
+                            "the answer now from what you have.";
+            }
+            messages.push_back({"user", std::move(handback)});
+            if (wake_) {
+                wake_();
+            }
+            continue;
+        }
+
         const std::string query = tools::search_request(answer, reasoning);
         if (query.empty()) {
             break;  // it answered, which is the ordinary case
@@ -774,7 +878,7 @@ void Engine::handle(const Request& request) {
                    : tools::search(query, settings, search_error);
 
         if (!repeat) {
-            state_.add_search(turn, results.empty()
+            state_.add_action(turn, results.empty()
                                         ? "searched \"" + query + "\" -- " + search_error
                                         : "searched \"" + query + "\" -- "
                                               + std::to_string(results.size()) + " result"
@@ -836,9 +940,22 @@ void Engine::handle(const Request& request) {
             const Turn&        finished = current.turns[turn];
             const std::string& shown    = finished.reply;
             const bool asked_to_search  = !tools::search_request(shown, {}).empty();
-            if (shown.empty() || asked_to_search) {
+
+            // A tool call left where the answer should be. It happens when the
+            // last round the turn had was spent asking for one more action, and
+            // showing "WRITE: src/main.cpp" as the reply is the one outcome
+            // that must never reach the screen -- it reads as the expert having
+            // said something.
+            const std::optional<tools::ToolCall> unfinished =
+                tools::parse_tool_call(shown, {});
+            const bool asked_to_act = unfinished && is_project_verb(unfinished->kind);
+
+            if (shown.empty() || asked_to_search || asked_to_act) {
                 std::string why;
-                if (asked_to_search || !finished.searches.empty()) {
+                if (asked_to_act) {
+                    why = "the expert ran out of turns before it finished the work -- ask "
+                          "again and it will carry on from what is on disk";
+                } else if (asked_to_search) {
                     why = "the expert kept asking to search instead of answering -- raise "
                           "\"Search rounds\" in settings, or ask again more narrowly";
                 } else if (stats.hit_limit) {

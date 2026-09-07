@@ -90,6 +90,64 @@ bool grow_input(const char* id, const char* hint, std::string& text,
     return submitted;
 }
 
+float reading_column(float available) {
+    // One measurement of one glyph: the face is monospace, so every column is
+    // this wide.
+    const float column = ImGui::CalcTextSize("0").x;
+    return column > 0.0F ? std::min(available, column * 110.0F) : available;
+}
+
+IconHit icon_slot(const char* id, float size, bool lit) {
+    IconHit hit;
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(size, size));
+    hit.clicked = ImGui::IsItemActivated();
+    hit.hovered = ImGui::IsItemHovered();
+    hit.centre  = ImVec2(at.x + size * 0.5F, at.y + size * 0.5F);
+
+    // The plate is what makes a drawn mark feel like a button. Two states only:
+    // under the pointer, and holding the view that is on screen. A third for
+    // "pressed" would be visible for one frame of a click.
+    if (hit.hovered || lit) {
+        const float inset = size * 0.10F;
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2(at.x + inset, at.y + inset),
+            ImVec2(at.x + size - inset, at.y + size - inset),
+            lit ? IM_COL32(0xFF, 0x87, 0x00, 0x28) : theme::kRaised, size * 0.16F);
+    }
+    return hit;
+}
+
+bool top_tab(const char* label, bool selected, float height) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.6F;
+    const ImVec2 at   = ImGui::GetCursorScreenPos();
+
+    ImGui::InvisibleButton(label, ImVec2(width, height));
+    const bool pressed = ImGui::IsItemActivated();
+    const bool hot     = ImGui::IsItemHovered();
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (hot && !selected) {
+        draw->AddRectFilled(ImVec2(at.x, at.y + height * 0.16F),
+                            ImVec2(at.x + width, at.y + height * 0.84F),
+                            theme::kRaised, height * 0.10F);
+    }
+    const ImU32 ink = selected ? theme::kText : hot ? theme::kTextDim : theme::kTextFaint;
+    const ImVec2 size = ImGui::CalcTextSize(label);
+    draw->AddText(ImVec2(at.x + (width - size.x) * 0.5F,
+                         at.y + (height - size.y) * 0.5F), ink, label);
+
+    // The bar sits on the bottom edge of the bar itself, so the three tabs read
+    // as one strip with one of them underlined rather than as three buttons.
+    if (selected) {
+        draw->AddRectFilled(ImVec2(at.x + width * 0.12F, at.y + height - 2.0F),
+                            ImVec2(at.x + width * 0.88F, at.y + height),
+                            theme::kFlame);
+    }
+    return pressed;
+}
+
 std::string model_label(const std::string& reference) {
     if (reference.empty()) {
         return "(none)";

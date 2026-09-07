@@ -62,10 +62,15 @@ struct Turn {
     /// model that thinking aloud is part of the transcript.
     std::string            reasoning;
 
-    /// What this turn looked up, one line each. Empty unless the expert used
-    /// the web-search tool, and shown above the reply so the user can always
-    /// see what left the machine.
-    std::vector<std::string> searches;
+    /// What this turn did besides talk, one line each: a page it looked up, a
+    /// file it read or rewrote, a command it ran.
+    ///
+    /// Shown above the reply, because these are the parts of a turn that left
+    /// the machine or changed something on it -- and a reader has to be able to
+    /// see them whether or not the answer mentions them. A model that edits a
+    /// file and then writes a summary of having edited a different one is not
+    /// rare, and this is the line that catches it.
+    std::vector<std::string> actions;
     std::optional<RouteDecision> route;
     bool                   streaming = false;
     bool                   cancelled = false;
@@ -170,8 +175,8 @@ public:
     /// have been a tool request rather than an answer.
     void set_reply(std::size_t turn, std::string text);
 
-    /// Record a lookup this turn made. See Turn::searches.
-    void add_search(std::size_t turn, std::string line);
+    /// Record something this turn did. See Turn::actions.
+    void add_action(std::size_t turn, std::string line);
 
     /// The expert work is flowing to, or nothing between turns.
     void set_linked(std::optional<ExpertId> id);

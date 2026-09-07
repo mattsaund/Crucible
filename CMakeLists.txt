@@ -180,9 +180,12 @@ if(CRUCIBLE_BUILD_GUI)
     add_executable(crucible-gui
         src/gui/main.cpp
         src/gui/app.cpp
+        src/gui/code_lines.cpp
         src/gui/markdown_view.cpp
+        src/gui/syntax.cpp
         src/gui/theme.cpp
         src/gui/widgets.cpp
+        src/gui/panels/topbar.cpp
         src/gui/panels/sidebar.cpp
         src/gui/panels/chat.cpp
         src/gui/panels/cook.cpp
@@ -267,10 +270,19 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_runtime.cpp
         tests/test_session.cpp
         tests/test_sprite.cpp
+        tests/test_syntax.cpp
+        tests/test_code_lines.cpp
         # The flame's own source, because it lives in the terminal program
         # rather than in the core library. It draws text and nothing else, so it
         # costs the test binary a link against FTXUI's colour type and no more.
-        src/ui/widgets/flame_sprite.cpp)
+        src/ui/widgets/flame_sprite.cpp
+        # And the two halves of a code block that are decisions rather than
+        # drawings: the lexer that colours it, and the reader that works out
+        # whether it is a diff and what to number each line. Both live in the
+        # desktop program and neither includes anything from ImGui -- text in,
+        # structure out, which is exactly the shape a test wants.
+        src/gui/syntax.cpp
+        src/gui/code_lines.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core ftxui::screen)
     target_include_directories(crucible_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))

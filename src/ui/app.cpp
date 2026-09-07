@@ -63,7 +63,7 @@ App::App(Config config, const std::vector<std::string>& warnings)
     // Cooks are journalled beside this project's conversations, and for the
     // same reason: Crucible is started inside a directory and is about that
     // directory.
-    engine_->set_journal_dir(store_.project().dir);
+    engine_->set_project(store_.project().root, store_.project().dir);
 
     InputOption option;
     option.multiline = false;  // FTXUI 7 defaults this on; we want Enter to send

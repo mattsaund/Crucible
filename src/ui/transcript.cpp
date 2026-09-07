@@ -48,12 +48,13 @@ Element App::render_turn(const Turn& turn) const {
         block.push_back(text(line) | color(theme::kRoute));
     }
 
-    // What this turn sent off the machine, and what came back. Always shown,
-    // never folded away: a local-first program that reaches the internet owes
-    // the user a plain record of when it did.
-    for (const std::string& line : turn.searches) {
+    // What this turn did besides talk: a page it fetched, a file it rewrote, a
+    // command it ran. Always shown, never folded away -- a local-first program
+    // that reaches the internet or the disk owes the user a plain record of
+    // when it did. Each line says what it was; there is no prefix to add.
+    for (const std::string& line : turn.actions) {
         block.push_back(hbox({
-            text("web ") | color(theme::kRoute) | bold,
+            text("\u00b7 ") | color(theme::kRoute) | bold,
             paragraph(line) | color(theme::kRoute) | flex,
         }));
     }

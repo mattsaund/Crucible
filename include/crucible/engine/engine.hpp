@@ -23,6 +23,7 @@
 #include "crucible/llm/model_host.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
+#include "crucible/tools/workshop.hpp"
 
 namespace crucible {
 
@@ -67,12 +68,18 @@ public:
     /// it will answer the next question with no idea what came before.
     void restore_history(std::vector<ChatMessage> history);
 
-    /// Where cooks are journalled: the project's history folder.
+    /// Which project this session is about: the directory being worked in, and
+    /// the history folder beside it that cooks are journalled to.
     ///
-    /// Set once at startup rather than passed with each cook. Which project a
-    /// cook belongs to is a property of the session -- Crucible is started
-    /// inside a directory and is about that directory -- not of the goal.
-    void set_journal_dir(std::filesystem::path project_dir);
+    /// Set once at startup rather than passed with each request. Which project
+    /// a turn belongs to is a property of the session -- Crucible is started
+    /// inside a directory and is about that directory -- not of the prompt.
+    ///
+    /// `root` also decides whether an expert can touch the disk at all. It is
+    /// only ever set to a folder the user has trusted, so having one *is* the
+    /// permission: there is no second switch behind it. Pass an empty path and
+    /// the workshop verbs are not offered and would be refused if they were.
+    void set_project(std::filesystem::path root, std::filesystem::path project_dir);
 
     /// Start a cook: work on the project towards `goal`, taking actions rather
     /// than describing them, until the budget runs out or the user stops it.
@@ -172,6 +179,15 @@ private:
     void do_cook(const std::string& goal, int budget_seconds,
                  const std::filesystem::path& root);
 
+    /// The workshop, pointed at `root`.
+    ///
+    /// One place, because chat and cook get the same tools -- asking a question
+    /// about a file and setting a goal that changes it are the same permission,
+    /// and a chat that could read but not write was a distinction nobody asked
+    /// for. An empty root gives a disabled workshop, which is what an untrusted
+    /// folder produces.
+    tools::WorkshopSettings workshop_for(const std::filesystem::path& root) const;
+
     /// Record a step, publish the journal and write it to disk.
     void note_step(CookStep step);
 
@@ -238,6 +254,14 @@ private:
     /// `mutex_`, which the worker holds while it waits for work.
     std::mutex written_mutex_;
     std::vector<std::pair<ExpertId, std::vector<std::string>>> written_examples_;
+
+    /// The directory this session is about, and the one thing that decides
+    /// whether an expert may touch the disk.
+    ///
+    /// Set from the UI thread by set_project and read by the worker, both only
+    /// between requests -- a project cannot change while a turn or a cook is
+    /// running, which is enforced above this by refusing to open one then.
+    std::filesystem::path        project_root_;
 
     /// The cook in progress. Touched only by the worker thread, except for the
     /// two atomics below, which the UI thread sets.

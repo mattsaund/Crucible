@@ -206,8 +206,6 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
             {"search_results",  config.tools.search_results},
             {"search_timeout",  config.tools.search_timeout},
             {"search_rounds",   config.tools.search_rounds},
-            {"workshop",         config.tools.workshop},
-            {"workshop_run",     config.tools.workshop_run},
             {"workshop_timeout", config.tools.workshop_timeout},
         }},
         {"ui", json{
@@ -310,8 +308,6 @@ void write_default_config(const std::filesystem::path& file) {
             {"search_results",  defaults.tools.search_results},
             {"search_timeout",  defaults.tools.search_timeout},
             {"search_rounds",   defaults.tools.search_rounds},
-            {"workshop",         defaults.tools.workshop},
-            {"workshop_run",     defaults.tools.workshop_run},
             {"workshop_timeout", defaults.tools.workshop_timeout},
         }},
         {"ui", json{
@@ -466,8 +462,6 @@ Config load_config(const std::filesystem::path& file, std::vector<std::string>& 
         read_field(*tools, "search_results",  config.tools.search_results,  "tools", warnings);
         read_field(*tools, "search_timeout",  config.tools.search_timeout,  "tools", warnings);
         read_field(*tools, "search_rounds",   config.tools.search_rounds,   "tools", warnings);
-        read_field(*tools, "workshop",         config.tools.workshop,         "tools", warnings);
-        read_field(*tools, "workshop_run",     config.tools.workshop_run,     "tools", warnings);
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
     }
 

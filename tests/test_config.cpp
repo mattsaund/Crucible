@@ -377,8 +377,7 @@ TEST(the_config_shape_the_readme_documents_actually_loads) {
       "model": "generalist-q4_k_m.gguf" }
   ],
   "routing": { "min_confidence": 0.60, "default_expert": "general" },
-  "tools": { "web_search": false, "workshop": false,
-             "workshop_run": true, "workshop_timeout": 120 }
+  "tools": { "web_search": false, "workshop_timeout": 120 }
 })";
     }
 
@@ -409,8 +408,6 @@ TEST(the_config_shape_the_readme_documents_actually_loads) {
     }
 
     CHECK_EQ(config.defaults.n_ctx, 8192);
-    CHECK(!config.tools.workshop);
-    CHECK(config.tools.workshop_run);
     CHECK_EQ(config.tools.workshop_timeout, 120);
 
     // The only warnings should be about models that are not on this machine --

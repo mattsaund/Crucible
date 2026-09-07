@@ -173,29 +173,17 @@ struct ToolsConfig {
     /// useful; one that does it eight times is stuck.
     int search_rounds = 2;
 
-    /// Let experts read, write and run things in the project directory.
-    ///
-    /// Off by default and for the same reason web search is: this is the
-    /// difference between a program that answers questions about your code and
-    /// one that changes it. Turning it on is a decision, and it is on top of
-    /// the folder trust Crucible already asks for -- a cook cannot run in a
-    /// directory you have not trusted.
-    ///
-    /// Every path an expert names is resolved inside the project root and
-    /// anything that escapes it is refused. See tools/workshop.hpp.
-    bool workshop = false;
-
-    /// Let it run commands, not only read and write files.
-    ///
-    /// Separate from `workshop` because they are separate decisions. Letting a
-    /// model edit a project you already trusted is one thing; letting it
-    /// execute arbitrary commands there is another, and plenty of people will
-    /// want the first without the second.
-    bool workshop_run = true;
-
     /// Seconds a single command may take before it is killed. A build is
     /// minutes; a command still going after this is stuck, and a cook waiting
     /// on it has stopped cooking.
+    ///
+    /// The last of what used to be three switches here. Reading, writing and
+    /// running in the project directory were each a setting of their own, on
+    /// top of the folder trust Crucible already asks for -- so a person who had
+    /// said yes to the trust question still found that nothing could be edited,
+    /// with no indication of which of two boxes they had not ticked. Trust is
+    /// the decision now, asked once per folder and asked in the terms it is
+    /// actually about. See tools/workshop.hpp.
     int workshop_timeout = 120;
 };
 

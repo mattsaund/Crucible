@@ -50,7 +50,13 @@ App::App(Config config, std::vector<std::string> warnings,
         // mouse moved, which during a model load is most of a minute.
         glfwPostEmptyEvent();
     });
-    engine_->set_journal_dir(store_->project().dir);
+    // The root is the permission, so it is withheld until the folder has been
+    // trusted. With the question still to be asked, the engine gets the history
+    // folder and no root -- an expert that tried a WRITE in that window would be
+    // refused, which is the right answer to "before you said yes".
+    engine_->set_project(ask_trust_on_open_ ? std::filesystem::path{}
+                                            : store_->project().root,
+                         store_->project().dir);
 
     // Not remembered until it is trusted. A directory the launcher happened to
     // hand over, and that the user is about to decline, has no business in the
@@ -79,7 +85,11 @@ void App::say(std::string message) {
 }
 
 void App::refresh_models() {
-    models_ = scan_models(config_.resolved_models_dir());
+    models_      = scan_models(config_.resolved_models_dir());
+    // Asked here rather than every frame: both are the same question -- what is
+    // on this machine that a prompt could actually be run on -- and both change
+    // only when the user goes and changes them.
+    any_runtime_ = RuntimeRegistry::any_installed();
 }
 
 void App::update_config(const std::function<void(Config&)>& change) {
@@ -154,7 +164,7 @@ void App::open_project(const std::filesystem::path& root) {
     persist_session();
 
     store_ = std::make_unique<SessionStore>(project);
-    engine_->set_journal_dir(project.dir);
+    engine_->set_project(project.root, project.dir);
     engine_->reset_history();
     state_.clear_turns();
     state_.clear_notices();
@@ -201,14 +211,6 @@ void App::begin_cook() {
         say("a cook needs a goal");
         return;
     }
-    if (!config_.tools.workshop) {
-        // Refused here rather than several model calls later, where it would
-        // surface as the expert being told the workshop is off, over and over.
-        say("cooking needs the workshop, which is off -- turn it on in Settings");
-        view_          = View::Settings;
-        settings_page_ = SettingsPage::Tools;
-        return;
-    }
     cook_goal_.clear();
     follow_ = true;
     view_   = View::Cook;
@@ -227,13 +229,17 @@ float App::composer_wanted_height(const Snapshot& snapshot) {
         return 0.0F;
     }
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float pad   = style.WindowPadding.y * 2.0F;
+    // The child's own padding, plus the border it draws inside it. Leaving the
+    // border out is two pixels of overflow, which the child answers with a
+    // scrollbar down the side of the box you type in.
+    const float pad   = style.WindowPadding.y * 2.0F + style.ChildBorderSize * 2.0F;
     const float frame = ImGui::GetFrameHeight();
 
     // The width the box will actually be given, so the wrapping measured here
-    // is the wrapping that gets drawn.
-    const float inner  = std::max(ImGui::GetContentRegionAvail().x
-                                      - style.WindowPadding.x * 2.0F, em(8.0F));
+    // is the wrapping that gets drawn. The reading column, not the window: the
+    // composer is capped with the transcript above it.
+    const float column = reading_column(ImGui::GetContentRegionAvail().x);
+    const float inner  = std::max(column - style.WindowPadding.x * 2.0F, em(8.0F));
     const float beside = std::max(inner - em(5.0F) - style.ItemSpacing.x, em(6.0F));
 
     const std::shared_ptr<const Cook> cook = snapshot.cook;
@@ -274,7 +280,8 @@ float App::composer_height(const Snapshot& snapshot) {
     }
     if (composer_height_ > 0.0F) {
         const float floor_at = ImGui::GetFrameHeight()
-                             + ImGui::GetStyle().WindowPadding.y * 2.0F;
+                             + ImGui::GetStyle().WindowPadding.y * 2.0F
+                             + ImGui::GetStyle().ChildBorderSize * 2.0F;
         return std::clamp(composer_height_, floor_at, room * 0.8F);
     }
     return std::min(wanted, room * 0.5F);
@@ -357,14 +364,35 @@ void App::draw() {
     // One window filling the viewport. Crucible is an application, not a
     // collection of floating panels, and a desktop app that opens with its own
     // windows scattered over the screen looks like a debug build.
+    //
+    // No padding on it: the top bar has to run edge to edge, and a window that
+    // insets its children by sixteen pixels cannot have a bar at the top -- it
+    // has a bar with a gutter around it, which reads as a floating strip rather
+    // than as the top of the window.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("crucible", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleVar();
 
+    draw_topbar(snapshot);
+
+    // Everything below the bar. A child of its own so the sidebar and the main
+    // pane both measure their height against what is left rather than against
+    // the window, which is what stops the composer being pushed off the bottom
+    // by exactly the height of the bar.
+    //
+    // It carries the margin the root window used to. The root cannot: a bar
+    // that runs edge to edge needs a window with no padding, and the panels
+    // under it still need to be held off the glass.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em(0.75F), em(0.6F)));
+    ImGui::BeginChild("body", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
     draw_sidebar(snapshot);
     draw_splitter();
 
@@ -380,11 +408,38 @@ void App::draw() {
 
         ImGui::BeginChild("pane", ImVec2(0, -(composer + bar)),
                           ImGuiChildFlags_Borders);
-        switch (view_) {
-            case View::Chat:     draw_chat(snapshot); break;
-            case View::Cook:     draw_cook(snapshot); break;
-            case View::History:  draw_history();      break;
-            case View::Settings: draw_settings();     break;
+
+        // A reading column inside the panel, rather than a narrow panel.
+        //
+        // The two are not the same picture. Narrowing the panel leaves a strip
+        // of bare window on either side of a floating box; narrowing the text
+        // inside a panel that still reaches both edges is a page with margins,
+        // which is what every book and every document view is. The panel frames
+        // the working area either way -- only the measure changes.
+        //
+        // AutoResizeY because the column has to be as tall as what is in it and
+        // the panel behind it is what scrolls.
+        //
+        // Settings is the exception and stays full width: it is a form, not
+        // prose. Its rows are a control and a label side by side, and squeezing
+        // those into a measure meant for sentences puts a file path in a box
+        // too narrow to read one in.
+        if (view_ == View::Settings) {
+            draw_settings();
+        } else {
+            const float room = ImGui::GetContentRegionAvail().x;
+            const float col  = reading_column(room);
+            if (col < room) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (room - col) * 0.5F);
+            }
+            ImGui::BeginChild("column", ImVec2(col, 0), ImGuiChildFlags_AutoResizeY);
+            switch (view_) {
+                case View::Chat:     draw_chat(snapshot); break;
+                case View::Cook:     draw_cook(snapshot); break;
+                case View::History:  draw_history();      break;
+                case View::Settings: break;               // handled above
+            }
+            ImGui::EndChild();
         }
         // Following the bottom, but only while the user is already there.
         // Yanking someone reading back through an hour-old cook to the end
@@ -407,7 +462,8 @@ void App::draw() {
         if (has_composer && composer_height_ > 0.0F) {
             const ImGuiStyle& style = ImGui::GetStyle();
             composer_input_height_ =
-                std::max(composer - style.WindowPadding.y * 2.0F, 0.0F);
+                std::max(composer - style.WindowPadding.y * 2.0F
+                             - style.ChildBorderSize * 2.0F, 0.0F);
         }
 
         if (view_ == View::Chat) {
@@ -416,6 +472,7 @@ void App::draw() {
             draw_cook_composer(snapshot);
         }
     }
+    ImGui::EndChild();
     ImGui::EndChild();
 
     draw_new_expert_modal();

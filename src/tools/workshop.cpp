@@ -704,7 +704,8 @@ ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
     return failure("nothing to do");
 }
 
-std::string workshop_instructions(const WorkshopSettings& settings) {
+std::string workshop_instructions(const WorkshopSettings& settings,
+                                  ToolAudience audience) {
     if (!settings.enabled) {
         return {};
     }
@@ -718,21 +719,34 @@ std::string workshop_instructions(const WorkshopSettings& settings) {
     if (settings.allow_run) {
         text += "RUN: <command>             run it in the project root and see the output\n";
     }
+    text += "NOTE: <what you are doing>  recorded in the log, no other effect\n";
+    if (audience == ToolAudience::Cook) {
+        text +=
+            "ASK: <question>            ask the user something you cannot work out\n"
+            "DONE: <what you changed>   this piece of work is finished\n"
+            "HANDOFF: <the next work>   this piece is done and the next needs a "
+            "different\n"
+            "                           kind of expertise -- say what it is, in one "
+            "line,\n"
+            "                           and the right expert will be brought in\n";
+    }
     text +=
-        "NOTE: <what you are doing>  recorded in the log, no other effect\n"
-        "ASK: <question>            ask the user something you cannot work out\n"
-        "DONE: <what you changed>   this piece of work is finished\n"
-        "HANDOFF: <the next work>   this piece is done and the next needs a "
-        "different\n"
-        "                           kind of expertise -- say what it is, in one "
-        "line,\n"
-        "                           and the right expert will be brought in\n"
         "\nThe colon is required. One call per reply, on its own line, and nothing "
-        "after it. Paths are relative to the project root and cannot leave it.\n"
-        // A worked example, because the rules alone are not enough. Told only
-        // the shape, models write `WRITE path "a description of the change"`
-        // and expect that to be applied -- which would put the description into
-        // the file in place of the code.
+        "after it. Paths are relative to the project root and cannot leave it.\n";
+    if (audience == ToolAudience::Chat) {
+        // Said plainly, because the alternative failure is the visible one: an
+        // expert that has finished the work and then writes "DONE: fixed it",
+        // leaving the person who asked with a status line instead of an answer.
+        text +=
+            "\nWhen you have finished, write the answer for the person who asked --"
+            " no verb, no status line. If you need something from them, just ask it"
+            " in the reply.\n";
+    }
+    // A worked example, because the rules alone are not enough. Told only the
+    // shape, models write `WRITE path "a description of the change"` and expect
+    // that to be applied -- which would put the description into the file in
+    // place of the code.
+    text +=
         "\nWRITE replaces the whole file and the new contents go in a fenced block "
         "on the following lines, never on the same line. Like this:\n"
         "\nWRITE: src/calc.py\n"

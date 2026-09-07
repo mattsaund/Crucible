@@ -66,6 +66,40 @@ float grow_input_height(const std::string& text, float width, int max_lines);
 bool grow_input(const char* id, const char* hint, std::string& text,
                 float width, int max_lines, float height = 0.0F);
 
+/// The width to set a transcript in, given the room there is for it.
+///
+/// A measure, not a fraction of the window. Prose set across a 2200-pixel
+/// monitor runs to a hundred and fifty characters a line and the eye loses the
+/// left margin coming back to it, which is why every book ever printed is
+/// narrower than the table it sits on. Typographers put the comfortable measure
+/// at 45-90 characters; code wants more than prose does, and a hundred and ten
+/// is the width most projects already wrap their source at.
+///
+/// Counted in columns rather than in ems because the face is monospace and a
+/// column is 0.6 of an em -- an "em" cap is nearly twice as wide as it reads,
+/// which is a mistake that looks like the cap simply not working.
+float reading_column(float available);
+
+/// A square hit target for a drawn mark, with the hover plate behind it.
+///
+/// The caller draws the icon itself, because the four in theme.hpp take
+/// different arguments and wrapping each in a std::function to hand it to a
+/// button helper is more machinery than the button is. What this owns is the
+/// part every icon button shares: the size, the hit test, the plate that
+/// appears under the pointer, and where the centre ended up.
+struct IconHit {
+    bool   clicked = false;
+    bool   hovered = false;
+    ImVec2 centre;
+};
+IconHit icon_slot(const char* id, float size, bool lit = false);
+
+/// One tab in the top bar: a word, and a bar under it when it is the one
+/// showing. Not ImGui::Tab, which draws a folder tab with a filled body -- at
+/// the top of a window that reads as a browser, and Crucible's three views are
+/// three modes of one window rather than three documents in it.
+bool top_tab(const char* label, bool selected, float height);
+
 /// A model reference as it should be read.
 ///
 /// The config stores a bare file name for a model in the models directory and

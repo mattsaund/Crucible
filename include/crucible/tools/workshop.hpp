@@ -186,8 +186,22 @@ std::string clamp_output(std::string_view text, std::size_t limit);
 ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
                     const SearchSettings& search, const CancelCallback& cancel);
 
+/// Who the instructions are being written for.
+///
+/// The verbs are the same either way; what differs is how the work ends. A cook
+/// runs until it says DONE or HANDOFF, and those lines are answers to the loop
+/// rather than actions. A chat turn ends when the expert stops calling tools and
+/// writes something for the person who asked -- so telling it about DONE would
+/// invite it to end a reply with a status line instead of an answer, and telling
+/// it about HANDOFF would offer it a seat change that chat has no way to make.
+enum class ToolAudience {
+    Cook,  ///< the cook loop: DONE and HANDOFF are how a piece of work ends
+    Chat,  ///< one turn: the answer is how it ends
+};
+
 /// What to add to an expert's system prompt so it knows the workshop is there.
-/// Lists only the verbs the settings actually allow.
-std::string workshop_instructions(const WorkshopSettings& settings);
+/// Lists only the verbs the settings and the audience actually allow.
+std::string workshop_instructions(const WorkshopSettings& settings,
+                                  ToolAudience audience);
 
 }  // namespace crucible::tools

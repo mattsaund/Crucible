@@ -195,17 +195,6 @@ bool App::handle_command(const std::string& text) {
             say("       /cook 30m <goal>      work on it for thirty minutes");
             return true;
         }
-        if (!config_.tools.workshop) {
-            // Refused here rather than three model calls later, where it would
-            // surface as an expert being told "the workshop is switched off"
-            // over and over.
-            say("cooking needs the workshop, which is off. Turn it on in "
-                "/settings, under TOOLS.");
-            say("it lets experts read, write and run things in "
-                + store_.project().root.string());
-            return true;
-        }
-
         // A leading duration is a budget; anything else is part of the goal.
         std::string goal   = rest;
         int         budget = 0;

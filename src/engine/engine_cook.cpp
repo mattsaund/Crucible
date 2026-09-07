@@ -114,7 +114,7 @@ std::string cook_system_prompt(const Config& config, const std::string& goal,
         "rather than assuming. Prefer the smallest change that makes something "
         "measurably better. When a piece of work is finished, say DONE and what "
         "you did, and you will be asked for the next one.";
-    prompt += tools::workshop_instructions(workshop);
+    prompt += tools::workshop_instructions(workshop, tools::ToolAudience::Cook);
     return prompt;
 }
 
@@ -165,8 +165,21 @@ std::string turn_text(const std::string& answer) {
 // Queueing and control
 // ---------------------------------------------------------------------------
 
-void Engine::set_journal_dir(std::filesystem::path project_dir) {
-    cook_log_ = std::make_unique<CookLog>(std::move(project_dir));
+void Engine::set_project(std::filesystem::path root, std::filesystem::path project_dir) {
+    project_root_ = std::move(root);
+    cook_log_     = std::make_unique<CookLog>(std::move(project_dir));
+}
+
+tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) const {
+    tools::WorkshopSettings workshop;
+    // Having a root is the permission. It is only ever set to a folder the user
+    // answered the trust question for, and that question is asked in the terms
+    // this is actually about: read, write, run, inside this directory.
+    workshop.enabled             = !root.empty();
+    workshop.root                = root;
+    workshop.allow_run           = !root.empty();
+    workshop.run_timeout_seconds = config_.tools.workshop_timeout;
+    return workshop;
 }
 
 void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root) {
@@ -341,11 +354,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     cook_.started_unix  = static_cast<std::int64_t>(std::time(nullptr));
     publish_cook();
 
-    tools::WorkshopSettings workshop;
-    workshop.enabled             = config_.tools.workshop;
-    workshop.root                = root;
-    workshop.allow_run           = config_.tools.workshop_run;
-    workshop.run_timeout_seconds = config_.tools.workshop_timeout;
+    const tools::WorkshopSettings workshop = workshop_for(root);
 
     tools::SearchSettings search;
     search.enabled         = config_.tools.web_search;

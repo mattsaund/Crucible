@@ -330,4 +330,113 @@ void draw_dot(ImDrawList* draw, ImVec2 centre, float radius, Dot dot) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The title bar's icons
+// ---------------------------------------------------------------------------
+//
+// All four are built from rectangles, lines and one triangle, on the theory
+// that an icon which needs a bezier to be recognisable is an icon that is
+// trying to say too much at sixteen pixels. They are stroked at a width tied to
+// `size` so they thicken with the display scale rather than fading to a hair on
+// a 4K panel.
+
+void draw_panel_icon(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
+                     bool open) {
+    // A pane with a rail down its left edge -- the same picture the sidebar
+    // actually is. Filled when the sidebar is open and hollow when it is not,
+    // so the button shows the state rather than the action: a control that
+    // shows the action has to be read twice, once for the arrow and once to
+    // remember which way it was pointing last.
+    const float half  = size * 0.5F;
+    const float thick = std::max(1.0F, size * 0.09F);
+    const ImVec2 lo{centre.x - half, centre.y - half * 0.82F};
+    const ImVec2 hi{centre.x + half, centre.y + half * 0.82F};
+    draw->AddRect(lo, hi, colour, size * 0.14F, 0, thick);
+
+    const float rail = lo.x + size * 0.34F;
+    if (open) {
+        draw->AddRectFilled(ImVec2(lo.x + thick, lo.y + thick),
+                            ImVec2(rail, hi.y - thick), colour, size * 0.10F,
+                            ImDrawFlags_RoundCornersLeft);
+    } else {
+        draw->AddLine(ImVec2(rail, lo.y + thick), ImVec2(rail, hi.y - thick),
+                      colour, thick);
+    }
+}
+
+void draw_gear(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour) {
+    // A cog: a solid body with square teeth standing off it, and a hole in the
+    // middle.
+    //
+    // The first version of this was a thin ring with six spokes radiating out
+    // of it, which is not a gear -- it is a sun, or an asterisk, and it read as
+    // one at every size. What makes the difference is that the teeth are wide:
+    // a tooth is a block about as broad as the gap beside it, so the outline
+    // steps in and out. Drawn as radial lines they are hairs, and hairs around
+    // a circle are rays.
+    constexpr int   kTeeth = 8;
+    constexpr float kTwoPi = 6.2831853F;
+    const float body  = size * 0.34F;   // the solid disc
+    const float tip   = size * 0.50F;   // how far the teeth reach
+    const float half  = kTwoPi / static_cast<float>(kTeeth) * 0.26F;  // tooth half-width
+
+    for (int i = 0; i < kTeeth; ++i) {
+        const float angle = (static_cast<float>(i) / kTeeth) * kTwoPi;
+        const auto at = [&](float a, float r) {
+            return ImVec2(centre.x + std::cos(a) * r, centre.y + std::sin(a) * r);
+        };
+        // Slightly inside the body at the root, so the tooth and the disc
+        // overlap and no seam shows between them.
+        const ImVec2 points[4] = {
+            at(angle - half, body * 0.92F),
+            at(angle - half, tip),
+            at(angle + half, tip),
+            at(angle + half, body * 0.92F),
+        };
+        draw->AddConvexPolyFilled(points, 4, colour);
+    }
+    // The body, as a stroked circle rather than a filled one, which is what
+    // leaves the hole. Painting the ground back over the middle would work
+    // until the button is hovered or lit, at which point the hole is the wrong
+    // colour -- an annulus does not have to know what is behind it.
+    const float hole = size * 0.15F;
+    draw->AddCircle(centre, (body + hole) * 0.5F, colour, 28, body - hole);
+}
+
+void draw_copy(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour) {
+    const float half  = size * 0.5F;
+    const float thick = std::max(1.0F, size * 0.09F);
+    const float sheet = size * 0.62F;
+    // The back sheet, then the front one over it, offset down and right.
+    draw->AddRect(ImVec2(centre.x - half, centre.y - half),
+                  ImVec2(centre.x - half + sheet, centre.y - half + sheet),
+                  colour, size * 0.12F, 0, thick);
+    draw->AddRectFilled(ImVec2(centre.x + half - sheet - thick, centre.y + half - sheet - thick),
+                        ImVec2(centre.x + half + thick, centre.y + half + thick),
+                        kRaised, size * 0.12F);
+    draw->AddRect(ImVec2(centre.x + half - sheet, centre.y + half - sheet),
+                  ImVec2(centre.x + half, centre.y + half),
+                  colour, size * 0.12F, 0, thick);
+}
+
+void draw_chevron(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
+                  bool open) {
+    const float half = size * 0.34F;
+    if (open) {
+        const ImVec2 points[3] = {
+            ImVec2(centre.x - half, centre.y - half * 0.6F),
+            ImVec2(centre.x + half, centre.y - half * 0.6F),
+            ImVec2(centre.x,        centre.y + half * 0.8F),
+        };
+        draw->AddConvexPolyFilled(points, 3, colour);
+        return;
+    }
+    const ImVec2 points[3] = {
+        ImVec2(centre.x - half * 0.6F, centre.y - half),
+        ImVec2(centre.x - half * 0.6F, centre.y + half),
+        ImVec2(centre.x + half * 0.8F, centre.y),
+    };
+    draw->AddConvexPolyFilled(points, 3, colour);
+}
+
 }  // namespace crucible::gui::theme

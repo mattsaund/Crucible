@@ -4,7 +4,7 @@
 //
 // A modal is used where the answer changes what the rest of the window means
 // -- a different working directory is a different history, journal and
-// workshop root -- and nowhere else.
+// project root -- and nowhere else.
 //
 // The folder browser is one dialog serving two questions, because they are the
 // same question: which directory. Where the models are, and where Crucible
@@ -116,7 +116,7 @@ void App::draw_browse_modal() {
         ? "Where your GGUF files are. Crucible reads this directory; it never "
           "writes to it and never downloads into it."
         : "The directory Crucible works in: its history, its cook journal and "
-          "the root the workshop is confined to.");
+          "the folder experts read and write inside.");
     ImGui::Dummy(ImVec2(0, em(0.3F)));
 
     // A browser rather than a native file dialog. Crucible has no toolkit to
@@ -212,10 +212,14 @@ void App::draw_trust_modal() {
 
     wrapped(theme::kText, pending_trust_->string());
     ImGui::Dummy(ImVec2(0, em(0.4F)));
+    // This is the whole permission now. There used to be two more switches
+    // behind it, which meant this question could be answered yes and nothing
+    // could still be edited; now yes means yes, so it has to say what it grants
+    // without hedging.
     wrapped(theme::kTextDim,
-            "Crucible will keep this folder's history, and -- if the workshop is on -- "
-            "read, write and run things inside it while cooking. It never touches "
-            "anything outside it.");
+            "Crucible will read, write and run commands in this folder, and keep its "
+            "history. Paths outside it are refused -- but a command it runs is a "
+            "command, and can reach whatever you can.");
     ImGui::Dummy(ImVec2(0, em(0.6F)));
 
     if (ImGui::Button("Trust and open", ImVec2(em(11.0F), 0))) {

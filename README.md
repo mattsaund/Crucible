@@ -133,11 +133,13 @@ The delegator stays active and can handoff work to another expert mid cook
 ```
 
 ___
-## The workshop
+## Acting on the project
 
-Cooking needs the workshop, and the workshop is **off until you turn it on**, in
-`/settings` under TOOLS. It is what lets an expert act on a project rather than
-describe it:
+Trusting a folder is what lets an expert act on it rather than describe it.
+Crucible asks once, on first use in a directory, and yes means yes — there is no
+second switch behind it. The same verbs are available in Chat and in Cook,
+because "fix the typo in README" is a sentence rather than a goal worth starting
+a cook for, and the answer to it is the edit:
 
 | | |
 |---|---|
@@ -146,9 +148,8 @@ describe it:
 | `WRITE:` | replace a file |
 | `RUN:` | run a command, starting in the project root |
 | `SEARCH:` | look something up (needs web search on) |
-| `ASK:` | ask you something |
-| `HANDOFF:` | this piece is done and the next needs a different expert |
-| `NOTE:` `DONE:` | record what it is doing; close a piece of work |
+| `NOTE:` | record what it is doing |
+| `ASK:` `DONE:` `HANDOFF:` | cook only — ask you something, close a piece of work, hand the next piece to a different expert |
 
 Three things are load-bearing and none of them is the tool list.
 
@@ -172,10 +173,12 @@ subset while claiming confinement would be worse than saying plainly what this
 is. Real confinement means a sandbox — bubblewrap, Landlock, seatbelt — which is
 per-platform and is not here yet.
 
-**So it is two switches, not one.** Letting a model edit a project you already
-trusted and letting it run commands *as you* are different decisions, and only
-the first is bounded by a directory. `RUN` can be off while the rest is on. Both
-sit on top of the folder-trust prompt Crucible asks on first use in a directory.
+**So the trust prompt says so.** It used to be two more switches under a
+settings page, on top of the folder trust — which meant you could answer the
+trust question yes and still find that nothing could be edited, with no
+indication of which box you had not ticked. The question is asked once now, in
+the terms it is actually about: read, write and run commands in this folder,
+paths outside it refused, and a command it runs is a command.
 
 **It is a text protocol.** llama.cpp applies a chat template, it does not
 negotiate a tool schema, and Crucible cannot know which model is in the seat. A
@@ -206,42 +209,76 @@ file, same folder-trust store, no protocol in between. Dear ImGui over GLFW, in
 one self-contained binary that links the core library directly.
 
 ```
-┌──────────────┬────────────────────────────────────────────┐
-│  ⢱⣆ CRUCIBLE │  you                                       │
-│     idle     │  why does the JIT swap cost so little?     │
-│              │                                            │
-│  PROJECT     │  Programming · 1.00 · router model         │
-│  crucible    │                                            │
-│  ~/code/cru… │  ## The short answer                       │
-│ Change folder│  Weights are mapped, not copied — so:      │
-│              │   • the page cache holds them already      │
-│  EXPERTS     │   • only the KV cache is really allocated  │
-│  ◇ Mathema…  │                                            │
-│  ◆ Programm… │  ┌────────────────────────────────────┐    │
-│              │  │ llama_model_load_from_file(path);  │    │
-│  VIEW        │  └────────────────────────────────────┘    │
-│  Chat  Cook  ├────────────────────────────────────────────┤
-│  History     │  ask anything                     [ Send ] │
-│  Settings    │  or give it a goal to cook on     [ Cook ] │
-│              │                                            │
-└──────────────┴────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│ ▣  ⢱⣆ CRUCIBLE   🗀 crucible  ~/code/crucible    Chat  Cook  History ⚙│
+├───────────────┬─────────────────────────────────────────────────────┤
+│ DELEGATOR     │   ▌why does the JIT swap cost so little?            │
+│ ◆ qwen3-4b    │                                                     │
+│ │             │   ◆ Programming · 94% · router model · swap 1.2s    │
+│ EXPERTS       │                                                     │
+│ │ ◇ Mathema…  │   ## The short answer                               │
+│ └─◆ Programm… │   Weights are mapped, not copied — so:              │
+│   ◇ Writing   │    • the page cache holds them already              │
+│   · Science   │    • only the KV cache is really allocated          │
+│               │                                                     │
+│               │   ┌ c++ · model_host.cpp ──────── 4 lines ─ ⧉ ┐     │
+│               │   │ 41   auto* model = llama_model_load(...);│     │
+│               │   └──────────────────────────────────────────┘     │
+│               ├─────────────────────────────────────────────────────┤
+│ 12k in/4k out │   ask anything                            [ Send ]  │
+└───────────────┴─────────────────────────────────────────────────────┘
 ```
 
+**The top bar is everything true of the window.** Which project is open — name,
+path, and a click to change it — the fold button for the side menu, the three
+views, and Settings in the corner. Settings is a corner rather than a fourth tab
+because it is where you go to change the program rather than one of the three
+things the program does; the gear goes in, and the same gear comes back out to
+where you were.
+
+**The side menu is one picture of how a prompt gets answered.** The delegator on
+top, the experts indented under it, a status diamond on every one of them — and
+while a turn is flowing, a line drawn from the delegator's dot down and into the
+seat it chose. It is the same drawing the terminal makes in its expert panel,
+turned ninety degrees. Yellow means "this one has the turn", the delegator
+included; white means it can answer; faint means it has no model behind it.
+
 Both panels are draggable. The sidebar closes when you drag its edge to the left
-of the window and comes back when you pull that edge out again; the box you type
-in has a handle above it and grows to whatever height you drag it to. The sidebar
-carries the folder being worked in and the expert list with live status.
+of the window — or with the fold button — and the box you type in has a handle
+above it and grows to whatever height you drag it to.
 
 **It says where it is working, and the terminal program does not have to.**
 `crucible` is told where it is by being run there — you `cd`, then you type it. A
-window has no `cd`, so it shows the folder instead, with one button that opens a
-browser to change it. Choosing a folder goes through the same trust prompt, so a
+window has no `cd`, so the top bar shows the folder instead, and clicking it opens
+a browser to change it. Choosing a folder goes through the same trust prompt, so a
 directory trusted in one face is trusted in the other.
 
 **Replies are rendered, not printed.** Headings, bold, lists, tables and fenced
 code all draw as themselves, using the same parser the terminal uses — so both
-faces break a reply into the same blocks and only the drawing differs. A cook
-step expands to show its diff, coloured by line.
+faces break a reply into the same blocks and only the drawing differs.
+
+**Code is coloured, numbered, and read as a diff when it is one.** A fenced block
+carries a header saying what language it is and which file it belongs to, numbers
+every line down the left, and colours the code with a small lexer that covers
+twenty-odd languages (`src/gui/syntax.cpp`). A unified diff is recognised without
+being told: the marker in column one becomes a gutter of old and new line
+numbers, added rows are washed green and removed rows red — and the code on each
+row keeps its syntax colours either way, because an added line you cannot read is
+not much of an improvement on a removed one. A block longer than about forty
+lines folds itself, with one click to open it out.
+
+**Chat and Cook differ in how long they run, not in what they may touch.** Chat
+is one question and one answer: the delegator reads what you type, hands it to
+the expert it fits, and that expert answers — reading, writing and running things
+in the project if the answer calls for it. Cook is one goal worked in passes —
+read, change, run, judge, go round again — with the goal pinned at the top, the
+pass count beside it, and every step accumulating underneath, each folding open
+to the diff or the command output it produced.
+
+With nothing in either view yet, they say one of three things and nothing else:
+**No runtime** (there is no backend installed to run a model on), **No model
+selected** (no expert has a GGUF behind it), or **Ask anything**. The first two
+are the way to the page that fixes them.
 
 The typeface is JetBrains Mono, compiled into the binary. A font is the one
 asset the program cannot draw for itself, and searching for it at runtime would
@@ -442,8 +479,6 @@ Experts page, or by writing an entry here.
 },
 "tools": {
   "web_search": false,          // the only thing Crucible sends off the machine
-  "workshop": false,            // let experts read and write in the project
-  "workshop_run": true,         // ...and run commands there
   "workshop_timeout": 120       // seconds before a stuck command is killed
 }
 ```
@@ -600,9 +635,13 @@ src/
 │                       line editor
 └── gui/            the desktop app                 [its own binary]
     ├── main.cpp        parse, trust, hand off
-    ├── app.cpp         the window: sidebar, panes, composer, dialogs
-    ├── markdown_view.cpp  drawing the markdown a model wrote
-    └── theme.cpp       the palette, the flame, the fonts
+    ├── app.cpp         the window: the frame, the reading column, the actions
+    ├── markdown_view.cpp  drawing the markdown a model wrote, code blocks and
+    │                      diffs included
+    ├── syntax.cpp      the lexer the code blocks are coloured with
+    ├── widgets.cpp     the vocabulary the panels are written in
+    ├── theme.cpp       the palette, the flame, the fonts, the title-bar marks
+    └── panels/         topbar, sidebar, chat, cook, settings, dialogs
 
 packaging/          the mark, and the application-menu entry
 ├── flame.txt       the flame, in braille -- the one copy the banner at the

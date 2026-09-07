@@ -75,7 +75,8 @@ void App::take_runtime_activation() {
 
     // What is installed changed, and so did the devices under it. Both lists
     // are read straight from ggml, so re-reading them is the whole refresh.
-    runtimes_ = RuntimeRegistry::scan();
+    runtimes_    = RuntimeRegistry::scan();
+    any_runtime_ = RuntimeRegistry::any_installed();
 
     // The models, though, are not: one picks its devices when it loads and
     // keeps them. Dropping them is what puts the next prompt on the new GPU.
@@ -159,7 +160,8 @@ void App::draw_settings_runtimes() {
                 std::string error;
                 if (RuntimeRegistry::remove(runtime.kind, error)) {
                     say(std::string(backend_name(runtime.kind)) + " runtime removed");
-                    runtimes_ = RuntimeRegistry::scan();
+                    runtimes_    = RuntimeRegistry::scan();
+                    any_runtime_ = RuntimeRegistry::any_installed();
                 } else {
                     runtime_error_ = error;
                 }
@@ -221,7 +223,8 @@ void App::draw_settings_runtimes() {
                 runtime_builder_.dismiss();
                 // A finished build changes what is installed and, if it
                 // loaded, what devices exist.
-                runtimes_ = RuntimeRegistry::scan();
+                runtimes_    = RuntimeRegistry::scan();
+                any_runtime_ = RuntimeRegistry::any_installed();
             }
         }
     }

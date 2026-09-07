@@ -330,7 +330,8 @@ TEST(a_near_miss_is_recognised_so_it_can_be_corrected) {
 TEST(the_instructions_show_the_write_shape_rather_than_only_describing_it) {
     tools::WorkshopSettings settings;
     settings.enabled = true;
-    const std::string text = tools::workshop_instructions(settings);
+    const std::string text =
+        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
 
     // Told only the rules, models write `WRITE path "a description"` and expect
     // it to be applied. A worked example is the cheapest thing that stops that.
@@ -357,13 +358,31 @@ TEST(a_handoff_names_the_next_piece_of_work) {
     CHECK(!tools::run_tool(*call, settings, tools::SearchSettings{}, {}).ok);
 }
 
-TEST(the_instructions_offer_a_handoff) {
+TEST(the_instructions_offer_a_handoff_to_a_cook_and_not_to_a_chat) {
     tools::WorkshopSettings settings;
     settings.enabled = true;
-    const std::string text = tools::workshop_instructions(settings);
+
     // An expert that does not know it can hand over will never do it, and the
     // roster stays a list of seats only one of which ever gets used.
-    CHECK(text.find("HANDOFF:") != std::string::npos);
+    const std::string cook =
+        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    CHECK(cook.find("HANDOFF:") != std::string::npos);
+    CHECK(cook.find("DONE:") != std::string::npos);
+
+    // A chat turn has no seat to hand over and no loop to say DONE to. Offered
+    // them anyway, an expert that has finished the work ends the turn with a
+    // status line, and the person who asked gets "DONE: fixed it" instead of an
+    // answer.
+    const std::string chat =
+        tools::workshop_instructions(settings, tools::ToolAudience::Chat);
+    CHECK(chat.find("HANDOFF:") == std::string::npos);
+    CHECK(chat.find("DONE:") == std::string::npos);
+
+    // The verbs that act on the project are the same either way: what differs
+    // is how the work ends, not what may be touched.
+    CHECK(chat.find("READ:") != std::string::npos);
+    CHECK(chat.find("WRITE:") != std::string::npos);
+    CHECK(chat.find("RUN:") != std::string::npos);
 }
 
 TEST(a_cook_records_every_expert_that_held_the_seat) {
@@ -545,15 +564,19 @@ TEST(long_output_keeps_its_head_and_its_tail) {
 
 TEST(the_instructions_only_offer_what_the_settings_allow) {
     tools::WorkshopSettings settings;
-    CHECK(tools::workshop_instructions(settings).empty());  // off: say nothing
+    // Off: say nothing. An untrusted folder produces exactly this.
+    CHECK(tools::workshop_instructions(settings, tools::ToolAudience::Cook).empty());
+    CHECK(tools::workshop_instructions(settings, tools::ToolAudience::Chat).empty());
 
     settings.enabled = true;
-    const std::string on = tools::workshop_instructions(settings);
+    const std::string on =
+        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
     CHECK(on.find("READ:") != std::string::npos);
     CHECK(on.find("RUN:") != std::string::npos);
 
     settings.allow_run = false;
-    const std::string no_run = tools::workshop_instructions(settings);
+    const std::string no_run =
+        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
     CHECK(no_run.find("READ:") != std::string::npos);
     // Offering a verb that will be refused wastes a whole round trip and
     // teaches the model the protocol is unreliable.

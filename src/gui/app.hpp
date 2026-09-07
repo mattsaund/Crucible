@@ -70,8 +70,40 @@ private:
 
     // --- frame ------------------------------------------------------------
     void draw();
+
+    /// The bar across the top: the fold toggle, the mark, which project is
+    /// open, the three views, and the way through to Settings.
+    void draw_topbar(const Snapshot& snapshot);
+    float topbar_height() const;
+
+    /// Open or close the side menu from the button in the top bar, remembering
+    /// the width it had so bringing it back does not reset it.
+    void toggle_sidebar();
+
     void draw_sidebar(const Snapshot& snapshot);
     void draw_splitter();
+
+    /// The delegator and the experts under it, and the line joining the two
+    /// while a turn is flowing. Drawn together because the connector needs both
+    /// ends before it can be drawn at all.
+    void draw_model_tree(const Snapshot& snapshot);
+
+    /// Go to a settings page, remembering where to come back to.
+    void show_settings(SettingsPage page);
+
+    /// The one line a working view shows when there is nothing in it yet.
+    ///
+    /// Three states, one line each, no paragraph under any of them. Two are a
+    /// thing to go and fix -- there is no backend to run a model on, or no
+    /// model behind any expert -- and the third is the invitation. Which one
+    /// you are in is a fact about the machine, and the two that are fixable are
+    /// the button that takes you to where they are fixed.
+    void draw_readiness();
+
+    /// True when at least one backend module is installed, so a model can be
+    /// loaded at all. Cached: it is a look at the filesystem, and the answer
+    /// only changes when a runtime is built or removed from the settings page.
+    bool any_runtime_ = false;
 
     /// The horizontal grab bar between the transcript and the composer, so the
     /// box you type in can be sized like the sidebar rather than only ever
@@ -190,6 +222,10 @@ private:
     View         view_          = View::Chat;
     SettingsPage settings_page_ = SettingsPage::General;
 
+    /// Where the gear came from, so pressing it again goes back there. Settings
+    /// is a place you visit and leave, not a fourth tab you land in.
+    View         before_settings_ = View::Chat;
+
     std::string prompt_;
     std::string cook_goal_;
 
@@ -198,6 +234,11 @@ private:
     /// writing to the config file. Below `sidebar_collapse_at()` the sidebar is
     /// closed, which is why there is no separate "is it open" flag.
     float sidebar_width_ = -1.0F;  ///< negative until the first frame sizes it
+
+    /// The width to reopen at. Set when the fold button closes the side menu,
+    /// because closing it leaves `sidebar_width_` at zero and reopening to a
+    /// hardcoded default would throw away a width the user chose.
+    float sidebar_restore_ = 0.0F;
 
     /// Height the user has dragged the composer to, or 0 for "as tall as what
     /// is typed in it". Same idea as the sidebar width and kept for the same

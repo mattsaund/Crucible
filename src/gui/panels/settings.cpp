@@ -178,35 +178,17 @@ void App::draw_settings() {
         case SettingsPage::Tools: {
             title("Tools");
 
-            section("WORKSHOP");
-            wrapped(theme::kTextDim,
-                    "What a cook is allowed to do to this project. Off, Crucible only "
-                    "answers questions about it. Every file an expert reads or writes is "
-                    "resolved inside the project folder and anything that escapes it is "
-                    "refused.");
+            // No switches for reading, writing and running here any more. They
+            // were three settings for one thing the user had already been asked
+            // about -- trusting the folder -- and having said yes to that, they
+            // then found nothing could be edited and no obvious reason why.
+            // Trust is the decision; this page keeps the one number that is
+            // genuinely a preference.
+            section("PROJECT");
             text_coloured(theme::kFlame, "%s", store_->project().root.string().c_str());
-
-            bool workshop = config_.tools.workshop;
-            if (ImGui::Checkbox("Let experts read and write files here", &workshop)) {
-                update_config([workshop](Config& config) {
-                    config.tools.workshop = workshop;
-                });
-            }
-            bool allow_run = config_.tools.workshop_run;
-            if (ImGui::Checkbox("Let them run commands too", &allow_run)) {
-                update_config([allow_run](Config& config) {
-                    config.tools.workshop_run = allow_run;
-                });
-            }
-            if (config_.tools.workshop_run) {
-                wrapped(theme::kError,
-                        "A command starts in the project folder but is not confined to "
-                        "it: a shell can cd anywhere and read anything you can. This is "
-                        "a separate switch for that reason.");
-            }
-            ImGui::SetItemTooltip(
-                "Editing a project you trusted and running commands as you are not the "
-                "same decision.");
+            wrapped(theme::kTextDim,
+                    "Experts can read, write and run things here because you trusted "
+                    "this folder. Paths outside it are refused.");
 
             int timeout = config_.tools.workshop_timeout;
             ImGui::SetNextItemWidth(em(12.0F));
@@ -215,6 +197,8 @@ void App::draw_settings() {
                     config.tools.workshop_timeout = timeout;
                 });
             }
+            ImGui::SetItemTooltip("A build is minutes; a command still going after this "
+                                  "is stuck.");
 
             section("WEB SEARCH");
             bool web = config_.tools.web_search;

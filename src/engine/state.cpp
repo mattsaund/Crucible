@@ -205,10 +205,10 @@ void AppState::set_reply(std::size_t turn, std::string text) {
     }
 }
 
-void AppState::add_search(std::size_t turn, std::string line) {
+void AppState::add_action(std::size_t turn, std::string line) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].searches.push_back(std::move(line));
+        turns_[turn].actions.push_back(std::move(line));
     }
 }
 
