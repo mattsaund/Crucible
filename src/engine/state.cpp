@@ -257,6 +257,33 @@ void AppState::fail_turn(std::size_t turn, std::string_view reason) {
     }
 }
 
+void AppState::remove_turn(std::size_t turn) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (turn >= turns_.size()) {
+        return;
+    }
+    turns_.erase(turns_.begin() + static_cast<long>(turn));
+}
+
+void AppState::truncate_turns(std::size_t from) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (from >= turns_.size()) {
+        return;
+    }
+    turns_.erase(turns_.begin() + static_cast<long>(from), turns_.end());
+}
+
+void AppState::cancel_turn(std::size_t turn) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (turn >= turns_.size()) {
+        return;
+    }
+    Turn& entry = turns_[turn];
+    entry.streaming = false;
+    entry.cancelled = true;
+    live_rate_      = 0.0;
+}
+
 void AppState::add_notice(std::string notice) {
     const std::lock_guard<std::mutex> lock(mutex_);
     // Startup can produce one warning per misconfigured expert; keep the list

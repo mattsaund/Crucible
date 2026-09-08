@@ -133,6 +133,12 @@ void draw_panel_icon(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
 void draw_gear(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
 void draw_copy(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
 
+/// The three that appear on a turn when the pointer is over it: ask this again,
+/// throw it away, and stop what is running.
+void draw_retry(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
+void draw_trash(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
+void draw_stop(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
+
 /// A disclosure triangle, pointing down when `open` and right when not.
 void draw_chevron(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
                   bool open);

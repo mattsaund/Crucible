@@ -205,6 +205,57 @@ void App::submit_prompt() {
     engine_->submit(text);
 }
 
+void App::stop_work() {
+    engine_->cancel();
+    say("stopping");
+}
+
+void App::retry_turn(std::size_t index) {
+    if (engine_->is_busy()) {
+        return;   // the buttons are not offered then; this is the belt to that brace
+    }
+    const Snapshot snapshot = state_.snapshot();
+    if (index >= snapshot.turns.size()) {
+        return;
+    }
+    const std::string prompt = snapshot.turns[index].prompt;
+    state_.truncate_turns(index);
+    rebuild_history();
+    expanded_.clear();
+    follow_ = true;
+    engine_->submit(prompt);
+}
+
+void App::delete_turn(std::size_t index) {
+    if (engine_->is_busy()) {
+        return;
+    }
+    state_.remove_turn(index);
+    rebuild_history();
+    persist_session();
+}
+
+void App::rebuild_history() {
+    const Snapshot snapshot = state_.snapshot();
+    std::vector<ChatMessage> history;
+    for (const Turn& turn : snapshot.turns) {
+        // The same rule the session resume uses: only exchanges that actually
+        // produced an answer go back to the expert. A failed or cancelled turn
+        // in the context teaches it that not answering is a thing that happens
+        // here.
+        if (!turn.failed && !turn.cancelled && !turn.reply.empty()) {
+            history.push_back({"user", turn.prompt});
+            history.push_back({"assistant", turn.reply});
+        }
+    }
+    engine_->restore_history(std::move(history));
+
+    // The session file is written from the turn count, so a shorter transcript
+    // has to reset it or the next save believes it has already stored turns
+    // that are no longer there.
+    persisted_turns_ = 0;
+}
+
 void App::begin_cook() {
     const std::string goal = format::trim(cook_goal_);
     if (goal.empty()) {

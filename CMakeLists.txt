@@ -272,6 +272,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_sprite.cpp
         tests/test_syntax.cpp
         tests/test_code_lines.cpp
+        tests/test_transcript_edits.cpp
         # The flame's own source, because it lives in the terminal program
         # rather than in the core library. It draws text and nothing else, so it
         # costs the test binary a link against FTXUI's colour type and no more.

@@ -135,6 +135,27 @@ void App::draw_cook(const Snapshot& snapshot) {
         ImGui::TextUnformatted(cook.goal.c_str());
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
+
+        // Stop, on the block it would stop. The composer at the bottom has the
+        // same two buttons and always will -- they are the deliberate,
+        // labelled way out -- but a cook that has scrolled a hundred steps
+        // past its own goal should not need to be scrolled back to to be
+        // ended, and the goal card is the thing on screen that *is* the cook.
+        const bool live = cook.state == CookState::Working
+                       || cook.state == CookState::Finishing;
+        if (live && ImGui::IsMouseHoveringRect(at, ImVec2(at.x + width, at.y + box),
+                                               false)) {
+            const float size = em(1.6F);
+            ImGui::SetCursorScreenPos(ImVec2(at.x + width - size - em(0.2F),
+                                             at.y + em(0.2F)));
+            const IconHit slot = icon_slot("##stop-cook", size);
+            theme::draw_stop(draw, slot.centre, em(0.9F),
+                             slot.hovered ? theme::kFlameBright : theme::kTextFaint);
+            ImGui::SetItemTooltip("Stop now, without the finishing pass");
+            if (slot.clicked) {
+                stop_work();
+            }
+        }
         ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + box + em(0.5F)));
     }
 

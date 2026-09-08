@@ -64,21 +64,41 @@ void log_to_file(ggml_log_level level, const char* text, void* /*user_data*/) {
     g_log_stream.flush();
 }
 
-/// Bridges llama.cpp's C progress callback to the std::function the UI gave us.
-/// Returning false from the C callback aborts the load, which is how a cancel
-/// during a multi-second expert swap actually takes effect.
+/// Bridges llama.cpp's C progress callback to the std::functions the caller
+/// gave us: one to report how far along the load is, one to ask whether it
+/// should still be happening.
+///
+/// Returning false from the C callback aborts the load, which is the only way
+/// out of one. That mattered more than it looked: a thirty-gigabyte expert is
+/// the better part of a minute off the disk, and until this was wired up the
+/// answer to "stop" during that minute was that nothing happened -- no token,
+/// no error, no way back -- which is indistinguishable from a program that has
+/// hung, because for that minute it had.
 struct ProgressBridge {
-    const ProgressCallback* progress = nullptr;
-    float                   last     = -1.0F;
+    const ProgressCallback* progress  = nullptr;
+    const CancelCallback*   cancel    = nullptr;
+    float                   last      = -1.0F;
+    bool                    cancelled = false;
 };
 
 bool progress_trampoline(float progress, void* user_data) {
     auto* bridge = static_cast<ProgressBridge*>(user_data);
-    // An empty std::function is a legal argument -- "load this, I do not care
-    // how far along it is" -- and calling one throws std::bad_function_call
-    // out through llama.cpp's C boundary, where it surfaces as an unexplained
-    // "failed to load model".
-    if (bridge == nullptr || bridge->progress == nullptr || !*bridge->progress) {
+    if (bridge == nullptr) {
+        return true;
+    }
+    // Asked first and on every tensor rather than on every whole percent: the
+    // percent throttle exists so the screen is not redrawn a thousand times,
+    // and a stop that waits for the next percent of a slow disk read is a stop
+    // that takes seconds to be noticed.
+    //
+    // An empty std::function is a legal argument -- "load this, I do not care"
+    // -- and calling one throws std::bad_function_call out through llama.cpp's
+    // C boundary, where it surfaces as an unexplained "failed to load model".
+    if (bridge->cancel != nullptr && *bridge->cancel && (*bridge->cancel)()) {
+        bridge->cancelled = true;
+        return false;
+    }
+    if (bridge->progress == nullptr || !*bridge->progress) {
         return true;
     }
     // llama.cpp calls this per tensor, which is far more often than a terminal
@@ -133,7 +153,7 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
     //
     // tensor_split is indexed by ggml device index, the same number as
     // ComputeDevice::index, and a zero share means "not used". An empty split
-    // is llama.cpp's own default: every GPU.
+    // is llama.cpp's own default: every GPU, divided by free memory.
     const std::vector<float>& split = params.tensor_split;
     const auto share_of = [&split](const ComputeDevice& gpu) {
         const auto index = static_cast<std::size_t>(gpu.index);
@@ -145,22 +165,23 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
     // split says.
     const bool single = params.split_mode == "none";
 
+    std::vector<const ComputeDevice*> used;
     std::uint64_t available = 0;
-    std::uint64_t cards     = 0;
-    std::string   where;
+    double        weight    = 0.0;   // total of the shares, to normalise by
     for (const ComputeDevice& gpu : gpus) {
         if (single ? gpu.index != params.main_gpu
                    : (!everywhere && share_of(gpu) <= 0.0F)) {
             continue;
         }
+        used.push_back(&gpu);
         available += gpu.memory_free;
-        ++cards;
-        if (!where.empty()) {
-            where += " + ";
-        }
-        where += (gpu.description.empty() ? gpu.name : gpu.description);
+        // llama.cpp divides by free memory when it is given no split of its
+        // own, and by the split when it is. Either way this has to be the same
+        // rule, or the two disagree about which card is the tight one.
+        weight += everywhere ? static_cast<double>(gpu.memory_free)
+                             : static_cast<double>(share_of(gpu));
     }
-    if (available == 0) {
+    if (available == 0 || weight <= 0.0) {
         // A backend that does not report free memory. Nothing to compare
         // against, so let the load proceed rather than refuse on a guess.
         return {};
@@ -172,19 +193,56 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
     // could not be read falls back to a tenth over the file size: small enough
     // not to refuse anything that would have fitted, which is the right way to
     // be wrong when the numbers are unknown.
-    std::uint64_t needed =
-        static_cast<std::uint64_t>(static_cast<double>(shape.weights) * 1.1);
+    const auto cards = static_cast<std::uint64_t>(used.size());
+    std::uint64_t divided = static_cast<std::uint64_t>(static_cast<double>(shape.weights) * 1.1);
+    std::uint64_t per_card = 0;
     if (shape.known) {
-        // Every card pays for its own activations, so the allowance is counted
-        // once per card rather than once per model -- the same arithmetic the
-        // split planner does. A check that counted it once would pass a model
-        // the planner then could not place, which is the one way for these two
-        // to disagree that ends in a failed load rather than a message.
-        needed = shape.resident_bytes(params.n_ctx) - shape.host_weights +
-                 (shape.compute_bytes(params.n_batch) - shape.logit_bytes(params.n_batch)) *
-                     std::max<std::uint64_t>(1, cards) +
-                 shape.logit_bytes(params.n_batch);
+        // What gets spread over the cards, and what every card pays for itself.
+        divided  = shape.resident_bytes(params.n_ctx) - shape.host_weights;
+        per_card = shape.compute_bytes(params.n_batch) - shape.logit_bytes(params.n_batch);
     }
+    const std::uint64_t needed = divided + per_card * std::max<std::uint64_t>(1, cards)
+                               + (shape.known ? shape.logit_bytes(params.n_batch) : 0);
+
+    // --- the tight card ----------------------------------------------------
+    //
+    // Asked per card, not in aggregate. Adding every card's free memory into
+    // one number and comparing the whole model against it is a check that says
+    // yes to a model which fits across the machine and overflows one card --
+    // and overflowing one card is not a refusal, it is ggml calling abort()
+    // with twenty-six gigabytes already uploaded, which takes the process with
+    // it and leaves nothing on screen to say why.
+    //
+    // The reserve is what makes this honest about a card that is also driving
+    // a display. Its free memory is not a number, it is a number right now: a
+    // browser opening a video moves it by half a gigabyte, and the load being
+    // checked takes the better part of a minute to finish. Planning to the last
+    // byte on that card means a load that fitted when it was checked and does
+    // not by the time it lands.
+    const auto reserve_for = [](const ComputeDevice& gpu) {
+        return std::max<std::uint64_t>(256ULL << 20,
+                                       static_cast<std::uint64_t>(
+                                           static_cast<double>(gpu.memory_total) * 0.06));
+    };
+
+    for (const ComputeDevice* gpu : used) {
+        const double share = everywhere
+                                 ? static_cast<double>(gpu->memory_free) / weight
+                                 : static_cast<double>(share_of(*gpu)) / weight;
+        const auto wants = static_cast<std::uint64_t>(static_cast<double>(divided) * share)
+                         + per_card;
+        const std::uint64_t reserve = reserve_for(*gpu);
+        const std::uint64_t room    = gpu->memory_free > reserve ? gpu->memory_free - reserve : 0;
+        if (wants <= room) {
+            continue;
+        }
+        const std::string where = gpu->description.empty() ? gpu->name : gpu->description;
+        return "would put " + format::bytes(wants) + " on " + where + ", which has "
+             + format::bytes(gpu->memory_free) + " free -- lower the context size, "
+               "close whatever else is using that card, or turn off \"Dedicated VRAM "
+               "only\" in settings to let the rest run on the processor";
+    }
+
     if (needed <= available) {
         return {};
     }
@@ -197,6 +255,14 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
         detail = " (" + format::bytes(shape.weights - shape.host_weights) +
                  " of weights plus " + format::bytes(shape.kv_bytes(params.n_ctx)) +
                  " of context at " + std::to_string(params.n_ctx) + " tokens)";
+    }
+
+    std::string where;
+    for (const ComputeDevice* gpu : used) {
+        if (!where.empty()) {
+            where += " + ";
+        }
+        where += (gpu->description.empty() ? gpu->name : gpu->description);
     }
 
     std::string advice = " -- close something using the GPU, lower the context size, "
@@ -239,6 +305,21 @@ ModelHost::ModelHost(std::filesystem::path log_path) {
     // Install the diversion before backend init so even startup chatter about
     // devices and backends goes to the file rather than over the TUI.
     llama_log_set(log_to_file, nullptr);
+
+    // And stderr with it, which is not the same diversion and is the one that
+    // matters when something goes badly wrong.
+    //
+    // llama_log_set catches everything ggml *reports*. It does not catch what
+    // ggml does when it gives up: GGML_ABORT writes the file, the line and the
+    // condition straight to stderr and calls abort(). In a window there is no
+    // stderr to read, so a CUDA allocation failing halfway through a
+    // thirty-gigabyte upload took the process with it and left a log that
+    // simply stopped mid-sentence -- no error, no clue, nothing to act on. The
+    // last thing written before the process died is exactly the thing worth
+    // having.
+    if (std::freopen(log_path.string().c_str(), "a", stderr) != nullptr) {
+        std::setvbuf(stderr, nullptr, _IONBF, 0);   // unbuffered: it is a crash log
+    }
 
     // Bring the loadable runtimes in before llama.cpp initialises, so the
     // devices they provide are there from the first model load. A fresh
@@ -287,6 +368,7 @@ std::vector<std::string> ModelHost::devices() {
 std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
                                              Role role,
                                              const ProgressCallback& progress,
+                                             const CancelCallback& cancel,
                                              std::string& error) {
     if (requested.path.empty()) {
         error = "no model file configured";
@@ -337,7 +419,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         }
     }
 
-    ProgressBridge bridge{&progress, -1.0F};
+    ProgressBridge bridge{&progress, &cancel, -1.0F, false};
 
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = params.n_gpu_layers;
@@ -370,6 +452,13 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
 
     llama_model* model = llama_model_load_from_file(params.path.c_str(), model_params);
     if (model == nullptr) {
+        // Stopped on purpose is not a failure, and must not be reported as one:
+        // "could not load, turn off GPU-only compute" is bad advice to give
+        // somebody who pressed stop.
+        if (bridge.cancelled) {
+            error = "stopped";
+            return nullptr;
+        }
         error = "llama.cpp could not load " + params.path
               + " (see the Crucible log for details)";
         // The most likely reason, and the one the user can act on. With every
@@ -406,6 +495,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
 
 LoadedModel* ModelHost::acquire_router(const ModelParams& params,
                                        const ProgressCallback& progress,
+                                       const CancelCallback& cancel,
                                        std::string& error) {
     if (router_ && router_->path() == params.path) {
         return router_.get();
@@ -427,7 +517,7 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
         }
     }
 
-    router_ = load(params, Role::Delegator, progress, error);
+    router_ = load(params, Role::Delegator, progress, cancel, error);
     return router_.get();
 }
 
@@ -457,6 +547,7 @@ bool same_load(const ModelParams& a, const ModelParams& b) {
 LoadedModel* ModelHost::acquire_expert(const ExpertId& id,
                                        const ModelParams& params,
                                        const ProgressCallback& progress,
+                                       const CancelCallback& cancel,
                                        std::string& error) {
     if (expert_ && loaded_expert_ == id && expert_->path() == params.path) {
         return expert_.get();
@@ -478,7 +569,7 @@ LoadedModel* ModelHost::acquire_expert(const ExpertId& id,
     // and defeat the entire point of loading experts just in time.
     release_expert();
 
-    expert_ = load(params, Role::Expert, progress, error);
+    expert_ = load(params, Role::Expert, progress, cancel, error);
     if (expert_) {
         loaded_expert_ = id;
         expert_params_ = params;

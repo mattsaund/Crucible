@@ -186,6 +186,31 @@ public:
     void finish_turn(std::size_t turn, const GenerationStats& stats, long load_ms);
     void fail_turn(std::size_t turn, std::string_view reason);
 
+    /// Throw one turn away.
+    ///
+    /// The transcript is the record of a conversation, and a record you cannot
+    /// correct is a record you stop trusting -- a question asked badly, or an
+    /// answer that went somewhere useless, is worth being able to remove rather
+    /// than scroll past forever. The caller is responsible for putting the
+    /// engine's own history back in step; see App::rebuild_history.
+    void remove_turn(std::size_t turn);
+
+    /// Throw `from` and everything after it away.
+    ///
+    /// What re-asking a question needs: the turns that followed were answers in
+    /// a conversation that is about to be different, and leaving them would
+    /// show the model's replies to a context it never saw.
+    void truncate_turns(std::size_t from);
+
+    /// Close a turn the user stopped.
+    ///
+    /// Apart from fail_turn because a stop is not a failure: nothing went
+    /// wrong, there is nothing to explain, and the turn should read as one the
+    /// user ended rather than one that broke. Reached when a stop lands during
+    /// a model load, which is the one part of a turn that has no tokens to
+    /// stop mid-flight.
+    void cancel_turn(std::size_t turn);
+
     /// Report the rate of the reply in flight. Called every few tokens by the
     /// engine, and reset to 0 when the turn ends.
     void set_live_rate(double tokens_per_second);

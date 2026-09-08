@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -96,6 +97,84 @@ void route_line(const Roster& roster, const Turn& turn) {
     ImGui::SetItemTooltip("How sure the delegator was, and what decided it.");
 }
 
+/// What can be done to one turn, drawn where the pointer already is.
+///
+/// A row of marks at the top right of the block, and only while the pointer is
+/// somewhere inside it. Three, and each of them is something the transcript
+/// could not do before: stop what is running, ask it again, throw it away.
+///
+/// Hidden until hovered because a transcript with three buttons beside every
+/// exchange is a control panel with a conversation in it. Hovered, they are
+/// exactly where the eye already is.
+///
+/// Returns which one was pressed. The caller acts on it *after* the loop over
+/// the turns, because two of the three change how many turns there are.
+enum class TurnAction { None, Stop, Retry, Delete };
+
+TurnAction turn_controls(const ImVec2& block_min, const ImVec2& block_max,
+                         bool running, bool busy) {
+    // The hover test is the whole block, not the buttons: a control that only
+    // appears once the pointer is already on top of it can never be found.
+    if (!ImGui::IsMouseHoveringRect(block_min, block_max, false)) {
+        return TurnAction::None;
+    }
+
+    // While something is running, the only honest offer is to stop it -- and
+    // only on the turn that is actually running. Retrying or deleting a turn
+    // mid-flight would renumber the thing the engine is writing into.
+    struct Button { TurnAction action; const char* tip; };
+    std::vector<Button> buttons;
+    if (running) {
+        buttons.push_back({TurnAction::Stop, "Stop"});
+    } else if (!busy) {
+        buttons.push_back({TurnAction::Retry, "Ask again"});
+        buttons.push_back({TurnAction::Delete, "Delete"});
+    }
+    if (buttons.empty()) {
+        return TurnAction::None;
+    }
+
+    const float size = em(1.6F);
+    const ImVec2 keep = ImGui::GetCursorScreenPos();
+    TurnAction   hit  = TurnAction::None;
+
+    ImGui::PushID("turn-controls");
+    for (std::size_t i = 0; i < buttons.size(); ++i) {
+        // Laid out from the right edge inwards, so the rightmost button is in
+        // the same place whether there are one or two of them.
+        const float x = block_max.x - size * static_cast<float>(buttons.size() - i);
+        ImGui::SetCursorScreenPos(ImVec2(x, block_min.y));
+        ImGui::PushID(static_cast<int>(i));
+        const IconHit slot = icon_slot("##turn", size);
+        const ImU32   ink  = slot.hovered ? theme::kFlameBright : theme::kTextFaint;
+        switch (buttons[i].action) {
+            case TurnAction::Stop:
+                theme::draw_stop(ImGui::GetWindowDrawList(), slot.centre, em(0.9F), ink);
+                break;
+            case TurnAction::Retry:
+                theme::draw_retry(ImGui::GetWindowDrawList(), slot.centre, em(0.95F), ink);
+                break;
+            case TurnAction::Delete:
+                theme::draw_trash(ImGui::GetWindowDrawList(), slot.centre, em(0.9F), ink);
+                break;
+            case TurnAction::None:
+                break;
+        }
+        ImGui::SetItemTooltip("%s", buttons[i].tip);
+        if (slot.clicked) {
+            hit = buttons[i].action;
+        }
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+
+    // Put the cursor back. These are drawn out of the flow, over a block that
+    // has already been laid out, and leaving the cursor where the last button
+    // was would push everything after them sideways.
+    ImGui::SetCursorScreenPos(keep);
+    return hit;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -164,12 +243,20 @@ void App::draw_chat(const Snapshot& snapshot) {
 
     const Roster& roster = snapshot.roster ? *snapshot.roster : config_.roster;
 
+    // What the hover buttons asked for, acted on after the loop: retry and
+    // delete both change how many turns there are, and doing that underneath
+    // the loop that is walking them is how a transcript ends up drawing a turn
+    // that is no longer in it.
+    TurnAction  wanted     = TurnAction::None;
+    std::size_t wanted_for = 0;
+
     for (std::size_t i = 0; i < snapshot.turns.size(); ++i) {
         const Turn& turn = snapshot.turns[i];
         // The ID a turn's code blocks hang off. Without it every block in the
         // transcript shares one state, and expanding a long one in the third
         // reply expands one in the first.
         ImGui::PushID(static_cast<int>(i));
+        const ImVec2 block_top = ImGui::GetCursorScreenPos();
 
         prompt_plate(turn.prompt);
         ImGui::Dummy(ImVec2(0, em(0.45F)));
@@ -213,9 +300,29 @@ void App::draw_chat(const Snapshot& snapshot) {
                           turn.prompt_tokens, turn.output_tokens);
         }
         ImGui::Dummy(ImVec2(0, em(0.7F)));
+
+        // Drawn last, over the block it belongs to, because the block's bottom
+        // edge is not known until it has been laid out.
+        const ImVec2 block_bottom = ImGui::GetCursorScreenPos();
+        if (const TurnAction action = turn_controls(
+                ImVec2(block_top.x, block_top.y),
+                ImVec2(block_top.x + ImGui::GetContentRegionAvail().x, block_bottom.y),
+                turn.streaming, snapshot.busy);
+            action != TurnAction::None) {
+            wanted     = action;
+            wanted_for = i;
+        }
+
         ImGui::Separator();
         ImGui::Dummy(ImVec2(0, em(0.5F)));
         ImGui::PopID();
+    }
+
+    switch (wanted) {
+        case TurnAction::Stop:   stop_work();              break;
+        case TurnAction::Retry:  retry_turn(wanted_for);   break;
+        case TurnAction::Delete: delete_turn(wanted_for);  break;
+        case TurnAction::None:   break;
     }
 
     if (snapshot.cook) {

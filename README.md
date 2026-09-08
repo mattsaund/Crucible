@@ -275,6 +275,25 @@ read, change, run, judge, go round again — with the goal pinned at the top, th
 pass count beside it, and every step accumulating underneath, each folding open
 to the diff or the command output it produced.
 
+**Every turn can be stopped, asked again, or thrown away.** Hovering an exchange
+puts the controls for it at its top right, and nowhere else: a transcript with
+three buttons beside every entry is a control panel with a conversation in it.
+Stop appears only on the turn that is actually running -- and it stops a model
+that is still coming off the disk, not just a reply mid-flight, which is the
+difference between a program you can interrupt and one that has frozen for the
+minute a thirty-gigabyte expert takes to load. Asking again drops that turn and
+the ones after it before resending, so the expert sees the same context it saw
+the first time; deleting takes the question and its answer out of the expert's
+memory as well as off the screen.
+
+**The delegator is freed after every decision by default.** One model is
+resident at a time: the delegator routes, is released, the expert loads,
+answers, and is released in its turn. The peak is the larger of the two rather
+than their sum, which is what leaves an expert the whole card. Settings has a
+checkbox to keep it resident instead, which is the right trade only when the
+delegator is small next to the card -- otherwise every expert that follows pays
+its whole footprint for the rest of the session.
+
 With nothing in either view yet, they say one of three things and nothing else:
 **No runtime** (there is no backend installed to run a model on), **No model
 selected** (no expert has a GGUF behind it), or **Ask anything**. The first two

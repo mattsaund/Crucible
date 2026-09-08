@@ -319,6 +319,7 @@ Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& 
     seat.model = host_->acquire_expert(
         seat.id, seat.params,
         [this, &seat](float progress) { state_.set_seat_progress(seat.id, progress); },
+        [this] { return cancel_.load(std::memory_order_relaxed); },
         error);
     if (seat.model == nullptr) {
         seat.error = error;

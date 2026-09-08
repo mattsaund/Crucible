@@ -85,7 +85,9 @@ void App::draw_settings() {
                 });
             }
             ImGui::SetItemTooltip(
-                "Off frees it after each decision, leaving the expert the whole card.");
+                "Off -- the default -- frees it the moment it has routed, so the expert "
+                "gets the whole card. On keeps it resident and charges every expert "
+                "that follows its whole footprint.");
 
             float floor_value = config_.routing.min_confidence;
             ImGui::SetNextItemWidth(em(14.0F));

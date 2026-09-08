@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
 
     ModelHost host(paths::log_file());
     std::string error;
-    LoadedModel* model = host.acquire_router(params, [](float) {}, error);
+    LoadedModel* model = host.acquire_router(params, [](float) {}, {}, error);
     if (model == nullptr) {
         std::printf("could not load: %s\n", error.c_str());
         return 1;

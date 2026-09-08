@@ -38,8 +38,12 @@ public:
 
     /// Load the router and keep it resident for the rest of the session.
     /// Idempotent.
+    ///
+    /// `cancel` is polled while the weights upload and stops the load where it
+    /// stands. It may be empty for a load nothing is allowed to interrupt.
     LoadedModel* acquire_router(const ModelParams& params,
                                 const ProgressCallback& progress,
+                                const CancelCallback& cancel,
                                 std::string& error);
 
     /// Make `id`'s expert the loaded one, freeing whichever expert was
@@ -47,9 +51,14 @@ public:
     /// exchange for experts far larger than RAM would otherwise allow.
     /// Returns the already-loaded model without doing any work if `id` is
     /// already resident.
+    ///
+    /// Cancellable. A thirty-gigabyte expert takes the better part of a minute
+    /// to come off the disk, and a program that cannot be stopped during that
+    /// minute is a program that has frozen, whatever it is doing underneath.
     LoadedModel* acquire_expert(const ExpertId& id,
                                 const ModelParams& params,
                                 const ProgressCallback& progress,
+                                const CancelCallback& cancel,
                                 std::string& error);
 
     /// Free the resident expert, if any. The router is untouched.
@@ -85,6 +94,7 @@ private:
     std::unique_ptr<LoadedModel> load(const ModelParams& params,
                                       Role role,
                                       const ProgressCallback& progress,
+                                      const CancelCallback& cancel,
                                       std::string& error);
 
     GpuConfig                    gpu_;

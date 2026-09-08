@@ -190,6 +190,34 @@ private:
     // --- actions ----------------------------------------------------------
     void submit_prompt();
     void begin_cook();
+
+    /// Stop whatever is running: a reply mid-flight, a cook, or a model that is
+    /// still coming off the disk.
+    ///
+    /// The last of those is the one that was missing. A thirty-gigabyte expert
+    /// is most of a minute of loading, and until the loader learned to be
+    /// interrupted there was no way to end that minute -- which is a program
+    /// that has frozen, from the only point of view that counts.
+    void stop_work();
+
+    /// Ask a turn's question again.
+    ///
+    /// The turn and everything after it goes, and the prompt is submitted
+    /// fresh. Truncating rather than appending is what makes this a re-ask
+    /// rather than a second ask: the replies that followed were answers in a
+    /// conversation that is now going to be a different one, and the expert
+    /// has to see the same context it saw the first time.
+    void retry_turn(std::size_t index);
+
+    /// Throw one turn away, question and answer together.
+    void delete_turn(std::size_t index);
+
+    /// Put the engine's conversation history back in step with the transcript.
+    ///
+    /// Called after anything that removes a turn. Without it the expert still
+    /// remembers an exchange the user has deleted from the screen, which is the
+    /// difference between deleting something and hiding it.
+    void rebuild_history();
     void update_config(const std::function<void(Config&)>& change);
     void persist_session();
     void refresh_models();

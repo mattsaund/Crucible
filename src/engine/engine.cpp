@@ -378,6 +378,7 @@ void Engine::load_router() {
                 wake_();
             }
         },
+        [this] { return cancel_.load(std::memory_order_relaxed); },
         error);
 
     if (model == nullptr) {
@@ -642,14 +643,22 @@ void Engine::handle(const Request& request) {
                 wake_();
             }
         },
+        [this] { return cancel_.load(std::memory_order_relaxed); },
         error);
     load_ms = already_resident ? 0 : ms_since(load_start);
 
     if (expert == nullptr) {
         state_.set_seat(decision.expert, SeatPhase::Dormant);
         state_.set_linked(std::nullopt);
-        state_.fail_turn(turn, error);
-        state_.set_mood(Mood::Error, error);
+        // A load the user stopped is not an error to be explained, and the
+        // turn it belonged to should read as cancelled rather than failed.
+        if (error == "stopped") {
+            state_.cancel_turn(turn);
+            state_.set_mood(Mood::Idle);
+        } else {
+            state_.fail_turn(turn, error);
+            state_.set_mood(Mood::Error, error);
+        }
         return;
     }
 

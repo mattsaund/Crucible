@@ -85,19 +85,24 @@ struct RoutingConfig {
 
     /// Keep the delegator in memory between prompts.
     ///
-    /// On, it is loaded once and stays -- which costs its whole footprint for
-    /// the life of the session, and is why the delegator has to be small.
+    /// Off by default, which is the setting that makes the whole design work on
+    /// one machine. Exactly one model is resident at any moment: the delegator
+    /// is freed the instant it has routed, the expert is loaded, and when the
+    /// expert has answered it is freed too and the delegator comes back ready
+    /// for the next prompt. The peak is the larger of the two rather than their
+    /// sum, which is what makes room for a delegator big enough to route well
+    /// *and* an expert as large as the cards will hold.
     ///
-    /// Off, exactly one model is resident at any moment. The delegator is freed
-    /// the instant it has routed, the expert is loaded, and when the expert has
-    /// answered it is freed too and the delegator comes back ready for the next
-    /// prompt. The peak is then the larger of the two rather than the sum,
-    /// which is what makes room for a delegator big enough to route well.
+    /// On, it is loaded once and stays -- and its whole footprint is gone from
+    /// every expert that follows for the rest of the session. That is a good
+    /// trade only when the delegator is small next to the card, which is why it
+    /// is a choice and not the default: the honest default is the one that does
+    /// not quietly cost an expert the memory it needed.
     ///
-    /// The cost is a load per model per prompt, so a follow-up question reloads
-    /// the expert. A prompt pinned with a slash command skips the delegator
-    /// entirely and pays only for the expert.
-    bool keep_delegator_loaded = true;
+    /// The cost of off is a load per model per prompt, so a follow-up question
+    /// reloads the expert. A prompt pinned with a slash command skips the
+    /// delegator entirely and pays only for the expert.
+    bool keep_delegator_loaded = false;
 };
 
 /// How the machine's GPUs are used.

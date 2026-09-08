@@ -419,6 +419,64 @@ void draw_copy(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour) {
                   colour, size * 0.12F, 0, thick);
 }
 
+void draw_retry(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour) {
+    // An arc with an arrowhead on one end: the universal "go round again".
+    // Three quarters of a circle, not a whole one -- a closed ring with a head
+    // stuck on it reads as a clock, and the gap is what says the motion has a
+    // beginning.
+    constexpr float kTwoPi = 6.2831853F;
+    const float radius = size * 0.38F;
+    const float thick  = std::max(1.4F, size * 0.11F);
+    const float from   = kTwoPi * 0.10F;
+    const float to     = kTwoPi * 0.82F;
+
+    draw->PathClear();
+    draw->PathArcTo(centre, radius, from, to, 24);
+    draw->PathStroke(colour, ImDrawFlags_None, thick);
+
+    // The head, on the end the arc starts at, pointing the way round.
+    const ImVec2 tip{centre.x + std::cos(from) * radius,
+                     centre.y + std::sin(from) * radius};
+    const float  head = size * 0.22F;
+    const ImVec2 points[3] = {
+        ImVec2(tip.x + head * 0.5F, tip.y - head * 0.2F),
+        ImVec2(tip.x - head * 0.5F, tip.y - head * 0.5F),
+        ImVec2(tip.x - head * 0.1F, tip.y + head * 0.6F),
+    };
+    draw->AddConvexPolyFilled(points, 3, colour);
+}
+
+void draw_trash(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour) {
+    const float half  = size * 0.5F;
+    const float thick = std::max(1.2F, size * 0.10F);
+    const float lid   = centre.y - half * 0.60F;
+
+    // The lid, with the handle above it, then the bin under it.
+    draw->AddLine(ImVec2(centre.x - half * 0.86F, lid),
+                  ImVec2(centre.x + half * 0.86F, lid), colour, thick);
+    draw->AddLine(ImVec2(centre.x - half * 0.34F, lid - size * 0.14F),
+                  ImVec2(centre.x + half * 0.34F, lid - size * 0.14F), colour, thick);
+
+    const float top    = lid + size * 0.10F;
+    const float bottom = centre.y + half * 0.78F;
+    const float taper  = size * 0.08F;   // a bin is narrower at the bottom
+    draw->AddLine(ImVec2(centre.x - half * 0.66F, top),
+                  ImVec2(centre.x - half * 0.66F + taper, bottom), colour, thick);
+    draw->AddLine(ImVec2(centre.x + half * 0.66F, top),
+                  ImVec2(centre.x + half * 0.66F - taper, bottom), colour, thick);
+    draw->AddLine(ImVec2(centre.x - half * 0.66F + taper, bottom),
+                  ImVec2(centre.x + half * 0.66F - taper, bottom), colour, thick);
+}
+
+void draw_stop(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour) {
+    // A filled square, which is what stop has meant on every transport control
+    // since tape. Not an X: an X is "close this", and closing and stopping are
+    // different enough that the wrong one is worth avoiding.
+    const float half = size * 0.32F;
+    draw->AddRectFilled(ImVec2(centre.x - half, centre.y - half),
+                        ImVec2(centre.x + half, centre.y + half), colour, size * 0.08F);
+}
+
 void draw_chevron(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
                   bool open) {
     const float half = size * 0.34F;
