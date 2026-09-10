@@ -198,6 +198,13 @@ struct ToolsConfig {
     /// the diff that step made.
     bool auto_edits = false;
 
+    /// What to do when the conversation outgrows the context. See Overflow.
+    ///
+    /// Stored as a word rather than the enum so a config file stays readable
+    /// and an unknown value degrades to the default instead of to whatever
+    /// integer happened to be written.
+    std::string overflow = "rolling";
+
     /// Seconds a single command may take before it is killed. A build is
     /// minutes; a command still going after this is stuck, and a cook waiting
     /// on it has stopped cooking.
@@ -211,6 +218,37 @@ struct ToolsConfig {
     /// actually about. See tools/workshop.hpp.
     int workshop_timeout = 120;
 };
+
+/// What to do when a conversation no longer fits in the context.
+///
+/// Every long conversation reaches this eventually: the context is a fixed
+/// number of tokens and a transcript is not. The three answers are the three
+/// anybody has ever wanted, and which is right depends on what the conversation
+/// is -- so it is a setting rather than a decision made once in the engine.
+enum class Overflow {
+    /// Drop the oldest exchanges until it fits, one at a time.
+    ///
+    /// The default, and right for a conversation: what was said an hour ago
+    /// matters less than what was said a minute ago, and the model keeps its
+    /// grip on the thread it is actually on.
+    RollingWindow,
+    /// Keep the beginning and the end, drop the middle.
+    ///
+    /// For a conversation that opened with something that has to survive -- a
+    /// specification, a file, a set of rules -- and has since wandered. A
+    /// rolling window throws exactly that away first.
+    TruncateMiddle,
+    /// Refuse rather than forget.
+    ///
+    /// Nothing is dropped and the turn does not run. For work where a silently
+    /// shortened context would be worse than no answer: the model cannot tell
+    /// you what it stopped being able to see, so this makes the program say it
+    /// instead.
+    StopAtLimit,
+};
+
+std::string_view overflow_id(Overflow policy);
+Overflow         overflow_from_id(std::string_view id);
 
 /// Purely cosmetic knobs.
 struct UiConfig {

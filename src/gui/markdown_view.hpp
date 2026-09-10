@@ -47,7 +47,20 @@ void draw_markdown(std::string_view text, ImU32 base);
 /// the caller knows and the text does not say. `seq` distinguishes one block
 /// from the next within whatever ID the caller has pushed, so that expanding a
 /// long block stays expanded on the next frame.
+/// Rows to wash green or red in a block that is not itself a diff.
+///
+/// For the two files shown side by side when an edit is waiting: neither side
+/// is a diff -- each is a whole file -- but the lines that differ still have to
+/// be findable without reading both columns line by line. `from`..`to` is
+/// half-open and counts from zero.
+struct RowMarks {
+    std::size_t from   = 0;
+    std::size_t to     = 0;
+    char        marker = 0;   ///< '+' washes green, '-' washes red
+};
+
 void draw_code_block(std::string_view text, std::string_view language = {},
-                     std::string_view caption = {}, int seq = 0);
+                     std::string_view caption = {}, int seq = 0,
+                     const RowMarks* marks = nullptr);
 
 }  // namespace crucible::gui

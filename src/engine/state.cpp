@@ -33,6 +33,8 @@ Snapshot AppState::snapshot() const {
     copy.roster   = roster_;
     copy.cook     = cook_;
     copy.pending_edit = pending_edit_;
+    copy.context_used = context_used_;
+    copy.context_size = context_size_;
     copy.seats    = seats_;
     copy.resident        = resident_;
     copy.linked          = linked_;
@@ -206,10 +208,10 @@ void AppState::set_reply(std::size_t turn, std::string text) {
     }
 }
 
-void AppState::add_action(std::size_t turn, std::string line) {
+void AppState::add_action(std::size_t turn, TurnAction action) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].actions.push_back(std::move(line));
+        turns_[turn].actions.push_back(std::move(action));
     }
 }
 
@@ -277,6 +279,17 @@ void AppState::truncate_turns(std::size_t from) {
 void AppState::set_pending_edit(std::shared_ptr<const PendingEdit> edit) {
     const std::lock_guard<std::mutex> lock(mutex_);
     pending_edit_ = std::move(edit);
+}
+
+void AppState::set_context_used(int used, int size) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    context_used_ = used;
+    context_size_ = size;
+}
+
+std::shared_ptr<const PendingEdit> AppState::pending_edit() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return pending_edit_;
 }
 
 void AppState::cancel_turn(std::size_t turn) {

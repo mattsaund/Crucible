@@ -3,6 +3,7 @@
 // Applying the GPU split policy to every model that will be loaded.
 #include "crucible/config/gpu_policy.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -129,6 +130,33 @@ std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu) {
 std::string apply_gpu_policy(Config& config) {
     const std::vector<ComputeDevice> all_gpus = gpu_devices();
     const bool have_gpu = !all_gpus.empty();
+
+    // Throw away any card in the priority order that is not in the machine.
+    //
+    // A stale entry is not harmless. apply_priority_order drops it when it
+    // builds the ranking -- so the order still works -- but the stored list
+    // goes on naming it, and the settings screen goes on drawing a list that
+    // does not match what is written down. Worse, it is silent: an order of
+    // "1, 2, 3" on a three-card machine numbered 0, 1, 2 means "card 1 first,
+    // then card 2, then card 0", which is not what anybody typing 1, 2, 3
+    // meant. Repairing it here, where the device list finally exists, is the
+    // first moment it can be done at all -- load_config runs before any
+    // runtime has been loaded, so it has no cards to check against.
+    if (have_gpu && !config.gpu.priority.empty()) {
+        std::vector<int> kept;
+        for (const int index : config.gpu.priority) {
+            const bool real = std::any_of(all_gpus.begin(), all_gpus.end(),
+                                          [index](const ComputeDevice& gpu) {
+                                              return gpu.index == index;
+                                          });
+            const bool already =
+                std::find(kept.begin(), kept.end(), index) != kept.end();
+            if (real && !already) {
+                kept.push_back(index);
+            }
+        }
+        config.gpu.priority = std::move(kept);
+    }
 
     stamp_memory(config.router, config.gpu, have_gpu);
     stamp_memory(config.defaults, config.gpu, have_gpu);

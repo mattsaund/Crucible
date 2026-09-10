@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "crucible/util/markdown.hpp"
-#include "code_lines.hpp"
-#include "syntax.hpp"
+#include "crucible/util/code_lines.hpp"
+#include "crucible/util/syntax.hpp"
 #include "theme.hpp"
 #include "widgets.hpp"
 
@@ -170,17 +170,17 @@ std::string joined(const std::vector<markdown::Span>& spans) {
 
 namespace {
 
-ImU32 color_of(syntax::Token token) {
+ImU32 color_of(crucible::syntax::Token token) {
     switch (token) {
-        case syntax::Token::Keyword:  return theme::kCodeKeyword;
-        case syntax::Token::Type:     return theme::kCodeType;
-        case syntax::Token::String:   return theme::kCodeString;
-        case syntax::Token::Number:   return theme::kCodeNumber;
-        case syntax::Token::Comment:  return theme::kCodeComment;
-        case syntax::Token::Function: return theme::kCodeFunction;
-        case syntax::Token::Punct:    return theme::kCodePunct;
-        case syntax::Token::Preproc:  return theme::kCodePreproc;
-        case syntax::Token::Text:     break;
+        case crucible::syntax::Token::Keyword:  return theme::kCodeKeyword;
+        case crucible::syntax::Token::Type:     return theme::kCodeType;
+        case crucible::syntax::Token::String:   return theme::kCodeString;
+        case crucible::syntax::Token::Number:   return theme::kCodeNumber;
+        case crucible::syntax::Token::Comment:  return theme::kCodeComment;
+        case crucible::syntax::Token::Function: return theme::kCodeFunction;
+        case crucible::syntax::Token::Punct:    return theme::kCodePunct;
+        case crucible::syntax::Token::Preproc:  return theme::kCodePreproc;
+        case crucible::syntax::Token::Text:     break;
     }
     return theme::kCodeText;
 }
@@ -201,30 +201,36 @@ std::string digits_of(int value) {
 }  // namespace
 
 void draw_code_block(std::string_view text, std::string_view language,
-                     std::string_view caption, int seq) {
+                     std::string_view caption, int seq, const RowMarks* marks) {
     if (text.empty()) {
         return;
     }
 
     // --- what is this ------------------------------------------------------
-    syntax::Lang lang = syntax::lang_from(language);
-    const bool   diff = lang == syntax::Lang::Diff || looks_like_diff(text);
+    crucible::syntax::Lang lang = crucible::syntax::lang_from(language);
+    const bool   diff = lang == crucible::syntax::Lang::Diff || crucible::syntax::looks_like_diff(text);
     std::string  path(caption);
     if (diff) {
-        if (std::string from_header = diff_path(text); !from_header.empty()) {
+        if (std::string from_header = crucible::syntax::diff_path(text); !from_header.empty()) {
             path = from_header;
         }
         // The language of a diff is the language of the file it patches, so the
         // added lines get colored like the code they are.
-        lang = syntax::lang_from(path);
+        lang = crucible::syntax::lang_from(path);
     }
-    if (lang == syntax::Lang::None && !path.empty()) {
-        lang = syntax::lang_from(path);
+    if (lang == crucible::syntax::Lang::None && !path.empty()) {
+        lang = crucible::syntax::lang_from(path);
+    }
+    // Nothing said what this is, so look at it. A fence opened with a bare ```
+    // is as common as one that names its language, and a block left gray
+    // because nobody told us reads as a block the program failed on.
+    if (lang == crucible::syntax::Lang::None) {
+        lang = crucible::syntax::sniff(text);
     }
 
     int added   = 0;
     int removed = 0;
-    std::vector<CodeRow> rows = code_rows(text, diff, added, removed);
+    std::vector<crucible::syntax::CodeRow> rows = crucible::syntax::code_rows(text, diff, added, removed);
 
     // --- fold --------------------------------------------------------------
     ImGui::PushID(seq);
@@ -243,8 +249,8 @@ void draw_code_block(std::string_view text, std::string_view language,
     std::size_t widest = 0;
     int         last_old = 0;
     int         last_new = 0;
-    for (const CodeRow& row : rows) {
-        widest   = std::max(widest, columns(row.text));
+    for (const crucible::syntax::CodeRow& row : rows) {
+        widest   = std::max(widest, crucible::syntax::columns(row.text));
         last_old = std::max(last_old, row.old_no);
         last_new = std::max(last_new, row.new_no);
     }
@@ -279,7 +285,7 @@ void draw_code_block(std::string_view text, std::string_view language,
     {
         std::string left;
         if (const std::string_view name = diff ? std::string_view("diff")
-                                               : syntax::lang_name(lang);
+                                               : crucible::syntax::lang_name(lang);
             !name.empty()) {
             left = std::string(name);
         }
@@ -330,21 +336,29 @@ void draw_code_block(std::string_view text, std::string_view language,
                       ImGuiWindowFlags_HorizontalScrollbar);
 
     const float row_w = std::max(content, ImGui::GetContentRegionAvail().x);
-    syntax::Carry carry;
+    crucible::syntax::Carry carry;
     for (std::size_t i = 0; i < shown; ++i) {
-        const CodeRow& row = rows[i];
+        const crucible::syntax::CodeRow& row = rows[i];
         // Every line is lexed, drawn or not: a block comment opened on a line
         // that got folded away still has to be closed on one that did not.
-        const std::vector<syntax::Piece> pieces = syntax::highlight(row.text, lang, carry);
+        const std::vector<crucible::syntax::Piece> pieces = crucible::syntax::highlight(row.text, lang, carry);
 
         const ImVec2 at = ImGui::GetCursorScreenPos();
         ImDrawList*  body = ImGui::GetWindowDrawList();
 
         // The wash goes the full content width rather than the visible width,
         // so a long added line stays green when the block is scrolled sideways.
-        if (row.marker == '+') {
+        // A row's own diff marker, or the range the caller asked to be washed.
+        // The two never both apply: a diff carries its markers and a whole file
+        // shown beside another one carries none.
+        char wash = row.marker;
+        if (wash == 0 && marks != nullptr && marks->marker != 0
+            && i >= marks->from && i < marks->to) {
+            wash = marks->marker;
+        }
+        if (wash == '+') {
             body->AddRectFilled(at, ImVec2(at.x + row_w, at.y + line_h), theme::kAddedWash);
-        } else if (row.marker == '-') {
+        } else if (wash == '-') {
             body->AddRectFilled(at, ImVec2(at.x + row_w, at.y + line_h), theme::kRemovedWash);
         }
 
@@ -379,11 +393,11 @@ void draw_code_block(std::string_view text, std::string_view language,
             // "this is the structure" everywhere else in the interface.
             body->AddText(ImVec2(x, at.y), theme::kFlame, row.text.c_str());
         } else {
-            for (const syntax::Piece& piece : pieces) {
+            for (const crucible::syntax::Piece& piece : pieces) {
                 body->AddText(ImVec2(x, at.y), color_of(piece.token),
                               piece.text.c_str(),
                               piece.text.c_str() + piece.text.size());
-                x += static_cast<float>(columns(piece.text)) * advance;
+                x += static_cast<float>(crucible::syntax::columns(piece.text)) * advance;
             }
         }
         ImGui::Dummy(ImVec2(row_w, line_h));

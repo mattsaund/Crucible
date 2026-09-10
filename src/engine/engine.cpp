@@ -20,6 +20,7 @@
 #include "crucible/engine/route_policy.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
+#include "crucible/engine/overflow.hpp"
 #include "crucible/tools/workshop.hpp"
 
 #include <fstream>
@@ -45,6 +46,46 @@ constexpr int kToolRounds = 12;
 /// piece of work and are not offered to a chat turn at all -- if one arrives
 /// anyway it falls through to being shown, which is the right outcome: a model
 /// that writes "DONE: fixed it" has said something to the reader.
+/// What the expert said before it reached for a tool.
+///
+/// A reply that ends in `WRITE: src/calc.py` and a fenced block is two things:
+/// a sentence for the reader and a line for the machine. The line has to come
+/// off the transcript -- shown as an answer it reads as the expert talking
+/// about the protocol -- and the sentence has to stay, because it is the only
+/// explanation of the change that will ever be written.
+std::string prose_before_tool_call(const std::string& answer, tools::ToolKind kind) {
+    const std::string verb(tools::tool_kind_name(kind));
+    std::string upper;
+    for (const char c : verb) {
+        upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+    upper.push_back(':');
+
+    // The first line that opens with the verb. Searched line by line rather
+    // than with a bare find, so a mention of "WRITE:" inside the prose does not
+    // truncate the very sentence being kept.
+    std::size_t at = 0;
+    while (at <= answer.size()) {
+        std::size_t start = at;
+        while (start < answer.size() && (answer[start] == ' ' || answer[start] == '\t')) {
+            ++start;
+        }
+        if (answer.compare(start, upper.size(), upper) == 0) {
+            std::string kept = answer.substr(0, at);
+            while (!kept.empty() && (kept.back() == '\n' || kept.back() == ' ')) {
+                kept.pop_back();
+            }
+            return kept;
+        }
+        const std::size_t end = answer.find('\n', at);
+        if (end == std::string::npos) {
+            break;
+        }
+        at = end + 1;
+    }
+    return {};   // nothing but the call: nothing to keep
+}
+
 bool is_project_verb(tools::ToolKind kind) {
     switch (kind) {
         case tools::ToolKind::List:
@@ -71,11 +112,30 @@ long ms_since(Clock::time_point start) {
         std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count());
 }
 
-/// How many past turns to replay to an expert.
+/// How many past turns to replay to an expert, before the context is consulted.
 ///
 /// Bounded deliberately: a swapped-in expert re-ingests the whole history from
 /// cold, so an unbounded transcript would make every turn slower than the last.
+/// This is a ceiling on work, not on meaning -- the overflow policy below is
+/// what decides what actually fits.
 constexpr std::size_t kHistoryTurns = 12;
+
+/// The share of the context a conversation may occupy.
+///
+/// The rest is for the answer. A conversation trimmed to exactly the context
+/// leaves the model no room to reply -- it ingests the prompt, has one token of
+/// space, and stops -- which looks like the model refusing to answer rather
+/// than like a context that is full.
+constexpr double kPromptShare = 0.75;
+
+/// How much of the context `messages` would take, in tokens.
+///
+/// Measured through the model's own tokenizer and its own chat template, which
+/// is the only figure that means anything: the template adds role markers and
+/// turn separators, and on a long conversation those are hundreds of tokens.
+int prompt_tokens(const LoadedModel& model, const std::vector<ChatMessage>& messages) {
+    return model.count_tokens(model.format_chat(messages, true));
+}
 
 }  // namespace
 
@@ -157,6 +217,16 @@ void Engine::cancel() {
     edit_answered_.notify_all();
 }
 
+void Engine::release_all() {
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        Request request;
+        request.kind = RequestKind::ReleaseAll;
+        pending_.push_back(std::move(request));
+    }
+    queued_.notify_one();
+}
+
 void Engine::release_expert() {
     // Queued rather than done inline: host_ belongs to the worker thread, and
     // reaching into it from the UI thread mid-generation would be a data race.
@@ -192,7 +262,8 @@ void Engine::approve_edit(bool approved) {
     edit_answered_.notify_all();
 }
 
-bool Engine::await_edit_approval(const tools::ToolCall& call,
+bool Engine::await_edit_approval(std::size_t turn, const std::string& answer,
+                                 const tools::ToolCall& call,
                                  const tools::WorkshopSettings& workshop) {
     // What the file is now, so the two can be shown side by side. A path that
     // does not resolve inside the root is not a question to put to the user --
@@ -212,6 +283,13 @@ bool Engine::await_edit_approval(const tools::ToolCall& call,
         buffer << in.rdbuf();
         edit->before = buffer.str();
     }
+
+    // The protocol line comes off the transcript before the question goes up,
+    // not after it is answered. Left on, the file is on screen twice while the
+    // user decides -- once as a raw `WRITE: path` and a fence, once in the
+    // panel asking about it -- and the raw one is the worse copy: no header, no
+    // line numbers, and a language nobody declared.
+    state_.set_reply(turn, prose_before_tool_call(answer, call.kind));
 
     state_.set_pending_edit(edit);
     state_.set_mood(Mood::Idle, "waiting on you: " + call.argument);
@@ -330,6 +408,22 @@ void Engine::run() {
             host_->release_expert();
             state_.set_resident(std::nullopt);
             state_.set_mood(Mood::Idle, "expert released");
+            if (wake_) {
+                wake_();
+            }
+            continue;
+        }
+
+        if (request.kind == RequestKind::ReleaseAll) {
+            // The wrapper first, then the models. release_router drops the
+            // ModelRouter that holds a reference to the loaded delegator, and
+            // freeing the model out from under it would leave a live object
+            // pointing at nothing.
+            release_router();
+            host_->release_expert();
+            state_.set_resident(std::nullopt);
+            state_.set_linked(std::nullopt);
+            state_.set_mood(Mood::Idle, "nothing loaded");
             if (wake_) {
                 wake_();
             }
@@ -772,6 +866,45 @@ void Engine::handle(const Request& request) {
     }
     messages.push_back({"user", request.prompt});
 
+    // --- does it still fit? -------------------------------------------------
+    //
+    // Asked here, once the expert is loaded, because only the expert can answer
+    // it: the context size is the one it was loaded with and the token count is
+    // its own tokenizer's. Before this point there is no model to ask.
+    {
+        const Overflow policy = overflow_from_id(config_.tools.overflow);
+        const int used   = prompt_tokens(*expert, messages);
+        const int budget = static_cast<int>(
+            static_cast<double>(expert->context_size()) * kPromptShare);
+
+        if (policy == Overflow::StopAtLimit && used > budget) {
+            // Refused rather than shortened. The model cannot tell you what it
+            // stopped being able to see, so the program says it instead.
+            state_.set_linked(std::nullopt);
+            state_.fail_turn(
+                turn, "this conversation no longer fits in the context: "
+                      + std::to_string(used) + " tokens of a "
+                      + std::to_string(expert->context_size())
+                      + "-token window. Raise \"Context size\" in settings, start a new "
+                        "conversation, or change what happens on overflow.");
+            state_.set_mood(Mood::Error, "context full");
+            return;
+        }
+        const TokenCounter counter = [expert](const std::vector<ChatMessage>& what) {
+            return prompt_tokens(*expert, what);
+        };
+        if (const std::size_t dropped = trim_to_budget(policy, messages, counter, budget);
+            dropped > 0) {
+            state_.add_action(turn, TurnAction{
+                "dropped " + std::to_string(dropped / 2)
+                    + (dropped == 2 ? " earlier exchange" : " earlier exchanges")
+                    + " to stay inside the context",
+                {}, {}});
+        }
+        state_.set_context_used(prompt_tokens(*expert, messages),
+                                expert->context_size());
+    }
+
     // The live tok/s readout is measured from the first token rather than from
     // the start of the call: everything before that is prompt ingestion, and
     // folding it in would make a long prompt look like a slow expert.
@@ -902,8 +1035,9 @@ void Engine::handle(const Request& request) {
             // to. Everything else (reading, listing, running) either changes
             // nothing or was already agreed to by trusting the folder.
             if (call->kind == tools::ToolKind::Write && !config_.tools.auto_edits
-                && !await_edit_approval(*call, workshop)) {
-                state_.add_action(turn, "declined the edit to " + call->argument);
+                && !await_edit_approval(turn, answer, *call, workshop)) {
+                state_.add_action(turn, TurnAction{
+                    "declined the edit to " + call->argument, {}, {}});
                 state_.set_reply(turn, {});
                 messages.push_back({"assistant", answer});
                 messages.push_back(
@@ -920,11 +1054,20 @@ void Engine::handle(const Request& request) {
             const tools::ToolResult result = tools::run_tool(
                 *call, workshop, tools::SearchSettings{},
                 [this] { return cancel_.load(std::memory_order_relaxed); });
-            state_.add_action(turn, result.summary);
+            // The diff a write made, or the output a command printed, kept for
+            // the transcript rather than only handed to the model.
+            state_.add_action(turn, TurnAction{result.summary, result.detail,
+                                               call->kind == tools::ToolKind::Write
+                                                   ? call->argument
+                                                   : std::string()});
 
-            // The call was a request, not an answer, and must not be left
-            // sitting above the reply that replaces it.
-            state_.set_reply(turn, {});
+            // The protocol line goes and the prose around it stays.
+            //
+            // This used to clear the whole reply, on the grounds that the call
+            // was a request rather than an answer. True of the `WRITE: path`
+            // line; false of the sentence above it explaining what was about to
+            // change, which was thrown away with it every time.
+            state_.set_reply(turn, prose_before_tool_call(answer, call->kind));
             messages.push_back({"assistant", answer});
 
             std::string handback = result.output;
@@ -975,12 +1118,13 @@ void Engine::handle(const Request& request) {
                    : tools::search(query, settings, search_error);
 
         if (!repeat) {
-            state_.add_action(turn, results.empty()
-                                        ? "searched \"" + query + "\" -- " + search_error
-                                        : "searched \"" + query + "\" -- "
-                                              + std::to_string(results.size()) + " result"
-                                              + (results.size() == 1 ? "" : "s") + " from "
-                                              + settings.provider);
+            state_.add_action(turn, TurnAction{
+                results.empty()
+                    ? "searched \"" + query + "\" -- " + search_error
+                    : "searched \"" + query + "\" -- "
+                          + std::to_string(results.size()) + " result"
+                          + (results.size() == 1 ? "" : "s") + " from " + settings.provider,
+                {}, {}});
         }
         // That round produced a request, not an answer. The next round writes
         // the answer, and the request should not be sitting above it.

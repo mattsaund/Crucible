@@ -315,12 +315,36 @@ bool App::handle_command(const std::string& text) {
         return true;
     }
 
-    if (command == "thinking") {
-        const bool wanted = !config_.ui.show_reasoning;
+    // Two commands rather than one toggle.
+    //
+    // A toggle has to be read before it can be used -- you have to know which
+    // way it is currently set to know what pressing it does -- and the answer
+    // is off the top of the screen by the time you are asking. Two verbs are
+    // idempotent: /showthinking always ends with it shown.
+    if (command == "showthinking" || command == "hidethinking") {
+        const bool wanted = command == "showthinking";
+        if (config_.ui.show_reasoning == wanted) {
+            say(wanted ? "a thinking model's working is already on screen"
+                       : "a thinking model's working is already hidden");
+            return true;
+        }
         update_config([wanted](Config& config) { config.ui.show_reasoning = wanted; });
         say(wanted ? "a thinking model's working now stays on screen"
                    : "a thinking model's working is shown while it happens, then replaced "
                      "by the answer");
+        return true;
+    }
+
+    if (command == "auto") {
+        // The window has this as a button beside the box you type in. Here it
+        // is a word, and it says which way it went rather than that it moved.
+        const bool wanted = !config_.tools.auto_edits;
+        update_config([wanted](Config& config) { config.tools.auto_edits = wanted; });
+        say(wanted ? "auto is on -- file edits are applied as the expert makes them"
+                   : "auto is off -- every file edit stops and asks first");
+        if (!wanted) {
+            say("a cook always applies; this is about Chat");
+        }
         return true;
     }
 

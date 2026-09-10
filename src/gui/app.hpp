@@ -73,7 +73,11 @@ private:
 
     /// The bar across the top: the fold toggle, the mark, which project is
     /// open, the three views, and the way through to Settings.
-    void draw_topbar(const Snapshot& snapshot);
+    ///
+    /// Takes no snapshot: everything on it is true of the window rather than of
+    /// what the engine is doing this second. What the engine is doing moved to
+    /// the side menu, over the models it is about.
+    void draw_topbar();
     float topbar_height() const;
 
     /// Open or close the side menu from the button in the top bar, remembering

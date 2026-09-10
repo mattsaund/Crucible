@@ -11,6 +11,22 @@
 
 namespace crucible {
 
+std::string_view overflow_id(Overflow policy) {
+    switch (policy) {
+        case Overflow::RollingWindow:  return "rolling";
+        case Overflow::TruncateMiddle: return "middle";
+        case Overflow::StopAtLimit:    return "stop";
+    }
+    return "rolling";
+}
+
+Overflow overflow_from_id(std::string_view id) {
+    if (id == "middle") { return Overflow::TruncateMiddle; }
+    if (id == "stop")   { return Overflow::StopAtLimit; }
+    return Overflow::RollingWindow;
+}
+
+
 void ModelParams::inherit_from(const ModelParams& base) {
     const ModelParams pristine;  // a field still equal to this was never set
 

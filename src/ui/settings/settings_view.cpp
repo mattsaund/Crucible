@@ -188,6 +188,17 @@ void SettingsView::build_rows() {
                      {"low", "medium", "high"}});
 
     header("TOOLS");
+    // The window has this as a button beside the box you type in, where it is
+    // reached mid-conversation. A terminal has no such bar, so it lives here --
+    // and it has to live somewhere, or a terminal user is asked y/n about every
+    // single edit with no way to say "stop asking".
+    rows_.push_back({Kind::Bool, "Apply edits automatically",
+                     "off asks before every file an expert writes -- a cook always applies",
+                     nullptr, nullptr, nullptr, &config_.tools.auto_edits, {}});
+    rows_.push_back({Kind::Enum, "Context overflow",
+                     "what happens when the conversation no longer fits",
+                     &config_.tools.overflow, nullptr, nullptr, nullptr,
+                     {"rolling", "middle", "stop"}});
     rows_.push_back({Kind::Bool, "Web search",
                      "let experts look things up -- the only thing Crucible sends off the machine",
                      nullptr, nullptr, nullptr, &config_.tools.web_search, {}});

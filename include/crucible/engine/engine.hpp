@@ -52,6 +52,17 @@ public:
     /// Drop the resident expert, freeing its memory without exiting.
     void release_expert();
 
+    /// Drop every model Crucible has in memory: the expert and the delegator.
+    ///
+    /// Not release_expert twice over. With the delegator set to stay resident
+    /// it is the larger of the two on plenty of machines, and releasing only
+    /// the expert leaves the card with a model on it that nothing is about to
+    /// use -- which is exactly the state somebody hits Eject to get out of,
+    /// usually because they want the memory for something that is not Crucible.
+    ///
+    /// Whatever is needed comes back on the next prompt.
+    void release_all();
+
     /// Drop every loaded model and load the router again.
     ///
     /// For when the hardware under Crucible changed: a model picks its devices
@@ -153,8 +164,8 @@ private:
     /// One unit of work for the engine thread. `kind` keeps config changes and
     /// expert releases on the same queue as prompts, so they are applied in
     /// order and never race with a generation in flight.
-    enum class RequestKind { Prompt, ReleaseExpert, ReloadModels, ApplyConfig,
-                             WriteExamples, Cook };
+    enum class RequestKind { Prompt, ReleaseExpert, ReleaseAll, ReloadModels,
+                             ApplyConfig, WriteExamples, Cook };
 
     struct Request {
         RequestKind             kind = RequestKind::Prompt;
@@ -283,7 +294,11 @@ private:
     /// Returns false when the edit was declined, and also when the turn was
     /// canceled or the engine is shutting down while parked here -- all three
     /// mean "do not write the file", which is the only question the caller has.
-    bool await_edit_approval(const tools::ToolCall& call,
+    /// `turn` and `answer` are the reply the call came out of: the protocol
+    /// line is taken off it before the question goes up, so the file is not on
+    /// screen twice while the user decides.
+    bool await_edit_approval(std::size_t turn, const std::string& answer,
+                             const tools::ToolCall& call,
                              const tools::WorkshopSettings& workshop);
 
     /// The answer to an edit, handed across from the UI thread.

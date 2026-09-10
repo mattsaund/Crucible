@@ -21,4 +21,13 @@ namespace crucible::ui {
 /// `dim_all` renders everything muted, for reasoning rather than an answer.
 std::vector<ftxui::Element> render_markdown(const std::string& text, bool dim_all = false);
 
+/// One file or snippet, drawn as a code block.
+///
+/// The same rendering a fenced block in a reply gets -- header, line numbers,
+/// syntax colors, and the two-sided gutter of a diff -- for the places that
+/// have code to show but no markdown around it. `language` may be a fence word
+/// or a file name; empty lets it be guessed from the text.
+ftxui::Element code_listing(const std::string& body, const std::string& language,
+                            bool dim = false);
+
 }  // namespace crucible::ui

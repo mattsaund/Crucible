@@ -84,6 +84,18 @@ LoadedModel::~LoadedModel() {
     }
 }
 
+int LoadedModel::count_tokens(const std::string& text) const {
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    if (vocab == nullptr || text.empty()) {
+        return 0;
+    }
+    return static_cast<int>(tokenize(vocab, text, false).size());
+}
+
+int LoadedModel::context_size() const {
+    return static_cast<int>(llama_n_ctx(ctx_));
+}
+
 std::uint64_t LoadedModel::params() const { return llama_model_n_params(model_); }
 std::uint64_t LoadedModel::bytes()  const { return llama_model_size(model_); }
 

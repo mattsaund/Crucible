@@ -75,7 +75,7 @@ std::string middle_out(const std::string& text, float room, float advance) {
 
 }  // namespace
 
-void App::draw_topbar(const Snapshot& snapshot) {
+void App::draw_topbar() {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float bar    = topbar_height();
     const float square = em(1.9F);
@@ -201,23 +201,12 @@ void App::draw_topbar(const Snapshot& snapshot) {
         left_used = at_x + block;
     }
 
-    // --- what it is doing --------------------------------------------------
-    //
-    // Only while it is doing something. An idle window says "idle" in the side
-    // menu's dots, which is where a state that is true most of the time
-    // belongs; a bar that always carries a word is a bar with a word nobody
-    // reads.
-    if (snapshot.busy) {
-        const std::string what = snapshot.status.empty()
-                                     ? std::string(mood_text(snapshot.mood))
-                                     : snapshot.status;
-        const float room = width - right_room - left_used - em(1.5F);
-        const std::string fitted = elide(what, room, advance);
-        if (!fitted.empty()) {
-            draw->AddText(ImVec2(origin.x + left_used + em(1.0F), middle - line * 0.5F),
-                          theme::kFlameBright, fitted.c_str());
-        }
-    }
+    // What it is doing is not here any more; it is in the side menu, over the
+    // column of models it is a sentence about. The bar is for things true of
+    // the whole window, and "loading gpt-oss-20b 40%" is true of one model for
+    // thirty seconds -- it was also the one message with a number in it and the
+    // one most likely to be cut, since it was elided to whatever was left
+    // between the project path and the tabs.
 
     // --- the tabs and the gear ---------------------------------------------
     ImGui::SetCursorPosX(width - right_room);

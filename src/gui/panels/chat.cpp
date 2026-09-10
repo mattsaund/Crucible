@@ -14,6 +14,8 @@
 #include "../app.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -23,6 +25,7 @@
 #include "../markdown_view.hpp"
 #include "../theme.hpp"
 #include "../widgets.hpp"
+#include "crucible/util/diff.hpp"
 #include "crucible/util/format.hpp"
 
 namespace crucible::gui {
@@ -109,34 +112,34 @@ void route_line(const Roster& roster, const Turn& turn) {
 ///
 /// Returns which one was pressed. The caller acts on it *after* the loop over
 /// the turns, because two of the three change how many turns there are.
-enum class TurnAction { None, Stop, Retry, Delete };
+enum class TurnControl { None, Stop, Retry, Delete };
 
-TurnAction turn_controls(const ImVec2& block_min, const ImVec2& block_max,
+TurnControl turn_controls(const ImVec2& block_min, const ImVec2& block_max,
                          bool running, bool busy) {
     // The hover test is the whole block, not the buttons: a control that only
     // appears once the pointer is already on top of it can never be found.
     if (!ImGui::IsMouseHoveringRect(block_min, block_max, false)) {
-        return TurnAction::None;
+        return TurnControl::None;
     }
 
     // While something is running, the only honest offer is to stop it -- and
     // only on the turn that is actually running. Retrying or deleting a turn
     // mid-flight would renumber the thing the engine is writing into.
-    struct Button { TurnAction action; const char* tip; };
+    struct Button { TurnControl action; const char* tip; };
     std::vector<Button> buttons;
     if (running) {
-        buttons.push_back({TurnAction::Stop, "Stop"});
+        buttons.push_back({TurnControl::Stop, "Stop"});
     } else if (!busy) {
-        buttons.push_back({TurnAction::Retry, "Ask again"});
-        buttons.push_back({TurnAction::Delete, "Delete"});
+        buttons.push_back({TurnControl::Retry, "Ask again"});
+        buttons.push_back({TurnControl::Delete, "Delete"});
     }
     if (buttons.empty()) {
-        return TurnAction::None;
+        return TurnControl::None;
     }
 
     const float size = em(1.6F);
     const ImVec2 keep = ImGui::GetCursorScreenPos();
-    TurnAction   hit  = TurnAction::None;
+    TurnControl  hit  = TurnControl::None;
 
     ImGui::PushID("turn-controls");
     for (std::size_t i = 0; i < buttons.size(); ++i) {
@@ -148,16 +151,16 @@ TurnAction turn_controls(const ImVec2& block_min, const ImVec2& block_max,
         const IconHit slot = icon_slot("##turn", size);
         const ImU32   ink  = slot.hovered ? theme::kFlameBright : theme::kTextFaint;
         switch (buttons[i].action) {
-            case TurnAction::Stop:
+            case TurnControl::Stop:
                 theme::draw_stop(ImGui::GetWindowDrawList(), slot.center, em(0.9F), ink);
                 break;
-            case TurnAction::Retry:
+            case TurnControl::Retry:
                 theme::draw_retry(ImGui::GetWindowDrawList(), slot.center, em(0.95F), ink);
                 break;
-            case TurnAction::Delete:
+            case TurnControl::Delete:
                 theme::draw_trash(ImGui::GetWindowDrawList(), slot.center, em(0.9F), ink);
                 break;
-            case TurnAction::None:
+            case TurnControl::None:
                 break;
         }
         ImGui::SetItemTooltip("%s", buttons[i].tip);
@@ -183,24 +186,83 @@ TurnAction turn_controls(const ImVec2& block_min, const ImVec2& block_max,
 
 void App::draw_pending_edit(const PendingEdit& edit) {
     const ImGuiStyle& style = ImGui::GetStyle();
+    bool keep  = false;   // leave the file as it is
+    bool apply = false;   // write the new one
 
     ImGui::Dummy(ImVec2(0, em(0.4F)));
+
+    // --- a file that does not exist yet ------------------------------------
+    //
+    // One panel, not two. There is no "before" to compare against, and a column
+    // headed "Now" saying "this file does not exist" is a space where a choice
+    // should be -- it asks the reader to compare something with nothing. The
+    // question here is not which of two files you want, it is whether this file
+    // should exist at all, and that is a different question with two different
+    // answers.
+    if (edit.before.empty()) {
+        ImGui::PushFont(theme::bold());
+        text_colored(theme::kAdded, "New file");
+        ImGui::PopFont();
+        ImGui::SameLine();
+        text_colored(theme::kText, "%s", edit.path.c_str());
+        ImGui::Dummy(ImVec2(0, em(0.3F)));
+
+        const RowMarks all{0, std::numeric_limits<std::size_t>::max(), '+'};
+        draw_code_block(edit.after, edit.path, {}, 900, &all);
+
+        ImGui::Dummy(ImVec2(0, em(0.4F)));
+        const float button = em(7.0F);
+        ImGui::PushStyleColor(ImGuiCol_Button, theme::to_vec(theme::kAddedWash));
+        if (ImGui::Button("Allow", ImVec2(button, 0))) {
+            apply = true;
+        }
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Create %s with these contents.", edit.path.c_str());
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, theme::to_vec(theme::kRemovedWash));
+        if (ImGui::Button("Deny", ImVec2(button, 0))) {
+            keep = true;
+        }
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Do not create the file.");
+
+        ImGui::Dummy(ImVec2(0, em(0.4F)));
+        if (keep) {
+            engine_->approve_edit(false);
+        } else if (apply) {
+            engine_->approve_edit(true);
+        }
+        return;
+    }
+
+    // --- a file that already exists ----------------------------------------
     ImGui::PushFont(theme::bold());
-    text_colored(theme::kFlameBright, "%s",
-                 edit.before.empty() ? "New file" : "Change to a file");
+    text_colored(theme::kFlameBright, "Change to a file");
     ImGui::PopFont();
     ImGui::SameLine();
     text_colored(theme::kText, "%s", edit.path.c_str());
-    ImGui::Dummy(ImVec2(0, em(0.3F)));
 
-    // Two panels, side by side, each one a button with the file under it.
+    // Which lines actually moved, so the two columns can say so.
     //
-    // Not a diff. A diff is the right way to review a change you have already
-    // decided to take and the wrong way to decide: it shows what moved and
-    // hides what the file becomes, and the question here is which of these two
-    // files you want on disk.
-    bool keep  = false;
-    bool apply = false;
+    // Whole files side by side answer "which one do I want"; they are useless
+    // at "what is different", and on a four-hundred-line file with one function
+    // changed that is the only question anyone has. So the rows that differ are
+    // washed -- red on the left for what goes, green on the right for what
+    // arrives -- which is the diff's one good idea without giving up the two
+    // files it is a diff of.
+    const util::ChangedLines changed = util::changed_lines(edit.before, edit.after);
+    const RowMarks removed{changed.first, changed.before_end, '-'};
+    const RowMarks added  {changed.first, changed.after_end,  '+'};
+
+    ImGui::SameLine();
+    if (changed.identical()) {
+        text_colored(theme::kTextFaint, "  \xC2\xB7  nothing would change");
+    } else {
+        text_colored(theme::kTextFaint, "  \xC2\xB7  %d removed, %d added",
+                     static_cast<int>(changed.before_end - changed.first),
+                     static_cast<int>(changed.after_end - changed.first));
+    }
+    ImGui::Dummy(ImVec2(0, em(0.3F)));
 
     if (ImGui::BeginTable("##edit", 2,
                           ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV)) {
@@ -209,11 +271,12 @@ void App::draw_pending_edit(const PendingEdit& edit) {
             const char*        action;
             const std::string* body;
             ImU32              ink;
+            const RowMarks*    marks;
             bool*              picked;
         };
         const Side sides[2] = {
-            {"Now",      "Keep this",   &edit.before, theme::kRemoved, &keep},
-            {"Proposed", "Use this",    &edit.after,  theme::kAdded,   &apply},
+            {"Now",      "Keep this", &edit.before, theme::kRemoved, &removed, &keep},
+            {"Proposed", "Use this",  &edit.after,  theme::kAdded,   &added,   &apply},
         };
 
         ImGui::TableNextRow();
@@ -247,10 +310,9 @@ void App::draw_pending_edit(const PendingEdit& edit) {
 
             if (sides[i].body->empty()) {
                 ImGui::Dummy(ImVec2(0, em(0.4F)));
-                wrapped(theme::kTextFaint,
-                        i == 0 ? "This file does not exist yet." : "(empty)");
+                wrapped(theme::kTextFaint, "(empty)");
             } else {
-                draw_code_block(*sides[i].body, edit.path, {}, 900 + i);
+                draw_code_block(*sides[i].body, edit.path, {}, 900 + i, sides[i].marks);
             }
             ImGui::PopID();
         }
@@ -336,7 +398,7 @@ void App::draw_chat(const Snapshot& snapshot) {
     // delete both change how many turns there are, and doing that underneath
     // the loop that is walking them is how a transcript ends up drawing a turn
     // that is no longer in it.
-    TurnAction  wanted     = TurnAction::None;
+    TurnControl wanted     = TurnControl::None;
     std::size_t wanted_for = 0;
 
     for (std::size_t i = 0; i < snapshot.turns.size(); ++i) {
@@ -356,16 +418,77 @@ void App::draw_chat(const Snapshot& snapshot) {
         // fetched, a file read or rewritten, a command run. Shown whether or not
         // the reply mentions them -- a model that edits one file and writes a
         // summary of editing another is not rare, and this is what catches it.
-        for (const std::string& action : turn.actions) {
-            text_colored(theme::kTextDim, "   \xC2\xB7  %s", action.c_str());
+        for (std::size_t a = 0; a < turn.actions.size(); ++a) {
+            const crucible::TurnAction& action = turn.actions[a];
+            text_colored(theme::kTextDim, "   \xC2\xB7  %s", action.summary.c_str());
+            // The diff it made or the output it printed, kept for good. This is
+            // what used to vanish the moment the next round started.
+            if (!action.body.empty()) {
+                ImGui::Indent(em(1.2F));
+                draw_code_block(action.body, action.language, action.language,
+                                100 + static_cast<int>(a));
+                ImGui::Unindent(em(1.2F));
+            }
         }
 
-        if (config_.ui.show_reasoning && !turn.reasoning.empty()) {
+        // The model's working, behind a disclosure triangle.
+        //
+        // It used to be all or nothing, decided once in Settings: on, every
+        // reply carried a wall of the model talking to itself, and the answer
+        // -- the thing that was asked for -- started a screen further down. Off,
+        // a reasoning model that spent its whole budget thinking left no way to
+        // find out what it had been thinking about.
+        //
+        // A triangle is the answer to both. The setting still decides whether a
+        // turn opens expanded, so somebody who wants to watch still can; the
+        // difference is that it is now a default rather than a verdict, and
+        // either one can be changed on the turn in front of you.
+        if (!turn.reasoning.empty()) {
             ImGui::Dummy(ImVec2(0, em(0.3F)));
-            text_colored(theme::kTextFaint, "thinking");
-            ImGui::PushFont(theme::italic());
-            wrapped(theme::kTextFaint, turn.reasoning);
-            ImGui::PopFont();
+
+            // Per turn, defaulting to whatever was last chosen anywhere.
+            //
+            // The two together are what makes this one control rather than two.
+            // A turn you have explicitly folded stays folded even if you open a
+            // later one; a turn you have not touched follows the last decision
+            // you made -- so somebody who wants to watch every model think sets
+            // that by opening one, not by going to look for a checkbox.
+            ImGuiStorage* storage = ImGui::GetStateStorage();
+            const ImGuiID key     = ImGui::GetID("thinking");
+            const bool open = storage->GetBool(key, config_.ui.show_reasoning);
+
+            const float  line = ImGui::GetTextLineHeight();
+            const ImVec2 at   = ImGui::GetCursorScreenPos();
+            const float  label_w = ImGui::CalcTextSize("thinking").x + em(1.4F);
+            ImGui::InvisibleButton("##thinking", ImVec2(label_w, line + em(0.2F)));
+            const bool hot = ImGui::IsItemHovered();
+            if (ImGui::IsItemActivated()) {
+                storage->SetBool(key, !open);
+                // And it sticks. Written to the config rather than held for the
+                // session, so it survives a restart and is the same preference
+                // the terminal's /thinking toggles -- one setting, two faces,
+                // and in the window it is reached by using it.
+                if (!open != config_.ui.show_reasoning) {
+                    update_config([open](Config& config) {
+                        config.ui.show_reasoning = !open;
+                    });
+                }
+            }
+            if (hot) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+            const ImU32 ink = hot ? theme::kTextDim : theme::kTextFaint;
+            theme::draw_chevron(ImGui::GetWindowDrawList(),
+                                ImVec2(at.x + em(0.35F), at.y + line * 0.55F),
+                                line * 0.7F, ink, open);
+            ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + em(0.9F), at.y), ink,
+                                                "thinking");
+
+            if (open) {
+                ImGui::PushFont(theme::italic());
+                wrapped(theme::kTextFaint, turn.reasoning);
+                ImGui::PopFont();
+            }
         }
 
         ImGui::Dummy(ImVec2(0, em(0.35F)));
@@ -393,11 +516,11 @@ void App::draw_chat(const Snapshot& snapshot) {
         // Drawn last, over the block it belongs to, because the block's bottom
         // edge is not known until it has been laid out.
         const ImVec2 block_bottom = ImGui::GetCursorScreenPos();
-        if (const TurnAction action = turn_controls(
+        if (const TurnControl action = turn_controls(
                 ImVec2(block_top.x, block_top.y),
                 ImVec2(block_top.x + ImGui::GetContentRegionAvail().x, block_bottom.y),
                 turn.streaming, snapshot.busy);
-            action != TurnAction::None) {
+            action != TurnControl::None) {
             wanted     = action;
             wanted_for = i;
         }
@@ -408,10 +531,10 @@ void App::draw_chat(const Snapshot& snapshot) {
     }
 
     switch (wanted) {
-        case TurnAction::Stop:   stop_work();              break;
-        case TurnAction::Retry:  retry_turn(wanted_for);   break;
-        case TurnAction::Delete: delete_turn(wanted_for);  break;
-        case TurnAction::None:   break;
+        case TurnControl::Stop:   stop_work();              break;
+        case TurnControl::Retry:  retry_turn(wanted_for);   break;
+        case TurnControl::Delete: delete_turn(wanted_for);  break;
+        case TurnControl::None:   break;
     }
 
     // The gate, under everything, which is where the eye already is: it appears
@@ -496,6 +619,43 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
         // Enter should leave the caret where it was, or every reply costs a
         // click to get back to typing.
         ImGui::SetKeyboardFocusHere(-1);
+    }
+
+    // --- what this conversation is costing ---------------------------------
+    //
+    // Under the box, because both numbers are about the conversation rather
+    // than about the models -- which is why they are no longer in the side
+    // menu, where they sat under a list of experts they had nothing to do with.
+    //
+    // The percentage is the one that changes behavior. Tokens in and out are a
+    // running total that only goes up; how full the context is decides whether
+    // the next turn quietly loses the start of this one, and it is the number
+    // to watch before that happens rather than after.
+    {
+        const TokenUsage& usage = snapshot.session_usage;
+        if (column < room) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (room - column) * 0.5F);
+        }
+        std::string line = format_tokens(usage.input_tokens) + " in  \xC2\xB7  "
+                         + format_tokens(usage.output_tokens) + " out";
+        if (snapshot.context_size > 0) {
+            const int percent = std::min(
+                100, static_cast<int>(std::lround(
+                         100.0 * snapshot.context_used / snapshot.context_size)));
+            line += "  \xC2\xB7  " + std::to_string(percent) + "% context used";
+        }
+        // Amber past three quarters. The prompt is allowed three quarters of
+        // the window and the answer needs the rest, so that is the point at
+        // which the next turn starts dropping things.
+        const bool tight = snapshot.context_size > 0
+                        && snapshot.context_used * 4 >= snapshot.context_size * 3;
+        text_colored(tight ? theme::kFlameBright : theme::kTextFaint, "%s", line.c_str());
+        ImGui::SetItemTooltip(
+            snapshot.context_size > 0
+                ? "Tokens this session, and how much of the expert's context the last "
+                  "turn filled.\nPast three quarters, the oldest exchanges start being "
+                  "dropped -- see Settings, Tools, Context."
+                : "Tokens this session. The context readout appears once a turn has run.");
     }
 
     ImGui::EndChild();

@@ -3,7 +3,12 @@
 // See markdown_view.hpp.
 #include "crucible/ui/widgets/markdown_view.hpp"
 
+#include <algorithm>
 #include <string>
+#include <vector>
+
+#include "crucible/util/code_lines.hpp"
+#include "crucible/util/syntax.hpp"
 
 #include "crucible/ui/theme.hpp"
 #include <ftxui/dom/table.hpp>
@@ -14,6 +19,140 @@ using namespace ftxui;  // NOLINT(google-build-using-namespace)
 
 namespace crucible::ui {
 namespace {
+
+// ---------------------------------------------------------------------------
+// Code blocks
+// ---------------------------------------------------------------------------
+//
+// The same block the window draws, in the parts a terminal has: a header saying
+// what it is, a gutter of line numbers, syntax colors, and the two-sided
+// numbering of a diff. Everything below shares util/syntax and util/code_lines
+// with the desktop app, so the two faces cannot disagree about what a keyword
+// is or which line a hunk starts on -- only about how it is painted.
+//
+// No fold. The window folds a long block because the pointer is there to open
+// it again; a terminal scrolls, which is the same answer arrived at for free.
+
+ftxui::Color color_of(syntax::Token token) {
+    switch (token) {
+        case syntax::Token::Keyword:  return theme::kCodeKeyword;
+        case syntax::Token::Type:     return theme::kCodeType;
+        case syntax::Token::String:   return theme::kCodeString;
+        case syntax::Token::Number:   return theme::kCodeNumber;
+        case syntax::Token::Comment:  return theme::kCodeComment;
+        case syntax::Token::Function: return theme::kCodeFunction;
+        case syntax::Token::Punct:    return theme::kCodePunct;
+        case syntax::Token::Preproc:  return theme::kCodePreproc;
+        case syntax::Token::Text:     break;
+    }
+    return theme::kCodeText;
+}
+
+/// A number right-aligned in `width` columns, or that many spaces for a row
+/// that has no number on this side of a diff.
+std::string gutter_number(int value, int width) {
+    const std::string digits = value > 0 ? std::to_string(value) : std::string();
+    return std::string(static_cast<std::size_t>(width) - digits.size(), ' ') + digits;
+}
+
+/// One block of code, gathered from a run of Code lines.
+Element code_block_impl(const std::string& body, const std::string& fence, bool dim_all) {
+    syntax::Lang lang = syntax::lang_from(fence);
+    const bool   diff = lang == syntax::Lang::Diff || syntax::looks_like_diff(body);
+    std::string  path;
+    if (diff) {
+        path = syntax::diff_path(body);
+        lang = syntax::lang_from(path);
+    }
+    if (lang == syntax::Lang::None) {
+        // Nothing said what this is, so look at it. A fence opened with a bare
+        // ``` is as common as one that names its language.
+        lang = syntax::sniff(body);
+    }
+
+    int added   = 0;
+    int removed = 0;
+    const std::vector<syntax::CodeRow> rows = syntax::code_rows(body, diff, added, removed);
+
+    int widest_old = 0;
+    int widest_new = 0;
+    for (const syntax::CodeRow& row : rows) {
+        widest_old = std::max(widest_old, row.old_no);
+        widest_new = std::max(widest_new, row.new_no);
+    }
+    const auto digits = [](int value) {
+        return static_cast<int>(std::to_string(std::max(value, 1)).size());
+    };
+    const int old_width = diff ? digits(widest_old) : 0;
+    const int new_width = digits(widest_new);
+
+    Elements lines;
+
+    // The header: what it is, which file, and how much moved.
+    {
+        std::string left(diff ? "diff" : syntax::lang_name(lang));
+        if (left.empty()) {
+            left = "text";
+        }
+        if (!path.empty()) {
+            left += "  ·  " + path;
+        }
+        const std::string right =
+            diff ? "+" + std::to_string(added) + " -" + std::to_string(removed)
+                 : std::to_string(rows.size())
+                       + (rows.size() == 1 ? " line" : " lines");
+        lines.push_back(hbox({
+            text("  " + left) | color(dim_all ? theme::kMeta : theme::kMeta),
+            filler(),
+            text(right + "  ") | color(theme::kMeta),
+        }));
+    }
+
+    syntax::Carry carry;
+    for (const syntax::CodeRow& row : rows) {
+        // Lexed whether or not it is drawn dim: a block comment opened on one
+        // line still has to be closed on the next.
+        const std::vector<syntax::Piece> pieces = syntax::highlight(row.text, lang, carry);
+
+        Elements parts;
+        parts.push_back(text("  "));
+        if (diff) {
+            parts.push_back(text(gutter_number(row.old_no, old_width) + " ")
+                            | color(theme::kCodeGutter));
+        }
+        parts.push_back(text(gutter_number(row.new_no, new_width) + " ")
+                        | color(theme::kCodeGutter));
+
+        const bool plus  = row.marker == '+';
+        const bool minus = row.marker == '-';
+        if (diff) {
+            parts.push_back(text(std::string(1, plus ? '+' : minus ? '-' : ' ') + " ")
+                            | color(plus  ? theme::kDiffAdded
+                                    : minus ? theme::kDiffRemoved
+                                            : theme::kCodeGutter));
+        }
+
+        if (row.marker == '@') {
+            // A hunk or file header: the structure of the diff, in the color
+            // structure takes everywhere else.
+            parts.push_back(text(row.text) | color(theme::kHeading));
+        } else {
+            for (const syntax::Piece& piece : pieces) {
+                parts.push_back(text(piece.text)
+                                | color(dim_all ? theme::kMeta : color_of(piece.token)));
+            }
+        }
+
+        Element line = hbox(std::move(parts));
+        if (plus) {
+            line = line | bgcolor(theme::kDiffAddedBg);
+        } else if (minus) {
+            line = line | bgcolor(theme::kDiffRemovedBg);
+        }
+        lines.push_back(std::move(line));
+    }
+    return vbox(std::move(lines));
+}
 
 /// One styled run.
 Element span_element(const markdown::Span& span, bool dim_all) {
@@ -192,16 +331,30 @@ std::vector<Element> render_markdown(const std::string& source, bool dim_all) {
                 }));
                 break;
 
-            case markdown::BlockKind::Code:
-                // Not wrapped, and not word-split: code that is re-flowed is
-                // code that no longer runs. A long line scrolls off, which is
-                // the honest failure.
-                lines.push_back(hbox({
-                    text("  ") ,
-                    text(block.spans.empty() ? std::string() : block.spans.front().text)
-                        | color(theme::kCode),
-                }));
-                break;
+            case markdown::BlockKind::Code: {
+                // Gathered back into one block rather than drawn a line at a
+                // time. A code block is one thing -- it has a language, a
+                // length, and line numbers that count from its own top -- and
+                // none of that can be worked out from a single row.
+                //
+                // Not wrapped and not word-split either: code that is re-flowed
+                // is code that no longer runs. A long line scrolls off, which
+                // is the honest failure.
+                std::size_t last = index;
+                std::string body;
+                for (; last < blocks.size() && blocks[last].kind == markdown::BlockKind::Code;
+                     ++last) {
+                    if (last > index) {
+                        body += '\n';
+                    }
+                    body += blocks[last].spans.empty() ? std::string()
+                                                       : blocks[last].spans.front().text;
+                }
+                lines.push_back(code_block_impl(body, block.marker, dim_all));
+                index = last - 1;
+                previous_blank = false;
+                continue;
+            }
 
             case markdown::BlockKind::TableRow:
             case markdown::BlockKind::TableRule:
@@ -218,6 +371,10 @@ std::vector<Element> render_markdown(const std::string& source, bool dim_all) {
     }
 
     return lines;
+}
+
+Element code_listing(const std::string& body, const std::string& language, bool dim) {
+    return code_block_impl(body, language, dim);
 }
 
 }  // namespace crucible::ui

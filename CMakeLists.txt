@@ -72,6 +72,12 @@ add_library(crucible_core STATIC
     src/util/diff.cpp
     src/util/platform.cpp
     src/util/markdown.cpp
+    # Reading code before drawing it: the lexer that colors a block, and the
+    # reader that works out whether it is a diff and what to number each line.
+    # In the core rather than in one of the faces because both draw code, and a
+    # terminal that colors it differently from a window is two programs.
+    src/util/syntax.cpp
+    src/util/code_lines.cpp
     src/util/resources.cpp
     src/util/subprocess.cpp
 
@@ -112,6 +118,7 @@ add_library(crucible_core STATIC
     src/llm/model_host.cpp
 
     # engine: the delegation loop and the state the UI reads
+    src/engine/overflow.cpp
     src/engine/state.cpp
     src/engine/route_policy.cpp
     src/engine/engine.cpp
@@ -180,9 +187,7 @@ if(CRUCIBLE_BUILD_GUI)
     add_executable(crucible-gui
         src/gui/main.cpp
         src/gui/app.cpp
-        src/gui/code_lines.cpp
         src/gui/markdown_view.cpp
-        src/gui/syntax.cpp
         src/gui/theme.cpp
         src/gui/widgets.cpp
         src/gui/panels/topbar.cpp
@@ -273,18 +278,12 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_syntax.cpp
         tests/test_code_lines.cpp
         tests/test_transcript_edits.cpp
+        tests/test_overflow.cpp
         tests/test_spelling.cpp
         # The flame's own source, because it lives in the terminal program
         # rather than in the core library. It draws text and nothing else, so it
         # costs the test binary a link against FTXUI's color type and no more.
-        src/ui/widgets/flame_sprite.cpp
-        # And the two halves of a code block that are decisions rather than
-        # drawings: the lexer that colors it, and the reader that works out
-        # whether it is a diff and what to number each line. Both live in the
-        # desktop program and neither includes anything from ImGui -- text in,
-        # structure out, which is exactly the shape a test wants.
-        src/gui/syntax.cpp
-        src/gui/code_lines.cpp)
+        src/ui/widgets/flame_sprite.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core ftxui::screen)
     target_include_directories(crucible_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     # So the spelling lint can walk the project from wherever it is run.

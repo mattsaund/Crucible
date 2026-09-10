@@ -47,6 +47,21 @@ struct SeatState {
     float     progress = 0.0F;  ///< 0..1 while Loading
 };
 
+/// Something a turn did to the world, and what came back.
+struct TurnAction {
+    /// One line, as it reads in the transcript: "wrote src/calc.py  +12 -3".
+    std::string summary;
+
+    /// What it produced and is worth keeping: the diff of a write, the output
+    /// of a command. Empty for the ones that produce nothing worth a block --
+    /// a listing, a search that only wants its own summary line.
+    std::string body;
+
+    /// What `body` should be colored as: a file name for a write, a fence
+    /// language otherwise. Empty lets the renderer work it out from the text.
+    std::string language;
+};
+
 /// One exchange. Kept as a unit so the transcript can show which expert
 /// answered each turn, which is most of the point of the panel.
 struct Turn {
@@ -62,15 +77,22 @@ struct Turn {
     /// model that thinking aloud is part of the transcript.
     std::string            reasoning;
 
-    /// What this turn did besides talk, one line each: a page it looked up, a
-    /// file it read or rewrote, a command it ran.
+    /// What this turn did besides talk: a page it looked up, a file it rewrote,
+    /// a command it ran -- and what that produced.
     ///
     /// Shown above the reply, because these are the parts of a turn that left
-    /// the machine or changed something on it -- and a reader has to be able to
+    /// the machine or changed something on it, and a reader has to be able to
     /// see them whether or not the answer mentions them. A model that edits a
     /// file and then writes a summary of having edited a different one is not
-    /// rare, and this is the line that catches it.
-    std::vector<std::string> actions;
+    /// rare, and this is the record that catches it.
+    ///
+    /// `body` is the reason this is a struct rather than a line of text. The
+    /// diff a write produced and the output a command printed used to be
+    /// thrown away the moment the next round started -- the tool call was wiped
+    /// off the transcript as "a request, not an answer" and everything it made
+    /// went with it. Scrolling back through an hour of work found the summaries
+    /// and none of the code. It is kept now, for the life of the turn.
+    std::vector<TurnAction> actions;
     std::optional<RouteDecision> route;
     bool                   streaming = false;
     bool                   canceled = false;
@@ -132,6 +154,14 @@ struct Snapshot {
     std::vector<Turn>                   turns;
     std::vector<std::string>            notices;
     bool                                busy = false;
+
+    /// How full the expert's context was on the last turn, and how big it is.
+    ///
+    /// Reported rather than estimated: it is what the expert's own tokenizer
+    /// made of the conversation, through the expert's own chat template. Zero
+    /// until a turn has run, because until then there is no model to ask.
+    int context_used  = 0;
+    int context_size  = 0;
 
     /// Tokens spent since Crucible started.
     TokenUsage session_usage;
@@ -196,7 +226,7 @@ public:
     void set_reply(std::size_t turn, std::string text);
 
     /// Record something this turn did. See Turn::actions.
-    void add_action(std::size_t turn, std::string line);
+    void add_action(std::size_t turn, TurnAction action);
 
     /// The expert work is flowing to, or nothing between turns.
     void set_linked(std::optional<ExpertId> id);
@@ -224,6 +254,13 @@ public:
 
     /// Put an edit up for approval, or take it back down with nothing.
     void set_pending_edit(std::shared_ptr<const PendingEdit> edit);
+
+    /// How full the context was on the last turn. See Snapshot::context_used.
+    void set_context_used(int used, int size);
+
+    /// The edit waiting on an answer, without copying a whole snapshot to ask.
+    /// The terminal checks this on every keystroke.
+    std::shared_ptr<const PendingEdit> pending_edit() const;
 
     /// Close a turn the user stopped.
     ///
@@ -272,6 +309,8 @@ private:
     bool                                 busy_ = false;
     std::shared_ptr<const Cook>          cook_;
     std::shared_ptr<const PendingEdit>   pending_edit_;
+    int                                  context_used_ = 0;
+    int                                  context_size_ = 0;
     TokenUsage                           session_usage_;
     TokenUsage                           project_usage_;
     double                               live_rate_ = 0.0;

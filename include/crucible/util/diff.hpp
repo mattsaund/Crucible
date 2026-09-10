@@ -33,6 +33,25 @@ struct DiffStat {
 
 DiffStat diff_stat(std::string_view before, std::string_view after);
 
+/// Which lines differ, as a half-open range into each side.
+///
+/// Everything before `first` is identical in both, and everything from
+/// `before_end` / `after_end` onwards is too, so the change is whatever is left
+/// in the middle. Exposed because the desktop app shows the two files side by
+/// side rather than as a diff, and still has to wash the rows that moved --
+/// which needs the range rather than the rendered hunk.
+///
+/// Line numbers count from zero.
+struct ChangedLines {
+    std::size_t first      = 0;  ///< first differing line, the same index in both
+    std::size_t before_end = 0;  ///< one past the last differing line of `before`
+    std::size_t after_end  = 0;  ///< and of `after`
+
+    bool identical() const { return first == before_end && first == after_end; }
+};
+
+ChangedLines changed_lines(std::string_view before, std::string_view after);
+
 /// The changed lines, as `-` and `+` rows with a little context.
 ///
 /// `max_lines` caps the whole thing; what is dropped is said so in place rather

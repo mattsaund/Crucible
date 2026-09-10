@@ -27,6 +27,42 @@ TEST(a_diff_reports_only_the_lines_that_moved) {
     CHECK(diff.find("+def main") == std::string::npos);
 }
 
+TEST(the_changed_range_is_what_the_side_by_side_view_washes) {
+    // The desktop shows an edit as two whole files rather than as a diff, and
+    // still has to mark the rows that moved -- red on the left, green on the
+    // right. That needs the range rather than the rendered hunk.
+    const std::string before = "one\ntwo\nthree\nfour\n";
+    const std::string after  = "one\nTWO\nTWO AND A HALF\nthree\nfour\n";
+
+    const util::ChangedLines changed = util::changed_lines(before, after);
+    CHECK(!changed.identical());
+    // Line 0 is shared, so the wash starts at 1 on both sides...
+    CHECK_EQ(changed.first, std::size_t{1});
+    // ...covers the one line that went...
+    CHECK_EQ(changed.before_end, std::size_t{2});
+    // ...and the two that arrived. The trailing lines are common and stay
+    // unwashed, which is the whole point: on a four-hundred-line file with one
+    // function changed, marking everything would be marking nothing.
+    CHECK_EQ(changed.after_end, std::size_t{3});
+}
+
+TEST(two_identical_files_have_nothing_to_wash) {
+    const std::string same = "alpha\nbeta\n";
+    const util::ChangedLines changed = util::changed_lines(same, same);
+    CHECK(changed.identical());
+    CHECK_EQ(changed.first, changed.before_end);
+    CHECK_EQ(changed.first, changed.after_end);
+}
+
+TEST(a_brand_new_file_is_all_addition) {
+    // The case that gets its own panel and an Allow/Deny rather than a
+    // comparison: there is no "before" to put beside it.
+    const util::ChangedLines changed = util::changed_lines("", "line one\nline two\n");
+    CHECK_EQ(changed.first, std::size_t{0});
+    CHECK_EQ(changed.before_end, std::size_t{0});
+    CHECK(changed.after_end > 0);
+}
+
 TEST(an_unchanged_write_produces_no_diff) {
     const std::string same = "one\ntwo\nthree\n";
     CHECK(util::unified_diff(same, same).empty());

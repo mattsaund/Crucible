@@ -92,6 +92,35 @@ inline constexpr ftxui::Color::Palette256 kHeading = ftxui::Color::DarkOrange; /
 inline constexpr ftxui::Color::Palette256 kCode    = ftxui::Color::Grey74;     // 250
 inline constexpr ftxui::Color::Palette256 kMarker  = ftxui::Color::Orange1;    // 214
 
+// --- inside a code block ---------------------------------------------------
+//
+// The same relaxation the window makes, in the colors a terminal has. Chrome
+// keeps the rule -- one saturated color, spent on what is running -- and a code
+// block does not, because telling a string from a keyword from a comment is a
+// job hue does and the one weight a terminal has was already spent on **bold**.
+//
+// Written as indices rather than names: these are chosen to sit near the
+// window's own code palette, and the number is the only thing that says which
+// gray or which purple. The hex each approximates is beside it.
+inline constexpr auto kCodeText     = static_cast<ftxui::Color::Palette256>(252); // d0d0d0
+inline constexpr auto kCodeKeyword  = static_cast<ftxui::Color::Palette256>(176); // d787d7
+inline constexpr auto kCodeType     = static_cast<ftxui::Color::Palette256>(180); // d7af87
+inline constexpr auto kCodeString   = static_cast<ftxui::Color::Palette256>(114); // 87d787
+inline constexpr auto kCodeNumber   = static_cast<ftxui::Color::Palette256>(173); // d7875f
+inline constexpr auto kCodeComment  = static_cast<ftxui::Color::Palette256>(243); // 767676
+inline constexpr auto kCodeFunction = static_cast<ftxui::Color::Palette256>(75);  // 5fafff
+inline constexpr auto kCodePunct    = static_cast<ftxui::Color::Palette256>(246); // 949494
+inline constexpr auto kCodePreproc  = static_cast<ftxui::Color::Palette256>(73);  // 5fafaf
+inline constexpr auto kCodeGutter   = static_cast<ftxui::Color::Palette256>(240); // 585858
+
+// A diff's pair. The marker in the gutter is solid and the row behind it is
+// washed; the code on the row keeps its own syntax colors either way, because
+// an added line you cannot read is not much of an improvement on a removed one.
+inline constexpr auto kDiffAdded     = static_cast<ftxui::Color::Palette256>(114); // 87d787
+inline constexpr auto kDiffRemoved   = static_cast<ftxui::Color::Palette256>(174); // d78787
+inline constexpr auto kDiffAddedBg   = static_cast<ftxui::Color::Palette256>(22);  // 005f00
+inline constexpr auto kDiffRemovedBg = static_cast<ftxui::Color::Palette256>(52);  // 5f0000
+
 }  // namespace theme
 
 /// Secondary text, in the shade that stays readable on the row it is on.

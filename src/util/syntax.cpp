@@ -12,12 +12,13 @@
 // Two exceptions get their own scanners because their rules are not the
 // C-family's at all: Markdown, where the interesting thing is the line's first
 // character, and Diff, where it is the column-one marker.
-#include "syntax.hpp"
+#include "crucible/util/syntax.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 
-namespace crucible::gui::syntax {
+namespace crucible::syntax {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -741,6 +742,152 @@ std::string_view lang_name(Lang lang) {
     return "";
 }
 
+namespace {
+
+/// Does `body` contain `mark` at the start of some line?
+bool at_line_start(std::string_view body, std::string_view mark) {
+    std::size_t at = 0;
+    while (at <= body.size()) {
+        std::size_t start = at;
+        while (start < body.size() && (body[start] == ' ' || body[start] == '\t')) {
+            ++start;
+        }
+        if (body.compare(start, mark.size(), mark) == 0) {
+            return true;
+        }
+        const std::size_t end = body.find('\n', at);
+        if (end == std::string_view::npos) {
+            break;
+        }
+        at = end + 1;
+    }
+    return false;
+}
+
+bool holds_text(std::string_view body, std::string_view mark) {
+    return body.find(mark) != std::string_view::npos;
+}
+
+}  // namespace
+
+Lang sniff(std::string_view body) {
+    if (body.empty()) {
+        return Lang::None;
+    }
+
+    // A shebang settles it outright, which is the whole point of a shebang.
+    if (body.rfind("#!", 0) == 0) {
+        const std::size_t end = body.find('\n');
+        const std::string_view line = body.substr(0, end);
+        if (holds_text(line, "python")) { return Lang::Python; }
+        if (holds_text(line, "node"))   { return Lang::JavaScript; }
+        if (holds_text(line, "ruby"))   { return Lang::Ruby; }
+        if (holds_text(line, "perl"))   { return Lang::None; }
+        return Lang::Shell;  // sh, bash, zsh, env with anything else
+    }
+    if (body.rfind("<?php", 0) == 0)      { return Lang::Php; }
+    if (body.rfind("<?xml", 0) == 0)      { return Lang::Html; }
+    if (body.rfind("<!DOCTYPE", 0) == 0)  { return Lang::Html; }
+
+    // A diff announces itself in column one, and mistaking one for the language
+    // it patches would color every marker as code.
+    if (at_line_start(body, "@@ ") || at_line_start(body, "+++ ")
+        || at_line_start(body, "diff --git")) {
+        return Lang::Diff;
+    }
+
+    // JSON is the one shape rather than the one keyword: brackets at the top
+    // and quoted keys under them.
+    {
+        const std::size_t first = body.find_first_not_of(" \t\r\n");
+        if (first != std::string_view::npos
+            && (body[first] == '{' || body[first] == '[')
+            && holds_text(body, "\":")
+            && !holds_text(body, ";")) {
+            return Lang::Json;
+        }
+    }
+
+    struct Mark { Lang lang; std::string_view text; int weight; bool line_start; };
+    static constexpr Mark kMarks[] = {
+        {Lang::C,          "#include",       4, true},
+        {Lang::C,          "std::",          3, false},
+        {Lang::C,          "int main(",      4, false},
+        {Lang::C,          "nullptr",        2, false},
+        {Lang::C,          "->",             1, false},
+        {Lang::Python,     "def ",           3, true},
+        {Lang::Python,     "elif ",          3, false},
+        {Lang::Python,     "self.",          3, false},
+        {Lang::Python,     "import ",        2, true},
+        {Lang::Python,     "__name__",       4, false},
+        {Lang::Python,     "print(",         1, false},
+        {Lang::Rust,       "fn ",            3, true},
+        {Lang::Rust,       "let mut ",       4, false},
+        {Lang::Rust,       "impl ",          3, true},
+        {Lang::Rust,       "pub fn",         4, false},
+        {Lang::Rust,       "println!",       4, false},
+        {Lang::Go,         "func ",          3, true},
+        {Lang::Go,         "package ",       3, true},
+        {Lang::Go,         ":= ",            3, false},
+        {Lang::Go,         "fmt.",           3, false},
+        {Lang::JavaScript, "function ",      2, false},
+        {Lang::JavaScript, "const ",         2, true},
+        {Lang::JavaScript, "=> ",            2, false},
+        {Lang::JavaScript, "console.log",    4, false},
+        {Lang::JavaScript, "require(",       3, false},
+        {Lang::Java,       "public class",   4, false},
+        {Lang::Java,       "System.out",     4, false},
+        {Lang::Shell,      "echo ",          2, true},
+        {Lang::Shell,      "sudo ",          3, true},
+        {Lang::Shell,      "$(",             2, false},
+        {Lang::Shell,      "fi\n",           2, true},
+        {Lang::Shell,      "apt-get",        3, false},
+        {Lang::Ruby,       "puts ",          3, true},
+        {Lang::Ruby,       "end\n",          1, true},
+        {Lang::Lua,        "local ",         2, true},
+        {Lang::Sql,        "SELECT ",        4, true},
+        {Lang::Sql,        "INSERT INTO",    4, false},
+        {Lang::Sql,        "CREATE TABLE",   4, false},
+        {Lang::Cmake,      "cmake_minimum",  4, false},
+        {Lang::Cmake,      "target_link",    4, false},
+        {Lang::Html,       "</",             2, false},
+        {Lang::Css,        "margin:",        3, false},
+        {Lang::Markdown,   "## ",            2, true},
+    };
+
+    std::map<int, int> score;   // Lang as int -> points
+    for (const Mark& mark : kMarks) {
+        const bool found = mark.line_start ? at_line_start(body, mark.text)
+                                           : holds_text(body, mark.text);
+        if (found) {
+            score[static_cast<int>(mark.lang)] += mark.weight;
+        }
+    }
+    if (score.empty()) {
+        return Lang::None;
+    }
+
+    int best  = 0;
+    int most  = 0;
+    int equal = 0;
+    for (const auto& [lang, points] : score) {
+        if (points > most) {
+            most  = points;
+            best  = lang;
+            equal = 1;
+        } else if (points == most) {
+            ++equal;
+        }
+    }
+    // A weak guess is worse than none: a paragraph of English with one "const"
+    // in it is not JavaScript, and coloring it as such is a confident wrong
+    // answer where "plain text" was the right one.
+    if (most < 3 || equal > 1) {
+        return Lang::None;
+    }
+    return static_cast<Lang>(best);
+}
+
 std::vector<Piece> highlight(std::string_view line, Lang lang, Carry& carry) {
     if (lang == Lang::Markdown) {
         return scan_markdown(line);
@@ -754,4 +901,4 @@ std::vector<Piece> highlight(std::string_view line, Lang lang, Carry& carry) {
     return scan(line, rules, carry);
 }
 
-}  // namespace crucible::gui::syntax
+}  // namespace crucible::syntax

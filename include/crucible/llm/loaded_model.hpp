@@ -116,6 +116,17 @@ public:
                                     const std::vector<std::string>& labels,
                                     const CancelCallback& cancel);
 
+    /// How many tokens `text` becomes for this model.
+    ///
+    /// The only honest way to ask "will this conversation fit". A character
+    /// count is out by a factor of three or four depending on the tokenizer and
+    /// the language, and the answer decides whether the oldest exchange gets
+    /// thrown away -- which is not a thing to get wrong by a factor of three.
+    int count_tokens(const std::string& text) const;
+
+    /// The context this model was loaded with, in tokens.
+    int context_size() const;
+
     const std::string& path() const { return path_; }
     std::uint64_t      params() const;       ///< parameter count, for the UI
     std::uint64_t      bytes() const;        ///< in-memory size

@@ -210,21 +210,21 @@ one self-contained binary that links the core library directly.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ ▣  ⢱⣆ CRUCIBLE   🗀 crucible  ~/code/crucible    Chat  Cook  History ⚙│
+│ ▣  ⢱⣆ CRUCIBLE      Project: ~/code/crucible   Chat  Cook  History ⚙│
 ├───────────────┬─────────────────────────────────────────────────────┤
-│ DELEGATOR     │   ▌why does the JIT swap cost so little?            │
-│ ◆ qwen3-4b    │                                                     │
-│ │             │   ◆ Programming · 94% · router model · swap 1.2s    │
-│ EXPERTS       │                                                     │
-│ │ ◇ Mathema…  │   ## The short answer                               │
-│ └─◆ Programm… │   Weights are mapped, not copied — so:              │
-│   ◇ Writing   │    • the page cache holds them already              │
-│   · Science   │    • only the KV cache is really allocated          │
-│               │                                                     │
+│ loading 41%   │   ▌why does the JIT swap cost so little?            │
+│ DELEGATOR     │                                                     │
+│ ◆ qwen3-4b    │   ◆ Programming · 94% · router model · swap 1.2s    │
+│ │             │                                                     │
+│ EXPERTS       │   ## The short answer                               │
+│ │ ◇ Mathema…  │   Weights are mapped, not copied — so:              │
+│ └─◆ Programm… │    • the page cache holds them already              │
+│   ◇ Writing   │    • only the KV cache is really allocated          │
+│   · Science   │                                                     │
 │               │   ┌ c++ · model_host.cpp ──────── 4 lines ─ ⧉ ┐     │
 │               │   │ 41   auto* model = llama_model_load(...);│     │
-│               │   └──────────────────────────────────────────┘     │
-│               ├─────────────────────────────────────────────────────┤
+│  [ Eject ]    │   └──────────────────────────────────────────┘     │
+├───────────────┤─────────────────────────────────────────────────────┤
 │ 12k in/4k out │   ask anything                            [ Send ]  │
 └───────────────┴─────────────────────────────────────────────────────┘
 ```
@@ -242,6 +242,30 @@ while a turn is flowing, a line drawn from the delegator's dot down and into the
 seat it chose. It is the same drawing the terminal makes in its expert panel,
 turned ninety degrees. Yellow means "this one has the turn", the delegator
 included; white means it can answer; faint means it has no model behind it.
+
+**What it is doing is said over the models it is about.** "loading router 41%"
+sits above the delegator rather than in the top bar, because it is a sentence
+about the column under it and true of one model for thirty seconds — where the
+bar is for what is true of the window. The row is always there, empty when
+nothing is happening, so the list below it never shifts by a line.
+
+**Eject unloads everything.** Both models, not just the expert: with the
+delegator set to stay resident it is the larger of the two on plenty of
+machines, and dropping only the expert leaves a card holding a model nothing is
+about to use — which is the state people press Eject to get out of, usually
+because they want the memory for something that is not Crucible. Whatever is
+needed comes back on the next prompt. It sits above the rule at the bottom of
+the side menu, sized to its own word rather than to the panel: a button
+stretched across a sidebar you can drag to four hundred pixels reads as the most
+important thing on screen, and this is a control you press once in a while.
+
+**What the conversation costs is written under the box you type in.** Tokens in,
+tokens out, and how much of the expert's context the last turn filled — `1.2k in
+Â· 253 out Â· 62% context used`. It moved there from the foot of the side menu,
+where it sat under a list of experts it had nothing to do with: both numbers are
+about the conversation, and the conversation is on this side of the window. The
+percentage is the one that changes behavior, and it turns amber past three
+quarters — the point at which the next turn starts dropping earlier exchanges.
 
 Both panels are draggable. The sidebar closes when you drag its edge to the left
 of the window — or with the fold button — and the box you type in has a handle
@@ -285,10 +309,64 @@ right way to review a change you have already decided to take and the wrong way
 to decide, because it shows what moved and hides what the file becomes. On, the
 edit lands and you read about it afterwards.
 
+A file that does not exist yet is a different question, so it gets a different
+answer: one panel with the path and the contents, and **Allow** or **Deny**.
+There is no "before" to compare it against, and a column headed "Now" saying
+"this file does not exist" asks the reader to compare something with nothing.
+
+Where there *is* a before, the lines that differ are washed -- red on the left
+for what goes, green on the right for what arrives -- with the count in the
+header. Whole files answer "which one do I want" and are useless at "what is
+different"; on a four-hundred-line file with one function changed that is the
+only question anyone has, so both are on the screen at once.
+
 Cook always applies. A cook is an hour of work you started and walked away from,
 and stopping it on the first write to ask a question nobody is there to answer
 would mean it never gets past the first write -- its record is the journal, and
 every step in it expands to the diff that step made.
+
+**What a turn did stays on the screen.** The diff a write made and the output a
+command printed are kept for the life of the turn and scroll back with it. They
+used to be thrown away the moment the next round started -- the tool call was
+wiped off the transcript as "a request, not an answer" and everything it
+produced went with it, so scrolling back through an hour of work found the
+summaries and none of the code. The sentence the expert wrote *around* the call
+stays too; only the protocol line goes.
+
+**A model's working folds away.** Reasoning sits behind a disclosure triangle on
+every turn that has any, so a long think does not push the answer a screen
+down -- and a reasoning model that spent its whole budget thinking can still be
+asked what about. The setting in Settings decides whether a turn opens expanded,
+which makes it a default rather than a verdict.
+
+**A code block is colored even when nothing said what it was.** Models open a
+fence with a bare ``` about as often as they name the language, so an unlabeled
+block is sniffed from its own contents -- a shebang, an `#include`, `fn main(`,
+`<?php`. A weak guess is no guess: a paragraph of English with one `const` in it
+stays plain text, because a confident wrong answer is worse than none.
+
+The terminal draws the same code blocks and asks the same question. Both faces
+share `util/syntax.cpp` and `util/code_lines.cpp`, so a keyword is the same
+color and a hunk starts on the same line in either -- only the painting differs.
+There the two files stack instead of sitting side by side, because eighty
+columns cannot hold both and stay readable, and the choice is a list you steer
+with the arrow keys rather than two panels you click:
+
+```
+  Create hello.py
+
+  python                                                    1 line
+  1 print("hello")
+
+  ❯ Create the file
+    Do not create it
+    arrows to choose, enter to take it · y / n · esc leaves it alone
+```
+
+`/auto` turns the asking off and on, and `/showthinking` and `/hidethinking` do
+for a model's working what the triangle does in the window. Two verbs rather
+than one toggle: a toggle has to be read before it can be used, and by the time
+you are asking which way it is set the answer has scrolled off the top.
 
 **Every turn can be stopped, asked again, or thrown away.** Hovering an exchange
 puts the controls for it at its top right, and nowhere else: a transcript with
@@ -344,6 +422,24 @@ failing five minutes into a build.
 | `even` | proportional to each card's memory, so they finish together |
 | `priority` | fill the cards in the order you list, spilling into the next only when one is full |
 | `single` | everything on **Main GPU** |
+
+Pick `priority` and the card list becomes an order you can rearrange with
+arrows: the card at the top is filled first, and the next one is only reached
+once it is full. In the other three modes the arrows are gone and the list is
+just the cards and what is free on each — an order nothing reads is a control
+that looks broken, because rearranging it changes nothing and nothing on screen
+says why. An index left over from a card that is no longer in the machine is
+dropped the moment Crucible can see the real hardware, so a stale entry cannot
+quietly shift everything below it.
+
+What priority decides is *how much* of the model each card gets, not which
+layers land on it. `tensor_split` is a proportion per device and llama.cpp walks
+devices in its own index order, so the card you put first gets the largest share
+and takes whichever layers fall to it.
+
+Crucible keeps 128 MiB per card in reserve when it checks whether a model will
+fit. It is deliberately small: a check that refuses a model which would have
+worked is worse than the abort it exists to prevent.
 
 ### Keeping the work on the GPU
 
@@ -513,9 +609,43 @@ Experts page, or by writing an entry here.
 },
 "tools": {
   "web_search": false,          // the only thing Crucible sends off the machine
-  "workshop_timeout": 120       // seconds before a stuck command is killed
+  "workshop_timeout": 120,      // seconds before a stuck command is killed
+  "overflow": "rolling"         // "rolling", "middle" or "stop" -- see below
 }
 ```
+
+### When the conversation outgrows the context
+
+A context window is finite and a conversation is not. Three quarters of the
+window is the conversation's; the last quarter is left for the answer, because a
+prompt that fills the window leaves nothing to reply with. What happens when the
+conversation wants more than its three quarters is yours to pick, under
+**Settings → Tools → Context** in the window and `Context overflow` in the
+terminal.
+
+| `overflow` | in settings | what it does |
+|---|---|---|
+| `rolling` | Rolling window | drop the oldest exchanges until it fits (the default) |
+| `middle` | Truncate middle | keep the beginning and the end, drop what is between |
+| `stop` | Stop at limit | drop nothing; refuse the turn and say so |
+
+`rolling` is right for a conversation where what was said an hour ago matters
+less than what was said a minute ago. `middle` is right for one that opened with
+something that has to survive — a specification, a file, a set of rules — and has
+since wandered. `stop` is for when a silently shortened conversation is worse
+than no answer: the model cannot tell you what it stopped being able to see, so
+the program says it instead and leaves the turn unrun.
+
+Two things are never dropped, whatever the setting: the system prompt and the
+question you just asked. Exchanges go whole, question and answer together — half
+an exchange is an answer with no question, which the model reads as something it
+got wrong. When a turn does drop something it says so in the transcript, on its
+own line under the route: *dropped 2 earlier exchanges to stay inside the
+context*.
+
+The counting is done by the expert's own tokenizer through its own chat
+template, not by an estimate — the figure being compared against the window is
+the figure the model will actually see.
 
 ## The delegator model
 
@@ -657,6 +787,7 @@ src/
 │   ├── engine.cpp        route -> JIT swap -> generate
 │   ├── engine_cook.cpp   the cook loop: act, read the result, act again
 │   ├── route_policy.cpp  what to do with the delegator's answer
+│   ├── overflow.cpp      making a conversation fit in the context window
 │   └── state.cpp         the only memory the two threads share
 ├── ui/                                            [UI thread]
 │   ├── app.cpp         shell, key handling, animation clock

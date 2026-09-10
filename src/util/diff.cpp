@@ -91,6 +91,18 @@ DiffStat diff_stat(std::string_view before, std::string_view after) {
     return stat;
 }
 
+ChangedLines changed_lines(std::string_view before, std::string_view after) {
+    const std::vector<std::string> old_lines = lines_of(before);
+    const std::vector<std::string> new_lines = lines_of(after);
+    const Span span = differing_span(old_lines, new_lines);
+
+    ChangedLines changed;
+    changed.first      = span.head;
+    changed.before_end = span.before_end;
+    changed.after_end  = span.after_end;
+    return changed;
+}
+
 std::string unified_diff(std::string_view before, std::string_view after,
                          std::size_t max_lines) {
     const std::vector<std::string> old_lines = lines_of(before);

@@ -213,16 +213,23 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
     // with twenty-six gigabytes already uploaded, which takes the process with
     // it and leaves nothing on screen to say why.
     //
-    // The reserve is what makes this honest about a card that is also driving
-    // a display. Its free memory is not a number, it is a number right now: a
-    // browser opening a video moves it by half a gigabyte, and the load being
-    // checked takes the better part of a minute to finish. Planning to the last
-    // byte on that card means a load that fitted when it was checked and does
-    // not by the time it lands.
-    const auto reserve_for = [](const ComputeDevice& gpu) {
-        return std::max<std::uint64_t>(256ULL << 20,
-                                       static_cast<std::uint64_t>(
-                                           static_cast<double>(gpu.memory_total) * 0.06));
+    // The reserve is a margin for a card whose free memory is still moving --
+    // a compositor redrawing, a browser opening a video -- because the load
+    // being checked takes the better part of a minute and the figure it was
+    // planned from is stale by the time the weights land.
+    //
+    // Small on purpose. It was six percent of each card, which on this machine
+    // is two and a third gigabytes across three cards, and that refused a model
+    // that fits: the 56B needs 8.18 GB of a card with 8.41 free, and six
+    // percent left it 7.71. A check that says no to something which would have
+    // worked is worse than the abort it exists to prevent -- the abort is rare
+    // and loud, the false refusal is quiet and happens every time.
+    //
+    // So the margin is what a desktop actually moves by, not a fraction of a
+    // card, and the planner's own kCardHeadroom sits on top of it for the
+    // arrangement it builds.
+    const auto reserve_for = [](const ComputeDevice&) {
+        return static_cast<std::uint64_t>(128ULL << 20);
     };
 
     for (const ComputeDevice* gpu : used) {

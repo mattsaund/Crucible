@@ -153,6 +153,15 @@ private:
     /// arriving while you are reading history does not yank you away from it.
     bool follow_          = true;
 
+    /// Which answer is under the cursor while an edit is waiting: 0 applies it,
+    /// 1 leaves the file alone. Arrow keys move it, Enter takes it.
+    ///
+    /// Starts on "apply" because that is the answer nine times in ten, and a
+    /// question whose common answer needs a keystroke to reach is a question
+    /// that gets in the way. Escape and Ctrl-C both mean no, so the careful
+    /// answer is never more than one key either.
+    int edit_choice_ = 0;
+
     /// Lines scrolled up from the bottom, when not following.
     int  scroll_          = 0;
 

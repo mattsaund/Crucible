@@ -142,15 +142,29 @@ void App::draw_settings_hardware() {
         }
     }
 
-    // The order is worth showing whatever the mode, because it is what
-    // "priority" will mean when it is selected -- but only priority reads it.
+    // The cards, and -- only in priority mode -- the arrows that order them.
+    //
+    // The arrows used to be here whatever the mode was, on the reasoning that
+    // the order is worth seeing because it is what priority *will* mean. That
+    // reads as a control that works: you rearrange the list, nothing changes,
+    // and nothing on screen says why. In every other mode the order is not
+    // consulted at all, so what is left is what those modes actually use --
+    // which cards there are and how big they are.
     if (gpus.size() > 1) {
         ImGui::Dummy(ImVec2(0, em(0.3F)));
-        text_colored(mode == GpuSplitMode::Priority ? theme::kText : theme::kTextFaint,
-                      "Priority order%s",
-                      mode == GpuSplitMode::Priority ? "" : "  (used by \"Priority order\")");
+        const bool ordering = mode == GpuSplitMode::Priority;
+        text_colored(ordering ? theme::kText : theme::kTextFaint,
+                      ordering ? "Priority order  --  filled top first" : "Cards");
 
-        const std::vector<int> order = full_order(gpus, config_.gpu.priority);
+        const std::vector<int> order =
+            ordering ? full_order(gpus, config_.gpu.priority) : std::vector<int>();
+
+        if (!ordering) {
+            for (const ComputeDevice& gpu : gpus) {
+                text_colored(theme::kTextDim, "   [%d] %s", gpu.index,
+                              gpu.label().c_str());
+            }
+        }
         for (std::size_t row = 0; row < order.size(); ++row) {
             const ComputeDevice* gpu = device_at(gpus, order[row]);
             if (gpu == nullptr) {

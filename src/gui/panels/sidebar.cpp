@@ -74,6 +74,39 @@ void App::draw_model_tree(const Snapshot& snapshot) {
     const float   left   = ImGui::GetCursorScreenPos().x;
     const float   right  = left + ImGui::GetContentRegionAvail().x;
 
+    // --- what it is doing --------------------------------------------------
+    //
+    // Above the delegator, because it is a sentence about the column below it:
+    // "loading gpt-oss-20b 40%" is about the row it sits over, and the row is
+    // where the eye already is when a model is being swapped in.
+    //
+    // It was in the top bar, which was the wrong place twice over. The bar is
+    // for things true of the whole window -- which project, which view -- and
+    // this is true of one model for thirty seconds. And it had to be elided to
+    // whatever room was left between a project path and the tabs, so the one
+    // message with a number in it was the one most likely to be cut.
+    //
+    // The row is always there, even when empty. A line that appears and
+    // disappears moves everything under it by one row each time, and the thing
+    // under it is the list you are watching.
+    {
+        const ImVec2 at   = ImGui::GetCursorScreenPos();
+        const float  wide = right - left - em(0.6F);
+        if (snapshot.busy) {
+            const std::string what = snapshot.status.empty()
+                                         ? std::string(mood_text(snapshot.mood))
+                                         : snapshot.status;
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wide);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(theme::kFlameBright));
+            ImGui::TextUnformatted(what.c_str());
+            ImGui::PopStyleColor();
+            ImGui::PopTextWrapPos();
+        } else {
+            ImGui::Dummy(ImVec2(wide, line));
+        }
+        (void)at;
+    }
+
     // --- the delegator -----------------------------------------------------
     //
     // Both headings are indented to the column the names are in, which is what
@@ -239,18 +272,39 @@ void App::draw_sidebar(const Snapshot& snapshot) {
     // position: the sidebar scrolls when the roster is long, and a footer
     // pinned to the window height ends up either overlapping the list or below
     // the visible area depending on how far it has scrolled.
-    const TokenUsage& usage = snapshot.session_usage;
-    const float footer = em(4.1F);
+    const float footer = em(4.4F);
     const float slack  = ImGui::GetContentRegionAvail().y - footer;
     if (slack > 0.0F) {
         ImGui::Dummy(ImVec2(0, slack));
     }
+    // Eject, immediately above the rule.
+    //
+    // Sized to its own word rather than to the panel: it is a small, occasional
+    // action, and a button stretched across a sidebar that can be dragged to
+    // four hundred pixels reads as the most important thing on the screen. The
+    // same shape and weight as Send, for the same reason -- a control you press
+    // once in a while should not be louder than the one you press every time.
+    {
+        const bool loaded = snapshot.resident.has_value() || snapshot.delegator_ready;
+        ImGui::BeginDisabled(!loaded);
+        if (ImGui::Button("Eject")) {
+            engine_->release_all();
+            say("unloaded every model");
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(
+            loaded ? "Unload every model and give the memory back.\nWhatever is needed "
+                     "comes back on the next prompt."
+                   : "Nothing is loaded.");
+    }
+    ImGui::Dummy(ImVec2(0, em(0.2F)));
+
     ImGui::Separator();
-    text_colored(theme::kTextFaint, "%s in / %s out",
-                  format_tokens(usage.input_tokens).c_str(),
-                  format_tokens(usage.output_tokens).c_str());
-    ImGui::SetItemTooltip("Tokens this session. The project's running total is in "
-                          "History.");
+
+    // The token counts used to be here. They are about the conversation rather
+    // than about the models, and they now sit under the box you type in --
+    // next to the context readout, which is the number they are read against.
+    ImGui::Dummy(ImVec2(0, em(0.1F)));
 
     ImGui::EndChild();
 }

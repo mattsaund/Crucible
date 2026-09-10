@@ -16,7 +16,7 @@
 #include <string_view>
 #include <vector>
 
-namespace crucible::gui {
+namespace crucible::syntax {
 
 /// One drawn line: what to color, and what to number it.
 struct CodeRow {
@@ -55,4 +55,4 @@ std::string diff_path(std::string_view text);
 std::vector<CodeRow> code_rows(std::string_view text, bool diff, int& added,
                                int& removed);
 
-}  // namespace crucible::gui
+}  // namespace crucible::syntax

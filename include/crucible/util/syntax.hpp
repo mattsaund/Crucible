@@ -22,7 +22,7 @@
 #include <string_view>
 #include <vector>
 
-namespace crucible::gui::syntax {
+namespace crucible::syntax {
 
 /// The languages worth telling apart.
 ///
@@ -63,6 +63,19 @@ Lang lang_from(std::string_view marker);
 /// What to call it in a code block's header. Empty for Lang::None.
 std::string_view lang_name(Lang lang);
 
+/// Guess the language from the code itself.
+///
+/// For the fence that says nothing. Models open a block with a bare ``` about
+/// as often as they name the language, and a block that is not colored because
+/// nobody said what it was looks like a block the program failed on -- the
+/// reader cannot tell "we did not know" from "we got it wrong".
+///
+/// Scored on marks that are close to unique to one language: a shebang, an
+/// `#include`, `fn main(`, `<?php`. A tie or a weak best guess returns None,
+/// which is the honest answer for a paragraph of English in a code fence, and
+/// leaves it drawn as plain text exactly as it is now.
+Lang sniff(std::string_view body);
+
 /// What one run of characters turned out to be.
 enum class Token {
     Text,
@@ -100,4 +113,4 @@ struct Carry {
 /// line, spacing and all.
 std::vector<Piece> highlight(std::string_view line, Lang lang, Carry& carry);
 
-}  // namespace crucible::gui::syntax
+}  // namespace crucible::syntax

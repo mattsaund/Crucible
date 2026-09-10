@@ -52,11 +52,32 @@ Element App::render_turn(const Turn& turn) const {
     // command it ran. Always shown, never folded away -- a local-first program
     // that reaches the internet or the disk owes the user a plain record of
     // when it did. Each line says what it was; there is no prefix to add.
-    for (const std::string& line : turn.actions) {
+    for (const TurnAction& action : turn.actions) {
         block.push_back(hbox({
             text("\u00b7 ") | color(theme::kRoute) | bold,
-            paragraph(line) | color(theme::kRoute) | flex,
+            paragraph(action.summary) | color(theme::kRoute) | flex,
         }));
+        // What it produced, kept rather than thrown away with the tool call.
+        // Indented and dimmed: the summary is the line you scan, this is the
+        // thing you stop and read.
+        std::size_t start = 0;
+        int shown = 0;
+        while (start <= action.body.size() && shown < 24) {
+            const std::size_t end = action.body.find('\n', start);
+            const std::string row = action.body.substr(
+                start, end == std::string::npos ? end : end - start);
+            block.push_back(hbox({
+                text("    "),
+                text(row) | color(row.rfind('+', 0) == 0   ? theme::kSeatActive
+                                  : row.rfind('-', 0) == 0 ? theme::kError
+                                                           : theme::kMeta),
+            }));
+            ++shown;
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
     }
 
     // A reasoning model's working, when there is any.
@@ -269,46 +290,58 @@ Element App::render_transcript(const Snapshot& snapshot) const {
 
     // Below the conversation, because it is the newest thing and the transcript
     // follows the bottom.
-    // The edit gate. The terminal cannot put two files side by side in eighty
-    // columns and stay readable, so it stacks them -- the question is the same
-    // one and the answer is typed rather than clicked.
+    // The edit gate.
+    //
+    // Eighty columns cannot hold two files side by side and stay readable, so
+    // they stack: what is there now, then what would replace it. A new file has
+    // only the second, and gets a plainer question to match -- there is nothing
+    // to compare it against, so "which of these" would be a question with one
+    // answer on screen.
+    //
+    // The choice is a list with the cursor on it rather than a line to type,
+    // because the engine is parked behind this and there is nothing else to do:
+    // a prompt that accepts arbitrary text implies you could type something
+    // else, and you cannot.
     if (snapshot.pending_edit) {
         const PendingEdit& edit = *snapshot.pending_edit;
+        const bool creating = edit.before.empty();
+
         rows.push_back(text(" "));
         rows.push_back(hbox({
-            text("   ? ") | color(theme::kAccent) | bold,
-            text(edit.before.empty() ? "create " : "rewrite ") | bold,
-            text(edit.path) | color(theme::kAccent) | bold,
+            text("  ") ,
+            text(creating ? "Create " : "Rewrite ") | color(theme::kAccent) | bold,
+            text(edit.path) | bold,
         }));
-        const auto listing = [&rows](const char* title, const std::string& body,
-                                     ftxui::Color tint) {
-            rows.push_back(hbox({text("     "), text(title) | color(tint) | bold}));
-            std::size_t start = 0;
-            int shown = 0;
-            while (start <= body.size() && shown < 20) {
-                const std::size_t end = body.find('\n', start);
-                rows.push_back(hbox({
-                    text("       "),
-                    text(std::string(body.substr(
-                        start, end == std::string::npos ? end : end - start)))
-                        | color(theme::kMeta),
-                }));
-                ++shown;
-                if (end == std::string::npos) {
-                    break;
-                }
-                start = end + 1;
-            }
-        };
-        if (!edit.before.empty()) {
-            listing("now", edit.before, theme::kError);
+        rows.push_back(text(" "));
+
+        if (!creating) {
+            rows.push_back(hbox({text("  "), text("now") | color(theme::kDiffRemoved)}));
+            rows.push_back(code_listing(edit.before, edit.path));
+            rows.push_back(text(" "));
+            rows.push_back(hbox({text("  "), text("proposed") | color(theme::kDiffAdded)}));
         }
-        listing("proposed", edit.after, theme::kSeatActive);
+        rows.push_back(code_listing(edit.after, edit.path));
+        rows.push_back(text(" "));
+
+        const char* options[2] = {
+            creating ? "Create the file" : "Apply the change",
+            creating ? "Do not create it" : "Keep the file as it is",
+        };
+        for (int i = 0; i < 2; ++i) {
+            const bool picked = i == edit_choice_;
+            Element row = hbox({
+                text(picked ? "  \u276f " : "    "),
+                text(options[i]),
+            });
+            rows.push_back(picked ? row | color(theme::kAccent) | bold
+                                  : row | color(theme::kMeta));
+        }
         rows.push_back(hbox({
-            text("     "),
-            text("type y to apply it, n to leave the file alone")
+            text("    "),
+            text("arrows to choose, enter to take it \u00b7 y / n \u00b7 esc leaves it alone")
                 | color(theme::kMeta) | dim,
         }));
+        rows.push_back(text(" "));
     }
 
     if (snapshot.cook) {

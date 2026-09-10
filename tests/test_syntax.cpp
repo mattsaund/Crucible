@@ -15,16 +15,17 @@
 // extension rather than by a fence.
 #include "test_helpers.hpp"
 
-#include "../src/gui/syntax.hpp"
+#include "crucible/util/syntax.hpp"
 
 namespace {
 
-using crucible::gui::syntax::Carry;
-using crucible::gui::syntax::Lang;
-using crucible::gui::syntax::Piece;
-using crucible::gui::syntax::Token;
-using crucible::gui::syntax::highlight;
-using crucible::gui::syntax::lang_from;
+using crucible::syntax::Carry;
+using crucible::syntax::Lang;
+using crucible::syntax::Piece;
+using crucible::syntax::Token;
+using crucible::syntax::highlight;
+using crucible::syntax::lang_from;
+using crucible::syntax::sniff;
 
 std::string joined(const std::vector<Piece>& pieces) {
     std::string out;
@@ -217,4 +218,52 @@ TEST(a_language_with_no_rules_leaves_the_line_alone) {
         highlight("error: expected ';' before '}' token", Lang::None, carry);
     CHECK_EQ(pieces.size(), std::size_t{1});
     CHECK(pieces.front().token == Token::Text);
+}
+
+// ---------------------------------------------------------------------------
+// Guessing the language when the fence did not say
+
+TEST(a_fence_that_names_nothing_is_still_recognized) {
+    // Models open a block with a bare ``` about as often as they name the
+    // language, and a block left gray because nobody told us reads as a block
+    // the program failed on -- the reader cannot tell "we did not know" from
+    // "we got it wrong".
+    CHECK(sniff("def add(a, b):\n    return a + b\n") == Lang::Python);
+    CHECK(sniff("#include <vector>\n\nint main() { return 0; }\n") == Lang::C);
+    CHECK(sniff("pub fn main() {\n    println!(\"hi\");\n}\n") == Lang::Rust);
+    CHECK(sniff("package main\n\nfunc main() {\n    fmt.Println(\"hi\")\n}\n") == Lang::Go);
+    CHECK(sniff("const x = 1;\nconsole.log(x);\n") == Lang::JavaScript);
+    CHECK(sniff("public class Main {\n  System.out.println(1);\n}\n") == Lang::Java);
+    CHECK(sniff("SELECT id FROM users WHERE age > 30;\n") == Lang::Sql);
+}
+
+TEST(a_shebang_settles_it_outright) {
+    // Which is the entire purpose of a shebang, and it beats every other mark
+    // in the file -- a bash script full of the word "import" is still bash.
+    CHECK(sniff("#!/usr/bin/env python3\nimport sys\n") == Lang::Python);
+    CHECK(sniff("#!/bin/bash\nset -eu\nimport_this=1\n") == Lang::Shell);
+    CHECK(sniff("#!/usr/bin/env node\n") == Lang::JavaScript);
+}
+
+TEST(a_diff_is_not_mistaken_for_the_language_it_patches) {
+    // The markers are in column one and would otherwise be colored as code.
+    CHECK(sniff("@@ -1,3 +1,4 @@\n def f():\n-    pass\n+    return 1\n") == Lang::Diff);
+    CHECK(sniff("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n") == Lang::Diff);
+}
+
+TEST(json_is_recognized_by_its_shape_rather_than_a_keyword) {
+    CHECK(sniff("{\n  \"name\": \"crucible\",\n  \"version\": 1\n}\n") == Lang::Json);
+    // A C struct initializer also starts with a brace; the semicolons say it is
+    // not JSON.
+    CHECK(sniff("{\n  int a = 1;\n}\n") != Lang::Json);
+}
+
+TEST(a_weak_guess_is_no_guess) {
+    // A paragraph of English with one "const" in it is not JavaScript, and
+    // coloring it as such is a confident wrong answer where plain text was the
+    // right one. Same for a block with nothing distinctive in it at all.
+    CHECK(sniff("This is a note about a const value in the design.") == Lang::None);
+    CHECK(sniff("hello world\n") == Lang::None);
+    CHECK(sniff("") == Lang::None);
+    CHECK(sniff("    \n  \n") == Lang::None);
 }

@@ -297,7 +297,14 @@ float App::composer_wanted_height(const Snapshot& snapshot) {
     const bool asking = cook && cook->state == CookState::Asking;
 
     if (view_ == View::Chat || asking) {
-        return pad + grow_input_height(prompt_, beside, kComposerLines);
+        // The chat composer carries a line under the box -- tokens in and out,
+        // and how full the context is -- and the box only gets the height asked
+        // for here. Leave that line out and it is drawn past the bottom edge of
+        // the child and clipped away, which looks exactly like a readout that
+        // was never written. Only chat has it; the same box in Cook does not.
+        const float readout =
+            view_ == View::Chat ? ImGui::GetTextLineHeightWithSpacing() : 0.0F;
+        return pad + grow_input_height(prompt_, beside, kComposerLines) + readout;
     }
     if (engine_->cooking()) {
         return pad + frame;   // just the two stop buttons
@@ -430,7 +437,7 @@ void App::draw() {
                  ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
     ImGui::PopStyleVar();
 
-    draw_topbar(snapshot);
+    draw_topbar();
 
     // Everything below the bar. A child of its own so the sidebar and the main
     // pane both measure their height against what is left rather than against

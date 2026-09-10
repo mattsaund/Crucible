@@ -16,15 +16,15 @@
 // `b/` is git's bookkeeping rather than part of the path.
 #include "test_helpers.hpp"
 
-#include "../src/gui/code_lines.hpp"
+#include "crucible/util/code_lines.hpp"
 
 namespace {
 
-using crucible::gui::CodeRow;
-using crucible::gui::code_rows;
-using crucible::gui::columns;
-using crucible::gui::diff_path;
-using crucible::gui::looks_like_diff;
+using crucible::syntax::CodeRow;
+using crucible::syntax::code_rows;
+using crucible::syntax::columns;
+using crucible::syntax::diff_path;
+using crucible::syntax::looks_like_diff;
 
 /// The rows of a diff, with the counts thrown away.
 std::vector<CodeRow> rows_of(const std::string& text, bool diff = true) {

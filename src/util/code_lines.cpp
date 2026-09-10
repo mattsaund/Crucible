@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-#include "code_lines.hpp"
+#include "crucible/util/code_lines.hpp"
 
 #include <algorithm>
 #include <cstdio>
 
-namespace crucible::gui {
+namespace crucible::syntax {
 namespace {
 
 /// The line starting at `start`, and where the next one starts.
@@ -182,4 +182,4 @@ std::vector<CodeRow> code_rows(std::string_view text, bool diff, int& added,
     return rows;
 }
 
-}  // namespace crucible::gui
+}  // namespace crucible::syntax

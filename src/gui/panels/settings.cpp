@@ -131,13 +131,18 @@ void App::draw_settings() {
                                   paths::models_dir().string().c_str());
             text_colored(theme::kTextFaint, "%zu GGUF files here", models_.size());
 
-            section("APPEARANCE");
-            bool reasoning = config_.ui.show_reasoning;
-            if (ImGui::Checkbox("Keep a thinking model's working on screen", &reasoning)) {
-                update_config([reasoning](Config& config) {
-                    config.ui.show_reasoning = reasoning;
-                });
-            }
+            // No "show reasoning" switch here any more.
+            //
+            // It was a switch for a thing that now has a triangle next to it on
+            // every turn, and the triangle remembers -- folding one reply's
+            // working away is what folds the next one's away too. A checkbox in
+            // Settings that does the same job as a control on the thing itself
+            // is a second place to look for one answer, and the one further from
+            // the work always loses.
+            //
+            // The terminal keeps its version of the switch, in /settings and as
+            // /thinking, because a terminal has nothing to click: there the flag
+            // is the whole mechanism rather than a starting position.
             break;
         }
 
@@ -201,6 +206,50 @@ void App::draw_settings() {
             }
             ImGui::SetItemTooltip("A build is minutes; a command still going after this "
                                   "is stuck.");
+
+            section("CONTEXT");
+            {
+                struct Choice { const char* id; const char* label; const char* why; };
+                static constexpr Choice kChoices[] = {
+                    {"rolling", "Rolling window",
+                     "Drop the oldest exchanges until it fits. Right for a "
+                     "conversation:\nwhat was said an hour ago matters less than what "
+                     "was said a minute ago."},
+                    {"middle", "Truncate middle",
+                     "Keep the beginning and the end, drop the middle.\nFor a "
+                     "conversation that opened with something that has to survive --\n"
+                     "a specification, a file, a set of rules."},
+                    {"stop", "Stop at limit",
+                     "Refuse rather than forget. Nothing is dropped and the turn does "
+                     "not run.\nFor work where a silently shortened context would be "
+                     "worse than no answer."},
+                };
+                const std::string current = config_.tools.overflow;
+                const char* shown = kChoices[0].label;
+                for (const Choice& choice : kChoices) {
+                    if (current == choice.id) {
+                        shown = choice.label;
+                    }
+                }
+                ImGui::SetNextItemWidth(em(16.0F));
+                if (ImGui::BeginCombo("When the conversation outgrows it", shown)) {
+                    for (const Choice& choice : kChoices) {
+                        if (ImGui::Selectable(choice.label, current == choice.id)) {
+                            const std::string id = choice.id;
+                            update_config([&id](Config& config) {
+                                config.tools.overflow = id;
+                            });
+                        }
+                        ImGui::SetItemTooltip("%s", choice.why);
+                    }
+                    ImGui::EndCombo();
+                }
+                for (const Choice& choice : kChoices) {
+                    if (current == choice.id) {
+                        wrapped(theme::kTextDim, choice.why);
+                    }
+                }
+            }
 
             section("WEB SEARCH");
             bool web = config_.tools.web_search;

@@ -568,19 +568,6 @@ void App::on_submit() {
         return;
     }
 
-    // An edit parked on approval takes the next thing typed as the answer, for
-    // the same reason a cook's question does: the screen is showing two files
-    // and asking which one you want, and nothing else typed under that would be
-    // a reasonable reading. Anything but a clear yes leaves the file alone,
-    // which is the safe way round for a question about overwriting something.
-    if (state_.snapshot().pending_edit) {
-        const bool yes = text == "y" || text == "Y" || text == "yes" || text == "apply";
-        engine_->approve_edit(yes);
-        say(yes ? "applied" : "left the file alone");
-        follow_ = true;
-        return;
-    }
-
     // A cook parked on a question takes the next thing typed as the answer.
     // Anything else would be strange: the screen is showing a question, and the
     // only reasonable reading of a line typed under it is that it answers it.
@@ -639,6 +626,49 @@ int App::run() {
         }
 
         // Modals are checked outermost-first, so the topmost one gets the key.
+
+        // An edit waiting for an answer sits above all of them, because the
+        // engine is parked on it: nothing else the user could do would make
+        // progress until it is answered, so nothing else gets the key.
+        if (const std::shared_ptr<const PendingEdit> edit = state_.pending_edit()) {
+            const auto answer = [this](bool approved) {
+                engine_->approve_edit(approved);
+                say(approved ? "applied" : "left the file alone");
+                edit_choice_ = 0;
+                follow_      = true;
+            };
+            // Both axes move it. The options are drawn as a column, so up and
+            // down are the obvious pair -- but a two-way choice invites left
+            // and right as well, and guessing wrong should not be a keystroke
+            // that does nothing.
+            if (event == Event::ArrowUp || event == Event::ArrowLeft) {
+                edit_choice_ = 0;
+                return true;
+            }
+            if (event == Event::ArrowDown || event == Event::ArrowRight) {
+                edit_choice_ = 1;
+                return true;
+            }
+            if (event == Event::Return) {
+                answer(edit_choice_ == 0);
+                return true;
+            }
+            // The shortcuts, for anyone who would rather say it than steer to
+            // it. Escape and Ctrl-C are both no: the way out of a question you
+            // did not want is the answer that changes nothing.
+            if (event == Event::Character('y') || event == Event::Character('Y')) {
+                answer(true);
+                return true;
+            }
+            if (event == Event::Character('n') || event == Event::Character('N')
+                || event == Event::Escape || event == Event::CtrlC) {
+                answer(false);
+                return true;
+            }
+            // Everything else is swallowed. A question with the engine held
+            // behind it is not a thing to type past.
+            return true;
+        }
 
         // The runtime panel sits above settings.
         if (runtimes_.active()) {
