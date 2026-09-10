@@ -91,6 +91,13 @@ private:
     /// Go to a settings page, remembering where to come back to.
     void show_settings(SettingsPage page);
 
+    /// The file an expert wants to change, as it is beside as it would be.
+    ///
+    /// Drawn under the transcript while the engine is parked waiting for an
+    /// answer. Two panels, two buttons, and no third option: the file stays as
+    /// it is, or it becomes the other one.
+    void draw_pending_edit(const PendingEdit& edit);
+
     /// The one line a working view shows when there is nothing in it yet.
     ///
     /// Three states, one line each, no paragraph under any of them. Two are a

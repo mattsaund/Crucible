@@ -81,7 +81,7 @@ std::vector<ComputeDevice> gpu_devices() {
         // driver's device id. Install CUDA and Vulkan together and every NVIDIA
         // card is reported twice; llama.cpp keeps the first of each, and a
         // split planned against a list it does not share would give every card
-        // the share meant for its neighbour.
+        // the share meant for its neighbor.
         const bool seen = std::any_of(gpus.begin(), gpus.end(),
                                       [&device](const ComputeDevice& other) {
                                           return !device.description.empty() &&
@@ -209,7 +209,7 @@ std::vector<std::uint64_t> usage_of(const std::vector<int>& counts,
 /// Move units off any card that is over its capacity.
 ///
 /// The greedy pass has to put every unit somewhere -- llama.cpp's split always
-/// normalises to one, so the last card in index order receives whatever the
+/// normalizes to one, so the last card in index order receives whatever the
 /// others declined whether it has room or not. On a machine where the model
 /// only just fits, that is exactly what happens: each earlier card stops one
 /// unit short of its limit and the last card inherits all of the slack at once.
@@ -310,7 +310,7 @@ std::vector<int> place_units(const std::vector<ComputeDevice>& gpus,
 
 /// Turn unit counts into the `tensor_split` that produces exactly them.
 ///
-/// llama.cpp makes the split cumulative, normalises it, and sends unit `i` to
+/// llama.cpp makes the split cumulative, normalizes it, and sends unit `i` to
 /// the first device whose cumulative share exceeds `i / total`. Feeding it the
 /// counts directly would put every boundary exactly on a comparison it is about
 /// to make in single precision, so each boundary is nudged half a unit clear of
@@ -346,9 +346,9 @@ std::vector<float> split_from_counts(const std::vector<int>& counts) {
     return split;
 }
 
-/// Normalise a set of weights into a split, or return nothing if they are all
+/// Normalize a set of weights into a split, or return nothing if they are all
 /// zero.
-std::vector<float> normalised(std::vector<float> weights) {
+std::vector<float> normalized(std::vector<float> weights) {
     const float total = std::accumulate(weights.begin(), weights.end(), 0.0F);
     if (total <= 0.0F) {
         return {};
@@ -482,7 +482,7 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
         for (const ComputeDevice& gpu : gpus) {
             equal[static_cast<std::size_t>(gpu.index)] = 1.0F;
         }
-        plan.split = normalised(std::move(equal));
+        plan.split = normalized(std::move(equal));
         return plan;
     }
 
@@ -503,7 +503,7 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
     for (std::size_t i = 0; i < width; ++i) {
         weights[i] = static_cast<float>(targets[i]);
     }
-    plan.split = normalised(std::move(weights));
+    plan.split = normalized(std::move(weights));
     return plan;
 }
 

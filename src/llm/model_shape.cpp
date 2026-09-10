@@ -275,7 +275,7 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
         BlockTensors& into = blocks[static_cast<std::size_t>(block)];
         into.weights += size;
 
-        // Only a projection counts as attention. A normalisation weight is
+        // Only a projection counts as attention. A normalization weight is
         // named attn_norm on blocks that never attend at all -- LFM2 puts one
         // on every short-convolution block -- and treating that as attention
         // would invent a cache for two blocks in three.

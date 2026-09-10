@@ -50,7 +50,7 @@ std::vector<std::string> prompts_of(const AppState& state) {
 std::size_t history_pairs(const AppState& state) {
     std::size_t pairs = 0;
     for (const Turn& turn : state.snapshot().turns) {
-        if (!turn.failed && !turn.cancelled && !turn.reply.empty()) {
+        if (!turn.failed && !turn.canceled && !turn.reply.empty()) {
             ++pairs;
         }
     }
@@ -119,7 +119,7 @@ TEST(a_stopped_turn_is_not_a_failed_one) {
     state.cancel_turn(1);
 
     const Snapshot snapshot = state.snapshot();
-    CHECK(snapshot.turns[1].cancelled);
+    CHECK(snapshot.turns[1].canceled);
     // Stopping is not an error and must not be dressed as one: "could not
     // load, turn off GPU-only compute" is bad advice to give somebody who
     // pressed stop.

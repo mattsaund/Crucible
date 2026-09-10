@@ -139,7 +139,7 @@ inline CookStep step_of(int iteration, const char* expert, const char* kind, con
 ///
 /// The seats vector is parallel to the roster the snapshot carries, and the
 /// roster is no longer a fixed order known at compile time, so a test that
-/// indexed by a hard-coded number would silently start reading its neighbour
+/// indexed by a hard-coded number would silently start reading its neighbor
 /// the first time a seat moved.
 inline SeatState seat_of(const Snapshot& snapshot, const ExpertId& id) {
     if (snapshot.roster) {

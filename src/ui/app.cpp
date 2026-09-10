@@ -197,7 +197,7 @@ Element App::render() {
     Elements rows;
 
     // Overlaid on the expert panel rather than given a column: a panel beside the
-    // ring would push Crucible off the centre it is arranged around, and the
+    // ring would push Crucible off the center it is arranged around, and the
     // space to the right of the table is empty anyway.
     // Only where there is room beside the table. Narrower than that and the two
     // would be drawn on top of each other, which is worse than not having it.
@@ -209,10 +209,10 @@ Element App::render() {
         Element meter = resource_meter(resources_.snapshot());
         // Its own column, not a dbox overlay.
         //
-        // Composited, the meter sat on top of whatever the centred panel
+        // Composited, the meter sat on top of whatever the centered panel
         // happened to reach underneath it, and on a wide terminal that is the
         // seat names: "Mathematics" rendered as "MatRTX 4070". Laid out beside
-        // the table instead, the panel centres in what is left over and
+        // the table instead, the panel centers in what is left over and
         // the two cannot collide however many seats the roster grows.
         return hbox({
             std::move(table) | flex,
@@ -265,7 +265,7 @@ Element App::render() {
 //
 // The matching itself is in completion.cpp, which knows nothing about
 // terminals. What is here is the part that has to: where the menu is drawn,
-// where the grey suffix lands relative to the cursor, and which keys mean
+// where the gray suffix lands relative to the cursor, and which keys mean
 // "take it".
 // ---------------------------------------------------------------------------
 
@@ -366,7 +366,7 @@ Element App::render_prompt() const {
     // content to keep the cursor in view, so a narrower box eats the leading
     // "/" instead.
     //
-    // Layering puts the first grey character *on* the cursor cell, which is
+    // Layering puts the first gray character *on* the cursor cell, which is
     // where it belongs: the cursor marks where typing would continue, and
     // where typing would continue is exactly the first suggested character.
     // The padding is emptyElement rather than spaces because dbox composites
@@ -541,7 +541,7 @@ void App::resume_session(const std::string& id) {
     std::vector<ChatMessage> history;
     for (const Turn& turn : turns) {
         state_.restore_turn(turn);
-        if (!turn.failed && !turn.cancelled && !turn.reply.empty()) {
+        if (!turn.failed && !turn.canceled && !turn.reply.empty()) {
             history.push_back({"user", turn.prompt});
             history.push_back({"assistant", turn.reply});
         }
@@ -565,6 +565,19 @@ void App::on_submit() {
     }
 
     if (handle_command(text)) {
+        return;
+    }
+
+    // An edit parked on approval takes the next thing typed as the answer, for
+    // the same reason a cook's question does: the screen is showing two files
+    // and asking which one you want, and nothing else typed under that would be
+    // a reasonable reading. Anything but a clear yes leaves the file alone,
+    // which is the safe way round for a question about overwriting something.
+    if (state_.snapshot().pending_edit) {
+        const bool yes = text == "y" || text == "Y" || text == "yes" || text == "apply";
+        engine_->approve_edit(yes);
+        say(yes ? "applied" : "left the file alone");
+        follow_ = true;
         return;
     }
 

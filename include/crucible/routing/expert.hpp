@@ -39,14 +39,14 @@ struct Expert {
     ///
     /// This is the single field that decides whether routing works. A vague
     /// blurb gives the delegator nothing to separate this seat from its
-    /// neighbours, which is why `/newexpert` asks for it in a box of its own
+    /// neighbors, which is why `/newexpert` asks for it in a box of its own
     /// rather than inferring it from the name.
     std::string blurb;
 
     /// Questions this expert should obviously take, as worked examples for the
     /// delegator.
     ///
-    /// Two of them, and the same number for every expert so none is favoured by
+    /// Two of them, and the same number for every expert so none is favored by
     /// having more. Measured on the 54-prompt benchmark with LFM2.5-1.2B: one
     /// example each scores 89% and never once reaches the ninth seat; two
     /// scores 96% and reaches every seat.
@@ -63,7 +63,7 @@ struct Expert {
 
 /// The live roster, in the order the seats are drawn.
 ///
-/// Every artefact the delegator consumes is generated from this list rather
+/// Every artifact the delegator consumes is generated from this list rather
 /// than stored beside it, so adding a seat cannot leave the system prompt
 /// describing eight experts while the label set offers nine.
 class Roster {

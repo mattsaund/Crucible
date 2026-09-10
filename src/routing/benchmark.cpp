@@ -47,7 +47,7 @@ const std::vector<RouteCase>& benchmark_cases() {
     {"biology", "how does photosynthesis convert light into sugar"},
 
     {"engineering", "what torque should I use on an M8 steel bolt"},
-    {"engineering", "how do I size a steel beam for a 3 metre span"},
+    {"engineering", "how do I size a steel beam for a 3 meter span"},
     {"engineering", "what gauge wire do I need for a 20 amp circuit"},
     {"engineering", "how do I choose a bearing for a rotating shaft"},
     {"engineering", "what tolerance should this press fit have"},
@@ -60,7 +60,7 @@ const std::vector<RouteCase>& benchmark_cases() {
     {"philosophy", "what makes an action morally right"},
     {"philosophy", "what is the mind-body problem"},
 
-    {"sociology", "how does urbanisation affect social mobility"},
+    {"sociology", "how does urbanization affect social mobility"},
     {"sociology", "what causes inflation in a modern economy"},
     {"sociology", "why do voter turnout rates differ between countries"},
     {"sociology", "what is the difference between a norm and a law"},
@@ -72,7 +72,7 @@ const std::vector<RouteCase>& benchmark_cases() {
     {"language", "when should I use a semicolon instead of a comma"},
     {"language", "rewrite this sentence in the active voice"},
     {"language", "what is the etymology of the word quarantine"},
-    {"language", "summarise this essay in two sentences"},
+    {"language", "summarize this essay in two sentences"},
 };
     return kCases;
 }
@@ -178,12 +178,12 @@ const Roster& benchmark_roster() {
             {"why did rents rise faster than wages",
              "what makes a protest movement succeed"},
             {"society","culture","class","institution","survey","demographic","inequality",
-             "norms","capitalism","policy","election","market","psychology","behaviour",
+             "norms","capitalism","policy","election","market","psychology","behavior",
              "behavior","community","migration","ethnography","bureaucracy",
              "socialization","urbanization","gdp","labor","kinship"}),
 
         seat("language", "Language", "LANG",
-            "writing, grammar, spelling, punctuation, a sentence, a paragraph, an essay, proofreading, editing, rewriting, tone, style, summarising, translation, a word or its meaning, literature",
+            "writing, grammar, spelling, punctuation, a sentence, a paragraph, an essay, proofreading, editing, rewriting, tone, style, summarizing, translation, a word or its meaning, literature",
             {"what is the difference between affect and effect",
              "what is the plural of octopus"},
             {"grammar","translate","essay","sentence","rhetoric","poem","metaphor",

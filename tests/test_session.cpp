@@ -277,7 +277,7 @@ TEST(a_session_round_trips_through_disk) {
     CHECK_EQ(loaded[1].output_tokens, 58);
     CHECK(loaded[1].route.has_value());
     CHECK_EQ(loaded[1].route->expert, ExpertId("mathematics"));
-    // How it was routed has to survive too: labelling a resumed turn
+    // How it was routed has to survive too: labeling a resumed turn
     // "fallback" when the delegator chose it is an untrue claim about history.
     CHECK_EQ(static_cast<int>(loaded[1].route->source), static_cast<int>(RouteSource::Model));
     CHECK(std::abs(loaded[1].route->confidence - 0.9F) < 0.001F);

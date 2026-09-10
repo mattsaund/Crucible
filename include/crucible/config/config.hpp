@@ -109,7 +109,7 @@ struct RoutingConfig {
 ///
 /// This is a property of the hardware rather than of any one model, so it is
 /// configured once and applied to every model that gets loaded. Per-model
-/// `tensor_split` values in the config file are only honoured while `mode` is
+/// `tensor_split` values in the config file are only honored while `mode` is
 /// "auto" -- otherwise this wins, and the settings screen is the one place the
 /// arrangement is decided.
 struct GpuConfig {
@@ -178,6 +178,26 @@ struct ToolsConfig {
     /// useful; one that does it eight times is stuck.
     int search_rounds = 2;
 
+    /// Apply a file edit without asking first.
+    ///
+    /// Off, every WRITE an expert makes in Chat stops and shows you the file as
+    /// it is beside the file as it would be, and nothing is written until you
+    /// pick one. On, the edit lands and you read about it afterwards.
+    ///
+    /// Off by default, because the two are not the same risk. Trusting a folder
+    /// says Crucible may work in it; it does not say every change an expert
+    /// proposes is one you wanted, and a model that rewrites the wrong file is
+    /// not a rare event -- it is a Tuesday. The toggle is in the chat bar rather
+    /// than buried here, because whether you are watching is a decision that
+    /// changes between one prompt and the next.
+    ///
+    /// A cook ignores this and always applies. A cook is an hour of work you
+    /// started and walked away from; stopping it on the first write to ask a
+    /// question nobody is there to answer would mean it never gets past the
+    /// first write. Its record is the journal, and every step in it expands to
+    /// the diff that step made.
+    bool auto_edits = false;
+
     /// Seconds a single command may take before it is killed. A build is
     /// minutes; a command still going after this is stuck, and a cook waiting
     /// on it has stopped cooking.
@@ -243,7 +263,7 @@ struct Config {
     ///
     /// Appended to the system prompt as `Reasoning: <level>`, which is where
     /// gpt-oss expects it. llama.cpp does not run the model's own jinja
-    /// template -- it recognises the harmony format and applies a built-in
+    /// template -- it recognizes the harmony format and applies a built-in
     /// formatter that emits no system preamble at all -- so the line has to be
     /// written into the system message rather than passed as a template
     /// argument. Measured on gpt-oss-20b: high produces more working than low
@@ -292,7 +312,7 @@ Config load_config(std::vector<std::string>& warnings);
 /// doubles as the reference for what is tunable.
 void write_default_config(const std::filesystem::path& file);
 
-/// Serialise `config` back to disk. This is what the in-app settings editor
+/// Serialize `config` back to disk. This is what the in-app settings editor
 /// calls, so it must round-trip everything the loader understands.
 /// Returns false if the file could not be written.
 bool save_config(const Config& config, const std::filesystem::path& file);

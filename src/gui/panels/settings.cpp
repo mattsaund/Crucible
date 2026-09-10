@@ -100,7 +100,7 @@ void App::draw_settings() {
                 "Below this the delegator is treated as undecided. 0 disables the check.");
 
             section("MODELS");
-            text_coloured(theme::kTextDim, "%s",
+            text_colored(theme::kTextDim, "%s",
                           config_.resolved_models_dir().string().c_str());
             std::string dir = config_.models_dir;
             ImGui::SetNextItemWidth(-em(7.5F));
@@ -129,7 +129,7 @@ void App::draw_settings() {
             }
             ImGui::SetItemTooltip("Back to %s",
                                   paths::models_dir().string().c_str());
-            text_coloured(theme::kTextFaint, "%zu GGUF files here", models_.size());
+            text_colored(theme::kTextFaint, "%zu GGUF files here", models_.size());
 
             section("APPEARANCE");
             bool reasoning = config_.ui.show_reasoning;
@@ -187,7 +187,7 @@ void App::draw_settings() {
             // Trust is the decision; this page keeps the one number that is
             // genuinely a preference.
             section("PROJECT");
-            text_coloured(theme::kFlame, "%s", store_->project().root.string().c_str());
+            text_colored(theme::kFlame, "%s", store_->project().root.string().c_str());
             wrapped(theme::kTextDim,
                     "Experts can read, write and run things here because you trusted "
                     "this folder. Paths outside it are refused.");
@@ -288,15 +288,15 @@ void App::draw_settings() {
                     "cook loop, same config file.");
 
             section("FILES");
-            text_coloured(theme::kTextDim, "config    %s",
+            text_colored(theme::kTextDim, "config    %s",
                           paths::config_file().string().c_str());
-            text_coloured(theme::kTextDim, "models    %s",
+            text_colored(theme::kTextDim, "models    %s",
                           config_.resolved_models_dir().string().c_str());
-            text_coloured(theme::kTextDim, "runtimes  %s",
+            text_colored(theme::kTextDim, "runtimes  %s",
                           paths::runtimes_dir().string().c_str());
-            text_coloured(theme::kTextDim, "history   %s",
+            text_colored(theme::kTextDim, "history   %s",
                           store_->project().dir.string().c_str());
-            text_coloured(theme::kTextDim, "log       %s",
+            text_colored(theme::kTextDim, "log       %s",
                           paths::log_file().string().c_str());
 
             section("TRUSTED FOLDERS");
@@ -304,7 +304,7 @@ void App::draw_settings() {
                     "Crucible asks once per directory before it will read or write "
                     "there. These are the ones you have said yes to.");
             for (const std::filesystem::path& entry : trust_.entries()) {
-                text_coloured(theme::kTextFaint, "%s", entry.string().c_str());
+                text_colored(theme::kTextFaint, "%s", entry.string().c_str());
             }
             break;
         }

@@ -3,7 +3,7 @@
   Crucible's mark, for the application menu.
 
   The two paths are the same control points as flame_path() in
-  src/gui/theme.cpp, at the same proportions and in the same two colours, so the
+  src/gui/theme.cpp, at the same proportions and in the same two colors, so the
   icon in the launcher is the mark the window draws rather than a lookalike. The
   body leans one way and the core, a little under half the size, leans the
   other, so the two edges cross rather than nest.

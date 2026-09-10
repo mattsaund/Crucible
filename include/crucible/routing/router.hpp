@@ -46,7 +46,7 @@ struct RouteDecision {
 
 std::string_view route_source_name(RouteSource source);
 
-/// The inverse, for reading a stored session back. An unrecognised name is
+/// The inverse, for reading a stored session back. An unrecognized name is
 /// Fallback, which is the honest answer for "this came from somewhere we no
 /// longer understand".
 RouteSource route_source_from_name(std::string_view name);
@@ -60,7 +60,7 @@ RouteSource route_source_from_name(std::string_view name);
 /// channel marker, so `<|start|>assistant` is followed by `<|channel|>` and
 /// never by a word. Nine subject names compared at that position are nine
 /// things that all essentially cannot happen, and the ranking between them is
-/// tokenisation noise.
+/// tokenization noise.
 ///
 /// Measured: gpt-oss-20b as the delegator scored 13% -- barely above the 11%
 /// that guessing gives -- and put 52 of 54 prompts in one seat. With the header

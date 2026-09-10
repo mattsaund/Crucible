@@ -3,7 +3,7 @@
 // Slash-command completion.
 //
 // Typing "/" opens a list of what could follow it, narrowing as more is typed,
-// with the rest of the best match shown in grey after the cursor. Tab takes it.
+// with the rest of the best match shown in gray after the cursor. Tab takes it.
 //
 // This file is the single list of commands Crucible has: /help prints it and the
 // completion menu offers it, so a command cannot exist in one and not the
@@ -54,7 +54,7 @@ std::vector<CommandInfo> command_matches(std::string_view input, const Roster& r
 /// nothing to add.
 ///
 /// Returns only the *added* text, not the whole line, so the caller appends
-/// rather than replaces -- which is also exactly what is drawn in grey.
+/// rather than replaces -- which is also exactly what is drawn in gray.
 std::string command_completion(std::string_view input, const CommandInfo& choice);
 
 }  // namespace crucible::ui

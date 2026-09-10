@@ -388,7 +388,7 @@ TEST(a_gpu_line_becomes_a_reading) {
 }
 
 TEST(a_card_that_reports_no_sensor_is_not_a_parse_failure) {
-    // Plenty of cards report no temperature, and some report no utilisation.
+    // Plenty of cards report no temperature, and some report no utilization.
     // That is a fact about the card, and the memory figures are still wanted.
     util::ResourceSample sample;
     CHECK(util::parse_gpu_line("Quadro K600, 100, 1024, [N/A], [N/A]", sample));
@@ -440,7 +440,7 @@ TEST(macos_page_counts_become_bytes_used) {
     // anything anyone wants, which is 175 of the 1000 pages.
     CHECK_EQ(used, std::uint64_t{825} * page);
 
-    // Nothing recognisable is not a reading, however long the text is.
+    // Nothing recognizable is not a reading, however long the text is.
     CHECK(!util::parse_vm_stat("no pages here\n", page, total, used));
     CHECK(!util::parse_vm_stat(vm_stat, page, /*total=*/0, used));
 }

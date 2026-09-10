@@ -22,7 +22,7 @@ namespace crucible::gui {
 
 /// Render `text` as markdown at the current cursor.
 ///
-/// `base` is the colour ordinary prose takes; headings, code and quotes have
+/// `base` is the color ordinary prose takes; headings, code and quotes have
 /// their own. Consumes the full available width and advances the cursor past
 /// what it drew.
 void draw_markdown(std::string_view text, ImU32 base);
@@ -36,9 +36,9 @@ void draw_markdown(std::string_view text, ImU32 base);
 ///
 /// The block draws its own header (the language, the file it belongs to, how
 /// long it is, a button that copies it), numbers every line down the left, and
-/// colours the code with gui/syntax.hpp. Unified diffs are recognised without
+/// colors the code with gui/syntax.hpp. Unified diffs are recognized without
 /// being told: the marker in column one turns into a gutter of old and new line
-/// numbers and a washed row, and the code on the row is still syntax-coloured,
+/// numbers and a washed row, and the code on the row is still syntax-colored,
 /// because an added line you cannot read is not much of an improvement on a
 /// removed one.
 ///

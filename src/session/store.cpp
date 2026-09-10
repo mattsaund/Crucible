@@ -117,7 +117,7 @@ json turn_to_json(const Turn& turn) {
         {"output_tokens", turn.output_tokens},
         {"tokens_per_second", turn.tokens_per_second},
         {"load_ms", turn.load_ms},
-        {"cancelled", turn.cancelled},
+        {"canceled", turn.canceled},
         {"failed", turn.failed},
     };
     if (turn.route) {
@@ -138,7 +138,7 @@ Turn turn_from_json(const json& entry) {
     turn.output_tokens     = entry.value("output_tokens", 0);
     turn.tokens_per_second = entry.value("tokens_per_second", 0.0);
     turn.load_ms           = entry.value("load_ms", 0L);
-    turn.cancelled         = entry.value("cancelled", false);
+    turn.canceled         = entry.value("canceled", false);
     turn.failed            = entry.value("failed", false);
 
     if (const auto route = entry.find("route"); route != entry.end() && route->is_object()) {
@@ -167,7 +167,7 @@ Turn turn_from_json(const json& entry) {
 // ---------------------------------------------------------------------------
 
 Project Project::at(const std::filesystem::path& root) {
-    // Normalised, so that /home/me/proj and /home/me/proj/ are one project
+    // Normalized, so that /home/me/proj and /home/me/proj/ are one project
     // rather than two histories that never see each other.
     std::error_code ec;
     std::filesystem::path resolved = std::filesystem::weakly_canonical(root, ec);
@@ -224,7 +224,7 @@ std::vector<Project> recent_projects(std::size_t limit) {
         }
         const std::filesystem::path root = entry.get<std::string>();
         std::error_code ec;
-        // Dropped rather than shown greyed out. A list whose entries open onto
+        // Dropped rather than shown grayed out. A list whose entries open onto
         // nothing is worse than a short one.
         if (!std::filesystem::is_directory(root, ec)) {
             continue;

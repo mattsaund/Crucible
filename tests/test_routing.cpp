@@ -262,12 +262,12 @@ TEST(worked_examples_are_parsed_out_of_whatever_the_model_replied_with) {
     // questions and told not to decorate them.
     const std::vector<std::string> got = parse_examples(
         "Here are two questions:\n"
-        "1. What preload should an M8 bolt take in aluminium?\n"
+        "1. What preload should an M8 bolt take in aluminum?\n"
         "2) \"How do I damp a resonant bracket at 40Hz?\"\n"
         "- a third one that should not be kept\n");
 
     CHECK_EQ(got.size(), std::size_t{2});
-    CHECK_EQ(got[0], std::string("What preload should an M8 bolt take in aluminium?"));
+    CHECK_EQ(got[0], std::string("What preload should an M8 bolt take in aluminum?"));
     CHECK_EQ(got[1], std::string("How do I damp a resonant bracket at 40Hz?"));
 }
 
@@ -275,9 +275,9 @@ TEST(a_preamble_line_is_not_mistaken_for_a_question) {
     // A line ending in a colon is the model introducing its list, and a very
     // short line is not a question worth showing a delegator.
     const std::vector<std::string> got = parse_examples(
-        "Sure, here you go:\nok\nWhat is the yield strength of 6061-T6 aluminium?\n");
+        "Sure, here you go:\nok\nWhat is the yield strength of 6061-T6 aluminum?\n");
     CHECK_EQ(got.size(), std::size_t{1});
-    CHECK_EQ(got[0], std::string("What is the yield strength of 6061-T6 aluminium?"));
+    CHECK_EQ(got[0], std::string("What is the yield strength of 6061-T6 aluminum?"));
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +318,7 @@ TEST(router_labels_name_every_seat_in_roster_order) {
 }
 
 TEST(router_labels_carry_no_padding) {
-    // A leading or trailing space changes how a label tokenises, which would
+    // A leading or trailing space changes how a label tokenizes, which would
     // score it at a position the model was never shown.
     for (const std::string& label : testing::sample_roster().router_labels()) {
         CHECK(!label.empty());
@@ -447,7 +447,7 @@ TEST(every_expert_gets_the_same_number_of_worked_examples) {
     const std::vector<std::pair<std::string, std::string>> examples = roster.router_examples();
 
     // The same number each, because a seat with more examples than its
-    // neighbours is a seat the delegator is being nudged towards -- and the
+    // neighbors is a seat the delegator is being nudged towards -- and the
     // nudge is invisible in the score until another seat stops being reachable.
     CHECK_EQ(examples.size(), roster.size() * 2);
 
@@ -759,7 +759,7 @@ TEST(the_delegator_prompt_survives_having_no_experts_to_describe) {
 }
 
 TEST(an_uncertain_route_with_no_default_is_taken_at_face_value) {
-    // The old behaviour sent this to a built-in Fallback seat that on most
+    // The old behavior sent this to a built-in Fallback seat that on most
     // installs had no model either, so the prompt failed instead of being
     // answered by the delegator's best guess. With nothing nominated, the guess
     // stands and the transcript records the doubt.
@@ -860,7 +860,7 @@ TEST(module_names_match_the_convention_ggml_loads_by) {
 // ---------------------------------------------------------------------------
 // Slash-command completion
 //
-// The menu and the grey suggestion after the cursor both come from these two
+// The menu and the gray suggestion after the cursor both come from these two
 // functions, so what they refuse to offer matters as much as what they offer.
 // ---------------------------------------------------------------------------
 
@@ -896,7 +896,7 @@ TEST(nothing_is_offered_once_the_command_is_settled) {
     // A space means the user has moved on to the argument, and the menu gets
     // out of the way. This is over-determined -- typed_word() bails on a space
     // and no command name contains one, so prefix matching would reject these
-    // anyway. Kept because it is the behaviour a reader wants pinned, not
+    // anyway. Kept because it is the behavior a reader wants pinned, not
     // because either mechanism alone is in doubt.
     CHECK(ui::command_matches("/physics why is the sky blue", *shipped()).empty());
     CHECK(ui::command_matches("/help ", *shipped()).empty());
@@ -916,7 +916,7 @@ TEST(completion_is_case_insensitive_like_the_commands_themselves) {
 }
 
 TEST(completion_returns_only_what_is_missing) {
-    // The caller appends it and draws it in grey, so returning the whole
+    // The caller appends it and draws it in gray, so returning the whole
     // command would double the part already typed.
     const ui::CommandInfo resume{"resume", "", false};
     CHECK(ui::command_completion("/re", resume) == "sume");

@@ -216,7 +216,7 @@ std::vector<Block> parse(std::string_view text) {
         text.remove_suffix(1);
     }
 
-    // Split first, because a table cannot be recognised a line at a time: what
+    // Split first, because a table cannot be recognized a line at a time: what
     // makes a row of pipes a table is the `|---|` under it, and that is the
     // next line.
     std::vector<std::string_view> lines;

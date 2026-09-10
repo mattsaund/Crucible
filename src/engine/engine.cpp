@@ -21,6 +21,9 @@
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
 #include "crucible/tools/workshop.hpp"
+
+#include <fstream>
+#include <sstream>
 #include "crucible/runtime/registry.hpp"
 
 namespace crucible {
@@ -96,6 +99,8 @@ void Engine::stop() {
     }
     cancel_.store(true, std::memory_order_relaxed);
     queued_.notify_all();
+    edit_answered_.notify_all();
+    cook_answered_.notify_all();
     if (worker_.joinable()) {
         worker_.join();
     }
@@ -147,6 +152,9 @@ Config Engine::config() const {
 
 void Engine::cancel() {
     cancel_.store(true, std::memory_order_relaxed);
+    // A turn parked on an edit is inside await_edit_approval, not looking at
+    // the flag. Waking it is what lets Stop end a turn that is waiting on you.
+    edit_answered_.notify_all();
 }
 
 void Engine::release_expert() {
@@ -174,6 +182,64 @@ void Engine::reload_models() {
 void Engine::reset_history() {
     const std::lock_guard<std::mutex> lock(mutex_);
     history_.clear();
+}
+
+void Engine::approve_edit(bool approved) {
+    {
+        const std::lock_guard<std::mutex> lock(edit_mutex_);
+        edit_approved_ = approved;
+    }
+    edit_answered_.notify_all();
+}
+
+bool Engine::await_edit_approval(const tools::ToolCall& call,
+                                 const tools::WorkshopSettings& workshop) {
+    // What the file is now, so the two can be shown side by side. A path that
+    // does not resolve inside the root is not a question to put to the user --
+    // run_tool would refuse it anyway, and asking would be asking them to
+    // approve something that cannot happen.
+    const std::optional<std::filesystem::path> target =
+        tools::resolve_in_root(workshop.root, call.argument);
+    if (!target) {
+        return true;   // let run_tool produce the refusal and its explanation
+    }
+
+    auto edit    = std::make_shared<PendingEdit>();
+    edit->path   = call.argument;
+    edit->after  = call.content;
+    if (std::ifstream in(*target, std::ios::binary); in) {
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        edit->before = buffer.str();
+    }
+
+    state_.set_pending_edit(edit);
+    state_.set_mood(Mood::Idle, "waiting on you: " + call.argument);
+    if (wake_) {
+        wake_();
+    }
+
+    bool approved = false;
+    {
+        std::unique_lock<std::mutex> lock(edit_mutex_);
+        edit_answered_.wait(lock, [this] {
+            // Canceling and shutting down both release the wait. Without them
+            // a turn parked on a question nobody is going to answer holds the
+            // worker thread for the life of the process -- which is the exact
+            // shape of the freeze that the loader used to have.
+            return edit_approved_.has_value()
+                || cancel_.load(std::memory_order_relaxed)
+                || !running_.load(std::memory_order_relaxed);
+        });
+        approved = edit_approved_.value_or(false);
+        edit_approved_.reset();
+    }
+
+    state_.set_pending_edit(nullptr);
+    if (wake_) {
+        wake_();
+    }
+    return approved;
 }
 
 void Engine::restore_history(std::vector<ChatMessage> history) {
@@ -599,7 +665,7 @@ void Engine::handle(const Request& request) {
     }
 
     if (cancel_.load(std::memory_order_relaxed)) {
-        state_.fail_turn(turn, "cancelled before routing finished");
+        state_.fail_turn(turn, "canceled before routing finished");
         state_.set_linked(std::nullopt);
         state_.set_mood(Mood::Idle);
         return;
@@ -651,7 +717,7 @@ void Engine::handle(const Request& request) {
         state_.set_seat(decision.expert, SeatPhase::Dormant);
         state_.set_linked(std::nullopt);
         // A load the user stopped is not an error to be explained, and the
-        // turn it belonged to should read as cancelled rather than failed.
+        // turn it belonged to should read as canceled rather than failed.
         if (error == "stopped") {
             state_.cancel_turn(turn);
             state_.set_mood(Mood::Idle);
@@ -798,17 +864,17 @@ void Engine::handle(const Request& request) {
         stats.output_tokens += pass.output_tokens;
         stats.prompt_ms     += pass.prompt_ms;
         stats.output_ms     += pass.output_ms;
-        stats.cancelled      = pass.cancelled;
+        stats.canceled      = pass.canceled;
         stats.hit_limit      = pass.hit_limit;
 
-        if (pass.cancelled || round + 1 >= rounds) {
+        if (pass.canceled || round + 1 >= rounds) {
             break;
         }
 
         // --- did it reach for the project? ---------------------------------
         //
         // Checked before the search, because SEARCH is one of the verbs
-        // parse_tool_call recognises and the search path below has bookkeeping
+        // parse_tool_call recognizes and the search path below has bookkeeping
         // of its own -- rounds, repeats, the last-search warning -- that the
         // file verbs do not want.
         if (const std::optional<tools::ToolCall> call =
@@ -827,6 +893,28 @@ void Engine::handle(const Request& request) {
             state_.set_mood(Mood::Thinking, doing);
             if (wake_) {
                 wake_();
+            }
+
+            // --- the gate ---------------------------------------------
+            //
+            // A write is the one tool call that changes something the user owns,
+            // so it is the one that stops and asks -- unless they have said not
+            // to. Everything else (reading, listing, running) either changes
+            // nothing or was already agreed to by trusting the folder.
+            if (call->kind == tools::ToolKind::Write && !config_.tools.auto_edits
+                && !await_edit_approval(*call, workshop)) {
+                state_.add_action(turn, "declined the edit to " + call->argument);
+                state_.set_reply(turn, {});
+                messages.push_back({"assistant", answer});
+                messages.push_back(
+                    {"user", "The user declined that edit; the file is unchanged. Do "
+                             "not try the same write again. Either explain what you "
+                             "were going to change and why, or propose something "
+                             "different."});
+                if (wake_) {
+                    wake_();
+                }
+                continue;
             }
 
             const tools::ToolResult result = tools::run_tool(
@@ -921,12 +1009,12 @@ void Engine::handle(const Request& request) {
 
     state_.finish_turn(turn, stats, load_ms);
 
-    // Only remember exchanges that actually produced an answer, so a cancelled
+    // Only remember exchanges that actually produced an answer, so a canceled
     // turn -- or one that spent its whole budget thinking -- does not poison
     // the context of the next one. Read before the placeholder below is put in
     // its place: what goes into history has to be what the model said, not what
     // Crucible said about it.
-    if (!stats.cancelled && stats.output_tokens > 0) {
+    if (!stats.canceled && stats.output_tokens > 0) {
         const Snapshot current = state_.snapshot();
         if (turn < current.turns.size() && !current.turns[turn].reply.empty()) {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -943,7 +1031,7 @@ void Engine::handle(const Request& request) {
     // spend its last round asking to search again rather than answering; and a
     // raw "SEARCH: ..." line is the one thing that must never be shown as an
     // answer. Naming the wrong one sends the reader to the wrong setting.
-    if (!stats.cancelled && stats.output_tokens > 0) {
+    if (!stats.canceled && stats.output_tokens > 0) {
         const Snapshot current = state_.snapshot();
         if (turn < current.turns.size()) {
             const Turn&        finished = current.turns[turn];
@@ -1009,7 +1097,7 @@ void Engine::handle(const Request& request) {
     // the weights are still in memory is a separate question, and the status
     // bar is where it is answered.
     state_.set_linked(std::nullopt);
-    state_.set_mood(Mood::Idle, stats.cancelled ? "cancelled" : "");
+    state_.set_mood(Mood::Idle, stats.canceled ? "canceled" : "");
 }
 
 }  // namespace crucible

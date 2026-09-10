@@ -105,8 +105,8 @@ Element GpuOrderView::render_gpu(std::size_t position) const {
     std::string rank = std::to_string(position + 1) + ".";
     rank.resize(3, ' ');
 
-    // Highlighted rows need the readable shade of grey: kMeta is the same
-    // colour as the highlight itself.
+    // Highlighted rows need the readable shade of gray: kMeta is the same
+    // color as the highlight itself.
     const bool lit = selected || held;
 
     Elements meta;

@@ -47,7 +47,7 @@ public:
     /// with no description, which is the one field that has to be there.
     ///
     /// Returns the filled form once committed, and nothing while it is still
-    /// open or was cancelled.
+    /// open or was canceled.
     std::optional<Result> handle(const ftxui::Event& event);
 
     /// Show why the last attempt was refused. The form stays open with what was

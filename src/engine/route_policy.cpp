@@ -30,7 +30,7 @@ RouteDecision apply_route_policy(const RouteDecision& proposed, const Config& co
     //
     // With no default expert set there is nothing better to do than take the
     // answer, so the route stands and the detail records the doubt. That is a
-    // change from the old behaviour, which sent it to a built-in Fallback seat
+    // change from the old behavior, which sent it to a built-in Fallback seat
     // that on most installs had no model either -- so the prompt failed instead
     // of being answered by the delegator's best guess.
     if (decision.source == RouteSource::Model && config.routing.min_confidence > 0.0F

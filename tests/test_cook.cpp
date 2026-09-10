@@ -262,7 +262,7 @@ std::string flat(const markdown::Block& block) {
 
 }  // namespace
 
-TEST(headings_lists_and_rules_are_recognised) {
+TEST(headings_lists_and_rules_are_recognized) {
     const std::vector<markdown::Block> blocks = markdown::parse(
         "## What a pointer is\n"
         "\n"
@@ -295,7 +295,7 @@ TEST(headings_lists_and_rules_are_recognised) {
     CHECK_EQ(flat(blocks.front()), "What a pointer is");
 }
 
-TEST(a_table_is_recognised_by_the_row_under_its_header) {
+TEST(a_table_is_recognized_by_the_row_under_its_header) {
     const std::vector<markdown::Block> blocks = markdown::parse(
         "| Planet | Radius (km) | Moons |\n"
         "|--------|------------:|:-----:|\n"

@@ -109,7 +109,7 @@ TEST(every_byte_of_every_line_comes_back_out) {
 }
 
 TEST(a_line_that_is_all_one_thing_is_one_piece) {
-    // Runs of the same colour are merged as they are appended. Without that a
+    // Runs of the same color are merged as they are appended. Without that a
     // line of forty brackets is forty draw calls saying one thing, and the
     // renderer measures each of them.
     Carry carry;
@@ -130,7 +130,7 @@ TEST(a_block_comment_stays_open_across_lines) {
     CHECK_EQ(pieces.size(), std::size_t{1});
     CHECK(pieces.front().token == Token::Comment);
 
-    // And it closes, with the code after it coloured again.
+    // And it closes, with the code after it colored again.
     pieces = highlight("*/ int x = 1;", Lang::C, carry);
     CHECK(!carry.in_comment);
     CHECK(holds(pieces, "int", Token::Type));
@@ -184,7 +184,7 @@ TEST(the_language_can_be_named_by_a_fence_or_by_a_file) {
     CHECK(lang_from("") == Lang::None);
 }
 
-TEST(the_obvious_things_get_the_obvious_colours) {
+TEST(the_obvious_things_get_the_obvious_colors) {
     Carry carry;
     const std::vector<Piece> c = highlight("static int count = 42;  // how many",
                                            Lang::C, carry);
@@ -210,8 +210,8 @@ TEST(the_obvious_things_get_the_obvious_colours) {
 
 TEST(a_language_with_no_rules_leaves_the_line_alone) {
     // Lang::None is what an unknown fence and a plain command's output get, and
-    // it has to be one untouched run -- a shell transcript coloured as though
-    // it were C is worse than no colour at all.
+    // it has to be one untouched run -- a shell transcript colored as though
+    // it were C is worse than no color at all.
     Carry carry;
     const std::vector<Piece> pieces =
         highlight("error: expected ';' before '}' token", Lang::None, carry);

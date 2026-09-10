@@ -2,18 +2,18 @@
 //
 // The desktop application's palette and its mark.
 //
-// The same three colours the terminal uses, in the same roles: black is the
+// The same three colors the terminal uses, in the same roles: black is the
 // ground, white is everything neutral, orange is heat and heat means work. The
-// terminal expresses that in 256-colour indices because that is what a terminal
+// terminal expresses that in 256-color indices because that is what a terminal
 // has; here they are the exact RGB those indices name, so the two faces of
-// Crucible are recognisably one program.
+// Crucible are recognizably one program.
 #pragma once
 
 #include <imgui.h>
 
 namespace crucible::gui::theme {
 
-// The palette, as the 256-colour indices the TUI uses actually render.
+// The palette, as the 256-color indices the TUI uses actually render.
 // DarkOrange is 208 (#ff8700), Orange1 is 214 (#ffaf00), OrangeRed1 is 202
 // (#ff5f00). Keeping the numbers identical is what stops the two faces drifting
 // into two different oranges.
@@ -32,14 +32,14 @@ constexpr ImU32 kTextFaint  = IM_COL32(0x5A, 0x5A, 0x60, 0xFF);
 
 // --- inside a code block ---------------------------------------------------
 //
-// Everything above is chrome, and chrome keeps the rule: one saturated colour,
+// Everything above is chrome, and chrome keeps the rule: one saturated color,
 // spent on what is running. A code block is not chrome. It is the thing the
 // reader came for, it is read a token at a time rather than glanced at, and
 // telling a string from a keyword from a comment is a job that hue does and
 // weight cannot -- a monospace family has one weight of meaning to give and
 // markdown already spent it on **bold**.
 //
-// So the relaxation is scoped: these colours appear between the borders of a
+// So the relaxation is scoped: these colors appear between the borders of a
 // code block and nowhere else, which is why the interface still reads as black,
 // white and orange from across the room.
 constexpr ImU32 kCodeText     = IM_COL32(0xD4, 0xD7, 0xDD, 0xFF);
@@ -53,20 +53,20 @@ constexpr ImU32 kCodePunct    = IM_COL32(0x99, 0xA0, 0xAC, 0xFF);
 constexpr ImU32 kCodePreproc  = IM_COL32(0x56, 0xB6, 0xC2, 0xFF);
 
 // A diff separates added from removed, and green and red are what every reader
-// already knows. This used to be orange and grey, on the argument that the
-// palette has one saturated colour to spend -- which is right for the chrome
+// already knows. This used to be orange and gray, on the argument that the
+// palette has one saturated color to spend -- which is right for the chrome
 // and wrong here: added and removed are a *pair*, and a pair drawn in one hue
 // and one absence of hue has to be read rather than seen. The tints are the
 // weak half of each: the row is washed, the marker in the gutter is solid, and
-// the code on the row keeps its own syntax colours either way.
+// the code on the row keeps its own syntax colors either way.
 constexpr ImU32 kAdded      = IM_COL32(0x7E, 0xC6, 0x99, 0xFF);
 constexpr ImU32 kRemoved    = IM_COL32(0xE5, 0x84, 0x7B, 0xFF);
 constexpr ImU32 kAddedWash  = IM_COL32(0x2E, 0x6B, 0x47, 0x3A);
 constexpr ImU32 kRemovedWash= IM_COL32(0x7A, 0x33, 0x2C, 0x3A);
 
-ImVec4 to_vec(ImU32 colour);
+ImVec4 to_vec(ImU32 color);
 
-/// Apply the whole style: colours, rounding, spacing.
+/// Apply the whole style: colors, rounding, spacing.
 void apply();
 
 /// Load the interface faces.
@@ -105,13 +105,13 @@ ImFont* heading();
 /// something that reads as fire and something that reads as a leaf.
 ///
 /// It does not move. Nothing in this file does.
-void draw_flame(ImDrawList* draw, ImVec2 centre, float radius, float alpha = 1.0F);
+void draw_flame(ImDrawList* draw, ImVec2 center, float radius, float alpha = 1.0F);
 
 /// A status diamond, the same vocabulary the terminal panel uses: filled
 /// means working, hollow means ready, faint means nothing assigned. Static --
 /// what moves is the percentage beside a loading seat, not the mark.
 enum class Dot { Active, Loading, Ready, Missing, Empty };
-void draw_dot(ImDrawList* draw, ImVec2 centre, float radius, Dot dot);
+void draw_dot(ImDrawList* draw, ImVec2 center, float radius, Dot dot);
 
 /// The three drawn marks: the side-menu toggle, Settings, and Copy.
 ///
@@ -127,20 +127,20 @@ void draw_dot(ImDrawList* draw, ImVec2 centre, float radius, Dot dot);
 /// makes them sharp at any display scale instead of whatever size the glyph was
 /// baked at.
 ///
-/// `size` is the box each is drawn to fit, centred on `centre`.
-void draw_panel_icon(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
+/// `size` is the box each is drawn to fit, centered on `center`.
+void draw_panel_icon(ImDrawList* draw, ImVec2 center, float size, ImU32 color,
                      bool open);
-void draw_gear(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
-void draw_copy(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
+void draw_gear(ImDrawList* draw, ImVec2 center, float size, ImU32 color);
+void draw_copy(ImDrawList* draw, ImVec2 center, float size, ImU32 color);
 
 /// The three that appear on a turn when the pointer is over it: ask this again,
 /// throw it away, and stop what is running.
-void draw_retry(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
-void draw_trash(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
-void draw_stop(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour);
+void draw_retry(ImDrawList* draw, ImVec2 center, float size, ImU32 color);
+void draw_trash(ImDrawList* draw, ImVec2 center, float size, ImU32 color);
+void draw_stop(ImDrawList* draw, ImVec2 center, float size, ImU32 color);
 
 /// A disclosure triangle, pointing down when `open` and right when not.
-void draw_chevron(ImDrawList* draw, ImVec2 centre, float size, ImU32 colour,
+void draw_chevron(ImDrawList* draw, ImVec2 center, float size, ImU32 color,
                   bool open);
 
 }  // namespace crucible::gui::theme

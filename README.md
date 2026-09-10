@@ -257,13 +257,13 @@ directory trusted in one face is trusted in the other.
 code all draw as themselves, using the same parser the terminal uses — so both
 faces break a reply into the same blocks and only the drawing differs.
 
-**Code is coloured, numbered, and read as a diff when it is one.** A fenced block
+**Code is colored, numbered, and read as a diff when it is one.** A fenced block
 carries a header saying what language it is and which file it belongs to, numbers
-every line down the left, and colours the code with a small lexer that covers
-twenty-odd languages (`src/gui/syntax.cpp`). A unified diff is recognised without
+every line down the left, and colors the code with a small lexer that covers
+twenty-odd languages (`src/gui/syntax.cpp`). A unified diff is recognized without
 being told: the marker in column one becomes a gutter of old and new line
 numbers, added rows are washed green and removed rows red — and the code on each
-row keeps its syntax colours either way, because an added line you cannot read is
+row keeps its syntax colors either way, because an added line you cannot read is
 not much of an improvement on a removed one. A block longer than about forty
 lines folds itself, with one click to open it out.
 
@@ -274,6 +274,21 @@ in the project if the answer calls for it. Cook is one goal worked in passes —
 read, change, run, judge, go round again — with the goal pinned at the top, the
 pass count beside it, and every step accumulating underneath, each folding open
 to the diff or the command output it produced.
+
+**Auto mode decides whether you see an edit before it lands.** The toggle sits
+beside the box you type in, because whether you are watching is a decision that
+changes between one prompt and the next rather than a setting you go and find.
+Off -- the default -- every file an expert wants to write stops and shows you
+the file as it is beside the file as it would be, and nothing is written until
+you pick one. It is two whole files rather than a diff on purpose: a diff is the
+right way to review a change you have already decided to take and the wrong way
+to decide, because it shows what moved and hides what the file becomes. On, the
+edit lands and you read about it afterwards.
+
+Cook always applies. A cook is an hour of work you started and walked away from,
+and stopping it on the first write to ask a question nobody is there to answer
+would mean it never gets past the first write -- its record is the journal, and
+every step in it expands to the diff that step made.
 
 **Every turn can be stopped, asked again, or thrown away.** Hovering an exchange
 puts the controls for it at its top right, and nowhere else: a transcript with
@@ -544,7 +559,7 @@ gets worked examples written for it before it is first used.
 | `/help`, `/quit` | |
 
 Type `/` and the list folds up out of the prompt, narrowing as you type, with
-the rest of the best match in grey after the cursor. `Tab` takes it:
+the rest of the best match in gray after the cursor. `Tab` takes it:
 
 ```
  › /resume   reopen an earlier conversation about this project
@@ -598,7 +613,7 @@ src/
 │   ├── trust_gate.cpp  the folder-trust prompt
 │   └── uninstall.cpp   crucible --uninstall
 ├── config/         what lives on disk
-│   ├── config.cpp      the Config type's own behaviour
+│   ├── config.cpp      the Config type's own behavior
 │   ├── config_io.cpp   reading and writing config.json
 │   ├── gpu_policy.cpp  turning a split mode into tensor_split
 │   ├── paths.cpp       XDG locations
@@ -657,7 +672,7 @@ src/
     ├── app.cpp         the window: the frame, the reading column, the actions
     ├── markdown_view.cpp  drawing the markdown a model wrote, code blocks and
     │                      diffs included
-    ├── syntax.cpp      the lexer the code blocks are coloured with
+    ├── syntax.cpp      the lexer the code blocks are colored with
     ├── widgets.cpp     the vocabulary the panels are written in
     ├── theme.cpp       the palette, the flame, the fonts, the title-bar marks
     └── panels/         topbar, sidebar, chat, cook, settings, dialogs

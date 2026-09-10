@@ -98,7 +98,7 @@ void App::draw_topbar(const Snapshot& snapshot) {
     draw->AddLine(ImVec2(origin.x, origin.y + bar - 1.0F),
                   ImVec2(origin.x + width, origin.y + bar - 1.0F), theme::kPanelEdge);
 
-    const auto centre_y = [&](float height) {
+    const auto center_y = [&](float height) {
         ImGui::SetCursorPosY((bar - height) * 0.5F);
     };
 
@@ -121,11 +121,11 @@ void App::draw_topbar(const Snapshot& snapshot) {
 
     // --- the left-hand group -----------------------------------------------
     ImGui::SetCursorPosX(em(0.3F));
-    centre_y(square);
+    center_y(square);
     {
         const bool open = !sidebar_collapsed();
         const IconHit hit = icon_slot("##fold", square);
-        theme::draw_panel_icon(draw, hit.centre, em(1.05F),
+        theme::draw_panel_icon(draw, hit.center, em(1.05F),
                                hit.hovered ? theme::kFlameBright : theme::kTextDim, open);
         ImGui::SetItemTooltip(open ? "Hide the side menu" : "Show the side menu");
         if (hit.clicked) {
@@ -147,15 +147,15 @@ void App::draw_topbar(const Snapshot& snapshot) {
     // beside it says the same thing in a fifth of the room.
     if (left_room > em(22.0F)) {
         ImGui::PushFont(theme::bold());
-        centre_y(line);
-        text_coloured(theme::kText, "CRUCIBLE");
+        center_y(line);
+        text_colored(theme::kText, "CRUCIBLE");
         ImGui::PopFont();
         ImGui::SameLine();
     }
 
     // --- the project -------------------------------------------------------
     //
-    // Centred in the bar, because it is what the whole window is about and the
+    // Centered in the bar, because it is what the whole window is about and the
     // controls on either side are not. Said in words rather than behind a
     // folder glyph: a small drawn icon next to a path is decoration that has to
     // be decoded, and "Project:" is four letters that never has to be.
@@ -182,9 +182,9 @@ void App::draw_topbar(const Snapshot& snapshot) {
         const float block = label_w + ImGui::CalcTextSize(shown.c_str()).x
                           + gap + button_w;
 
-        // Centred on the window, then pushed right if the wordmark and the
+        // Centered on the window, then pushed right if the wordmark and the
         // fold button have already taken that space. It never overlaps either
-        // side; it only stops being centred.
+        // side; it only stops being centered.
         float at_x = std::max((width - block) * 0.5F, start);
         at_x = std::min(at_x, std::max(stop - block, start));
 
@@ -193,7 +193,7 @@ void App::draw_topbar(const Snapshot& snapshot) {
         draw->AddText(ImVec2(at.x + label_w, at.y), theme::kText, shown.c_str());
 
         ImGui::SetCursorPosX(at_x + block - button_w);
-        centre_y(ImGui::GetFrameHeight());
+        center_y(ImGui::GetFrameHeight());
         if (ImGui::Button("Change project")) {
             open_browse(BrowseFor::Project, store_->project().root);
         }
@@ -221,7 +221,7 @@ void App::draw_topbar(const Snapshot& snapshot) {
 
     // --- the tabs and the gear ---------------------------------------------
     ImGui::SetCursorPosX(width - right_room);
-    centre_y(bar);
+    center_y(bar);
     for (const Tab& tab : tabs) {
         if (top_tab(tab.label, view_ == tab.view, bar)) {
             view_ = tab.view;
@@ -234,10 +234,10 @@ void App::draw_topbar(const Snapshot& snapshot) {
     }
 
     ImGui::SetCursorPosX(width - square - em(0.4F));
-    centre_y(square);
+    center_y(square);
     {
         const IconHit hit = icon_slot("##settings", square, view_ == View::Settings);
-        theme::draw_gear(draw, hit.centre, em(1.05F),
+        theme::draw_gear(draw, hit.center, em(1.05F),
                          view_ == View::Settings ? theme::kFlame
                          : hit.hovered           ? theme::kFlameBright
                                                  : theme::kTextDim);

@@ -64,7 +64,7 @@ std::vector<ModelFile> scan_models(const std::filesystem::path& dir) {
             break;
         }
         // Follow symlinks: a models folder full of links to a big external
-        // drive is a perfectly reasonable way to organise this.
+        // drive is a perfectly reasonable way to organize this.
         std::error_code entry_ec;
         if (!it->is_regular_file(entry_ec) || entry_ec) {
             continue;

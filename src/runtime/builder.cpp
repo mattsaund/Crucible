@@ -278,7 +278,7 @@ std::string BuildProgress::label() const {
         case Phase::Installing:     return "installing";
         case Phase::Done:           return "installed";
         case Phase::Failed:         return "failed";
-        case Phase::Cancelled:      return "cancelled";
+        case Phase::Canceled:      return "canceled";
     }
     return {};
 }
@@ -496,7 +496,7 @@ void RuntimeBuilder::run(BackendKind kind) {
 
     std::string error;
     if (!ensure_source(error)) {
-        set_phase(cancel_.load() ? BuildProgress::Phase::Cancelled : BuildProgress::Phase::Failed);
+        set_phase(cancel_.load() ? BuildProgress::Phase::Canceled : BuildProgress::Phase::Failed);
         if (!cancel_.load()) {
             fail(error);
         }
@@ -587,7 +587,7 @@ void RuntimeBuilder::run(BackendKind kind) {
         }
         if (!run_command(configure, {}, BuildProgress::Phase::Configuring, false)) {
             if (cancel_.load()) {
-                set_phase(BuildProgress::Phase::Cancelled);
+                set_phase(BuildProgress::Phase::Canceled);
                 running_.store(false);
                 return;
             }
@@ -612,7 +612,7 @@ void RuntimeBuilder::run(BackendKind kind) {
                 }
                 if (!run_command(configure, {}, BuildProgress::Phase::Configuring, false)) {
                     if (cancel_.load()) {
-                        set_phase(BuildProgress::Phase::Cancelled);
+                        set_phase(BuildProgress::Phase::Canceled);
                     }
                     running_.store(false);
                     return;
@@ -638,7 +638,7 @@ void RuntimeBuilder::run(BackendKind kind) {
         };
         if (!run_command(compile, {}, BuildProgress::Phase::Compiling, true)) {
             if (cancel_.load()) {
-                set_phase(BuildProgress::Phase::Cancelled);
+                set_phase(BuildProgress::Phase::Canceled);
             }
             running_.store(false);
             return;
@@ -646,7 +646,7 @@ void RuntimeBuilder::run(BackendKind kind) {
     }
 
     if (cancel_.load()) {
-        set_phase(BuildProgress::Phase::Cancelled);
+        set_phase(BuildProgress::Phase::Canceled);
         running_.store(false);
         return;
     }

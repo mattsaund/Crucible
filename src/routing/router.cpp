@@ -259,7 +259,7 @@ RouteDecision ModelRouter::route(const std::string& prompt, const CancelCallback
     if (cancel && cancel()) {
         RouteDecision decision;
         decision.source = RouteSource::Fallback;
-        decision.detail = "routing cancelled";
+        decision.detail = "routing canceled";
         return decision;
     }
     if (scores.size() != labels_.size() || scores.front() <= kUnscored) {

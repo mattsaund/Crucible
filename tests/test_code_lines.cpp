@@ -6,7 +6,7 @@
 //
 // Is it a diff? Say yes about a YAML list and every line of somebody's config
 // turns red. Say no about a real diff and the additions and deletions vanish
-// into grey.
+// into gray.
 //
 // What number does each line carry? A unified diff numbers two files at once,
 // and off-by-one here is a line number that points at the line above the one it
@@ -59,7 +59,7 @@ const char* kCrucibleDiff =
 
 // ---------------------------------------------------------------------------
 
-TEST(a_diff_is_recognised_without_being_told) {
+TEST(a_diff_is_recognized_without_being_told) {
     CHECK(looks_like_diff(kGitDiff));
     CHECK(looks_like_diff(kCrucibleDiff));
 
@@ -69,7 +69,7 @@ TEST(a_diff_is_recognised_without_being_told) {
 
 TEST(a_list_of_bullets_is_not_a_diff) {
     // The counter-example that made the old "half the lines are marked" rule
-    // wrong: every line of a YAML list starts with a minus, and colouring one
+    // wrong: every line of a YAML list starts with a minus, and coloring one
     // as a page of deletions is a much bigger wrong than missing a diff.
     CHECK(!looks_like_diff("- one\n- two\n- three\n"));
     CHECK(!looks_like_diff("steps:\n  - build\n  - test\n  - install\n"));

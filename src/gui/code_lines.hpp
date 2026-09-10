@@ -8,7 +8,7 @@
 // exactly the sort of thing that is wrong by one for a month before anybody
 // looks closely, and it is only checkable if it can be called without a window.
 //
-// The drawing is in markdown_view.cpp and the colouring is in syntax.cpp.
+// The drawing is in markdown_view.cpp and the coloring is in syntax.cpp.
 #pragma once
 
 #include <cstddef>
@@ -18,7 +18,7 @@
 
 namespace crucible::gui {
 
-/// One drawn line: what to colour, and what to number it.
+/// One drawn line: what to color, and what to number it.
 struct CodeRow {
     std::string text;         ///< the code, with any diff marker taken off
     char        marker = 0;   ///< 0 for plain code; ' ' '+' '-' '@' in a diff
@@ -40,11 +40,11 @@ std::size_t columns(std::string_view text);
 /// common: a YAML list, or a markdown bullet list inside a fence, is every line
 /// starting with a minus. Requiring an addition as well as a removal costs only
 /// the header-less pure-addition diff, which then renders as ordinary code -- a
-/// much smaller wrong than colouring somebody's YAML as deletions.
+/// much smaller wrong than coloring somebody's YAML as deletions.
 bool looks_like_diff(std::string_view text);
 
 /// The file a diff is about, from its `+++ b/path` line. Empty when it has none
-/// -- a fragment of a diff with no header is still a diff worth colouring.
+/// -- a fragment of a diff with no header is still a diff worth coloring.
 std::string diff_path(std::string_view text);
 
 /// Split `text` into rows, working out the numbering as it goes.

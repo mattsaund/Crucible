@@ -270,7 +270,7 @@ struct Rules {
     bool             backtick     = false;  ///< `template literals`
     bool             triple_quote = false;  ///< python's ''' and """
     bool             preproc_hash = false;  ///< a # in column one is a directive
-    bool             dollar_names = false;  ///< $var is one token, coloured apart
+    bool             dollar_names = false;  ///< $var is one token, colored apart
     bool             capital_types = false; ///< Capitalised means a type here
     const Words*     keywords = nullptr;
     const Words*     types    = nullptr;
@@ -373,7 +373,7 @@ void push(std::vector<Piece>& out, std::string_view text, Token token) {
     if (text.empty()) {
         return;
     }
-    // Runs of the same colour are merged as they are appended, because the
+    // Runs of the same color are merged as they are appended, because the
     // renderer measures and draws once per piece and a line of forty
     // single-character Punct pieces is forty draw calls saying one thing.
     if (!out.empty() && out.back().token == token) {
@@ -551,7 +551,7 @@ std::vector<Piece> scan(std::string_view line, const Rules& rules, Carry& carry)
             while (i < line.size() && ident_body(line[i])) {
                 ++i;
             }
-            // Ruby and Lua let a name end in ? or !, and colouring `empty?` as
+            // Ruby and Lua let a name end in ? or !, and coloring `empty?` as
             // `empty` plus a stray punctuation mark reads as a typo.
             if (i < line.size() && (line[i] == '?' || line[i] == '!')
                 && (rules.keywords == &ruby_keywords())) {

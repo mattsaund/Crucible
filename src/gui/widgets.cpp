@@ -15,31 +15,31 @@ float em(float n) {
     return n * ImGui::GetFontSize();
 }
 
-void text_coloured(ImU32 colour, const char* fmt, ...) IM_FMTARGS(2);
-void text_coloured(ImU32 colour, const char* fmt, ...) {
+void text_colored(ImU32 color, const char* fmt, ...) IM_FMTARGS(2);
+void text_colored(ImU32 color, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(colour));
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(color));
     ImGui::TextV(fmt, args);
     ImGui::PopStyleColor();
     va_end(args);
 }
 
-void wrapped(ImU32 colour, const std::string& text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(colour));
+void wrapped(ImU32 color, const std::string& text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(color));
     ImGui::TextWrapped("%s", text.c_str());
     ImGui::PopStyleColor();
 }
 
 void section(const char* label) {
     ImGui::Dummy(ImVec2(0, em(0.5F)));
-    text_coloured(theme::kTextFaint, "%s", label);
+    text_colored(theme::kTextFaint, "%s", label);
     ImGui::Dummy(ImVec2(0, em(0.1F)));
 }
 
 void title(const char* label) {
     ImGui::PushFont(theme::heading());
-    text_coloured(theme::kFlame, "%s", label);
+    text_colored(theme::kFlame, "%s", label);
     ImGui::PopFont();
 }
 
@@ -103,7 +103,7 @@ IconHit icon_slot(const char* id, float size, bool lit) {
     ImGui::InvisibleButton(id, ImVec2(size, size));
     hit.clicked = ImGui::IsItemActivated();
     hit.hovered = ImGui::IsItemHovered();
-    hit.centre  = ImVec2(at.x + size * 0.5F, at.y + size * 0.5F);
+    hit.center  = ImVec2(at.x + size * 0.5F, at.y + size * 0.5F);
 
     // The plate is what makes a drawn mark feel like a button. Two states only:
     // under the pointer, and holding the view that is on screen. A third for
@@ -187,7 +187,7 @@ const char* mood_text(Mood mood) {
     return "idle";
 }
 
-ImU32 step_colour(const CookStep& step) {
+ImU32 step_color(const CookStep& step) {
     if (!step.ok) {
         return theme::kError;
     }

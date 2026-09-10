@@ -215,6 +215,7 @@ TEST(saving_then_loading_round_trips_every_setting) {
     original.ui.animation_ms      = 55;
     original.ui.show_experts   = false;
     original.ui.unicode           = false;
+    original.tools.auto_edits     = true;
     original.experts["physics"].model = "phys.gguf";
     original.experts["biology"].model = "bio.gguf";
     // One expert deliberately differs from defaults, to prove overrides survive.
@@ -235,6 +236,10 @@ TEST(saving_then_loading_round_trips_every_setting) {
     CHECK_EQ(reloaded.ui.animation_ms, 55);
     CHECK(!reloaded.ui.show_experts);
     CHECK(!reloaded.ui.unicode);
+    // A safety switch that silently forgets itself is worse than not having
+    // one: the user turns auto mode on, restarts, and is asked about every
+    // edit again -- or, the other way round, believes it is off when it is not.
+    CHECK(reloaded.tools.auto_edits);
 
     CHECK_EQ(reloaded.expert("physics").model,
              std::string("phys.gguf"));
@@ -409,6 +414,9 @@ TEST(the_config_shape_the_readme_documents_actually_loads) {
 
     CHECK_EQ(config.defaults.n_ctx, 8192);
     CHECK_EQ(config.tools.workshop_timeout, 120);
+    // Absent from the file, so it takes the default -- and the default is the
+    // careful one: an edit stops and asks before it overwrites anything.
+    CHECK(!config.tools.auto_edits);
 
     // The only warnings should be about models that are not on this machine --
     // nothing about the shape of the file itself.
@@ -592,7 +600,7 @@ TEST(tilde_expands_to_the_home_directory) {
     CHECK(paths::expand_user("").empty());
 }
 
-TEST(xdg_config_home_is_honoured_when_absolute) {
+TEST(xdg_config_home_is_honored_when_absolute) {
     const auto file = paths::config_file();
     CHECK_EQ(file.filename().string(), std::string("config.json"));
     CHECK_EQ(file.parent_path().filename().string(), std::string("crucible"));

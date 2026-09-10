@@ -58,7 +58,7 @@ bool App::handle_command(const std::string& text) {
         // cannot exist in one and be missing from the other.
         for (const CommandInfo& entry : all_commands(config_.roster)) {
             if (entry.takes_prompt) {
-                continue;  // the experts are summarised in one line below
+                continue;  // the experts are summarized in one line below
             }
             std::string line = "/" + entry.name;
             line.resize(22, ' ');

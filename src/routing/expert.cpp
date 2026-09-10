@@ -219,7 +219,7 @@ std::string Roster::router_system_prompt() const {
         // Tag, name, then the remit. The tag earns its place here even though
         // the delegator answers with the name: on the 54-prompt benchmark,
         // listing the options without their tags costs 6 points (87% to 81%).
-        // Reading it as a labelled menu appears to be what helps.
+        // Reading it as a labeled menu appears to be what helps.
         prompt += expert.tag;
         prompt += "  ";
         prompt += expert.name;

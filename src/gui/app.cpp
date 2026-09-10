@@ -240,10 +240,10 @@ void App::rebuild_history() {
     std::vector<ChatMessage> history;
     for (const Turn& turn : snapshot.turns) {
         // The same rule the session resume uses: only exchanges that actually
-        // produced an answer go back to the expert. A failed or cancelled turn
+        // produced an answer go back to the expert. A failed or canceled turn
         // in the context teaches it that not answering is a thing that happens
         // here.
-        if (!turn.failed && !turn.cancelled && !turn.reply.empty()) {
+        if (!turn.failed && !turn.canceled && !turn.reply.empty()) {
             history.push_back({"user", turn.prompt});
             history.push_back({"assistant", turn.reply});
         }

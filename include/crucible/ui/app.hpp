@@ -83,7 +83,7 @@ private:
     void accept_completion();
     /// The menu that folds up above the prompt, or an empty element.
     ftxui::Element render_completion() const;
-    /// The prompt row, with the grey suggestion trailing the cursor.
+    /// The prompt row, with the gray suggestion trailing the cursor.
     ftxui::Element render_prompt() const;
 
     void on_submit();

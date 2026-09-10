@@ -21,11 +21,11 @@
 // and both of those are budgets. DONE closes a piece of work and the loop asks
 // for the next one; it does not end the cook.
 //
-// Stopping is not cancelling. Stop means "wrap up": the cook stops taking new
+// Stopping is not canceling. Stop means "wrap up": the cook stops taking new
 // work and makes a finishing pass whose whole job is to leave the project in a
 // state that runs. Ctrl-C is still there for "stop now".
 //
-// Everything is journalled as it happens rather than summarised at the end, so
+// Everything is journalled as it happens rather than summarized at the end, so
 // a cook killed at minute fifty can still say what it changed.
 #include "crucible/engine/engine.hpp"
 

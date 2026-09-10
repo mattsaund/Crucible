@@ -82,7 +82,7 @@ void route_line(const Roster& roster, const Turn& turn) {
     ImGui::SameLine(0.0F, 0.0F);
 
     ImGui::PushFont(theme::bold());
-    text_coloured(theme::kFlameBright, "%s",
+    text_colored(theme::kFlameBright, "%s",
                   expert_label(roster, turn.route->expert).c_str());
     ImGui::PopFont();
     ImGui::SameLine();
@@ -93,7 +93,7 @@ void route_line(const Roster& roster, const Turn& turn) {
     if (turn.load_ms > 0) {
         rest += "  \xC2\xB7  swapped in " + format::duration_ms(turn.load_ms);
     }
-    text_coloured(theme::kTextFaint, "%s", rest.c_str());
+    text_colored(theme::kTextFaint, "%s", rest.c_str());
     ImGui::SetItemTooltip("How sure the delegator was, and what decided it.");
 }
 
@@ -149,13 +149,13 @@ TurnAction turn_controls(const ImVec2& block_min, const ImVec2& block_max,
         const ImU32   ink  = slot.hovered ? theme::kFlameBright : theme::kTextFaint;
         switch (buttons[i].action) {
             case TurnAction::Stop:
-                theme::draw_stop(ImGui::GetWindowDrawList(), slot.centre, em(0.9F), ink);
+                theme::draw_stop(ImGui::GetWindowDrawList(), slot.center, em(0.9F), ink);
                 break;
             case TurnAction::Retry:
-                theme::draw_retry(ImGui::GetWindowDrawList(), slot.centre, em(0.95F), ink);
+                theme::draw_retry(ImGui::GetWindowDrawList(), slot.center, em(0.95F), ink);
                 break;
             case TurnAction::Delete:
-                theme::draw_trash(ImGui::GetWindowDrawList(), slot.centre, em(0.9F), ink);
+                theme::draw_trash(ImGui::GetWindowDrawList(), slot.center, em(0.9F), ink);
                 break;
             case TurnAction::None:
                 break;
@@ -176,6 +176,95 @@ TurnAction turn_controls(const ImVec2& block_min, const ImVec2& block_max,
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// The edit gate
+// ---------------------------------------------------------------------------
+
+void App::draw_pending_edit(const PendingEdit& edit) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    ImGui::Dummy(ImVec2(0, em(0.4F)));
+    ImGui::PushFont(theme::bold());
+    text_colored(theme::kFlameBright, "%s",
+                 edit.before.empty() ? "New file" : "Change to a file");
+    ImGui::PopFont();
+    ImGui::SameLine();
+    text_colored(theme::kText, "%s", edit.path.c_str());
+    ImGui::Dummy(ImVec2(0, em(0.3F)));
+
+    // Two panels, side by side, each one a button with the file under it.
+    //
+    // Not a diff. A diff is the right way to review a change you have already
+    // decided to take and the wrong way to decide: it shows what moved and
+    // hides what the file becomes, and the question here is which of these two
+    // files you want on disk.
+    bool keep  = false;
+    bool apply = false;
+
+    if (ImGui::BeginTable("##edit", 2,
+                          ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV)) {
+        struct Side {
+            const char*        title;
+            const char*        action;
+            const std::string* body;
+            ImU32              ink;
+            bool*              picked;
+        };
+        const Side sides[2] = {
+            {"Now",      "Keep this",   &edit.before, theme::kRemoved, &keep},
+            {"Proposed", "Use this",    &edit.after,  theme::kAdded,   &apply},
+        };
+
+        ImGui::TableNextRow();
+        for (int i = 0; i < 2; ++i) {
+            ImGui::TableSetColumnIndex(i);
+            ImGui::PushID(i);
+
+            const float column = ImGui::GetContentRegionAvail().x;
+            const float head   = ImGui::GetFrameHeight();
+            const ImVec2 at    = ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("##pick", ImVec2(column, head));
+            const bool hot = ImGui::IsItemHovered();
+            if (ImGui::IsItemActivated()) {
+                *sides[i].picked = true;
+            }
+            if (hot) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            const ImU32 wash = (sides[i].ink & 0x00FFFFFFU) | (hot ? 0x55000000U : 0x22000000U);
+            draw->AddRectFilled(at, ImVec2(at.x + column, at.y + head), wash,
+                                style.ChildRounding);
+            const float line = ImGui::GetTextLineHeight();
+            draw->AddText(ImVec2(at.x + style.FramePadding.x, at.y + (head - line) * 0.5F),
+                          sides[i].ink, sides[i].title);
+            const float action_w = ImGui::CalcTextSize(sides[i].action).x;
+            draw->AddText(ImVec2(at.x + column - action_w - style.FramePadding.x,
+                                 at.y + (head - line) * 0.5F),
+                          hot ? theme::kText : theme::kTextDim, sides[i].action);
+
+            if (sides[i].body->empty()) {
+                ImGui::Dummy(ImVec2(0, em(0.4F)));
+                wrapped(theme::kTextFaint,
+                        i == 0 ? "This file does not exist yet." : "(empty)");
+            } else {
+                draw_code_block(*sides[i].body, edit.path, {}, 900 + i);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::Dummy(ImVec2(0, em(0.4F)));
+
+    if (keep) {
+        engine_->approve_edit(false);
+    } else if (apply) {
+        engine_->approve_edit(true);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The empty state
@@ -202,7 +291,7 @@ void App::draw_readiness() {
     }
 
     const float room = ImGui::GetContentRegionAvail().x;
-    const auto  centre = [&room](float item) {
+    const auto  center = [&room](float item) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max((room - item) * 0.5F, 0.0F));
     };
 
@@ -210,8 +299,8 @@ void App::draw_readiness() {
 
     ImGui::PushFont(theme::heading());
     const ImVec2 size = ImGui::CalcTextSize(label);
-    centre(size.x);
-    text_coloured(fixable ? theme::kTextDim : theme::kTextFaint, "%s", label);
+    center(size.x);
+    text_colored(fixable ? theme::kTextDim : theme::kTextFaint, "%s", label);
     ImGui::PopFont();
 
     // The button says Settings and nothing else. It is the second and last
@@ -222,7 +311,7 @@ void App::draw_readiness() {
     if (fixable) {
         ImGui::Dummy(ImVec2(0, em(0.9F)));
         const float width = em(8.0F);
-        centre(width);
+        center(width);
         if (ImGui::Button("Settings", ImVec2(width, 0))) {
             show_settings(page);
         }
@@ -268,12 +357,12 @@ void App::draw_chat(const Snapshot& snapshot) {
         // the reply mentions them -- a model that edits one file and writes a
         // summary of editing another is not rare, and this is what catches it.
         for (const std::string& action : turn.actions) {
-            text_coloured(theme::kTextDim, "   \xC2\xB7  %s", action.c_str());
+            text_colored(theme::kTextDim, "   \xC2\xB7  %s", action.c_str());
         }
 
         if (config_.ui.show_reasoning && !turn.reasoning.empty()) {
             ImGui::Dummy(ImVec2(0, em(0.3F)));
-            text_coloured(theme::kTextFaint, "thinking");
+            text_colored(theme::kTextFaint, "thinking");
             ImGui::PushFont(theme::italic());
             wrapped(theme::kTextFaint, turn.reasoning);
             ImGui::PopFont();
@@ -287,15 +376,15 @@ void App::draw_chat(const Snapshot& snapshot) {
         draw_markdown(turn.reply, turn.failed ? theme::kError : theme::kText);
 
         if (turn.streaming && turn.reply.empty()) {
-            text_coloured(theme::kTextFaint, "...");
+            text_colored(theme::kTextFaint, "...");
         }
-        if (turn.cancelled) {
-            text_coloured(theme::kTextFaint, "-- stopped");
+        if (turn.canceled) {
+            text_colored(theme::kTextFaint, "-- stopped");
         }
 
         if (turn.tokens_per_second > 0.0) {
             ImGui::Dummy(ImVec2(0, em(0.2F)));
-            text_coloured(theme::kTextFaint, "%s tok/s  \xC2\xB7  %d in  \xC2\xB7  %d out",
+            text_colored(theme::kTextFaint, "%s tok/s  \xC2\xB7  %d in  \xC2\xB7  %d out",
                           format::number(turn.tokens_per_second, 1).c_str(),
                           turn.prompt_tokens, turn.output_tokens);
         }
@@ -323,6 +412,13 @@ void App::draw_chat(const Snapshot& snapshot) {
         case TurnAction::Retry:  retry_turn(wanted_for);   break;
         case TurnAction::Delete: delete_turn(wanted_for);  break;
         case TurnAction::None:   break;
+    }
+
+    // The gate, under everything, which is where the eye already is: it appears
+    // in the middle of a turn that is streaming and the transcript is following
+    // the bottom.
+    if (snapshot.pending_edit) {
+        draw_pending_edit(*snapshot.pending_edit);
     }
 
     if (snapshot.cook) {
@@ -357,11 +453,42 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
     if (column < room) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (room - column) * 0.5F);
     }
+    // Auto, then Send. Auto sits beside the box rather than in Settings because
+    // whether you are watching an expert edit your files is a decision that
+    // changes between one prompt and the next -- and a switch you have to go
+    // and find is a switch that stays wherever it was last left.
+    const float auto_w = ImGui::CalcTextSize("Auto").x
+                       + ImGui::GetStyle().FramePadding.x * 2.6F;
     const float button = em(5.0F);
-    const float width  = std::max(column - button - ImGui::GetStyle().ItemSpacing.x,
+    const float width  = std::max(column - button - auto_w
+                                      - ImGui::GetStyle().ItemSpacing.x * 2.0F,
                                   em(6.0F));
     const bool entered = grow_input("##prompt", hint, prompt_, width, kComposerLines,
                                     composer_input_height());
+
+    ImGui::SameLine();
+    {
+        const bool on = config_.tools.auto_edits;
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              on ? theme::to_vec(theme::kFlame)
+                                 : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                              on ? theme::to_vec(theme::kFlameBright)
+                                 : ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered]);
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              theme::to_vec(on ? theme::kInk : theme::kTextDim));
+        if (ImGui::Button("Auto", ImVec2(auto_w, 0))) {
+            update_config([on](Config& config) { config.tools.auto_edits = !on; });
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::SetItemTooltip(
+            on ? "Auto is on: file edits are applied as the expert makes them.\n"
+                 "Click to be asked about each one instead."
+               : "Auto is off: every file edit stops and shows you the file as it "
+                 "is\nbeside the file as it would be, and you pick one.\n"
+                 "Click to apply edits without asking.\n\nCook always applies.");
+    }
+
     ImGui::SameLine();
     const bool send = ImGui::Button(asking ? "Answer" : "Send", ImVec2(button, 0));
     if (entered || send) {

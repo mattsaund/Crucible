@@ -10,7 +10,7 @@
 // This is the parsing half, kept away from the drawing half so it can be tested
 // without a terminal. It is deliberately not a complete CommonMark
 // implementation: it covers what models actually produce, and anything it does
-// not recognise passes through as the text it was, which is exactly what used
+// not recognize passes through as the text it was, which is exactly what used
 // to happen to all of it.
 #pragma once
 
@@ -61,7 +61,7 @@ struct Block {
     std::vector<std::vector<Span>> cells;
 };
 
-/// Split `text` into blocks. Never fails: anything unrecognised is a paragraph.
+/// Split `text` into blocks. Never fails: anything unrecognized is a paragraph.
 std::vector<Block> parse(std::string_view text);
 
 /// Split one line of inline markdown into styled runs. Exposed for testing;

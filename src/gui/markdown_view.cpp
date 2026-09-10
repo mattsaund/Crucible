@@ -7,7 +7,7 @@
 // terminal's.
 //
 // The work here is wrapping. ImGui::TextWrapped wraps one string in one font
-// and one colour, which is no use for a paragraph whose bold run continues
+// and one color, which is no use for a paragraph whose bold run continues
 // mid-sentence: drawing each span separately breaks the line at every style
 // change instead of at the width. So the spans are flattened into words that
 // each remember their own face, and the wrapping is done a word at a time.
@@ -89,7 +89,7 @@ std::vector<Word> words_of(const std::vector<markdown::Span>& spans) {
 }
 
 /// Draw one word at the cursor, with a background if it is inline code.
-void draw_word(const Word& word, ImU32 colour) {
+void draw_word(const Word& word, ImU32 color) {
     ImGui::PushFont(face_for(word));
     if (word.code) {
         // Painted behind rather than around: an inline span cannot use a child
@@ -102,14 +102,14 @@ void draw_word(const Word& word, ImU32 colour) {
             theme::kRaised, 2.0F);
     }
     ImGui::PushStyleColor(ImGuiCol_Text,
-                          theme::to_vec(word.code ? theme::kFlameBright : colour));
+                          theme::to_vec(word.code ? theme::kFlameBright : color));
     ImGui::TextUnformatted(word.text.c_str());
     ImGui::PopStyleColor();
     ImGui::PopFont();
 }
 
 /// Lay out `spans` as wrapped prose, indented by `indent` pixels.
-void draw_spans(const std::vector<markdown::Span>& spans, ImU32 colour, float indent) {
+void draw_spans(const std::vector<markdown::Span>& spans, ImU32 color, float indent) {
     const std::vector<Word> words = words_of(spans);
     if (words.empty()) {
         ImGui::NewLine();
@@ -141,7 +141,7 @@ void draw_spans(const std::vector<markdown::Span>& spans, ImU32 colour, float in
         } else {
             ImGui::SameLine(0.0F, spaced ? space : 0.0F);
         }
-        draw_word(word, colour);
+        draw_word(word, color);
         used += advance;
         first = false;
     }
@@ -170,7 +170,7 @@ std::string joined(const std::vector<markdown::Span>& spans) {
 
 namespace {
 
-ImU32 colour_of(syntax::Token token) {
+ImU32 color_of(syntax::Token token) {
     switch (token) {
         case syntax::Token::Keyword:  return theme::kCodeKeyword;
         case syntax::Token::Type:     return theme::kCodeType;
@@ -215,7 +215,7 @@ void draw_code_block(std::string_view text, std::string_view language,
             path = from_header;
         }
         // The language of a diff is the language of the file it patches, so the
-        // added lines get coloured like the code they are.
+        // added lines get colored like the code they are.
         lang = syntax::lang_from(path);
     }
     if (lang == syntax::Lang::None && !path.empty()) {
@@ -375,12 +375,12 @@ void draw_code_block(std::string_view text, std::string_view language,
         }
 
         if (row.marker == '@') {
-            // A hunk or file header: one colour, and the orange that means
+            // A hunk or file header: one color, and the orange that means
             // "this is the structure" everywhere else in the interface.
             body->AddText(ImVec2(x, at.y), theme::kFlame, row.text.c_str());
         } else {
             for (const syntax::Piece& piece : pieces) {
-                body->AddText(ImVec2(x, at.y), colour_of(piece.token),
+                body->AddText(ImVec2(x, at.y), color_of(piece.token),
                               piece.text.c_str(),
                               piece.text.c_str() + piece.text.size());
                 x += static_cast<float>(columns(piece.text)) * advance;
@@ -427,8 +427,8 @@ void draw_markdown(std::string_view text, ImU32 base) {
     // a code block and a stack of them.
     //
     // `pending_lang` is the word after the opening ``` -- the only place a model
-    // ever says what language it is writing, and the difference between coloured
-    // code and grey code.
+    // ever says what language it is writing, and the difference between colored
+    // code and gray code.
     std::string pending_code;
     std::string pending_lang;
     int         block_seq = 0;

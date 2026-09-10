@@ -37,7 +37,7 @@ struct GenerationStats {
     int    output_tokens = 0;
     double prompt_ms     = 0.0;
     double output_ms     = 0.0;
-    bool   cancelled     = false;
+    bool   canceled     = false;
     /// Stopped at max_tokens rather than at an end-of-turn token.
     bool   hit_limit     = false;
 
@@ -70,7 +70,7 @@ std::size_t reusable_prefix(const std::vector<llama_token>& cached,
 }  // namespace detail
 
 /// What LoadedModel::score_labels reports for a label it could not evaluate --
-/// a decode that failed, or a cancelled call. Far below any real
+/// a decode that failed, or a canceled call. Far below any real
 /// log-probability, so it never wins a comparison by accident.
 inline constexpr float kUnscored = -1e30F;
 
@@ -109,7 +109,7 @@ public:
     /// something a confidence threshold can actually be applied to.
     ///
     /// The score is the sum over the label's tokens, which is the probability
-    /// of the sequence. A label that tokenises longer is very slightly
+    /// of the sequence. A label that tokenizes longer is very slightly
     /// penalised; with labels of two or three tokens the effect is far smaller
     /// than the differences being measured.
     std::vector<float> score_labels(const std::string& prompt,

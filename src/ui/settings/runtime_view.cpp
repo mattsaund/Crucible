@@ -17,7 +17,7 @@ using namespace ftxui;  // NOLINT(google-build-using-namespace)
 namespace crucible::ui {
 namespace {
 
-/// A short phrase for the state a runtime is in, and the colour to say it in.
+/// A short phrase for the state a runtime is in, and the color to say it in.
 /// `highlighted` picks the readable shade for a row under the cursor.
 std::pair<std::string, Color> state_of(const RuntimeStatus& runtime, bool highlighted) {
     // Before anything else: a module built against another llama.cpp will load
@@ -187,7 +187,7 @@ RuntimeAction RuntimeView::handle(const Event& event) {
 
     if (event == Event::Character('c') && build.running()) {
         builder_.cancel();
-        status_ = "cancelling the build";
+        status_ = "canceling the build";
         return RuntimeAction::Notify;
     }
 
@@ -237,7 +237,7 @@ Element RuntimeView::render_runtime(const RuntimeStatus& runtime, bool selected)
 
     // One line each. The blurb that used to sit under every row explained what
     // CPU, CUDA and Vulkan are to an audience that already knows -- three
-    // paragraphs of grey to say what three words say.
+    // paragraphs of gray to say what three words say.
     Elements row{
         text(selected ? " ▸ " : "   "),
         text(name) | bold,

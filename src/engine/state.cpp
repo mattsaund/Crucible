@@ -32,6 +32,7 @@ Snapshot AppState::snapshot() const {
     copy.status   = status_;
     copy.roster   = roster_;
     copy.cook     = cook_;
+    copy.pending_edit = pending_edit_;
     copy.seats    = seats_;
     copy.resident        = resident_;
     copy.linked          = linked_;
@@ -219,13 +220,13 @@ void AppState::finish_turn(std::size_t turn, const GenerationStats& stats, long 
     }
     Turn& entry = turns_[turn];
     entry.streaming         = false;
-    entry.cancelled         = stats.cancelled;
+    entry.canceled         = stats.canceled;
     entry.tokens_per_second = stats.tokens_per_second();
     entry.prompt_tokens     = stats.prompt_tokens;
     entry.output_tokens     = stats.output_tokens;
     entry.load_ms           = load_ms;
 
-    // The session total counts every generation, cancelled ones included --
+    // The session total counts every generation, canceled ones included --
     // the tokens were produced either way, and hiding them would make the
     // readout disagree with what the machine actually did.
     session_usage_.add(stats);
@@ -273,6 +274,11 @@ void AppState::truncate_turns(std::size_t from) {
     turns_.erase(turns_.begin() + static_cast<long>(from), turns_.end());
 }
 
+void AppState::set_pending_edit(std::shared_ptr<const PendingEdit> edit) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    pending_edit_ = std::move(edit);
+}
+
 void AppState::cancel_turn(std::size_t turn) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn >= turns_.size()) {
@@ -280,7 +286,7 @@ void AppState::cancel_turn(std::size_t turn) {
     }
     Turn& entry = turns_[turn];
     entry.streaming = false;
-    entry.cancelled = true;
+    entry.canceled = true;
     live_rate_      = 0.0;
 }
 

@@ -92,8 +92,8 @@ Element App::render_turn(const Turn& turn) const {
         if (turn.tokens_per_second > 0.0) {
             stats += " · " + format::number(turn.tokens_per_second, 1) + " tok/s";
         }
-        if (turn.cancelled) {
-            stats += " · cancelled";
+        if (turn.canceled) {
+            stats += " · canceled";
         }
         block.push_back(text(stats) | color(theme::kMeta) | dim);
     }
@@ -127,10 +127,10 @@ Element App::render_welcome() const {
     });
 }
 
-/// The colour a step's verb takes.
+/// The color a step's verb takes.
 ///
 /// Only the two that change something get heat. A cook is mostly reading and
-/// thinking, and colouring all of it would make the two lines that matter --
+/// thinking, and coloring all of it would make the two lines that matter --
 /// the file it wrote, the command that failed -- impossible to find while
 /// scrolling.
 ftxui::Color step_color(const CookStep& step) {
@@ -269,12 +269,54 @@ Element App::render_transcript(const Snapshot& snapshot) const {
 
     // Below the conversation, because it is the newest thing and the transcript
     // follows the bottom.
+    // The edit gate. The terminal cannot put two files side by side in eighty
+    // columns and stay readable, so it stacks them -- the question is the same
+    // one and the answer is typed rather than clicked.
+    if (snapshot.pending_edit) {
+        const PendingEdit& edit = *snapshot.pending_edit;
+        rows.push_back(text(" "));
+        rows.push_back(hbox({
+            text("   ? ") | color(theme::kAccent) | bold,
+            text(edit.before.empty() ? "create " : "rewrite ") | bold,
+            text(edit.path) | color(theme::kAccent) | bold,
+        }));
+        const auto listing = [&rows](const char* title, const std::string& body,
+                                     ftxui::Color tint) {
+            rows.push_back(hbox({text("     "), text(title) | color(tint) | bold}));
+            std::size_t start = 0;
+            int shown = 0;
+            while (start <= body.size() && shown < 20) {
+                const std::size_t end = body.find('\n', start);
+                rows.push_back(hbox({
+                    text("       "),
+                    text(std::string(body.substr(
+                        start, end == std::string::npos ? end : end - start)))
+                        | color(theme::kMeta),
+                }));
+                ++shown;
+                if (end == std::string::npos) {
+                    break;
+                }
+                start = end + 1;
+            }
+        };
+        if (!edit.before.empty()) {
+            listing("now", edit.before, theme::kError);
+        }
+        listing("proposed", edit.after, theme::kSeatActive);
+        rows.push_back(hbox({
+            text("     "),
+            text("type y to apply it, n to leave the file alone")
+                | color(theme::kMeta) | dim,
+        }));
+    }
+
     if (snapshot.cook) {
         rows.push_back(render_cook(*snapshot.cook));
     }
 
     // Scrolling by exact lines. `focusPosition` puts the frame's focus at an
-    // absolute line and the frame centres it, so the line that ends up at the
+    // absolute line and the frame centers it, so the line that ends up at the
     // bottom of the window is the one asked for. Both heights come from the
     // previous frame -- see widgets/scroll.hpp for why that is enough.
     const int overflow = std::max(0, content_height_ - viewport_height_);

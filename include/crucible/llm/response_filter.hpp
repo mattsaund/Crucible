@@ -20,7 +20,7 @@
 // channels (gpt-oss) and the `<think>` tags used by DeepSeek-R1, Qwen3 and
 // most of what followed them. A model that uses neither is unaffected -- every
 // byte it produces is answer, which is what the filter does with text it does
-// not recognise.
+// not recognize.
 #pragma once
 
 #include <string>

@@ -30,7 +30,7 @@ struct ResourceSample {
     std::string   name;
     std::uint64_t used  = 0;
     std::uint64_t total = 0;
-    int           busy_percent  = -1;  ///< utilisation
+    int           busy_percent  = -1;  ///< utilization
     int           temperature_c = -1;
 
     /// Memory used, 0-100, or -1 when the total is unknown.

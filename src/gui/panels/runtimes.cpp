@@ -118,7 +118,7 @@ void App::draw_settings_runtimes() {
         const bool busy_here = build.running() && build.kind == runtime.kind;
 
         ImGui::PushFont(theme::bold());
-        text_coloured(runtime.active    ? theme::kFlame
+        text_colored(runtime.active    ? theme::kFlame
                       : runtime.stale   ? theme::kError
                       : runtime.installed ? theme::kText
                                           : theme::kTextFaint,
@@ -127,20 +127,20 @@ void App::draw_settings_runtimes() {
         ImGui::SameLine();
 
         if (runtime.stale) {
-            text_coloured(theme::kError, "built against %s, this build needs %s",
+            text_colored(theme::kError, "built against %s, this build needs %s",
                           runtime.llama_tag.c_str(),
                           std::string(RuntimeStatus::required_llama_tag()).c_str());
         } else if (runtime.active) {
-            text_coloured(theme::kTextDim, "%d device%s   %s", runtime.device_count,
+            text_colored(theme::kTextDim, "%d device%s   %s", runtime.device_count,
                           runtime.device_count == 1 ? "" : "s",
                           runtime.size_label().c_str());
         } else if (runtime.installed) {
-            text_coloured(theme::kTextDim, "installed, no devices   %s",
+            text_colored(theme::kTextDim, "installed, no devices   %s",
                           runtime.size_label().c_str());
         } else if (!runtime.buildable) {
-            text_coloured(theme::kTextFaint, "%s", runtime.blocker.c_str());
+            text_colored(theme::kTextFaint, "%s", runtime.blocker.c_str());
         } else {
-            text_coloured(theme::kTextFaint, "not installed");
+            text_colored(theme::kTextFaint, "not installed");
         }
 
         wrapped(theme::kTextFaint, backend_blurb(runtime.kind));
@@ -178,7 +178,7 @@ void App::draw_settings_runtimes() {
 
         if (busy_here) {
             ImGui::SameLine();
-            text_coloured(theme::kFlameBright, "%s", build.label().c_str());
+            text_colored(theme::kFlameBright, "%s", build.label().c_str());
         }
 
         ImGui::Dummy(ImVec2(0, em(0.4F)));
@@ -192,14 +192,14 @@ void App::draw_settings_runtimes() {
 
     if (build.phase != BuildProgress::Phase::Idle) {
         section("BUILD");
-        text_coloured(theme::kText, "%s  %s", backend_name(build.kind),
+        text_colored(theme::kText, "%s  %s", backend_name(build.kind),
                       build.label().c_str());
 
         if (build.phase == BuildProgress::Phase::Compiling) {
             ImGui::ProgressBar(build.percent, ImVec2(-FLT_MIN, em(1.0F)));
         }
         if (!build.step.empty() && build.running()) {
-            text_coloured(theme::kTextFaint, "%s", build.step.c_str());
+            text_colored(theme::kTextFaint, "%s", build.step.c_str());
         }
 
         if (build.running()) {
@@ -212,10 +212,10 @@ void App::draw_settings_runtimes() {
                 // The tail is what a failed build is actually about; the full
                 // log is on disk and named here so it can be sent on.
                 for (const std::string& line : build.log_tail) {
-                    text_coloured(theme::kTextFaint, "%s", line.c_str());
+                    text_colored(theme::kTextFaint, "%s", line.c_str());
                 }
                 if (!build.log_file.empty()) {
-                    text_coloured(theme::kTextDim, "full log: %s",
+                    text_colored(theme::kTextDim, "full log: %s",
                                   build.log_file.string().c_str());
                 }
             }

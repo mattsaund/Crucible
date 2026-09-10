@@ -73,12 +73,29 @@ struct Turn {
     std::vector<std::string> actions;
     std::optional<RouteDecision> route;
     bool                   streaming = false;
-    bool                   cancelled = false;
+    bool                   canceled = false;
     bool                   failed    = false;
     double                 tokens_per_second = 0.0;
     int                    prompt_tokens     = 0;
     int                    output_tokens     = 0;
     long                   load_ms           = 0;  ///< JIT swap cost for this turn
+};
+
+/// A file edit an expert wants to make, waiting on an answer.
+///
+/// Present in a snapshot exactly while the engine is parked on it. The renderer
+/// draws `before` and `after` side by side and the user picks one; the engine
+/// is blocked on a condition variable the whole time, which is what makes this
+/// a gate rather than a notification.
+///
+/// Both sides are carried whole rather than as a diff. A diff is the right way
+/// to *review* a change and the wrong way to *choose* one: it shows what moved
+/// and hides what the file becomes, and the question here is which of two files
+/// you want on disk.
+struct PendingEdit {
+    std::string path;    ///< relative to the project root, as the expert named it
+    std::string before;  ///< the file as it is; empty when the expert is creating it
+    std::string after;   ///< the file as it would be
 };
 
 /// A consistent copy of everything the renderer needs for one frame.
@@ -127,6 +144,9 @@ struct Snapshot {
     /// in preference to the session average, because while an answer is
     /// arriving that is the number being asked about.
     double live_tokens_per_second = 0.0;
+
+    /// The edit waiting on an answer, or nothing. See PendingEdit.
+    std::shared_ptr<const PendingEdit> pending_edit;
 
     /// The cook in progress, or nothing.
     ///
@@ -202,6 +222,9 @@ public:
     /// show the model's replies to a context it never saw.
     void truncate_turns(std::size_t from);
 
+    /// Put an edit up for approval, or take it back down with nothing.
+    void set_pending_edit(std::shared_ptr<const PendingEdit> edit);
+
     /// Close a turn the user stopped.
     ///
     /// Apart from fail_turn because a stop is not a failure: nothing went
@@ -248,6 +271,7 @@ private:
     std::vector<std::string>             notices_;
     bool                                 busy_ = false;
     std::shared_ptr<const Cook>          cook_;
+    std::shared_ptr<const PendingEdit>   pending_edit_;
     TokenUsage                           session_usage_;
     TokenUsage                           project_usage_;
     double                               live_rate_ = 0.0;

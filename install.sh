@@ -711,7 +711,7 @@ detect_platform() {
     fi
 
     if [ "$PKG" = "unknown" ] && [ "$INSTALL_DEPS" = 1 ]; then
-        warn "unrecognised package manager; skipping dependency installation."
+        warn "unrecognized package manager; skipping dependency installation."
         warn "you will need: a C++20 compiler, cmake >= 3.24, git."
         INSTALL_DEPS=0
     fi
@@ -1507,7 +1507,7 @@ path_advice() {
 # before deciding whether to install at all.
 run_check() {
     local saved_deps="$INSTALL_DEPS"
-    INSTALL_DEPS=0          # suppresses the sudo pre-authorisation
+    INSTALL_DEPS=0          # suppresses the sudo pre-authorization
     banner
     printf '%s==>%s %sDry run -- nothing will be changed%s\n\n' \
         "$C_CYN" "$C_RESET" "$C_BOLD" "$C_RESET"

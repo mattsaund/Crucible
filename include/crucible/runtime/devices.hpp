@@ -42,7 +42,7 @@ std::vector<ComputeDevice> compute_devices();
 /// NVIDIA GPU appears twice. llama.cpp keeps the first of each and Crucible has
 /// to agree with it exactly, because a split is handed over as an array indexed
 /// by position in that list: disagree by one entry and every card gets the
-/// share meant for its neighbour.
+/// share meant for its neighbor.
 std::vector<ComputeDevice> gpu_devices();
 
 /// The `tensor_split` array llama.cpp reads, from a plan indexed by ggml device
@@ -190,13 +190,13 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
 
 /// Which of the GPU settings the loaded devices can actually act on.
 ///
-/// A setting the hardware cannot honour is worse than a missing one: it reads
+/// A setting the hardware cannot honor is worse than a missing one: it reads
 /// as configured, it saves, and nothing happens. So each field is either empty
 /// -- the setting works -- or the reason it does not, phrased for the person
 /// looking at it and naming what would have to change.
 ///
 /// Read from the devices rather than from the config, because it is whatever
-/// is loaded that honours a setting or ignores it. `describe_split` lives here
+/// is loaded that honors a setting or ignores it. `describe_split` lives here
 /// for the same reason: the explanation belongs with the fact.
 struct GpuSettingSupport {
     std::string split;      ///< dividing one model between several cards

@@ -52,7 +52,7 @@ public:
     /// Returns the already-loaded model without doing any work if `id` is
     /// already resident.
     ///
-    /// Cancellable. A thirty-gigabyte expert takes the better part of a minute
+    /// Cancelable. A thirty-gigabyte expert takes the better part of a minute
     /// to come off the disk, and a program that cannot be stopped during that
     /// minute is a program that has frozen, whatever it is doing underneath.
     LoadedModel* acquire_expert(const ExpertId& id,

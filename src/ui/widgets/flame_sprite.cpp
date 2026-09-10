@@ -18,7 +18,7 @@
 //
 // Every frame is padded to the same width and height at render time, so the
 // expert panel never reflows and the flame never slides sideways as it burns.
-// The plume grows and shrinks about a fixed centre line, which is what keeps it
+// The plume grows and shrinks about a fixed center line, which is what keeps it
 // from wandering across the column as the engine changes state.
 #include "crucible/ui/widgets/flame_sprite.hpp"
 
@@ -395,7 +395,7 @@ std::string thought_bubble(Mood mood, const std::string& status, std::size_t tic
     // Trailing dots that march, so a long model load still looks alive even
     // when the percentage has not moved.
     //
-    // Padded back out to a constant width. The bubble and the flame are centred
+    // Padded back out to a constant width. The bubble and the flame are centered
     // inside the same column, so a bubble that grows by a character shifts the
     // whole sprite half a column -- which reads as the mark rocking side to
     // side once a second, and is far more distracting than the dots are useful.

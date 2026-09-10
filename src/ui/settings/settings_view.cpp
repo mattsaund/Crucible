@@ -8,7 +8,7 @@
 // the same way, and there is no second state to fall out of step.
 //
 // Rows that cannot apply are marked inert instead of hidden -- a CUDA setting
-// on a machine with no CUDA is worth seeing greyed out, because "where did that
+// on a machine with no CUDA is worth seeing grayed out, because "where did that
 // option go" is a worse question than "why can't I change this".
 #include "crucible/ui/settings/settings_view.hpp"
 
@@ -180,7 +180,7 @@ void SettingsView::build_rows() {
                      "refuse a model that would spill out of video memory into RAM",
                      nullptr, nullptr, nullptr, &config_.gpu.vram_only, {}});
 
-    header("BEHAVIOUR");
+    header("BEHAVIOR");
     rows_.push_back({Kind::Text, "System prompt", "sent to every expert",
                      &config_.system_prompt, nullptr, nullptr, nullptr, {}});
     rows_.push_back({Kind::Enum, "Reasoning effort", "how hard a thinking model works",
@@ -618,7 +618,7 @@ Element SettingsView::render_row(const Row& row, std::size_t index) const {
     std::string value = value_of(row);
     Color value_color = theme::kUser;
 
-    // A setting the runtime cannot honour shows why instead of what it is set
+    // A setting the runtime cannot honor shows why instead of what it is set
     // to. The value is still in the config and is still saved -- plug the card
     // back in and it takes effect again -- but showing it here would be showing
     // a number that is doing nothing.
@@ -659,7 +659,7 @@ Element SettingsView::render_row(const Row& row, std::size_t index) const {
         value_color = (row.flag != nullptr && *row.flag) ? theme::kSeatActive : theme::kMeta;
     }
 
-    // kMeta is the same grey as the highlight, so a "(none)" or an "off" on the
+    // kMeta is the same gray as the highlight, so a "(none)" or an "off" on the
     // selected row would be invisible exactly when it is being looked at.
     Element value_element = (Color(value_color) == Color(theme::kMeta))
                                 ? text(value) | color(meta_color(selected))

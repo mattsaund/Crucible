@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// The Config type's own behaviour: inheritance from defaults, and resolving
+// The Config type's own behavior: inheritance from defaults, and resolving
 // model references against the models directory.
 //
 // Anything to do with the file on disk lives in config_io.cpp.

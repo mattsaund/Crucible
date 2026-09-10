@@ -47,13 +47,13 @@ void App::draw_expert_list() {
         ImGui::Separator();
 
         ImGui::PushFont(theme::bold());
-        text_coloured(theme::kText, "%s", expert.name.c_str());
+        text_colored(theme::kText, "%s", expert.name.c_str());
         ImGui::PopFont();
         ImGui::SameLine();
-        text_coloured(theme::kTextFaint, "[%s]", expert.tag.c_str());
+        text_colored(theme::kTextFaint, "[%s]", expert.tag.c_str());
         if (config_.routing.default_expert == expert.id) {
             ImGui::SameLine();
-            text_coloured(theme::kFlame, "default");
+            text_colored(theme::kFlame, "default");
         }
         wrapped(theme::kTextDim, expert.blurb);
 

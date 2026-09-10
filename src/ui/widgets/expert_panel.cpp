@@ -64,8 +64,8 @@ Element seat(const Expert& expert, const SeatState& state, std::size_t tick,
              bool narrow = false) {
     // The tag is padded to a fixed width for the one-line strip, where the
     // chips are laid end to end and the padding is what lines them up. In the
-    // ring the box is already a fixed width and the label is centred in it, so
-    // padding there would only push the short tags half a column off centre.
+    // ring the box is already a fixed width and the label is centered in it, so
+    // padding there would only push the short tags half a column off center.
     std::string tag = expert.tag;
     if (narrow) {
         tag.resize(4, ' ');
@@ -88,7 +88,7 @@ Element seat(const Expert& expert, const SeatState& state, std::size_t tick,
     }
     // In the ring, every seat reserves room for the widest label
     // ("◴ MATH 100%") so the layout does not jitter while a model loads -- and
-    // the label is centred in that room rather than left-aligned in it. A
+    // the label is centered in that room rather than left-aligned in it. A
     // six-column chip in an eleven-column box reads as three columns further
     // left than it is, which was enough to make the whole ring look adrift of
     // the crucible it is supposed to be arranged around.
@@ -238,7 +238,7 @@ Element expert_panel(const Snapshot& snapshot, const FlameSprite& sprite, std::s
         }
     }
 
-    // All three columns are centred against each other, not just the mark.
+    // All three columns are centered against each other, not just the mark.
     //
     // The mark is a fixed seven rows however hard the flame is burning, and a
     // roster is however many experts you have -- so one of the two is always

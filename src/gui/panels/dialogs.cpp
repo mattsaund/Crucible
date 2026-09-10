@@ -48,14 +48,14 @@ void App::draw_new_expert_modal() {
             "delegator writes its own example questions once it is loaded.");
     ImGui::Dummy(ImVec2(0, em(0.5F)));
 
-    text_coloured(theme::kTextFaint, "Expert name");
+    text_colored(theme::kTextFaint, "Expert name");
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::InputTextWithHint("##name", "Rust Async, Tax Law, Kubernetes", &new_expert_name_);
 
     ImGui::Dummy(ImVec2(0, em(0.4F)));
-    text_coloured(theme::kTextFaint, "Describe what the expert is trained in");
+    text_colored(theme::kTextFaint, "Describe what the expert is trained in");
     ImGui::InputTextMultiline("##blurb", &new_expert_blurb_, ImVec2(-FLT_MIN, em(5.2F)));
-    text_coloured(theme::kTextFaint,
+    text_colored(theme::kTextFaint,
                   "The delegator routes on this, so name the things it should take.");
 
     if (!expert_error_.empty()) {
@@ -144,7 +144,7 @@ void App::draw_browse_modal() {
         browse_text_ = browse_.string();
     }
 
-    text_coloured(theme::kTextFaint, "%s", browse_.string().c_str());
+    text_colored(theme::kTextFaint, "%s", browse_.string().c_str());
 
     // Sized to what is left rather than to a fixed height: the "create folder"
     // row that used to sit under it is gone, and a list that kept its old
@@ -233,7 +233,7 @@ void App::draw_trust_modal() {
     if (ImGui::Button("Cancel", ImVec2(em(5.6F), 0))) {
         // Declining the folder the window opened in is different from declining
         // one picked from the sidebar: there is no trusted project underneath to
-        // fall back to, so cancelling would leave the user sitting in a
+        // fall back to, so canceling would leave the user sitting in a
         // directory they just refused. Offer the picker instead of nothing.
         const bool was_the_open_project = *pending_trust_ == store_->project().root;
         pending_trust_.reset();

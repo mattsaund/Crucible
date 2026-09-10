@@ -727,7 +727,7 @@ echo "  bash 3.2 on macOS"
 # installed a newer one, which is every machine this script is run on.
 #
 # 3.2 scans a bare $name with isalnum() a byte at a time, and macOS's ctype
-# table answers yes for the bytes of a UTF-8 character. So a bare colour
+# table answers yes for the bytes of a UTF-8 character. So a bare color
 # variable written against a tick becomes a variable whose name has the tick's
 # three bytes glued on the end, which is unset, and `set -u` kills the install --
 # which is exactly what happened at step 2/5, reported as

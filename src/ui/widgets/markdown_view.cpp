@@ -159,7 +159,7 @@ std::vector<Element> render_markdown(const std::string& source, bool dim_all) {
                 break;
 
             case markdown::BlockKind::Heading: {
-                // Every level is bold; the first two are also coloured, so a
+                // Every level is bold; the first two are also colored, so a
                 // document with headings four deep still reads as a hierarchy.
                 Element line = wrapped(block.spans, dim_all) | bold;
                 if (!dim_all && block.level <= 2) {

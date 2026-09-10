@@ -78,7 +78,7 @@ struct ProgressBridge {
     const ProgressCallback* progress  = nullptr;
     const CancelCallback*   cancel    = nullptr;
     float                   last      = -1.0F;
-    bool                    cancelled = false;
+    bool                    canceled = false;
 };
 
 bool progress_trampoline(float progress, void* user_data) {
@@ -95,7 +95,7 @@ bool progress_trampoline(float progress, void* user_data) {
     // -- and calling one throws std::bad_function_call out through llama.cpp's
     // C boundary, where it surfaces as an unexplained "failed to load model".
     if (bridge->cancel != nullptr && *bridge->cancel && (*bridge->cancel)()) {
-        bridge->cancelled = true;
+        bridge->canceled = true;
         return false;
     }
     if (bridge->progress == nullptr || !*bridge->progress) {
@@ -167,7 +167,7 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
 
     std::vector<const ComputeDevice*> used;
     std::uint64_t available = 0;
-    double        weight    = 0.0;   // total of the shares, to normalise by
+    double        weight    = 0.0;   // total of the shares, to normalize by
     for (const ComputeDevice& gpu : gpus) {
         if (single ? gpu.index != params.main_gpu
                    : (!everywhere && share_of(gpu) <= 0.0F)) {
@@ -321,7 +321,7 @@ ModelHost::ModelHost(std::filesystem::path log_path) {
         std::setvbuf(stderr, nullptr, _IONBF, 0);   // unbuffered: it is a crash log
     }
 
-    // Bring the loadable runtimes in before llama.cpp initialises, so the
+    // Bring the loadable runtimes in before llama.cpp initializes, so the
     // devices they provide are there from the first model load. A fresh
     // install has none: Crucible ships no backends, and this does nothing until
     // one has been built from the settings screen.
@@ -455,7 +455,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         // Stopped on purpose is not a failure, and must not be reported as one:
         // "could not load, turn off GPU-only compute" is bad advice to give
         // somebody who pressed stop.
-        if (bridge.cancelled) {
+        if (bridge.canceled) {
             error = "stopped";
             return nullptr;
         }

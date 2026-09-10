@@ -248,7 +248,7 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
 
     for (const BackendInfo& info : all_backends()) {
         // A backend this machine cannot have is not listed at all. Showing
-        // CUDA on a Mac, greyed out with a reason, is a row that can never
+        // CUDA on a Mac, grayed out with a reason, is a row that can never
         // become anything -- and the list is short enough that every row in it
         // should be one you could act on.
         if (!backend_available_here(info.kind)) {

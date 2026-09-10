@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 //
-// Colouring the code a model wrote.
+// Coloring the code a model wrote.
 //
 // This is a lexer, not a parser. It has no idea what a program means and is not
 // trying to find out: it splits a line into runs of "this is a string", "this
 // is a keyword", "this is a comment", and gets those right often enough that a
-// forty-line function reads as structure instead of as a grey block. A real
+// forty-line function reads as structure instead of as a gray block. A real
 // grammar per language would be a thousand lines each and would still be wrong
 // on the half-written snippets models actually emit.
 //
@@ -13,7 +13,7 @@
 // diff arrives -- but a block comment and a triple-quoted string both outlive
 // their line, so the caller carries a `Carry` from one line to the next.
 //
-// Anything it does not recognise comes out as Text, which is exactly what the
+// Anything it does not recognize comes out as Text, which is exactly what the
 // whole block used to be.
 #pragma once
 
@@ -76,7 +76,7 @@ enum class Token {
     Preproc,   ///< #include, a shell $variable, an attribute
 };
 
-/// One run of characters that share a colour.
+/// One run of characters that share a color.
 struct Piece {
     std::string text;
     Token       token = Token::Text;
@@ -85,7 +85,7 @@ struct Piece {
 /// What a line leaves behind for the next one.
 ///
 /// A block comment or a triple-quoted string opened on line 12 is still open on
-/// line 13, and a lexer that forgets that colours the body of every docstring
+/// line 13, and a lexer that forgets that colors the body of every docstring
 /// as code. `quote` holds which delimiter is still waiting to be closed.
 struct Carry {
     bool        in_comment = false;  ///< inside /* */ or <!-- --> or =begin
@@ -93,7 +93,7 @@ struct Carry {
     std::string quote;               ///< the delimiter that will close it
 };
 
-/// Split one line into coloured runs, advancing `carry`.
+/// Split one line into colored runs, advancing `carry`.
 ///
 /// The pieces concatenate back to `line` exactly -- every byte comes out
 /// somewhere, so the renderer can lay them end to end and get the original

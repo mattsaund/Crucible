@@ -122,7 +122,7 @@ private:
 
         /// Why this row cannot be changed right now, or empty when it can.
         ///
-        /// A setting whose runtime cannot honour it is worse than a missing
+        /// A setting whose runtime cannot honor it is worse than a missing
         /// one: it reads as configured, it saves, and nothing happens. So the
         /// row stays visible and selectable -- you have to be able to land on
         /// it to find out why -- and says what would have to change.

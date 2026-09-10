@@ -60,7 +60,7 @@ Element ModelPicker::render(const std::string& models_dir) const {
             // An explicit gap: flex collapses to nothing when the file name is
             // long, which would run the name straight into its size.
             text("  "),
-            // kMeta is the same grey as the highlight below, so the note
+            // kMeta is the same gray as the highlight below, so the note
             // has to brighten on the row that is selected or it disappears.
             text(note) | color(meta_color(on)),
         });

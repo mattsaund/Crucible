@@ -151,7 +151,7 @@ Element DirectoryBrowser::render() const {
             text(on ? " > " : "   ") | color(theme::kAccent),
             text(label) | color(tint) | flex,
             text("  "),
-            // kMeta is the same grey as the highlight below, so the note
+            // kMeta is the same gray as the highlight below, so the note
             // has to brighten on the row that is selected or it disappears.
             text(note) | color(meta_color(on)),
         });

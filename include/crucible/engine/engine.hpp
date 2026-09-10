@@ -39,7 +39,7 @@ public:
     /// Start the worker and load the router model. Returns immediately.
     void start();
 
-    /// Stop the worker, cancelling any generation in flight.
+    /// Stop the worker, canceling any generation in flight.
     void stop();
 
     /// Queue a prompt. `pinned` skips routing and sends it straight to that
@@ -90,7 +90,7 @@ public:
     ///
     /// Queued like any other request, and once it starts it holds the worker
     /// for its whole duration. Prompts submitted while it runs wait behind it,
-    /// which is the truthful behaviour: there is one engine and it is busy.
+    /// which is the truthful behavior: there is one engine and it is busy.
     void start_cook(std::string goal, int budget_seconds, std::filesystem::path root);
 
     /// Ask the running cook to wrap up.
@@ -102,6 +102,14 @@ public:
 
     /// Answer the question a cook is waiting on, releasing it to carry on.
     void answer_cook(std::string answer);
+
+    /// Answer the edit a chat turn is waiting on: true writes the file, false
+    /// leaves it alone and tells the expert so.
+    ///
+    /// Only reachable while a snapshot carries a PendingEdit. Calling it at any
+    /// other time is harmless -- the answer is dropped, because there is nobody
+    /// waiting to read it.
+    void approve_edit(bool approved);
 
     /// True from the moment a cook starts until its finishing pass is done.
     bool cooking() const { return cooking_.load(std::memory_order_relaxed); }
@@ -269,6 +277,19 @@ private:
     std::unique_ptr<CookLog>     cook_log_;
     std::atomic<bool>            cooking_{false};
     std::atomic<bool>            cook_stop_{false};
+
+    /// Ask the user about one edit and block until they answer.
+    ///
+    /// Returns false when the edit was declined, and also when the turn was
+    /// canceled or the engine is shutting down while parked here -- all three
+    /// mean "do not write the file", which is the only question the caller has.
+    bool await_edit_approval(const tools::ToolCall& call,
+                             const tools::WorkshopSettings& workshop);
+
+    /// The answer to an edit, handed across from the UI thread.
+    std::mutex                   edit_mutex_;
+    std::condition_variable      edit_answered_;
+    std::optional<bool>          edit_approved_;
 
     /// The answer to a question a cook asked, handed across from the UI thread.
     std::mutex                   cook_answer_mutex_;

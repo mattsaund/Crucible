@@ -40,7 +40,7 @@ void App::draw_cook_step(const CookStep& step, std::size_t index) {
     const float  line   = ImGui::GetTextLineHeight();
     const float  badge  = em(4.6F);
     const bool   has    = !step.detail.empty();
-    const ImU32  ink    = step_colour(step);
+    const ImU32  ink    = step_color(step);
 
     const ImVec2 at    = ImGui::GetCursorScreenPos();
     const float  width = ImGui::GetContentRegionAvail().x;
@@ -127,7 +127,7 @@ void App::draw_cook(const Snapshot& snapshot) {
                             style.ChildRounding, ImDrawFlags_RoundCornersLeft);
 
         ImGui::SetCursorScreenPos(ImVec2(at.x + pad, at.y + pad * 0.7F));
-        text_coloured(theme::kTextFaint, "GOAL");
+        text_colored(theme::kTextFaint, "GOAL");
         ImGui::SetCursorScreenPos(ImVec2(at.x + pad, at.y + pad * 0.7F
                                                    + ImGui::GetTextLineHeight() + em(0.2F)));
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap);
@@ -138,7 +138,7 @@ void App::draw_cook(const Snapshot& snapshot) {
 
         // Stop, on the block it would stop. The composer at the bottom has the
         // same two buttons and always will -- they are the deliberate,
-        // labelled way out -- but a cook that has scrolled a hundred steps
+        // labeled way out -- but a cook that has scrolled a hundred steps
         // past its own goal should not need to be scrolled back to to be
         // ended, and the goal card is the thing on screen that *is* the cook.
         const bool live = cook.state == CookState::Working
@@ -149,7 +149,7 @@ void App::draw_cook(const Snapshot& snapshot) {
             ImGui::SetCursorScreenPos(ImVec2(at.x + width - size - em(0.2F),
                                              at.y + em(0.2F)));
             const IconHit slot = icon_slot("##stop-cook", size);
-            theme::draw_stop(draw, slot.centre, em(0.9F),
+            theme::draw_stop(draw, slot.center, em(0.9F),
                              slot.hovered ? theme::kFlameBright : theme::kTextFaint);
             ImGui::SetItemTooltip("Stop now, without the finishing pass");
             if (slot.clicked) {
@@ -183,11 +183,11 @@ void App::draw_cook(const Snapshot& snapshot) {
         ImGui::Dummy(ImVec2(em(0.85F), line));
         ImGui::SameLine(0.0F, 0.0F);
         ImGui::PushFont(theme::bold());
-        text_coloured(live ? theme::kFlameBright : theme::kTextDim, "%s",
+        text_colored(live ? theme::kFlameBright : theme::kTextDim, "%s",
                       std::string(cook_state_name(cook.state)).c_str());
         ImGui::PopFont();
         ImGui::SameLine();
-        text_coloured(theme::kTextFaint, "  \xC2\xB7  pass %d  \xC2\xB7  %s",
+        text_colored(theme::kTextFaint, "  \xC2\xB7  pass %d  \xC2\xB7  %s",
                       cook.iterations, clock.c_str());
     }
 
@@ -202,7 +202,7 @@ void App::draw_cook(const Snapshot& snapshot) {
             names += (i == 0 ? "" : "  \xE2\x86\x92  ")
                    + expert_label(config_.roster, experts[i]);
         }
-        text_coloured(theme::kFlameBright, "%s", names.c_str());
+        text_colored(theme::kFlameBright, "%s", names.c_str());
         ImGui::SetItemTooltip("Every expert this cook has been handed to, in order.");
     }
 
@@ -244,7 +244,7 @@ void App::draw_cook(const Snapshot& snapshot) {
 
         ImGui::SetCursorScreenPos(ImVec2(at.x + pad, at.y + pad * 0.7F));
         ImGui::PushFont(theme::bold());
-        text_coloured(theme::kFlameBright, "It is asking");
+        text_colored(theme::kFlameBright, "It is asking");
         ImGui::PopFont();
         ImGui::SetCursorScreenPos(ImVec2(at.x + pad, at.y + pad * 0.7F + line + em(0.25F)));
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap);
@@ -253,7 +253,7 @@ void App::draw_cook(const Snapshot& snapshot) {
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
         ImGui::SetCursorScreenPos(ImVec2(at.x + pad, at.y + box - line - em(0.35F)));
-        text_coloured(theme::kTextFaint, "answer in the box below and press enter");
+        text_colored(theme::kTextFaint, "answer in the box below and press enter");
         ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + box + em(0.4F)));
     }
 
@@ -269,16 +269,16 @@ void App::draw_cook(const Snapshot& snapshot) {
                        || cook.state == CookState::Failed;
     ImGui::Dummy(ImVec2(0, em(0.4F)));
     if (!files.empty()) {
-        text_coloured(theme::kTextFaint, "changed");
+        text_colored(theme::kTextFaint, "changed");
         for (const std::string& file : files) {
-            text_coloured(theme::kAdded, "  %s", file.c_str());
+            text_colored(theme::kAdded, "  %s", file.c_str());
         }
     } else if (finished) {
         // The outcome above is the expert's account of itself; this is the
         // fact. A model that talked its way through an edit it never made
         // writes a confident summary of having made it, and the only thing that
         // catches that is the journal saying nothing was written.
-        text_coloured(theme::kError,
+        text_colored(theme::kError,
                       "changed no files -- whatever it says, nothing on disk moved");
     }
 }
@@ -297,7 +297,7 @@ void App::draw_history() {
     for (const CookSummary& cook : cooks) {
         ImGui::Separator();
         wrapped(theme::kText, cook.goal);
-        text_coloured(theme::kTextDim, "%s  ·  %d %s  ·  %d steps  ·  %s  ·  %s",
+        text_colored(theme::kTextDim, "%s  ·  %d %s  ·  %d steps  ·  %s  ·  %s",
                       cook.when().c_str(), cook.files,
                       cook.files == 1 ? "file" : "files", cook.steps,
                       format_duration(cook.duration).c_str(),
@@ -313,7 +313,7 @@ void App::draw_history() {
     for (const SessionSummary& session : sessions) {
         ImGui::Separator();
         wrapped(theme::kText, session.title);
-        text_coloured(theme::kTextDim, "%s  ·  %d turns", session.when().c_str(),
+        text_colored(theme::kTextDim, "%s  ·  %d turns", session.when().c_str(),
                       session.turns);
     }
 }
@@ -353,7 +353,7 @@ void App::draw_cook_composer(const Snapshot& snapshot) {
         }
     } else if (engine_->cooking()) {
         ImGui::PushFont(theme::bold());
-        text_coloured(theme::kFlameBright, "cooking");
+        text_colored(theme::kFlameBright, "cooking");
         ImGui::PopFont();
         ImGui::SameLine();
         if (ImGui::Button("Stop and finish", ImVec2(em(9.0F), 0))) {

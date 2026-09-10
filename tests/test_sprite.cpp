@@ -51,8 +51,8 @@ std::vector<std::string> glyphs(const std::string& line) {
 bool blank(const std::string& glyph) { return glyph == " " || glyph == "\u2800"; }
 
 /// Twice the midpoint of the drawn part of a line, in columns, or -1 for an
-/// empty line. Doubled so a flame two columns wide has an exact centre.
-int twice_centre(const std::string& line) {
+/// empty line. Doubled so a flame two columns wide has an exact center.
+int twice_center(const std::string& line) {
     const std::vector<std::string> cols = glyphs(line);
     int first = -1;
     int last  = -1;
@@ -109,13 +109,13 @@ TEST(the_flicker_never_moves_the_foot) {
     }
 }
 
-TEST(the_flame_stands_on_the_bottom_row_and_stays_centred) {
+TEST(the_flame_stands_on_the_bottom_row_and_stays_centered) {
     // Fire grows upward from where it is lit, and the plume grows and shrinks
-    // about a fixed centre line rather than drifting across the column. Both
+    // about a fixed center line rather than drifting across the column. Both
     // are what keep the mark still while the engine changes state -- the flame
     // gets shorter, it does not wander off.
     //
-    // Within half a column of centre: the canvas is an odd number of columns
+    // Within half a column of center: the canvas is an odd number of columns
     // wide and the drawing is not symmetric, so an exact match is not a thing
     // that can be asked for.
     for (const bool unicode : {false, true}) {
@@ -125,9 +125,9 @@ TEST(the_flame_stands_on_the_bottom_row_and_stays_centred) {
             for (const Mood mood : all_moods()) {
                 for (std::size_t tick = 0; tick < 64; ++tick) {
                     const std::vector<std::string> lines = sprite.render(mood, tick, compact);
-                    const int centre = twice_centre(lines.back());
-                    CHECK(centre >= 0);
-                    CHECK(centre >= middle - 1 && centre <= middle + 1);
+                    const int center = twice_center(lines.back());
+                    CHECK(center >= 0);
+                    CHECK(center >= middle - 1 && center <= middle + 1);
                 }
             }
         }

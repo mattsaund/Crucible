@@ -5,7 +5,7 @@
 // The loop is deliberately plain: clear the KV cache, feed the whole prompt,
 // then sample a token at a time. Re-feeding the conversation each turn is
 // wasteful, but an expert swap invalidates the cache anyway, and correctness
-// here is worth more than the saving. Prefix reuse is a later optimisation.
+// here is worth more than the saving. Prefix reuse is a later optimization.
 #include "crucible/llm/loaded_model.hpp"
 
 #include <algorithm>
@@ -320,7 +320,7 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
     for (std::size_t offset = reused; offset < tokens.size();
          offset += static_cast<std::size_t>(batch_size)) {
         if (cancel && cancel()) {
-            stats.cancelled = true;
+            stats.canceled = true;
             stats.prompt_ms = ms_since(prompt_start);
             cached_.clear();  // the cache holds part of a prompt nobody will finish
             return stats;
@@ -345,7 +345,7 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
 
     for (int produced = 0; produced < limit; ++produced) {
         if (cancel && cancel()) {
-            stats.cancelled = true;
+            stats.canceled = true;
             break;
         }
 

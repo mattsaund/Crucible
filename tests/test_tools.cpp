@@ -312,7 +312,7 @@ TEST(a_colon_is_still_required_where_being_wrong_costs_something) {
     CHECK(!tools::parse_tool_call("DONE", "").has_value());
 }
 
-TEST(a_near_miss_is_recognised_so_it_can_be_corrected) {
+TEST(a_near_miss_is_recognized_so_it_can_be_corrected) {
     // Not executed -- named, so the cook loop can answer with the syntax
     // instead of a generic "take an action", which is how a whole cook goes by
     // with nothing written.
@@ -483,7 +483,7 @@ TEST(a_command_starts_in_the_project_but_is_not_confined_to_it) {
     // And the part worth stating out loud rather than discovering later: a
     // shell can leave. The file verbs are confined; this is not, which is why
     // it is a switch of its own and why the interface says so. Asserting the
-    // real behaviour here means a future sandbox has to update this test
+    // real behavior here means a future sandbox has to update this test
     // deliberately rather than quietly appearing to have always worked.
     run.argument = "cat ../outside.txt";
     const tools::ToolResult escaped =
@@ -660,7 +660,7 @@ TEST(a_wikipedia_response_becomes_results) {
     CHECK_EQ(results[1].title, "Paris");
 }
 
-TEST(the_result_limit_is_honoured_whatever_the_provider_sent) {
+TEST(the_result_limit_is_honored_whatever_the_provider_sent) {
     const std::string body =
         R"({"results":[{"url":"a","title":"A"},{"url":"b","title":"B"},{"url":"c","title":"C"}]})";
     CHECK_EQ(tools::parse_results("searxng", body, 2).size(), std::size_t{2});
@@ -699,7 +699,7 @@ TEST(an_expert_talking_about_searching_is_not_searching) {
     CHECK(tools::search_request("SEARCH:", "").empty());
 }
 
-TEST(a_models_own_tool_call_is_recognised_as_a_search) {
+TEST(a_models_own_tool_call_is_recognized_as_a_search) {
     // What gpt-oss actually does when told it can search: it ignores the
     // convention it was given and writes a call in its own format, on the
     // channel meant for tool calls -- which arrives here as reasoning, with

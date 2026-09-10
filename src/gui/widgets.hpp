@@ -33,11 +33,11 @@ constexpr int kComposerLines = 8;
 /// tracks whatever size the font was actually loaded at.
 float em(float n);
 
-/// Formatted text in one colour.
-void text_coloured(ImU32 colour, const char* fmt, ...) IM_FMTARGS(2);
+/// Formatted text in one color.
+void text_colored(ImU32 color, const char* fmt, ...) IM_FMTARGS(2);
 
-/// Wrapped body text in one colour.
-void wrapped(ImU32 colour, const std::string& text);
+/// Wrapped body text in one color.
+void wrapped(ImU32 color, const std::string& text);
 
 /// A section heading: small, faint, spaced above.
 void section(const char* label);
@@ -62,7 +62,7 @@ float grow_input_height(const std::string& text, float width, int max_lines);
 ///
 /// `height` overrides that: pass a positive value to make the box exactly that
 /// tall whatever is typed in it, which is what a composer the user has dragged
-/// to a size of their own needs. Zero keeps the measured behaviour.
+/// to a size of their own needs. Zero keeps the measured behavior.
 bool grow_input(const char* id, const char* hint, std::string& text,
                 float width, int max_lines, float height = 0.0F);
 
@@ -86,11 +86,11 @@ float reading_column(float available);
 /// different arguments and wrapping each in a std::function to hand it to a
 /// button helper is more machinery than the button is. What this owns is the
 /// part every icon button shares: the size, the hit test, the plate that
-/// appears under the pointer, and where the centre ended up.
+/// appears under the pointer, and where the center ended up.
 struct IconHit {
     bool   clicked = false;
     bool   hovered = false;
-    ImVec2 centre;
+    ImVec2 center;
 };
 IconHit icon_slot(const char* id, float size, bool lit = false);
 
@@ -119,9 +119,9 @@ theme::Dot dot_for(SeatPhase phase);
 /// A mood as one lowercase word, for the line under the mark.
 const char* mood_text(Mood mood);
 
-/// The colour a cook step is drawn in: red for a failure, orange for a write,
+/// The color a cook step is drawn in: red for a failure, orange for a write,
 /// flame for anything that ran, faint for the rest.
-ImU32 step_colour(const CookStep& step);
+ImU32 step_color(const CookStep& step);
 
 /// Subdirectories of `dir`, sorted, with hidden ones left out.
 std::vector<std::filesystem::path> subdirectories(const std::filesystem::path& dir);

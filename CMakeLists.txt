@@ -273,12 +273,13 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_syntax.cpp
         tests/test_code_lines.cpp
         tests/test_transcript_edits.cpp
+        tests/test_spelling.cpp
         # The flame's own source, because it lives in the terminal program
         # rather than in the core library. It draws text and nothing else, so it
-        # costs the test binary a link against FTXUI's colour type and no more.
+        # costs the test binary a link against FTXUI's color type and no more.
         src/ui/widgets/flame_sprite.cpp
         # And the two halves of a code block that are decisions rather than
-        # drawings: the lexer that colours it, and the reader that works out
+        # drawings: the lexer that colors it, and the reader that works out
         # whether it is a diff and what to number each line. Both live in the
         # desktop program and neither includes anything from ImGui -- text in,
         # structure out, which is exactly the shape a test wants.
@@ -286,6 +287,9 @@ if(CRUCIBLE_BUILD_TESTS)
         src/gui/code_lines.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core ftxui::screen)
     target_include_directories(crucible_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    # So the spelling lint can walk the project from wherever it is run.
+    target_compile_definitions(crucible_tests
+        PRIVATE CRUCIBLE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         target_compile_options(crucible_tests PRIVATE ${_crucible_warnings})
     endif()

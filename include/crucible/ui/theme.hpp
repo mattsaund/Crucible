@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// One place for every colour Crucible draws with.
+// One place for every color Crucible draws with.
 #pragma once
 
 #include <ftxui/screen/color.hpp>
@@ -17,9 +17,9 @@ namespace crucible::ui {
 /// is answering, the thing being pointed at. If it is orange, something is
 /// happening.
 ///
-/// These are 256-colour palette indices rather than the sixteen named ones,
+/// These are 256-color palette indices rather than the sixteen named ones,
 /// because there is no orange in the sixteen. Every terminal in use supports
-/// 256 colours; the alternative is truecolor, which buys nothing here (the
+/// 256 colors; the alternative is truecolor, which buys nothing here (the
 /// palette holds the exact shades wanted) and costs `constexpr`, since FTXUI's
 /// RGB constructors are not.
 namespace theme {
@@ -34,14 +34,14 @@ inline constexpr ftxui::Color::Palette256 kFlameError = ftxui::Color::OrangeRed1
 
 // --- seats ----------------------------------------------------------------
 // A heat ramp, which is the one gradient this palette can express and happens
-// to be exactly the right metaphor: cold grey for a seat with nothing in it,
+// to be exactly the right metaphor: cold gray for a seat with nothing in it,
 // warming as a model is read in, hottest while it is answering.
 //
-// Two of these are close enough in hue that colour alone would not separate
+// Two of these are close enough in hue that color alone would not separate
 // them, and it does not have to. Every seat also carries a distinct glyph
-// (◆ ◇ ◴ ✗ ·) and a loading seat carries a percentage, so the colour reinforces
+// (◆ ◇ ◴ ✗ ·) and a loading seat carries a percentage, so the color reinforces
 // a state that is already legible in monochrome -- which is the only way a
-// three-colour palette can afford five states.
+// three-color palette can afford five states.
 inline constexpr ftxui::Color::Palette256 kSeatActive       = ftxui::Color::Orange1;    // 214
 inline constexpr ftxui::Color::Palette256 kSeatLoading      = ftxui::Color::DarkOrange; // 208
 inline constexpr ftxui::Color::Palette256 kSeatDormant      = ftxui::Color::Grey62;     // 247
@@ -55,7 +55,7 @@ inline constexpr ftxui::Color::Palette256 kUser   = ftxui::Color::Grey100;    //
 inline constexpr ftxui::Color::Palette256 kRoute  = ftxui::Color::DarkOrange; // 208
 inline constexpr ftxui::Color::Palette256 kMeta   = ftxui::Color::Grey42;     // 242
 // Notices are mostly informational -- /help, /models, startup device lines --
-// so they take the calm colour. Anything genuinely wrong uses kError.
+// so they take the calm color. Anything genuinely wrong uses kError.
 inline constexpr ftxui::Color::Palette256 kNotice = ftxui::Color::Grey70;     // 249
 inline constexpr ftxui::Color::Palette256 kError  = ftxui::Color::OrangeRed1; // 202
 inline constexpr ftxui::Color::Palette256 kAccent = ftxui::Color::DarkOrange; // 208
@@ -68,9 +68,9 @@ inline constexpr ftxui::Color::Palette256 kPanelText = ftxui::Color::Grey85;  //
 
 // The row under the cursor, in every list Crucible draws.
 //
-// A band rather than a colour swap: `inverted` on an orange theme turns the
+// A band rather than a color swap: `inverted` on an orange theme turns the
 // selected row into a solid block of orange, which reads as an alert. A dark
-// grey ground keeps the row's own colours and just lifts it off the page.
+// gray ground keeps the row's own colors and just lifts it off the page.
 //
 // kMeta is dim enough that secondary text -- a file size, a build date, a
 // "(none)" -- would vanish against that band, so anything drawn on a
@@ -97,7 +97,7 @@ inline constexpr ftxui::Color::Palette256 kMarker  = ftxui::Color::Orange1;    /
 /// Secondary text, in the shade that stays readable on the row it is on.
 ftxui::Color meta_color(bool highlighted);
 
-/// The colour the crucible's fire takes for a given mood.
+/// The color the crucible's fire takes for a given mood.
 ftxui::Color mood_color(Mood mood);
 
 }  // namespace crucible::ui

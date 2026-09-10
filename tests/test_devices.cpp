@@ -100,7 +100,7 @@ constexpr std::uint64_t kGb = 1024ULL * 1024ULL * 1024ULL;
 
 /// Replay llama.cpp's own layer assignment for a `tensor_split`.
 ///
-/// Copied from llama-model.cpp: the split is made cumulative, normalised, and
+/// Copied from llama-model.cpp: the split is made cumulative, normalized, and
 /// unit `i` goes to the first device whose share exceeds `i / total`. Anything
 /// this file claims about layer counts is only true if it survives this.
 std::vector<int> llama_cpp_assignment(const std::vector<float>& split, int units) {
@@ -178,7 +178,7 @@ TEST(the_lowest_priority_card_never_holds_more_than_a_higher_one) {
 
 TEST(reversing_the_priority_order_reverses_the_split) {
     // The property a user actually checks: put a card last and it should hold
-    // less than when you put it first. Before honour_targets these two calls
+    // less than when you put it first. Before honor_targets these two calls
     // returned the same answer.
     const std::vector<ComputeDevice> gpus{
         fake_gpu(0, "first",  10 * kGb),
@@ -606,7 +606,7 @@ TEST(a_model_that_fits_on_the_first_card_never_leaves_it) {
     CHECK_EQ(actual[1], 8);
 }
 
-TEST(a_setting_the_hardware_cannot_honour_says_so) {
+TEST(a_setting_the_hardware_cannot_honor_says_so) {
     // The failure this exists for is silent: a split mode saved on a machine
     // with one card reads as configured, saves, and does nothing.
     ComputeDevice cpu;
@@ -690,7 +690,7 @@ TEST(split_modes_round_trip_through_their_ids) {
         CHECK_EQ(static_cast<int>(gpu_split_mode_from_id(gpu_split_mode_id(mode))),
                  static_cast<int>(mode));
     }
-    // Anything unrecognised must be the safe option, not a crash.
+    // Anything unrecognized must be the safe option, not a crash.
     CHECK_EQ(static_cast<int>(gpu_split_mode_from_id("nonsense")),
              static_cast<int>(GpuSplitMode::Auto));
 }

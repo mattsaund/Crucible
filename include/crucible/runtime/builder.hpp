@@ -64,7 +64,7 @@ struct BuildProgress {
         Installing,      ///< copying the module into the runtimes directory
         Done,
         Failed,
-        Cancelled,
+        Canceled,
     };
 
     Phase       phase   = Phase::Idle;
@@ -81,7 +81,7 @@ struct BuildProgress {
     std::filesystem::path log_file;
 
     bool finished() const {
-        return phase == Phase::Done || phase == Phase::Failed || phase == Phase::Cancelled;
+        return phase == Phase::Done || phase == Phase::Failed || phase == Phase::Canceled;
     }
     bool running() const { return phase != Phase::Idle && !finished(); }
 
@@ -102,7 +102,7 @@ public:
     /// Returns false if a build is already running.
     bool start(BackendKind kind, std::function<void()> on_change);
 
-    /// Ask the running build to stop. The compiler is signalled, so this takes
+    /// Ask the running build to stop. The compiler is signaled, so this takes
     /// effect within a second rather than at the end of the build.
     void cancel();
 

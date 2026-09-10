@@ -82,7 +82,7 @@ void App::draw_settings_hardware() {
         }
     }
     for (const ComputeDevice& device : devices) {
-        text_coloured(theme::kTextDim, "[%d] %s  %s", device.index,
+        text_colored(theme::kTextDim, "[%d] %s  %s", device.index,
                       device.label().c_str(), device.backend.c_str());
     }
 
@@ -146,7 +146,7 @@ void App::draw_settings_hardware() {
     // "priority" will mean when it is selected -- but only priority reads it.
     if (gpus.size() > 1) {
         ImGui::Dummy(ImVec2(0, em(0.3F)));
-        text_coloured(mode == GpuSplitMode::Priority ? theme::kText : theme::kTextFaint,
+        text_colored(mode == GpuSplitMode::Priority ? theme::kText : theme::kTextFaint,
                       "Priority order%s",
                       mode == GpuSplitMode::Priority ? "" : "  (used by \"Priority order\")");
 
@@ -176,7 +176,7 @@ void App::draw_settings_hardware() {
             ImGui::EndDisabled();
             ImGui::SameLine();
 
-            text_coloured(row == 0 ? theme::kFlame : theme::kTextDim, "%zu. [%d] %s",
+            text_colored(row == 0 ? theme::kFlame : theme::kTextDim, "%zu. [%d] %s",
                           row + 1, gpu->index, gpu->label().c_str());
             ImGui::PopID();
         }
@@ -192,7 +192,7 @@ void App::draw_settings_hardware() {
         if (supported) {
             ImGui::SetItemTooltip("%s", help);
         } else {
-            text_coloured(theme::kTextFaint, "%s", why_not);
+            text_colored(theme::kTextFaint, "%s", why_not);
         }
     };
 

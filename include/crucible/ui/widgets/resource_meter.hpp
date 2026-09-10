@@ -13,7 +13,7 @@ namespace crucible::ui {
 /// full its memory is, how busy it is, and how hot.
 ///
 /// Drawn as an overlay rather than a column of its own, so it cannot move the
-/// expert panel off centre -- which is the one thing the list is arranged around.
+/// expert panel off center -- which is the one thing the list is arranged around.
 ftxui::Element resource_meter(const util::ResourceSnapshot& snapshot);
 
 }  // namespace crucible::ui

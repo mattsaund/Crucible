@@ -32,7 +32,7 @@ public:
     ///
     /// Returns the chosen model's file name once the user commits -- an empty
     /// string meaning "leave this seat empty" -- and nothing while the dialog
-    /// is still open or was cancelled.
+    /// is still open or was canceled.
     std::optional<std::string> handle(const ftxui::Event& event);
 
     ftxui::Element render(const std::string& models_dir) const;

@@ -3,12 +3,12 @@
 // Where Crucible keeps its files.
 //
 // The XDG base directory spec on Linux and macOS, and %APPDATA% /
-// %LOCALAPPDATA% on Windows -- with the XDG variables still honoured first
+// %LOCALAPPDATA% on Windows -- with the XDG variables still honored first
 // there, because someone running Crucible under a POSIX-flavoured shell on
 // Windows has usually set them and expects them to mean what they mean
 // everywhere else.
 //
-// The spec's awkward rule is honoured here: an XDG variable set to a *relative*
+// The spec's awkward rule is honored here: an XDG variable set to a *relative*
 // path must be ignored rather than resolved, because resolving it against the
 // working directory would scatter config wherever the user happened to be.
 #include "crucible/config/paths.hpp"
@@ -34,7 +34,7 @@ std::filesystem::path home_dir() {
     return std::filesystem::current_path();
 }
 
-/// Honour an XDG variable if it is set to an absolute path, per the spec:
+/// Honor an XDG variable if it is set to an absolute path, per the spec:
 /// a relative value must be ignored rather than resolved.
 ///
 /// `fallback` is the directory under $HOME to use when it is not set;

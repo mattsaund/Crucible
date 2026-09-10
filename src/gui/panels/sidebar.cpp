@@ -246,7 +246,7 @@ void App::draw_sidebar(const Snapshot& snapshot) {
         ImGui::Dummy(ImVec2(0, slack));
     }
     ImGui::Separator();
-    text_coloured(theme::kTextFaint, "%s in / %s out",
+    text_colored(theme::kTextFaint, "%s in / %s out",
                   format_tokens(usage.input_tokens).c_str(),
                   format_tokens(usage.output_tokens).c_str());
     ImGui::SetItemTooltip("Tokens this session. The project's running total is in "

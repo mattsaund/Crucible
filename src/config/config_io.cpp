@@ -103,7 +103,7 @@ bool read_expert_identity(const json& entry, const ExpertId& id, Expert& expert,
     return true;
 }
 
-/// Round a float before serialising it.
+/// Round a float before serializing it.
 ///
 /// A float widened to double prints as 0.05000000074505806, which is correct
 /// and unreadable. The config is meant to be edited by hand, so trim the noise.
@@ -206,6 +206,7 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
             {"search_results",  config.tools.search_results},
             {"search_timeout",  config.tools.search_timeout},
             {"search_rounds",   config.tools.search_rounds},
+            {"auto_edits",       config.tools.auto_edits},
             {"workshop_timeout", config.tools.workshop_timeout},
         }},
         {"ui", json{
@@ -308,6 +309,7 @@ void write_default_config(const std::filesystem::path& file) {
             {"search_results",  defaults.tools.search_results},
             {"search_timeout",  defaults.tools.search_timeout},
             {"search_rounds",   defaults.tools.search_rounds},
+            {"auto_edits",       defaults.tools.auto_edits},
             {"workshop_timeout", defaults.tools.workshop_timeout},
         }},
         {"ui", json{
@@ -462,6 +464,7 @@ Config load_config(const std::filesystem::path& file, std::vector<std::string>& 
         read_field(*tools, "search_results",  config.tools.search_results,  "tools", warnings);
         read_field(*tools, "search_timeout",  config.tools.search_timeout,  "tools", warnings);
         read_field(*tools, "search_rounds",   config.tools.search_rounds,   "tools", warnings);
+        read_field(*tools, "auto_edits",       config.tools.auto_edits,       "tools", warnings);
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
     }
 
