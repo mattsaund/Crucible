@@ -277,6 +277,17 @@ bool plausible_path(std::string_view target) {
     // A colon is how "src/calc.py:2: return a + b" gets in, and it has no place
     // in a relative path inside a project.
     constexpr std::string_view kRefused = " \t\n\r\"\'`&|;<>*?$()[]{}:";
+#if defined(_WIN32)
+    // Except the colon every absolute Windows path starts with. Absolute paths
+    // inside the root are accepted -- it is what a model writes after reading
+    // its own listing -- and on Windows this refused every one of them, drive
+    // letter first. Only a drive at the very start and followed by a
+    // separator; a colon anywhere after that is still a sentence.
+    if (target.size() >= 3 && std::isalpha(static_cast<unsigned char>(target[0])) != 0
+        && target[1] == ':' && (target[2] == '\\' || target[2] == '/')) {
+        target.remove_prefix(2);
+    }
+#endif
     return target.find_first_of(kRefused) == std::string_view::npos;
 }
 

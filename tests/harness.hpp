@@ -48,7 +48,9 @@ struct Registrar {
 
 inline void report_failure(const char* file, int line, const std::string& message) {
     ++failure_count();
-    std::cout << "    FAIL " << file << ":" << line << "  " << message << "\n";
+    // Flushed for the same reason the case names are: a failed check is often
+    // the step before a crash, and a line still in the buffer dies with it.
+    std::cout << "    FAIL " << file << ":" << line << "  " << message << std::endl;
 }
 
 inline int run_all() {

@@ -449,6 +449,9 @@ TEST(a_file_named_two_ways_is_recorded_once) {
 
     CHECK_EQ(first.changed.size(), std::size_t{1});
     CHECK_EQ(second.changed.size(), std::size_t{1});
+    if (first.changed.size() != 1 || second.changed.size() != 1) {
+        return;  // reported above; indexing an empty list would crash the run
+    }
     CHECK_EQ(first.changed[0], std::string("src/calc.py"));
     CHECK_EQ(second.changed[0], first.changed[0]);
 
