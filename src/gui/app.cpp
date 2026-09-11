@@ -543,6 +543,49 @@ void App::draw() {
 // The window
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Set by GLFW when the window lands on a display with another scale, and acted
+/// on at the top of the next frame, where rebuilding the fonts is safe.
+bool g_display_changed = false;
+
+}  // namespace
+
+void App::apply_display_scale(bool rebuild_texture) {
+    float content_x = 1.0F;
+    float content_y = 1.0F;
+    glfwGetWindowContentScale(window_, &content_x, &content_y);
+    int window_w = 0;
+    int window_h = 0;
+    int fb_w     = 0;
+    int fb_h     = 0;
+    glfwGetWindowSize(window_, &window_w, &window_h);
+    glfwGetFramebufferSize(window_, &fb_w, &fb_h);
+    const util::DisplayScale scale = util::display_scale(content_x, window_w, fb_w);
+
+    // A move between two displays of the same scale changes nothing, and the
+    // rebuild is not free: every face is rasterized again.
+    if (rebuild_texture && scale.layout == display_scale_.layout
+        && scale.density == display_scale_.density) {
+        return;
+    }
+    display_scale_ = scale;
+
+    if (rebuild_texture) {
+        ImGui_ImplOpenGL3_DestroyFontsTexture();
+    }
+    theme::load_fonts(scale.layout, scale.density);
+    if (rebuild_texture) {
+        ImGui_ImplOpenGL3_CreateFontsTexture();
+    }
+
+    // The style from its defaults every time: ScaleAllSizes multiplies, so
+    // scaling an already-scaled style would compound with every move.
+    ImGui::GetStyle() = ImGuiStyle();
+    theme::apply();
+    ImGui::GetStyle().ScaleAllSizes(scale.layout);
+}
+
 int App::run() {
     glfwSetErrorCallback([](int code, const char* description) {
         std::fprintf(stderr, "crucible-gui: glfw error %d: %s\n", code, description);
@@ -577,17 +620,19 @@ int App::run() {
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, "crucible-gui");
 #endif
 
-    // Sized against the monitor rather than in fixed pixels: 1280x820 is a
-    // reasonable window on a 1080p panel and a postage stamp on a 4K one.
-    int width  = 1280;
-    int height = 820;
-    if (GLFWmonitor* monitor = glfwGetPrimaryMonitor(); monitor != nullptr) {
-        if (const GLFWvidmode* mode = glfwGetVideoMode(monitor); mode != nullptr) {
-            width  = std::clamp(static_cast<int>(mode->width * 0.62F), 1120, 2200);
-            height = std::clamp(static_cast<int>(mode->height * 0.70F), 760, 1500);
-        }
-    }
-    window_ = glfwCreateWindow(width, height, "Crucible", nullptr, nullptr);
+    // Opened hidden and sized once it exists, because the size depends on the
+    // display scale and only a real window can say what that is: whether its
+    // units are pixels (Windows, X11) or points over a denser framebuffer (a
+    // Mac, Wayland) is not something the monitor alone reports.
+    //
+    // SCALE_TO_MONITOR has Windows keep the window the same size in points when
+    // it is dragged to a display with another scale, where it would otherwise
+    // keep its pixels and grow or shrink.
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+#ifdef GLFW_SCALE_TO_MONITOR
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+#endif
+    window_ = glfwCreateWindow(1280, 820, "Crucible", nullptr, nullptr);
     if (window_ == nullptr) {
         std::fprintf(stderr, "crucible-gui: could not create the window\n");
         glfwTerminate();
@@ -602,18 +647,32 @@ int App::run() {
     io.IniFilename = nullptr;  // no imgui.ini litter beside the project
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // The display's own scale, so the interface is the same physical size on a
-    // 4K laptop panel as on a 1080p monitor. GLFW reports it per monitor; the
-    // one the window opened on is the one that matters.
-    float scale_x = 1.0F;
-    float scale_y = 1.0F;
-    if (GLFWmonitor* monitor = glfwGetPrimaryMonitor(); monitor != nullptr) {
-        glfwGetMonitorContentScale(monitor, &scale_x, &scale_y);
+    // Fonts and style at the scale of the display the window is on: the same
+    // physical size on a Retina Mac, a 150% Windows laptop and a 1080p monitor.
+    // The window's own scale, not the primary monitor's, which is a different
+    // screen as often as not on a laptop with a monitor plugged in.
+    apply_display_scale(/*rebuild_texture=*/false);
+
+    // Then the size: decided in points, set in this display's window units.
+    {
+        int work_x = 0;
+        int work_y = 0;
+        int work_w = 0;
+        int work_h = 0;
+        if (GLFWmonitor* monitor = glfwGetPrimaryMonitor(); monitor != nullptr) {
+            glfwGetMonitorWorkarea(monitor, &work_x, &work_y, &work_w, &work_h);
+        }
+        const util::WindowSize size =
+            util::default_window_size(work_w, work_h, display_scale_.layout);
+        glfwSetWindowSize(window_, size.width, size.height);
     }
-    const float scale = std::max(1.0F, scale_x);
-    theme::load_fonts(scale);
-    theme::apply();
-    ImGui::GetStyle().ScaleAllSizes(scale);
+    glfwShowWindow(window_);
+
+    // Moved to a display with another scale: rebuilt at the top of the next
+    // frame rather than here, in the middle of event handling.
+    glfwSetWindowContentScaleCallback(window_, [](GLFWwindow*, float, float) {
+        g_display_changed = true;
+    });
 
     ImGui_ImplGlfw_InitForOpenGL(window_, true);
     ImGui_ImplOpenGL3_Init("#version 150");
@@ -625,6 +684,11 @@ int App::run() {
         // and the engine posts an empty event whenever it has something new --
         // the timeout is only there so the cook clock keeps moving.
         glfwWaitEventsTimeout(state_.busy() ? 0.05 : 0.5);
+
+        if (g_display_changed) {
+            g_display_changed = false;
+            apply_display_scale(/*rebuild_texture=*/true);
+        }
 
         persist_session();
         absorb_written_examples();

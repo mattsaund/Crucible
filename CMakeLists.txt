@@ -121,6 +121,10 @@ add_library(crucible_core STATIC
     # terminal that colors it differently from a window is two programs.
     src/util/syntax.cpp
     src/util/code_lines.cpp
+    # How big the desktop app draws itself. In the core rather than the desktop
+    # app because the Mac is the case that went wrong, and from a Linux machine
+    # a unit test is the only place it can be checked.
+    src/util/display_scale.cpp
     src/util/resources.cpp
     src/util/subprocess.cpp
 
@@ -303,6 +307,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_code_lines.cpp
         tests/test_transcript_edits.cpp
         tests/test_overflow.cpp
+        tests/test_display_scale.cpp
         tests/test_spelling.cpp
         # The flame's own source, because it lives in the terminal program
         # rather than in the core library. It draws text and nothing else, so it

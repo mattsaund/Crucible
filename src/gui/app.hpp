@@ -28,6 +28,7 @@
 #include "crucible/config/config.hpp"
 #include "crucible/config/trust.hpp"
 #include "crucible/cook/journal.hpp"
+#include "crucible/util/display_scale.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/llm/model_catalog.hpp"
@@ -173,6 +174,11 @@ private:
     /// stayed one line high.
     float composer_input_height() const;
 
+    /// Measure the display the window is on and, when it differs from what the
+    /// fonts and style were built for, rebuild both. `rebuild_texture` once the
+    /// renderer exists and holds a font texture of its own.
+    void apply_display_scale(bool rebuild_texture);
+
     /// Set while the composer splitter is being dragged, so the height it is
     /// being dragged to survives the frame that computes it.
     float composer_input_height_ = 0.0F;
@@ -273,6 +279,9 @@ private:
     /// writing to the config file. Below `sidebar_collapse_at()` the sidebar is
     /// closed, which is why there is no separate "is it open" flag.
     float sidebar_width_ = -1.0F;  ///< negative until the first frame sizes it
+
+    /// The display scale the fonts and style were last built for.
+    util::DisplayScale display_scale_{};
 
     /// The width to reopen at. Set when the fold button closes the side menu,
     /// because closing it leaves `sidebar_width_` at zero and reopening to a

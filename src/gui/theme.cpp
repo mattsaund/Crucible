@@ -122,10 +122,11 @@ ImFont* g_heading = nullptr;
 
 /// The first of `candidates` that exists and loads, or nullptr.
 ImFont* first_available(const char* const* candidates, std::size_t count, float pixels,
-                        const ImWchar* ranges) {
+                        const ImWchar* ranges, float density) {
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig cfg;
-    cfg.GlyphRanges = ranges;
+    cfg.GlyphRanges       = ranges;
+    cfg.RasterizerDensity = density;
     for (std::size_t i = 0; i < count; ++i) {
         std::error_code ec;
         if (!std::filesystem::exists(candidates[i], ec)) {
@@ -188,9 +189,14 @@ ImFont* bold()    { return g_bold != nullptr ? g_bold : g_body; }
 ImFont* italic()  { return g_italic != nullptr ? g_italic : g_body; }
 ImFont* heading() { return g_heading != nullptr ? g_heading : bold(); }
 
-void load_fonts(float scale) {
+void load_fonts(float layout, float density) {
     ImGuiIO& io = ImGui::GetIO();
-    const float size = 15.0F * scale;
+    // From nothing every time, so moving the window to a display with another
+    // scale rebuilds the faces rather than piling new ones on the old.
+    io.Fonts->Clear();
+    g_body = g_bold = g_italic = g_heading = nullptr;
+    io.FontGlobalScale = 1.0F;
+    const float size = 15.0F * layout;
 
     // The glyphs to bake, beyond Latin.
     //
@@ -217,6 +223,7 @@ void load_fonts(float scale) {
     ImFontConfig cfg;
     cfg.FontDataOwnedByAtlas = false;
     cfg.GlyphRanges          = kRanges;
+    cfg.RasterizerDensity    = density;  // sharp on a Retina panel, not bigger
 
     const auto embedded = [&](const unsigned char* data, unsigned int bytes, float pixels) {
         return io.Fonts->AddFontFromMemoryTTF(
@@ -245,13 +252,13 @@ void load_fonts(float scale) {
             "/System/Library/Fonts/SFNSMono.ttf",
             "C:/Windows/Fonts/consola.ttf",
         };
-        g_body = first_available(kMono, IM_ARRAYSIZE(kMono), size, kRanges);
+        g_body = first_available(kMono, IM_ARRAYSIZE(kMono), size, kRanges, density);
     }
     if (g_body == nullptr) {
         // The built-in is a bitmap face and looks it, but a window with ugly
         // text beats no window.
         g_body = io.Fonts->AddFontDefault();
-        io.FontGlobalScale = scale;
+        io.FontGlobalScale = layout;
     }
 }
 

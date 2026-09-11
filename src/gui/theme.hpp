@@ -80,8 +80,12 @@ void apply();
 /// *italic*. Falls back to a system monospace, and then to ImGui's built-in
 /// bitmap face, because a missing typeface is not a reason to have no window.
 ///
-/// `scale` comes from the display's DPI.
-void load_fonts(float scale);
+/// `layout` is window units per point and sizes the faces; `density` is
+/// framebuffer pixels per window unit and is what the glyphs are rasterized at,
+/// so a Retina Mac gets sharp 15-point text rather than 30-point text. See
+/// crucible/util/display_scale.hpp. Safe to call again when the display
+/// changes: it clears the atlas and loads the faces afresh.
+void load_fonts(float layout, float density);
 
 /// The faces, after load_fonts. `body()` is never null; the others fall back to
 /// it when only one face could be loaded.
