@@ -485,7 +485,11 @@ TEST(a_command_starts_in_the_project_but_is_not_confined_to_it) {
 
     tools::ToolCall run;
     run.kind     = tools::ToolKind::Run;
+#if defined(_WIN32)
+    run.argument = "cd";   // cmd has no pwd; a bare cd prints the directory
+#else
     run.argument = "pwd";
+#endif
     const tools::ToolResult where =
         tools::run_tool(run, workshop_at(root), tools::SearchSettings{}, {});
     CHECK(where.ok);

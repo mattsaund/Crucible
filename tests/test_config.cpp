@@ -97,17 +97,19 @@ TEST(unparseable_config_falls_back_instead_of_throwing) {
 TEST(bare_names_resolve_inside_the_models_directory) {
     const std::filesystem::path dir = "/srv/models";
 
+    // Compared as paths throughout. Windows joins with a backslash and roots
+    // "/opt" on the current drive, so the text of the answer differs by
+    // platform; the directory it names does not.
+
     // The normal case: the config names a file, the directory says where.
-    CHECK_EQ(resolve_model_ref(dir, "physics-q4.gguf").string(),
-             std::string("/srv/models/physics-q4.gguf"));
+    CHECK_EQ(resolve_model_ref(dir, "physics-q4.gguf"), dir / "physics-q4.gguf");
 
     // A path escapes the directory, so a model can live anywhere.
-    CHECK_EQ(resolve_model_ref(dir, "/opt/big/expert.gguf").string(),
-             std::string("/opt/big/expert.gguf"));
+    CHECK_EQ(resolve_model_ref(dir, "/opt/big/expert.gguf"),
+             std::filesystem::weakly_canonical("/opt/big/expert.gguf"));
 
     // Relative-with-slash stays relative to the models directory.
-    CHECK_EQ(resolve_model_ref(dir, "subdir/expert.gguf").string(),
-             std::string("/srv/models/subdir/expert.gguf"));
+    CHECK_EQ(resolve_model_ref(dir, "subdir/expert.gguf"), dir / "subdir" / "expert.gguf");
 
     CHECK(resolve_model_ref(dir, "").empty());
 }
@@ -116,6 +118,13 @@ TEST(is_bare_name_distinguishes_a_file_from_a_path) {
     CHECK(is_bare_name("expert.gguf"));
     CHECK(!is_bare_name("/abs/expert.gguf"));
     CHECK(!is_bare_name("~/models/expert.gguf"));
+#if defined(_WIN32)
+    // A Windows path need not contain a forward slash, and is a path there.
+    CHECK(!is_bare_name("C:\\models\\expert.gguf"));
+    CHECK(!is_bare_name("models\\expert.gguf"));
+    CHECK_EQ(resolve_model_ref("C:\\ggufs", "C:\\big\\expert.gguf"),
+             std::filesystem::weakly_canonical("C:\\big\\expert.gguf"));
+#endif
     CHECK(!is_bare_name("sub/expert.gguf"));
     CHECK(!is_bare_name(""));
 }
@@ -167,9 +176,13 @@ TEST(model_references_resolve_against_the_configured_directory) {
     config.experts["physics"].model = "/elsewhere/phys.gguf";
     config.resolve_models();
 
-    CHECK_EQ(config.router.path, std::string("/srv/gguf/router.gguf"));
+    // Built the way a resolved path is built, so the separators and the drive
+    // are whatever this platform makes of "/srv/gguf" -- the directory is the
+    // point, not its spelling.
+    CHECK_EQ(config.router.path,
+             (std::filesystem::weakly_canonical("/srv/gguf") / "router.gguf").string());
     CHECK_EQ(config.expert("physics").path,
-             std::string("/elsewhere/phys.gguf"));
+             std::filesystem::weakly_canonical("/elsewhere/phys.gguf").string());
 }
 
 TEST(a_seat_whose_file_is_gone_is_not_shown_as_ready) {
@@ -633,11 +646,13 @@ TEST(resetting_the_models_dir_re_resolves_every_model_reference) {
     // that directory must leave it exactly where it points.
     config.experts["programming"].model      = "/opt/models/programming.gguf";
     config.resolve_models();
-    CHECK_EQ(config.router.path, std::string("/mnt/external/ggufs/router.gguf"));
+    CHECK_EQ(config.router.path,
+             (std::filesystem::weakly_canonical("/mnt/external/ggufs") / "router.gguf").string());
 
     config.models_dir.clear();
     config.resolve_models();
     CHECK_EQ(config.router.path, (paths::models_dir() / "router.gguf").string());
     CHECK_EQ(config.expert("mathematics").path, (paths::models_dir() / "maths.gguf").string());
-    CHECK_EQ(config.expert("programming").path, std::string("/opt/models/programming.gguf"));
+    CHECK_EQ(config.expert("programming").path,
+             std::filesystem::weakly_canonical("/opt/models/programming.gguf").string());
 }

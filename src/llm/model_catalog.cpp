@@ -33,12 +33,16 @@ std::string ModelFile::size_label() const {
     return format::bytes(bytes);
 }
 
+// Both of these ask the path library rather than looking for a '/'. On Windows
+// a model can be "C:\ggufs\phys.gguf", which has no forward slash in it at all:
+// it read as a bare name and was looked for inside the models directory.
+
 bool is_bare_name(std::string_view reference) {
-    if (reference.empty()) {
+    if (reference.empty() || reference.front() == '~') {
         return false;
     }
-    return reference.front() != '/' && reference.front() != '~'
-        && reference.find('/') == std::string_view::npos;
+    const std::filesystem::path path{std::string(reference)};
+    return !path.has_root_path() && !path.has_parent_path();
 }
 
 std::filesystem::path resolve_model_ref(const std::filesystem::path& models_dir,
@@ -46,12 +50,15 @@ std::filesystem::path resolve_model_ref(const std::filesystem::path& models_dir,
     if (reference.empty()) {
         return {};
     }
-    if (reference.front() == '/' || reference.front() == '~') {
+    // A root of any kind -- "/opt/x.gguf", "C:\x.gguf", "\\server\share\x.gguf" --
+    // or a home-relative "~/x.gguf" names a file outside the models directory.
+    const std::filesystem::path path{std::string(reference)};
+    if (reference.front() == '~' || path.has_root_path()) {
         return paths::expand_user(reference);
     }
     // Anything else, including "subfolder/model.gguf", is relative to the
     // models directory.
-    return models_dir / std::filesystem::path(std::string(reference));
+    return models_dir / path;
 }
 
 std::vector<ModelFile> scan_models(const std::filesystem::path& dir) {
