@@ -13,6 +13,29 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ---------------------------------------------------------------------------
+# MSVC, for everything -- the dependencies included
+#
+# Up here because add_compile_options only reaches targets created after it,
+# and the dependency step below is what creates llama.cpp. These used to sit
+# further down, after every target in this file, and so applied to nothing.
+#
+# /Zc:__cplusplus is the one llama.cpp needs. Without it MSVC reports
+# __cplusplus as 199711 whatever standard it is compiling, and llama-chat.cpp
+# picks the type of its u8"" literals by that number: built as C++20 it got
+# char8_t where it expected char, and did not compile.
+#
+# Scoped to C and C++ the way llama.cpp scopes its own, so nothing reaches the
+# resource compiler, which takes neither.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    # The sources contain UTF-8 -- the crucible sprite's melt, the diamonds the
+    # expert panel draws with. MSVC assumes the system code page without this
+    # and mangles every one of them.
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
@@ -67,6 +90,18 @@ else()
 endif()
 
 include(cmake/CrucibleDependencies.cmake)
+
+# MSVC, for Crucible's own targets only. After the dependencies, so windows.h
+# in their sources is left the way they expect it, and before the first target
+# below, since a definition added after a target is created never reaches it.
+if(MSVC)
+    # windows.h defines min and max as macros, which breaks std::min the moment
+    # any header reaches it.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+    # getenv, strerror and the like draw a "use the _s version" warning on
+    # every call. The portable spelling is the one this code means.
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
 
 # ---------------------------------------------------------------------------
 # crucible_core -- everything that is not the terminal UI.
@@ -214,25 +249,6 @@ if(CRUCIBLE_BUILD_GUI)
             BUILD_RPATH   "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}"
             INSTALL_RPATH "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}")
     endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# MSVC
-#
-# Four settings, and every one of them is a thing that would otherwise fail
-# rather than a preference.
-# ---------------------------------------------------------------------------
-if(MSVC)
-    # The sources contain UTF-8 -- the crucible sprite's melt, the diamonds the
-    # expert panel draws with. MSVC assumes the system code page without this
-    # and mangles every one of them.
-    add_compile_options(/utf-8)
-    # windows.h defines min and max as macros, which breaks std::min the moment
-    # any header reaches it.
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
-    # localtime_s and friends are the "secure" versions MSVC wants; the ones
-    # this code uses are already those, but llama.cpp's are not.
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
 # ---------------------------------------------------------------------------

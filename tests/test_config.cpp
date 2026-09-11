@@ -154,7 +154,10 @@ TEST(models_dir_falls_back_to_the_default_when_blank) {
     CHECK_EQ(config.resolved_models_dir(), paths::models_dir());
 
     config.models_dir = "/srv/gguf";
-    CHECK_EQ(config.resolved_models_dir().string(), std::string("/srv/gguf"));
+    // Compared as paths, resolved the way any configured path is: on Windows
+    // "/srv/gguf" is C:\srv\gguf by the time anything opens it, so a string
+    // compare against the text as typed could never match there.
+    CHECK_EQ(config.resolved_models_dir(), std::filesystem::weakly_canonical("/srv/gguf"));
 }
 
 TEST(model_references_resolve_against_the_configured_directory) {
@@ -614,7 +617,8 @@ TEST(an_empty_models_dir_means_the_default_so_resetting_is_clearing_it) {
     // without stranding anyone who reset.
     Config moved;
     moved.models_dir = "/mnt/external/ggufs";
-    CHECK_EQ(moved.resolved_models_dir().string(), std::string("/mnt/external/ggufs"));
+    CHECK_EQ(moved.resolved_models_dir(),
+             std::filesystem::weakly_canonical("/mnt/external/ggufs"));
 
     moved.models_dir.clear();
     CHECK_EQ(moved.resolved_models_dir(), paths::models_dir());

@@ -111,7 +111,12 @@ TEST(a_runtime_built_against_another_llama_cpp_is_reported_as_stale) {
 
     const std::filesystem::path runtimes = paths::runtimes_dir();
     std::filesystem::create_directories(runtimes);
-    { std::ofstream module(runtimes / "libggml-cuda.so"); module << "not really a module"; }
+    // Vulkan, and named the way this platform names a module. CUDA is not
+    // offered on a Mac at all, so a fake CUDA module there is never looked at;
+    // and libggml-*.so is not a name Windows loads.
+    const std::string module = std::string(module_prefix()) + "vulkan"
+                             + std::string(module_suffix());
+    { std::ofstream out(runtimes / module); out << "not really a module"; }
 
     const auto status_for = [&](BackendKind kind) {
         for (const RuntimeStatus& status : RuntimeRegistry::scan()) {
@@ -125,19 +130,19 @@ TEST(a_runtime_built_against_another_llama_cpp_is_reported_as_stale) {
     // The tag this binary wants: recorded, so not stale.
     {
         std::ofstream manifest(runtimes / "manifest.json");
-        manifest << R"({"cuda":{"llama_tag":")"
+        manifest << R"({"vulkan":{"llama_tag":")"
                  << RuntimeStatus::required_llama_tag() << R"("}})";
     }
-    CHECK(status_for(BackendKind::Cuda).installed);
-    CHECK(!status_for(BackendKind::Cuda).stale);
+    CHECK(status_for(BackendKind::Vulkan).installed);
+    CHECK(!status_for(BackendKind::Vulkan).stale);
 
     // Some other tag: stale, and the message needs the tag to name it.
     {
         std::ofstream manifest(runtimes / "manifest.json");
-        manifest << R"({"cuda":{"llama_tag":"b0001"}})";
+        manifest << R"({"vulkan":{"llama_tag":"b0001"}})";
     }
-    CHECK(status_for(BackendKind::Cuda).stale);
-    CHECK_EQ(status_for(BackendKind::Cuda).llama_tag, std::string("b0001"));
+    CHECK(status_for(BackendKind::Vulkan).stale);
+    CHECK_EQ(status_for(BackendKind::Vulkan).llama_tag, std::string("b0001"));
 
     // No manifest entry at all means "cannot tell", which is not a reason to
     // tell someone their working runtime is broken.
@@ -145,12 +150,12 @@ TEST(a_runtime_built_against_another_llama_cpp_is_reported_as_stale) {
         std::ofstream manifest(runtimes / "manifest.json");
         manifest << "{}";
     }
-    CHECK(status_for(BackendKind::Cuda).installed);
-    CHECK(!status_for(BackendKind::Cuda).stale);
+    CHECK(status_for(BackendKind::Vulkan).installed);
+    CHECK(!status_for(BackendKind::Vulkan).stale);
 
     // And a backend with no module is never stale, whatever the manifest says.
-    CHECK(!status_for(BackendKind::Vulkan).installed);
-    CHECK(!status_for(BackendKind::Vulkan).stale);
+    CHECK(!status_for(BackendKind::Cpu).installed);
+    CHECK(!status_for(BackendKind::Cpu).stale);
 }
 
 TEST(the_cpu_backend_is_the_one_every_other_runtime_needs) {

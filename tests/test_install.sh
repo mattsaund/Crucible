@@ -673,7 +673,22 @@ check     "macOS bakes in @loader_path rather than \$ORIGIN" \
 # MSVC assumes the system code page without this and mangles every non-ASCII
 # glyph the sprite and the expert panel draw with.
 check     "MSVC is told the sources are UTF-8" \
-          grep -q 'add_compile_options(/utf-8)' "$HERE/../CMakeLists.txt"
+          grep -q 'COMPILE_LANGUAGE:C,CXX>:/utf-8' "$HERE/../CMakeLists.txt"
+# And told to report the standard it is compiling. Without /Zc:__cplusplus it
+# says C++98 whatever it is doing, and llama.cpp picks a string type by that.
+check     "MSVC reports the real __cplusplus" \
+          grep -q 'COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus' "$HERE/../CMakeLists.txt"
+# add_compile_options reaches only targets created after it, so flags meant for
+# llama.cpp have to come before the step that creates it. They sat below every
+# target once, and applied to none.
+msvc_line="$(grep -n 'COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus' "$HERE/../CMakeLists.txt" | head -1 | cut -d: -f1)"
+deps_line="$(grep -n '^include(cmake/CrucibleDependencies.cmake)' "$HERE/../CMakeLists.txt" | cut -d: -f1)"
+core_line="$(grep -n '^add_library(crucible_core' "$HERE/../CMakeLists.txt" | cut -d: -f1)"
+defs_line="$(grep -n 'add_compile_definitions(NOMINMAX' "$HERE/../CMakeLists.txt" | head -1 | cut -d: -f1)"
+check     "and says so before the dependencies are created" \
+          [ "${msvc_line:-999999}" -lt "${deps_line:-0}" ]
+check     "and defines NOMINMAX before Crucible's own targets exist" \
+          [ "${defs_line:-999999}" -lt "${core_line:-0}" ]
 
 echo
 echo "  the built-in fallback seat is gone"

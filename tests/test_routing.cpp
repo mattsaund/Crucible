@@ -852,8 +852,15 @@ TEST(module_names_match_the_convention_ggml_loads_by) {
 #else
     // macOS is not the odd one out: CMake gives a MODULE library the .so
     // suffix there too, which is why ggml only special-cases Windows.
+    // ggml's own loader: ggml-*.dll on Windows, libggml-*.so everywhere else --
+    // macOS included, where CMake names a MODULE library .so, not .dylib.
+#if defined(_WIN32)
+    CHECK(module_prefix() == "ggml-");
+    CHECK(module_suffix() == ".dll");
+#else
     CHECK(module_prefix() == "libggml-");
     CHECK(module_suffix() == ".so");
+#endif
 #endif
 }
 
