@@ -12,6 +12,7 @@
 #include "crucible/engine/engine.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <exception>
 

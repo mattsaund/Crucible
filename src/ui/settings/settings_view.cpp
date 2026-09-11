@@ -16,7 +16,9 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
+#include <iterator>
 #include <system_error>
 
 #include "crucible/runtime/backend.hpp"

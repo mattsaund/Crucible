@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/util/platform.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <system_error>
@@ -79,6 +80,16 @@ std::tm local_time(std::time_t when) {
     ::localtime_s(&parts, &when);
 #else
     ::localtime_r(&when, &parts);
+#endif
+    return parts;
+}
+
+std::tm utc_time(std::time_t when) {
+    std::tm parts{};
+#if defined(_WIN32)
+    ::gmtime_s(&parts, &when);
+#else
+    ::gmtime_r(&when, &parts);
 #endif
     return parts;
 }

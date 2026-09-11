@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <system_error>
 #include <nlohmann/json.hpp>
 
 namespace crucible {

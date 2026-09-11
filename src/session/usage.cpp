@@ -3,6 +3,7 @@
 // Token arithmetic and how it is displayed.
 #include "crucible/session/usage.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "crucible/llm/loaded_model.hpp"

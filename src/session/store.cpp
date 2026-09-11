@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <system_error>
 
 #include "crucible/util/platform.hpp"
 #include <fstream>

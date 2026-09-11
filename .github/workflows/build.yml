@@ -1,0 +1,105 @@
+# Build and test Crucible on Linux, macOS and Windows, and run the installers
+# on macOS and Windows the way people run them.
+#
+# Why this exists: every change used to be built and tested on one Linux
+# machine, so macOS and Windows met each one for the first time when somebody
+# ran the installer -- and both broke exactly that way. Here all three build on
+# every push, and a change is not finished until all three are green.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the run for the older one pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      # GLFW and OpenGL for the desktop app. macOS and Windows already have
+      # what it needs; Linux packages it.
+      - name: Desktop app headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libglfw3-dev libgl-dev
+
+      # No generator named, on purpose: that is Makefiles on Linux and macOS
+      # and Visual Studio on Windows -- the same ones install.sh and the
+      # runtime builder get on those systems.
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_GUI=ON
+          -DCRUCIBLE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # install.sh's own logic, under the bash each system really has. On a Mac
+      # that is 3.2 at /bin/bash rather than whatever Homebrew put first on
+      # PATH, and 3.2 is what people run the installer with.
+      - name: Installer tests
+        if: runner.os != 'Windows'
+        run: |
+          /bin/bash tests/test_install.sh
+          /bin/bash tests/test_uninstall.sh
+
+  install:
+    name: install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      # Run from inside the checkout, install.sh builds that checkout rather
+      # than fetching main -- so this installs the commit being tested. --yes
+      # because there is nobody to answer, and a prefix of its own so the check
+      # below knows where to look without guessing whether sudo was there.
+      - name: install.sh
+        if: runner.os == 'macOS'
+        run: /bin/bash ./install.sh --yes --prefix "$HOME/.local"
+
+      - name: The installed crucible starts
+        if: runner.os == 'macOS'
+        run: |
+          "$HOME/.local/bin/crucible" --version
+
+      # As people run it: from a string, with no script file behind it. That is
+      # the case where a bare `exit` used to close the window, so it is the one
+      # worth running. -Source points it at this checkout.
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell   # Windows PowerShell 5.1, the one Windows ships
+        run: |
+          $installer = [scriptblock]::Create((Get-Content -Raw -Encoding UTF8 .\install.ps1))
+          & $installer -Source $PWD.Path
+
+      # With no file there is no exit code to fail the step above on, so this
+      # is the check: the program is where the installer said, and it runs.
+      - name: The installed crucible starts
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --version
+          exit $LASTEXITCODE

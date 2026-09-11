@@ -21,8 +21,14 @@
     its settings screen, on the machine that will run it, so an installer that
     guessed at a GPU SDK was doing work the program does better.
 
+    Run as a file from inside a checkout -- .\install.ps1 -- it builds that
+    checkout instead of fetching one, the same as install.sh does.
+
 .PARAMETER Prefix
     Where to install. Defaults to %LOCALAPPDATA%\Programs\Crucible.
+
+.PARAMETER Source
+    A checkout to build instead of fetching one.
 
 .PARAMETER NoGui
     Build only the terminal program, skipping crucible-gui. The desktop app is
@@ -41,6 +47,7 @@
 param(
     [string] $Prefix = (Join-Path $env:LOCALAPPDATA 'Programs\Crucible'),
     [string] $Branch = 'main',
+    [string] $Source = '',
     [int]    $Jobs   = 0,
     [switch] $Gui,
     [switch] $NoGui,
@@ -62,6 +69,9 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
 $RepoUrl = 'https://github.com/mattsaund/Crucible.git'
 $RawUrl  = 'https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1'
+
+# The checkout this installer keeps for itself -- and the one the uninstall
+# removes, which is why a checkout named with -Source is never put here.
 $SrcDir  = Join-Path $env:LOCALAPPDATA 'crucible\src'
 
 # Where Crucible keeps its files. Created by the installer so the first run
@@ -70,6 +80,44 @@ $SrcDir  = Join-Path $env:LOCALAPPDATA 'crucible\src'
 $ConfigDir = Join-Path $env:APPDATA 'crucible'
 $DataDir   = Join-Path $env:LOCALAPPDATA 'crucible'
 $ModelsDir = Join-Path $DataDir 'models'
+
+# ---------------------------------------------------------------------------
+# State
+#
+# Everything the functions below change, in one table. This script runs three
+# ways -- piped into iex, as a scriptblock, as a file -- and $script: does not
+# name the same scope in all three, so a function writing $script:BarShown and
+# the top of the file reading $BarShown are not guaranteed to be the same
+# variable. A table is one object, whichever scope reaches for it.
+# ---------------------------------------------------------------------------
+$State = @{
+    StepIndex  = -1
+    StepPct    = 0
+    BarShown   = $false
+    BarLabel   = 'starting'
+    ExitCode   = 0
+    InstallLog = @()
+}
+
+# ---------------------------------------------------------------------------
+# How this script ends
+#
+# Never with a bare `exit`. Piped into iex, or run through the scriptblock the
+# uninstall line builds, there is no script file, and with no file `exit` does
+# not end the script -- it ends PowerShell. Every failure closed the window and
+# took its own error message with it, which from outside is a crash.
+#
+# So whatever has to stop calls Stop-Script, which unwinds to the bottom of
+# this file. Only a run from a real file, where an exit code means something to
+# whoever started it, turns that into `exit`.
+# ---------------------------------------------------------------------------
+$FromFile   = -not [string]::IsNullOrEmpty($PSCommandPath)
+$StopSignal = 'crucible-installer-stop'
+
+function Stop-Script ([int] $Code) {
+    $State.ExitCode = $Code
+    throw $StopSignal
+}
 
 # ---------------------------------------------------------------------------
 # Progress
@@ -90,19 +138,15 @@ $ModelsDir = Join-Path $DataDir 'models'
 # 75% for almost the whole install.
 # ---------------------------------------------------------------------------
 $StepWeights = @(2, 26, 8, 64)   # system, build tools, source, build+install
-$StepIndex   = -1
-$StepPct     = 0
-$BarShown    = $false
-$BarLabel    = 'starting'
 $IsConsole   = $Host.Name -eq 'ConsoleHost'
 
 function Get-OverallPercent {
     $done = 0
-    for ($i = 0; $i -lt $StepIndex -and $i -lt $StepWeights.Count; $i++) {
+    for ($i = 0; $i -lt $State.StepIndex -and $i -lt $StepWeights.Count; $i++) {
         $done += $StepWeights[$i]
     }
-    if ($StepIndex -ge 0 -and $StepIndex -lt $StepWeights.Count) {
-        $done += [int]($StepWeights[$StepIndex] * $StepPct / 100)
+    if ($State.StepIndex -ge 0 -and $State.StepIndex -lt $StepWeights.Count) {
+        $done += [int]($StepWeights[$State.StepIndex] * $State.StepPct / 100)
     }
     if ($done -gt 100) { $done = 100 }
     return $done
@@ -132,44 +176,44 @@ function Show-Bar {
     $bar     = ('#' * $filled) + ('.' * ($width - $filled))
     # Padded to the row width and rewritten in place, so a short label cannot
     # leave the tail of a longer one behind it.
-    $line = "    install  [$bar] {0,3}%  {1}" -f $percent, $BarLabel
+    $line = "    install  [$bar] {0,3}%  {1}" -f $percent, $State.BarLabel
     if ($line.Length -gt $row) { $line = $line.Substring(0, $row - 1) + '…' }
     Write-Host ("`r" + $line.PadRight($row)) -NoNewline -ForegroundColor DarkYellow
-    $script:BarShown = $true
+    $State.BarShown = $true
 }
 
 # Take the bar off the line so something else can be written there. Everything
 # that prints during an install goes through this first.
 function Hide-Bar {
-    if ($script:BarShown) {
+    if ($State.BarShown) {
         Write-Host ("`r" + (' ' * (Get-RowWidth)) + "`r") -NoNewline
-        $script:BarShown = $false
+        $State.BarShown = $false
     }
 }
 
 function Step-Begin ($Label) {
-    $script:StepIndex = $script:StepIndex + 1
-    $script:StepPct   = 0
-    $script:BarLabel  = $Label
+    $State.StepIndex = $State.StepIndex + 1
+    $State.StepPct   = 0
+    $State.BarLabel  = $Label
     Show-Bar
 }
 
 function Step-At ($Percent, $Label) {
-    if ($Percent -lt $script:StepPct) { return }   # never backwards
-    $script:StepPct = [Math]::Min(100, $Percent)
-    if ($Label) { $script:BarLabel = $Label }
+    if ($Percent -lt $State.StepPct) { return }   # never backwards
+    $State.StepPct = [Math]::Min(100, $Percent)
+    if ($Label) { $State.BarLabel = $Label }
     Show-Bar
 }
 
 function Step-Done {
-    $script:StepPct = 100
+    $State.StepPct = 100
     Show-Bar
 }
 
 function Stop-Progress {
-    $script:StepIndex = $script:StepWeights.Count
+    $State.StepIndex = $StepWeights.Count
     Show-Bar
-    if ($script:BarShown) { Write-Host '' ; $script:BarShown = $false }
+    if ($State.BarShown) { Write-Host '' ; $State.BarShown = $false }
 }
 
 # ---------------------------------------------------------------------------
@@ -200,16 +244,16 @@ function Write-Banner {
 # the uninstall. A warning is exempt: it says something is not as asked, and
 # that has to reach the screen whatever else is on it.
 function Write-Note ($Message) {
-    if (-not $script:BarShown) { Write-Host "    $Message" -ForegroundColor DarkGray }
+    if (-not $State.BarShown) { Write-Host "    $Message" -ForegroundColor DarkGray }
 }
 function Write-Ok   ($Message) {
-    if (-not $script:BarShown) { Write-Host "    OK $Message" -ForegroundColor Green }
+    if (-not $State.BarShown) { Write-Host "    OK $Message" -ForegroundColor Green }
 }
 function Write-Warn ($Message) {
     # Only put the bar back if there was one. After Stop-Progress there is
     # not, and redrawing it would leave a finished 100% bar sitting under the
     # closing summary.
-    $was = $script:BarShown
+    $was = $State.BarShown
     Hide-Bar
     Write-Host "    !  $Message" -ForegroundColor Yellow
     if ($was) { Show-Bar }
@@ -218,11 +262,41 @@ function Stop-Install ($Message) {
     Hide-Bar
     Write-Host ""
     Write-Host "error: $Message" -ForegroundColor Red
-    exit 1
+    Stop-Script 1
+}
+
+# What a program said before it failed: the lines that look like errors when
+# there are any, and the end of what it wrote when there are not. A failure
+# that prints nothing but "failed" sends whoever reads it to go and find a log.
+function Show-Tail ([object[]] $Lines, [string] $Pattern = 'error|FAILED|fatal') {
+    Hide-Bar
+    $all   = @($Lines | ForEach-Object { "$_" })
+    $shown = @($all | Where-Object { $_ -match $Pattern } | Select-Object -First 20)
+    if ($shown.Count -eq 0) { $shown = @($all | Select-Object -Last 20) }
+    foreach ($line in $shown) { Write-Host "    $line" -ForegroundColor Red }
 }
 
 function Test-Command ($Name) {
     $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+# ---------------------------------------------------------------------------
+# Running other programs
+#
+# Everything this script starts goes through here, with what it writes to
+# stderr folded into what it writes to stdout.
+#
+# That is for Windows PowerShell 5.1, the one Windows ships. Redirect a native
+# program's stderr there and every line of it becomes an error record -- and
+# with ErrorActionPreference at Stop, the first one ends the script. cmake
+# writes to stderr during an ordinary configure (llama.cpp prints its build
+# type there), so every install stopped partway through configuring. In here a
+# line on stderr is only a line. Whether the program failed is its exit code,
+# which every caller reads from $LASTEXITCODE.
+# ---------------------------------------------------------------------------
+function Invoke-Native ([string] $Program, [string[]] $Arguments = @()) {
+    $ErrorActionPreference = 'Continue'
+    & $Program @Arguments 2>&1 | ForEach-Object { "$_" }
 }
 
 # ---------------------------------------------------------------------------
@@ -233,49 +307,105 @@ function Test-Command ($Name) {
 # not, this says what to install by hand rather than installing a package
 # manager to install a compiler.
 # ---------------------------------------------------------------------------
-function Install-Package ($Id, $What) {
+function Install-Package ($Id, $What, [string] $Override = '') {
     if (-not (Test-Command 'winget')) {
-        Stop-Install "$What is missing and winget is not available. Install $What by hand, then run this again."
+        Stop-Install "$What could not be found, and winget is not here to install it. Install $What by hand, then run this again."
     }
-    $script:BarLabel = "installing $What"
+    $State.BarLabel = "installing $What"
     Show-Bar
-    winget install --id $Id --exact --silent --accept-source-agreements --accept-package-agreements | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Install "could not install $What"
-    }
+    $arguments = @('install', '--id', $Id, '--exact', '--silent',
+                   '--accept-source-agreements', '--accept-package-agreements')
+    if ($Override) { $arguments += @('--override', $Override) }
+    $State.InstallLog = @(Invoke-Native 'winget' $arguments)
     # winget puts new tools on PATH for future sessions, not this one.
     $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
                 [Environment]::GetEnvironmentVariable('PATH', 'User')
 }
 
-function Find-VisualStudio {
-    # vswhere is installed by every Visual Studio since 2017 and lives at a
-    # fixed path, which is the whole reason it exists.
+# Whether an install worked is whether the thing is there afterwards. The exit
+# code does not say: winget has codes of its own for "installed, restart to
+# finish", and the Visual Studio installer reports 3010 for the same thing.
+function Assert-Installed ([bool] $There, [string] $What) {
+    if ($There) { return }
+    Show-Tail $State.InstallLog
+    Stop-Install "could not install $What"
+}
+
+# vswhere is installed by every Visual Studio since 2017 and lives at a fixed
+# path, which is the whole reason it exists.
+function Invoke-VsWhere ([string[]] $Arguments) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (-not (Test-Path $vswhere)) {
-        return $null
+    if (-not (Test-Path $vswhere)) { return $null }
+    $found = @(Invoke-Native $vswhere (@('-latest', '-products', '*') + $Arguments) |
+               Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($found.Count -eq 0) { return $null }
+    return $found[0].Trim()
+}
+
+# A Visual Studio with the C++ compiler in it -- the only kind that can build
+# this. Returns where it is installed.
+function Find-VisualStudio {
+    return Invoke-VsWhere @('-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                            '-property', 'installationPath')
+}
+
+function Install-BuildTools {
+    $existing = Invoke-VsWhere @('-property', 'installationPath')
+    if ($null -eq $existing) {
+        # The workload is the whole point. The Build Tools installed with none
+        # named are MSBuild and nothing to compile with -- which is what winget
+        # installs by default, so the check after it found no compiler and
+        # stopped. --wait keeps the bootstrapper from returning before the
+        # install it started underneath has finished.
+        Install-Package 'Microsoft.VisualStudio.2022.BuildTools' 'the Visual Studio build tools' `
+            '--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
+        return
     }
-    $found = & $vswhere -latest -products * `
-                        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-                        -property installationPath 2>$null
-    if ([string]::IsNullOrWhiteSpace($found)) { return $null }
-    return $found.Trim()
+
+    # Visual Studio is here, only without its C++ compiler: a C#-only install,
+    # or build tools another program put down. winget will not add a workload
+    # to something it already counts as installed; the Visual Studio installer
+    # will. The same compiler is a different workload in the Build Tools than
+    # in the full product.
+    $product  = Invoke-VsWhere @('-property', 'productId')
+    $workload = if ("$product" -like '*BuildTools') { 'Microsoft.VisualStudio.Workload.VCTools' } else { 'Microsoft.VisualStudio.Workload.NativeDesktop' }
+    $setup    = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\setup.exe'
+    $State.BarLabel = 'adding the C++ compiler to Visual Studio'
+    Show-Bar
+    $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+        'modify', '--installPath', "`"$existing`"", '--add', $workload,
+        '--includeRecommended', '--passive', '--norestart')
+    $State.InstallLog = @("the Visual Studio installer exited with code $($process.ExitCode)")
 }
 
 function Initialize-BuildEnvironment {
     # The compiler needs its environment: INCLUDE, LIB and a cl.exe on PATH.
     # VsDevCmd sets them, and the only way to get them into this process is to
-    # run it and read back what changed.
+    # run it and read back what it left.
     $vs = Find-VisualStudio
     if ($null -eq $vs) { return $false }
 
     $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
     if (-not (Test-Path $devcmd)) { return $false }
 
-    cmd /s /c "`"$devcmd`" -arch=amd64 -no_logo && set" | ForEach-Object {
-        if ($_ -match '^([^=]+)=(.*)$') {
-            Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] -ErrorAction SilentlyContinue
+    # Through a batch file of its own rather than a `cmd /c` line. The line
+    # needs quotes inside quotes -- the path has spaces in it -- and how those
+    # reach cmd depends on which PowerShell is passing them. A file has no
+    # quoting to get wrong.
+    $batch = Join-Path ([IO.Path]::GetTempPath()) "crucible-vsdevcmd-$PID.cmd"
+    Set-Content -Path $batch -Encoding Ascii -Value @(
+        '@echo off'
+        "call `"$devcmd`" -arch=amd64 -no_logo >nul"
+        'set'
+    )
+    try {
+        foreach ($line in @(Invoke-Native 'cmd' @('/c', $batch))) {
+            if ($line -match '^([^=]+)=(.*)$') {
+                Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] -ErrorAction SilentlyContinue
+            }
         }
+    } finally {
+        Remove-Item $batch -ErrorAction SilentlyContinue
     }
     return (Test-Command 'cl')
 }
@@ -298,7 +428,7 @@ function Remove-Crucible {
         # whole prefix, which is precisely what was just declined.
         if ($LASTEXITCODE -eq 0 -and (Test-Path $exe)) {
             Write-Note 'nothing was removed'
-            exit 0
+            Stop-Script 0
         }
         $handled = ($LASTEXITCODE -eq 0)
     }
@@ -320,7 +450,7 @@ function Remove-Crucible {
                 $reply = Read-Host '  Remove Crucible and everything above? [Y/n]'
                 if ($reply -and $reply -notmatch '^(y|yes)$') {
                     Write-Note 'nothing was removed'
-                    exit 0
+                    Stop-Script 0
                 }
             }
         }
@@ -340,149 +470,224 @@ function Remove-Crucible {
     }
 
     # Say what survived rather than claiming success over the top of it.
-    $left = @($Prefix, $SrcDir, $ConfigDir, $DataDir) | Where-Object { Test-Path $_ }
-    if ($left) {
+    $left = @(@($Prefix, $SrcDir, $ConfigDir, $DataDir) | Where-Object { Test-Path $_ })
+    if ($left.Count -gt 0) {
         foreach ($path in $left) { Write-Warn "still present: $path" }
-        exit 1
+        Stop-Script 1
     }
     Write-Ok 'done'
-    exit 0
+    Stop-Script 0
+}
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+function Invoke-Install {
+    Write-Banner
+
+    if ($Uninstall) { Remove-Crucible }
+
+    # -Gui is accepted and redundant; -NoGui is the one that changes anything.
+    $buildGui = -not $NoGui
+
+    # What gets built: the checkout above, fetched fresh -- unless there is
+    # already one to build. -Source names one. Run as a file from inside a
+    # checkout, it is that checkout without being asked, which is how a change
+    # gets tried on Windows before it is pushed.
+    $buildSrc = $SrcDir
+    $fetch    = $true
+    if ($Source) {
+        if (-not (Test-Path (Join-Path $Source 'CMakeLists.txt'))) {
+            Stop-Install "$Source is not a Crucible checkout"
+        }
+        $buildSrc = (Resolve-Path $Source).Path
+        $fetch    = $false
+    } elseif ($PSScriptRoot) {
+        $lists = Join-Path $PSScriptRoot 'CMakeLists.txt'
+        if ((Test-Path $lists) -and (Select-String -Path $lists -Pattern 'project\(crucible' -Quiet)) {
+            $buildSrc = $PSScriptRoot
+            $fetch    = $false
+        }
+    }
+
+    if ($Check) {
+        Write-Note "prefix     : $Prefix"
+        Write-Note "source     : $(if ($fetch) { "$SrcDir (fetched from $Branch)" } else { $buildSrc })"
+        Write-Note "desktop app: $(if ($buildGui) { 'yes' } else { 'no (-NoGui)' })"
+        Write-Note "cmake      : $(if (Test-Command 'cmake') { 'found' } else { 'would install' })"
+        Write-Note "git        : $(if (Test-Command 'git')   { 'found' } else { 'would install' })"
+        Write-Note "compiler   : $(if ($null -ne (Find-VisualStudio)) { 'found' } else { 'would install' })"
+        Write-Note "config     : $ConfigDir"
+        Write-Note "models     : $ModelsDir"
+        Write-Note 'No compute runtime is installed. Crucible builds one on demand'
+        Write-Note 'from its settings screen, on the machine that will run it.'
+        Write-Ok 'nothing was changed'
+        Stop-Script 0
+    }
+
+    Step-Begin 'checking the machine'
+    $jobCount = if ($Jobs -gt 0) { $Jobs } else { [Environment]::ProcessorCount }
+    Step-Done
+
+    Step-Begin 'installing the build tools'
+    if (-not $NoDeps) {
+        if (-not (Test-Command 'git')) {
+            Install-Package 'Git.Git' 'git'
+            Assert-Installed (Test-Command 'git') 'git'
+        }
+        Step-At 33
+        if (-not (Test-Command 'cmake')) {
+            Install-Package 'Kitware.CMake' 'cmake'
+            Assert-Installed (Test-Command 'cmake') 'cmake'
+        }
+        Step-At 66
+        if ($null -eq (Find-VisualStudio)) {
+            Install-BuildTools
+            Assert-Installed ($null -ne (Find-VisualStudio)) 'the Visual Studio C++ build tools'
+        }
+    }
+    if (-not (Initialize-BuildEnvironment)) {
+        Stop-Install @'
+no C++ compiler. Install the "Desktop development with C++" workload from the
+Visual Studio Build Tools, then run this again:
+  winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+'@
+    }
+    Step-Done
+
+    Step-Begin 'fetching the source'
+    if ($fetch) {
+        if ((Test-Path $SrcDir) -and -not (Test-Path (Join-Path $SrcDir '.git'))) {
+            # Left behind by a clone that did not finish. git will not clone
+            # into a directory that is not empty, so one failed first attempt
+            # would otherwise fail every attempt after it.
+            Remove-Item -Recurse -Force $SrcDir
+        }
+        if (Test-Path (Join-Path $SrcDir '.git')) {
+            $fetchLog = @(Invoke-Native 'git' @('-C', $SrcDir, 'fetch', '--depth', '1', 'origin', $Branch))
+            if ($LASTEXITCODE -eq 0) {
+                $fetchLog += @(Invoke-Native 'git' @('-C', $SrcDir, 'checkout', '-q', 'FETCH_HEAD'))
+            }
+        } else {
+            New-Item -ItemType Directory -Force -Path (Split-Path $SrcDir) | Out-Null
+            $fetchLog = @(Invoke-Native 'git' @('clone', '--depth', '1', '--branch', $Branch, $RepoUrl, $SrcDir))
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Show-Tail $fetchLog
+            Stop-Install "could not fetch $RepoUrl ($Branch)"
+        }
+    }
+    Step-Done
+
+    Step-Begin 'configuring'
+    $buildDir = Join-Path $buildSrc 'build'
+
+    # Ninja when it is there and MSBuild when it is not. Ninja is several times
+    # faster on a build this size, and the Visual Studio installer ships it.
+    $generator = if (Test-Command 'ninja') { @('-G', 'Ninja') } else { @() }
+    $configure = @('-S', $buildSrc, '-B', $buildDir) + $generator + @(
+        '-DCMAKE_BUILD_TYPE=Release',
+        "-DCMAKE_INSTALL_PREFIX=$Prefix",
+        '-DCRUCIBLE_BACKEND_DL=ON',
+        "-DCRUCIBLE_BUILD_GUI=$(if ($buildGui) { 'ON' } else { 'OFF' })")
+
+    $configureLog = @(Invoke-Native 'cmake' $configure)
+    if ($LASTEXITCODE -ne 0 -and (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
+        # Configure failed over a build directory that was already there. By
+        # far the likeliest reason is a cache from an earlier run with another
+        # generator or other paths, which cmake refuses to reuse. The cache is
+        # derived data, so clearing it and trying once more is safe -- the same
+        # thing install.sh and the runtime builder do.
+        Write-Warn 'the existing build directory is stale; clearing it and trying again'
+        Remove-Item -Recurse -Force $buildDir
+        $configureLog = @(Invoke-Native 'cmake' $configure)
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Show-Tail $configureLog 'CMake Error|error:'
+        Stop-Install 'cmake configure failed'
+    }
+    Step-At 12 'compiling'
+
+    # cmake reports its own progress per compiled unit, and it is a real, ordered
+    # figure worth turning into a bar rather than a spinner. Two spellings,
+    # because the generator decides: the Makefile generators write
+    # "[ 42%] Building ..." and Ninja writes "[123/456] Building ...". Ninja is
+    # the one that will normally be in play here, since the Visual Studio
+    # installer ships it and the configure above prefers it.
+    $buildLog = @()
+    Invoke-Native 'cmake' @('--build', $buildDir, '--config', 'Release', '-j', "$jobCount") |
+        Tee-Object -Variable buildLog | ForEach-Object {
+            $done = -1
+            if ($_ -match '^\s*\[\s*(\d+)%\]') {
+                $done = [int]$Matches[1]
+            } elseif ($_ -match '^\s*\[(\d+)/(\d+)\]' -and [int]$Matches[2] -gt 0) {
+                $done = [int](100 * [int]$Matches[1] / [int]$Matches[2])
+            }
+            if ($done -ge 0) { Step-At (12 + [int]($done * 0.82)) 'compiling' }
+        }
+    if ($LASTEXITCODE -ne 0) {
+        Show-Tail $buildLog
+        Stop-Install 'the build failed'
+    }
+    Step-At 94 'installing'
+
+    # The component, for the same reason the shell installer passes it: llama.cpp
+    # and ggml carry their own install rules written for people installing them
+    # as a library, and a plain install would scatter their headers and import
+    # libraries through the prefix.
+    $installLog = @(Invoke-Native 'cmake' @('--install', $buildDir, '--config', 'Release',
+                                            '--component', 'crucible'))
+    if ($LASTEXITCODE -ne 0) {
+        Show-Tail $installLog
+        Stop-Install 'the install failed'
+    }
+
+    New-Item -ItemType Directory -Force -Path $ConfigDir, $DataDir, $ModelsDir | Out-Null
+
+    $binDir   = Join-Path $Prefix 'bin'
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $addedToPath = $false
+    if ($userPath -notlike "*$binDir*") {
+        $newPath = if ($userPath) { "$userPath;$binDir" } else { $binDir }
+        [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+        $addedToPath = $true
+    }
+    Stop-Progress
+
+    Write-Host ''
+    Write-Host '  Crucible is installed.' -ForegroundColor Green
+    Write-Host ''
+    Write-Host "    crucible      $(Join-Path $binDir 'crucible.exe')"
+    if ($buildGui) {
+        Write-Host "    crucible-gui  $(Join-Path $binDir 'crucible-gui.exe')"
+    }
+    Write-Host "    config        $ConfigDir"
+    Write-Host "    models        $ModelsDir"
+    if ($addedToPath) {
+        Write-Host ''
+        Write-Warn 'open a new terminal for the PATH change to take effect'
+    }
+    Write-Host ''
+    Write-Host "  To remove it:  & ([scriptblock]::Create((irm $RawUrl))) -Uninstall"
+    Write-Host ''
 }
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-Write-Banner
-
-if ($Uninstall) { Remove-Crucible }
-
-# -Gui is accepted and redundant; -NoGui is the one that changes anything.
-$BuildGui = -not $NoGui
-
-if ($Check) {
-    Write-Note "prefix     : $Prefix"
-    Write-Note "desktop app: $(if ($BuildGui) { 'yes' } else { 'no (-NoGui)' })"
-    Write-Note "cmake      : $(if (Test-Command 'cmake') { 'found' } else { 'would install' })"
-    Write-Note "git        : $(if (Test-Command 'git')   { 'found' } else { 'would install' })"
-    Write-Note "compiler   : $(if ($null -ne (Find-VisualStudio)) { 'found' } else { 'would install' })"
-    Write-Note "config     : $ConfigDir"
-    Write-Note "models     : $ModelsDir"
-    Write-Note 'No compute runtime is installed. Crucible builds one on demand'
-    Write-Note 'from its settings screen, on the machine that will run it.'
-    Write-Ok 'nothing was changed'
-    exit 0
-}
-
-Step-Begin 'checking the machine'
-if ($Jobs -le 0) { $Jobs = [Environment]::ProcessorCount }
-Step-Done
-
-Step-Begin 'installing the build tools'
-if (-not $NoDeps) {
-    if (-not (Test-Command 'git'))   { Install-Package 'Git.Git' 'git' }
-    Step-At 33
-    if (-not (Test-Command 'cmake')) { Install-Package 'Kitware.CMake' 'cmake' }
-    Step-At 66
-    if ($null -eq (Find-VisualStudio)) {
-        Install-Package 'Microsoft.VisualStudio.2022.BuildTools' 'the Visual Studio build tools'
+try {
+    Invoke-Install
+} catch {
+    if ("$($_.Exception.Message)" -ne $StopSignal) {
+        # Anything that did not stop on purpose: a cmdlet failing under
+        # ErrorActionPreference Stop, or a mistake in this script. Said once
+        # and plainly, with the line it came from, so it can be reported --
+        # and the window stays open to read it.
+        Hide-Bar
+        Write-Host ''
+        Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "       (install.ps1, line $($_.InvocationInfo.ScriptLineNumber))" -ForegroundColor DarkGray
+        $State.ExitCode = 1
     }
 }
-if (-not (Initialize-BuildEnvironment)) {
-    Stop-Install @'
-no C++ compiler. Install the "Desktop development with C++" workload from the
-Visual Studio Build Tools, then run this again:
-  winget install --id Microsoft.VisualStudio.2022.BuildTools --exact
-'@
-}
-Step-Done
-
-Step-Begin 'fetching the source'
-if (Test-Path (Join-Path $SrcDir '.git')) {
-    git -C $SrcDir fetch --depth 1 origin $Branch  | Out-Null
-    git -C $SrcDir checkout -q FETCH_HEAD          | Out-Null
-} else {
-    New-Item -ItemType Directory -Force -Path (Split-Path $SrcDir) | Out-Null
-    git clone --depth 1 --branch $Branch $RepoUrl $SrcDir | Out-Null
-}
-if ($LASTEXITCODE -ne 0) { Stop-Install "could not fetch $RepoUrl" }
-Step-Done
-
-Step-Begin 'configuring'
-$buildDir = Join-Path $SrcDir 'build'
-
-# Ninja when it is there and MSBuild when it is not. Ninja is several times
-# faster on a build this size, and the Visual Studio installer ships it.
-$generator = if (Test-Command 'ninja') { @('-G', 'Ninja') } else { @() }
-
-& cmake -S $SrcDir -B $buildDir @generator `
-    -DCMAKE_BUILD_TYPE=Release `
-    -DCMAKE_INSTALL_PREFIX="$Prefix" `
-    -DCRUCIBLE_BACKEND_DL=ON `
-    -DCRUCIBLE_BUILD_GUI="$(if ($BuildGui) { 'ON' } else { 'OFF' })" 2>&1 |
-    Tee-Object -Variable configureLog | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Hide-Bar
-    $configureLog | Select-String -Pattern 'CMake Error|error:' | Select-Object -First 20 |
-        ForEach-Object { Write-Host $_ -ForegroundColor Red }
-    Stop-Install 'cmake configure failed'
-}
-Step-At 12 'compiling'
-
-# cmake reports its own progress per compiled unit, and it is a real, ordered
-# figure worth turning into a bar rather than a spinner. Two spellings, because
-# the generator decides: the Makefile generators write "[ 42%] Building ..."
-# and Ninja writes "[123/456] Building ...". Ninja is the one that will
-# normally be in play here, since the Visual Studio installer ships it and the
-# configure above prefers it.
-& cmake --build $buildDir --config Release -j $Jobs 2>&1 |
-    Tee-Object -Variable buildLog | ForEach-Object {
-        $done = -1
-        if ($_ -match '^\s*\[\s*(\d+)%\]') {
-            $done = [int]$Matches[1]
-        } elseif ($_ -match '^\s*\[(\d+)/(\d+)\]' -and [int]$Matches[2] -gt 0) {
-            $done = [int](100 * [int]$Matches[1] / [int]$Matches[2])
-        }
-        if ($done -ge 0) { Step-At (12 + [int]($done * 0.82)) 'compiling' }
-    }
-if ($LASTEXITCODE -ne 0) {
-    Hide-Bar
-    $buildLog | Select-String -Pattern 'error|FAILED' | Select-Object -First 20 |
-        ForEach-Object { Write-Host $_ -ForegroundColor Red }
-    Stop-Install 'the build failed'
-}
-Step-At 94 'installing'
-
-# The component, for the same reason the shell installer passes it: llama.cpp
-# and ggml carry their own install rules written for people installing them as
-# a library, and a plain install would scatter their headers and import
-# libraries through the prefix.
-& cmake --install $buildDir --config Release --component crucible | Out-Null
-if ($LASTEXITCODE -ne 0) { Stop-Install 'the install failed' }
-
-New-Item -ItemType Directory -Force -Path $ConfigDir, $DataDir, $ModelsDir | Out-Null
-
-$binDir   = Join-Path $Prefix 'bin'
-$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-$addedToPath = $false
-if ($userPath -notlike "*$binDir*") {
-    [Environment]::SetEnvironmentVariable('PATH', "$userPath;$binDir", 'User')
-    $addedToPath = $true
-}
-Stop-Progress
-
-Write-Host ''
-Write-Host '  Crucible is installed.' -ForegroundColor Green
-Write-Host ''
-Write-Host "    crucible      $(Join-Path $binDir 'crucible.exe')"
-if ($BuildGui) {
-    Write-Host "    crucible-gui  $(Join-Path $binDir 'crucible-gui.exe')"
-}
-Write-Host "    config        $ConfigDir"
-Write-Host "    models        $ModelsDir"
-if ($addedToPath) {
-    Write-Host ''
-    Write-Warn 'open a new terminal for the PATH change to take effect'
-}
-Write-Host ''
-Write-Host "  To remove it:  & ([scriptblock]::Create((irm $RawUrl))) -Uninstall"
-Write-Host ''
+if ($FromFile) { exit $State.ExitCode }

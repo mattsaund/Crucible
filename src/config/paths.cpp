@@ -14,6 +14,8 @@
 #include "crucible/config/paths.hpp"
 
 #include <cstdlib>
+#include <string_view>
+#include <system_error>
 
 
 namespace crucible::paths {

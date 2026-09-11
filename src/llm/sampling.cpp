@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/llm/sampling.hpp"
 
+#include <cstdint>
 #include <random>
 
 #include <llama.h>

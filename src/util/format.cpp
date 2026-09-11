@@ -5,6 +5,7 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 
 namespace crucible::format {
 

@@ -588,7 +588,7 @@ check     "and says so when the desktop app was not installed" \
 check     "Windows takes -NoGui" \
           grep -q '\[switch\] \$NoGui' "$HERE/../install.ps1"
 check     "Windows derives the build flag from it" \
-          grep -q 'BuildGui = -not \$NoGui' "$HERE/../install.ps1"
+          grep -q 'buildGui = -not \$NoGui' "$HERE/../install.ps1"
 check_not "Windows no longer gates the build on the bare -Gui switch" \
           grep -q 'CRUCIBLE_BUILD_GUI="\$(if (\$Gui)' "$HERE/../install.ps1"
 
@@ -642,13 +642,34 @@ check_not "and no longer takes a GPU SDK to install" \
 check_not "it does not build a GPU runtime" \
           grep -q 'CRUCIBLE_BUILD_RUNTIME\|prebuild_runtime' "$HERE/../install.ps1"
 check     "it installs only Crucible's own component" \
-          grep -q -- '--component crucible' "$HERE/../install.ps1"
+          grep -q -- "'--component', 'crucible'" "$HERE/../install.ps1"
+
+# Run as `irm | iex`, or as the scriptblock the uninstall line builds, there is
+# no script file -- and there `exit` ends PowerShell, not the script. Every
+# failure closed the window and took its message with it.
+check_not "Windows never ends with a bare exit" \
+          grep -qE '^[[:space:]]*exit [0-9]|[;{][[:space:]]*exit [0-9]' "$HERE/../install.ps1"
+check     "and exits only when it was run from a file" \
+          grep -q 'if (\$FromFile) { exit \$State.ExitCode }' "$HERE/../install.ps1"
+# winget installs the Build Tools with no workload unless told, which is
+# MSBuild and nothing to compile with.
+check     "the Build Tools come with the C++ workload" \
+          grep -q 'Microsoft.VisualStudio.Workload.VCTools' "$HERE/../install.ps1"
+# Windows PowerShell 5.1 turns a native program's redirected stderr into
+# errors, and under ErrorActionPreference Stop the first one ends the script.
+check     "native programs run with their stderr not fatal" \
+          grep -q "function Invoke-Native" "$HERE/../install.ps1"
 # RPATH is an ELF idea. On Windows the loader looks beside the executable, so
 # the libraries have to be installed there instead.
 check     "Windows installs the libraries beside the binary" \
           grep -q 'RUNTIME DESTINATION \${CMAKE_INSTALL_BINDIR}' "$HERE/../CMakeLists.txt"
 check     "and does not try to bake in an RPATH" \
           grep -q 'CRUCIBLE_BACKEND_DL AND NOT WIN32' "$HERE/../CMakeLists.txt"
+# And macOS spells "the directory this binary is in" as @loader_path. It reads
+# $ORIGIN as the name of a directory that does not exist, so an installed
+# crucible could not find libllama.dylib and would not start.
+check     "macOS bakes in @loader_path rather than \$ORIGIN" \
+          grep -q 'set(CRUCIBLE_ORIGIN "@loader_path")' "$HERE/../CMakeLists.txt"
 # MSVC assumes the system code page without this and mangles every non-ASCII
 # glyph the sprite and the expert panel draw with.
 check     "MSVC is told the sources are UTF-8" \
@@ -861,7 +882,7 @@ check     "and measures the console rather than assuming a width" \
 check_not "with no hard-coded row width left to be wrong about" \
           grep -qE "PadRight\(78\)|' \* 78" "$ROOT/install.ps1"
 check     "and keeps its notes quiet while it is up" \
-          grep -q 'if (-not \$script:BarShown) { Write-Host "    \$Message"' "$ROOT/install.ps1"
+          grep -q 'if (-not \$State.BarShown) { Write-Host "    \$Message"' "$ROOT/install.ps1"
 
 # The closing text. No "Next:" list -- it told you to go and build a runtime,
 # put models somewhere and assign them, which is the program's first-run job

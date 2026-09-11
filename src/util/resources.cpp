@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <system_error>
+#include <utility>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN

@@ -21,6 +21,7 @@
 #include <fstream>
 #include <mutex>
 #include <random>
+#include <system_error>
 #include <thread>
 
 #include <ggml-backend.h>

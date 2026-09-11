@@ -13,3 +13,6 @@ models/
 .vscode/
 .idea/
 *.swp
+
+# Claude Code's per-project settings
+.claude/

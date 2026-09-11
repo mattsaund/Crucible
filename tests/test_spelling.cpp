@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <system_error>
 
 namespace {
 

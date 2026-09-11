@@ -21,6 +21,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 
 namespace crucible {
 namespace {

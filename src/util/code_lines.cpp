@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 namespace crucible::syntax {
 namespace {

@@ -36,6 +36,13 @@ std::filesystem::path executable_path();
 /// shared buffer and is a data race waiting for a second thread.
 std::tm local_time(std::time_t when);
 
+/// The UTC time for `when`.
+///
+/// The same split as local_time: `gmtime_r` on POSIX, `gmtime_s` on Windows
+/// with the arguments reversed. The runtime builder used to call `gmtime_r`
+/// itself, and no Windows compiler has it.
+std::tm utc_time(std::time_t when);
+
 /// Is there a terminal on standard input to ask a question on?
 ///
 /// The difference between `crucible-gui` started from a shell and the same

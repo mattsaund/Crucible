@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <utility>
 
 #include <ggml-backend.h>
 #include <llama.h>

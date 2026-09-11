@@ -152,7 +152,9 @@ void App::draw_browse_modal() {
     const float reserve = em(3.4F) + (project_error_.empty() ? 0.0F : em(1.8F));
     ImGui::BeginChild("dirs", ImVec2(0, -reserve), ImGuiChildFlags_Borders);
     for (const std::filesystem::path& entry : subdirectories(browse_)) {
-        ImGui::PushID(entry.c_str());
+        // string(), not c_str(): on Windows a path is wide, and PushID would
+        // quietly take the pointer rather than the name.
+        ImGui::PushID(entry.string().c_str());
         if (ImGui::Selectable((entry.filename().string() + "/").c_str())) {
             browse_      = entry;
             browse_text_ = browse_.string();

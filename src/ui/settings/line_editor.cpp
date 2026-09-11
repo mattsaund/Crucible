@@ -2,6 +2,7 @@
 #include "crucible/ui/settings/line_editor.hpp"
 
 #include <algorithm>
+#include <utility>
 
 #include "crucible/util/text.hpp"
 

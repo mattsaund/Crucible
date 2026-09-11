@@ -19,6 +19,7 @@
 
 #include "fonts.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <system_error>

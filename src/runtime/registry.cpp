@@ -7,6 +7,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <system_error>
 
 #include <nlohmann/json.hpp>
 

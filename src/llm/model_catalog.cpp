@@ -9,7 +9,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
+#include <system_error>
+#include <utility>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"

@@ -40,6 +40,16 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 
 This single line installer installs both the CLI and the GUI interface. it does not install any runtimes or models.
 
+On Windows it compiles Crucible with Visual Studio's C++ compiler. If that is
+not installed, the installer adds the Visual Studio Build Tools with the C++
+workload, which asks for administrator permission and takes a while.
+
+Run from inside a clone, either installer builds that clone instead of
+fetching `main`, so a change can be tried on a Mac or a Windows machine before
+it is pushed: `./install.sh`, or on Windows (which refuses to run a local script
+unless told to) `powershell -ExecutionPolicy Bypass -File .\install.ps1`. Every push is also built and tested
+on Linux, macOS and Windows by `.github/workflows/build.yml`.
+
 ___
 ## Uninstalling
 

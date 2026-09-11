@@ -11,10 +11,16 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 
 #include <random>
 #include <map>
 #include <set>
+#if defined(_WIN32)
+#  include <process.h>   // _getpid
+#else
+#  include <unistd.h>    // getpid
+#endif
 
 #include <ggml.h>
 #include <gguf.h>
@@ -57,6 +63,35 @@ using namespace crucible;
 using namespace crucible;
 
 
+// ---------------------------------------------------------------------------
+// The three POSIX calls the fixtures below need, spelled for both systems.
+// setenv, unsetenv and getpid are not in the Windows C runtime; _putenv_s and
+// _getpid are, and setting a variable to nothing is how _putenv_s removes it.
+// ---------------------------------------------------------------------------
+inline void set_env(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    ::_putenv_s(name, value.c_str());
+#else
+    ::setenv(name, value.c_str(), 1);
+#endif
+}
+
+inline void unset_env(const char* name) {
+#if defined(_WIN32)
+    ::_putenv_s(name, "");
+#else
+    ::unsetenv(name);
+#endif
+}
+
+inline int process_id() {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return static_cast<int>(::getpid());
+#endif
+}
+
 /// A directory that cleans itself up, so tests never leave files behind.
 /// Point the XDG data directory at a temporary place, so a test that reads or
 /// writes a real Crucible directory cannot touch the one belonging to whoever is
@@ -68,13 +103,13 @@ public:
             previous_ = existing;
             had_      = true;
         }
-        ::setenv("XDG_DATA_HOME", dir.c_str(), 1);
+        set_env("XDG_DATA_HOME", dir.string());
     }
     ~ScopedDataHome() {
         if (had_) {
-            ::setenv("XDG_DATA_HOME", previous_.c_str(), 1);
+            set_env("XDG_DATA_HOME", previous_);
         } else {
-            ::unsetenv("XDG_DATA_HOME");
+            unset_env("XDG_DATA_HOME");
         }
     }
     ScopedDataHome(const ScopedDataHome&)            = delete;
@@ -89,7 +124,7 @@ class TempDir {
 public:
     TempDir() {
         path_ = std::filesystem::temp_directory_path()
-              / ("crucible-test-" + std::to_string(::getpid()) + "-"
+              / ("crucible-test-" + std::to_string(process_id()) + "-"
                  + std::to_string(counter()++));
         std::filesystem::create_directories(path_);
     }

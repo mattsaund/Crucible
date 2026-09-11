@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace crucible::util {

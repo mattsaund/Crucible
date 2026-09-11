@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <system_error>
 #include <nlohmann/json.hpp>
 
 #include "crucible/llm/model_catalog.hpp"

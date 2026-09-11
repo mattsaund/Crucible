@@ -3,6 +3,7 @@
 // one should be loaded and sampled.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>

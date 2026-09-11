@@ -10,12 +10,14 @@
 #include <ctime>
 #include <fstream>
 #include <string_view>
+#include <system_error>
 
 #include <nlohmann/json.hpp>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/platform.hpp"
 
 namespace crucible {
 namespace {
@@ -37,8 +39,7 @@ constexpr std::size_t kTailLines   = 25;
 
 std::string iso_date_now() {
     const std::time_t now = std::time(nullptr);
-    std::tm parts{};
-    ::gmtime_r(&now, &parts);
+    const std::tm parts = util::utc_time(now);
     char buffer[32] = {};
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M UTC", &parts);
     return buffer;
@@ -631,8 +632,14 @@ void RuntimeBuilder::run(BackendKind kind) {
         // that works for the CPU backend, which under GGML_CPU_ALL_VARIANTS is
         // a dozen targets (ggml-cpu-haswell, ggml-cpu-zen4, ...) and no single
         // `ggml-cpu` at all.
+        //
+        // --config is for Windows. With no generator named, CMake picks Visual
+        // Studio there, and Visual Studio builds Debug unless told otherwise:
+        // CMAKE_BUILD_TYPE above means nothing to a generator that holds every
+        // configuration at once. Makefiles and Ninja ignore the flag.
         const std::vector<std::string> compile = {
             "cmake", "--build", build.string(),
+            "--config", "Release",
             "--target", "ggml",
             "-j", job_count(),
         };
@@ -656,9 +663,22 @@ void RuntimeBuilder::run(BackendKind kind) {
     const std::filesystem::path target = paths::runtimes_dir();
     std::filesystem::create_directories(target, ec);
 
+    // Where the modules land depends on the generator. Makefiles and Ninja put
+    // them in bin/. Visual Studio keeps a directory per configuration, so on
+    // Windows they are in bin/Release/ -- and looking only in bin/ found
+    // nothing there, and reported a build that had just produced a module as
+    // having produced none.
+    std::vector<std::filesystem::directory_entry> built;
+    for (const std::filesystem::path& dir : {build / "bin", build / "bin" / "Release"}) {
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::directory_iterator(dir, ec)) {
+            built.push_back(entry);
+        }
+        ec.clear();   // a directory this generator did not make is not an error
+    }
+
     int copied = 0;
-    for (const std::filesystem::directory_entry& entry :
-         std::filesystem::directory_iterator(build / "bin", ec)) {
+    for (const std::filesystem::directory_entry& entry : built) {
         const std::string name = entry.path().filename().string();
         if (!produces_module(produces, name)) {
             continue;

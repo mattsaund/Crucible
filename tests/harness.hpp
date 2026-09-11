@@ -7,10 +7,12 @@
 // exits non-zero if anything failed, which is all CTest needs.
 #pragma once
 
+#include <exception>
 #include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace harness {

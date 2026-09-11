@@ -58,6 +58,14 @@ option(CRUCIBLE_BUILD_GUI "Build the desktop application (crucible-gui)" OFF)
 include(GNUInstallDirs)
 set(CRUCIBLE_LIBDIR ${CMAKE_INSTALL_LIBDIR}/crucible)
 
+# How a binary names the directory it is in, for the library path baked into
+# it. See "Where the loader looks" in the install section.
+if(APPLE)
+    set(CRUCIBLE_ORIGIN "@loader_path")
+else()
+    set(CRUCIBLE_ORIGIN "$ORIGIN")
+endif()
+
 include(cmake/CrucibleDependencies.cmake)
 
 # ---------------------------------------------------------------------------
@@ -203,8 +211,8 @@ if(CRUCIBLE_BUILD_GUI)
     target_link_libraries(crucible-gui PRIVATE crucible::core crucible_imgui)
     if(CRUCIBLE_BACKEND_DL AND NOT WIN32)
         set_target_properties(crucible-gui PROPERTIES
-            BUILD_RPATH   "$ORIGIN/../${CRUCIBLE_LIBDIR}"
-            INSTALL_RPATH "$ORIGIN/../${CRUCIBLE_LIBDIR}")
+            BUILD_RPATH   "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}"
+            INSTALL_RPATH "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}")
     endif()
 endif()
 
@@ -306,16 +314,21 @@ endif()
 # ---------------------------------------------------------------------------
 # Where the loader looks for llama.cpp's shared libraries.
 #
-# ELF and Mach-O take a search path baked into the binary, and $ORIGIN is the
-# directory the binary is in -- so bin/../lib/crucible resolves whether the
-# prefix is ~/.local or /usr/local, and `crucible` runs from anywhere on PATH
-# with no LD_LIBRARY_PATH. Windows has no such thing: it looks beside the
-# executable, so there the DLLs are installed into bin/ and nothing has to be
-# baked in at all.
+# ELF and Mach-O take a search path baked into the binary, relative to the
+# binary itself -- so bin/../lib/crucible resolves whether the prefix is
+# ~/.local or /usr/local, and `crucible` runs from anywhere on PATH with no
+# LD_LIBRARY_PATH. The two spell "the directory this binary is in" differently:
+# $ORIGIN on Linux, @loader_path on macOS. macOS reads $ORIGIN as the name of a
+# directory that does not exist, so an installed crucible there could not find
+# libllama.dylib and would not start. CRUCIBLE_ORIGIN, set near the top, is
+# whichever this platform uses.
+#
+# Windows has no such thing at all: it looks beside the executable, so there
+# the DLLs are installed into bin/ and nothing has to be baked in.
 if(CRUCIBLE_BACKEND_DL AND NOT WIN32)
     set_target_properties(crucible PROPERTIES
-        BUILD_RPATH   "$ORIGIN/../${CRUCIBLE_LIBDIR}"
-        INSTALL_RPATH "$ORIGIN/../${CRUCIBLE_LIBDIR}")
+        BUILD_RPATH   "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}"
+        INSTALL_RPATH "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}")
 endif()
 
 # Everything Crucible installs goes in one component, and the install is run as

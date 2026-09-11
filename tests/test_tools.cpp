@@ -4,6 +4,10 @@
 // subprocess primitive underneath both.
 #include "test_helpers.hpp"
 
+#include <system_error>
+
+#include "crucible/util/platform.hpp"
+
 // ---------------------------------------------------------------------------
 // The workshop
 // ---------------------------------------------------------------------------
@@ -407,7 +411,11 @@ TEST(a_command_runs_in_the_project_and_reports_its_status) {
 
     tools::ToolCall run;
     run.kind     = tools::ToolKind::Run;
+#if defined(_WIN32)
+    run.argument = "cd && echo hello";   // cmd has no pwd; a bare cd prints the directory
+#else
     run.argument = "pwd && echo hello";
+#endif
     const tools::ToolResult result = do_call(run, settings);
     CHECK(result.ok);
     CHECK(result.output.find("hello") != std::string::npos);
@@ -485,7 +493,11 @@ TEST(a_command_starts_in_the_project_but_is_not_confined_to_it) {
     // it is a switch of its own and why the interface says so. Asserting the
     // real behavior here means a future sandbox has to update this test
     // deliberately rather than quietly appearing to have always worked.
+#if defined(_WIN32)
+    run.argument = "type ..\\outside.txt";
+#else
     run.argument = "cat ../outside.txt";
+#endif
     const tools::ToolResult escaped =
         tools::run_tool(run, workshop_at(root), tools::SearchSettings{}, {});
     CHECK(escaped.ok);
@@ -505,7 +517,13 @@ TEST(a_command_that_never_finishes_is_killed) {
 
     tools::ToolCall run;
     run.kind     = tools::ToolKind::Run;
+#if defined(_WIN32)
+    // cmd has no sleep, and timeout refuses to run without a console to read
+    // from. ping waits a second between echoes.
+    run.argument = "ping -n 30 127.0.0.1 > nul";
+#else
     run.argument = "sleep 30";
+#endif
 
     const auto start = std::chrono::steady_clock::now();
     const tools::ToolResult result = do_call(run, settings);
@@ -755,7 +773,11 @@ TEST(search_does_nothing_at_all_until_it_is_switched_on) {
 TEST(a_child_process_reports_its_output_and_status) {
     util::Subprocess child;
     std::string error;
+#if defined(_WIN32)
+    CHECK(child.start(util::shell_command("echo one& echo two 1>&2& exit 3"), {}, {}, error));
+#else
     CHECK(child.start({"sh", "-c", "echo one; echo two >&2; exit 3"}, {}, {}, error));
+#endif
     CHECK(error.empty());
 
     std::vector<std::string> lines;
@@ -773,6 +795,12 @@ TEST(a_child_process_reports_its_output_and_status) {
 TEST(a_command_that_does_not_exist_fails_rather_than_hanging) {
     util::Subprocess child;
     std::string error;
+#if defined(_WIN32)
+    // CreateProcess looks the program up itself and fails on the spot, so on
+    // Windows the failure arrives at start() rather than as an exit status.
+    CHECK(!child.start({"crucible-no-such-program"}, {}, {}, error));
+    CHECK(!error.empty());
+#else
     CHECK(child.start({"crucible-no-such-program"}, {}, {}, error));
 
     std::string line;
@@ -781,10 +809,15 @@ TEST(a_command_that_does_not_exist_fails_rather_than_hanging) {
     }
     // execvp failed in the child, which exits 127 the way a shell would.
     CHECK_EQ(child.wait(), 127);
+#endif
 }
 
 TEST(on_path_finds_real_programs_and_not_invented_ones) {
+#if defined(_WIN32)
+    CHECK(util::on_path("cmd"));
+#else
     CHECK(util::on_path("sh"));
+#endif
     CHECK(!util::on_path("crucible-definitely-not-a-program"));
     // An empty requirement means "nothing needed", which is how a backend with
     // no SDK says so.
