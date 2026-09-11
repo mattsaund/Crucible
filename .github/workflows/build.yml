@@ -46,11 +46,14 @@ jobs:
           -DCRUCIBLE_BUILD_GUI=ON
           -DCRUCIBLE_BUILD_TESTS=ON
 
+      # RelWithDebInfo on Windows: Release, plus the PDB files that let the test
+      # harness name the function a crash happened in. The Makefile generators
+      # build the one type they were configured with and ignore this.
       - name: Build
-        run: cmake --build build --config Release --parallel 4
+        run: cmake --build build --config ${{ runner.os == 'Windows' && 'RelWithDebInfo' || 'Release' }} --parallel 4
 
       - name: Unit tests
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C ${{ runner.os == 'Windows' && 'RelWithDebInfo' || 'Release' }} --output-on-failure
 
       # install.sh's own logic, under the bash each system really has. On a Mac
       # that is 3.2 at /bin/bash rather than whatever Homebrew put first on

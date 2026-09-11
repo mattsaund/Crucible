@@ -32,6 +32,14 @@ inline int& failure_count() {
     return failures;
 }
 
+/// The case running now, for a crash report to name. A crash takes the process
+/// with it before the harness can say anything, so the name has to be
+/// somewhere a handler can read it.
+inline std::string& current_test() {
+    static std::string name;
+    return name;
+}
+
 struct Registrar {
     Registrar(const char* name, std::function<void()> body) {
         registry().push_back({name, std::move(body)});
@@ -47,7 +55,11 @@ inline int run_all() {
     int failed_cases = 0;
     for (const TestCase& test : registry()) {
         const int before = failure_count();
-        std::cout << "  " << test.name << "\n";
+        current_test() = test.name;
+        // Flushed, not just ended. When a case crashes, whatever names are still
+        // in the buffer die with the process, and the log then stops up to a
+        // page of names before the one that did it.
+        std::cout << "  " << test.name << std::endl;
         try {
             test.body();
         } catch (const std::exception& e) {

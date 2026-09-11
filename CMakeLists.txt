@@ -309,6 +309,12 @@ if(CRUCIBLE_BUILD_TESTS)
         # costs the test binary a link against FTXUI's color type and no more.
         src/ui/widgets/flame_sprite.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core ftxui::screen)
+    # dbghelp turns a crash address into a function name, for the report
+    # tests/test_main.cpp prints on Windows -- where a crash otherwise reaches
+    # the log as one line from CTest and nothing else.
+    if(WIN32)
+        target_link_libraries(crucible_tests PRIVATE dbghelp)
+    endif()
     target_include_directories(crucible_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     # So the spelling lint can walk the project from wherever it is run.
     target_compile_definitions(crucible_tests
