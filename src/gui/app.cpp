@@ -86,6 +86,7 @@ void App::say(std::string message) {
 
 void App::refresh_models() {
     models_      = scan_models(config_.resolved_models_dir());
+    lab_made_    = lab::finished_models();
     // Asked here rather than every frame: both are the same question -- what is
     // on this machine that a prompt could actually be run on -- and both change
     // only when the user goes and changes them.
@@ -296,24 +297,23 @@ float App::composer_wanted_height(const Snapshot& snapshot) {
     const std::shared_ptr<const Cook> cook = snapshot.cook;
     const bool asking = cook && cook->state == CookState::Asking;
 
+    // Both composers carry a line under the box -- tokens in and out, and how
+    // full the context is -- and each box only gets the height asked for here.
+    // Leave that line out and it is drawn past the bottom edge of the child and
+    // clipped away, which looks exactly like a readout that was never written.
+    const float readout = ImGui::GetTextLineHeightWithSpacing();
+
     if (view_ == View::Chat || asking) {
-        // The chat composer carries a line under the box -- tokens in and out,
-        // and how full the context is -- and the box only gets the height asked
-        // for here. Leave that line out and it is drawn past the bottom edge of
-        // the child and clipped away, which looks exactly like a readout that
-        // was never written. Only chat has it; the same box in Cook does not.
-        const float readout =
-            view_ == View::Chat ? ImGui::GetTextLineHeightWithSpacing() : 0.0F;
         return pad + grow_input_height(prompt_, beside, kComposerLines) + readout;
     }
     if (engine_->cooking()) {
-        return pad + frame;   // just the two stop buttons
+        return pad + frame + readout;   // the two stop buttons, and the count
     }
     // The goal box with the Cook button beside it -- one row, the same shape as
     // the chat bar. It used to be two, with a minutes slider and a checkbox on
     // the second; reserving room for that row after it was removed left an
     // empty strip under the box.
-    return pad + grow_input_height(cook_goal_, beside, kComposerLines);
+    return pad + grow_input_height(cook_goal_, beside, kComposerLines) + readout;
 }
 
 /// The composer's height, kept to something the window can actually spare.
@@ -484,6 +484,11 @@ void App::draw() {
         // too narrow to read one in.
         if (view_ == View::Settings) {
             draw_settings();
+        } else if (view_ == View::Create) {
+            // Full width, for the same reason Settings is: a rail of steps with
+            // a form beside it is not prose, and a reading measure squeezes
+            // both into the middle of the window.
+            draw_create(snapshot);
         } else {
             const float room = ImGui::GetContentRegionAvail().x;
             const float col  = reading_column(room);
@@ -494,6 +499,7 @@ void App::draw() {
             switch (view_) {
                 case View::Chat:     draw_chat(snapshot); break;
                 case View::Cook:     draw_cook(snapshot); break;
+                case View::Create:   break;               // handled above
                 case View::History:  draw_history();      break;
                 case View::Settings: break;               // handled above
             }
@@ -588,10 +594,10 @@ void App::apply_display_scale(bool rebuild_texture) {
 
 int App::run() {
     glfwSetErrorCallback([](int code, const char* description) {
-        std::fprintf(stderr, "crucible-gui: glfw error %d: %s\n", code, description);
+        std::fprintf(stderr, "crucible: glfw error %d: %s\n", code, description);
     });
     if (glfwInit() == GLFW_FALSE) {
-        std::fprintf(stderr, "crucible-gui: could not open a window. On Linux this "
+        std::fprintf(stderr, "crucible: could not open a window. On Linux this "
                              "usually means there is no display, or no OpenGL driver.\n");
         return 1;
     }
@@ -613,11 +619,11 @@ int App::run() {
     // Guarded because the hints arrived in different GLFW releases and the
     // system's GLFW is preferred over the vendored one where there is one.
 #ifdef GLFW_X11_CLASS_NAME
-    glfwWindowHintString(GLFW_X11_CLASS_NAME, "crucible-gui");
-    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "crucible-gui");
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, "crucible");
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "crucible");
 #endif
 #ifdef GLFW_WAYLAND_APP_ID
-    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "crucible-gui");
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "crucible");
 #endif
 
     // Opened hidden and sized once it exists, because the size depends on the
@@ -634,7 +640,7 @@ int App::run() {
 #endif
     window_ = glfwCreateWindow(1280, 820, "Crucible", nullptr, nullptr);
     if (window_ == nullptr) {
-        std::fprintf(stderr, "crucible-gui: could not create the window\n");
+        std::fprintf(stderr, "crucible: could not create the window\n");
         glfwTerminate();
         return 1;
     }

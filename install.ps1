@@ -31,13 +31,11 @@
     A checkout to build instead of fetching one.
 
 .PARAMETER NoGui
-    Build only the terminal program, skipping crucible-gui. The desktop app is
-    built by default: it needs nothing extra on Windows, since OpenGL is part
-    of the system, so unlike Linux it costs only build time.
+    Accepted and ignored. Crucible is one program and it is the window; the
+    terminal face this chose between is gone.
 
 .PARAMETER Gui
-    Build the desktop application. On by default; the switch is kept so an
-    explicit -Gui still means what it says.
+    Accepted and ignored, for the same reason.
 
 .PARAMETER Uninstall
     Remove Crucible and everything it installed: both programs, the libraries,
@@ -436,6 +434,13 @@ function Remove-Crucible {
     # Whatever the binary could not speak for. Where its own uninstaller ran,
     # it has already taken the config, the data and the models, and this is
     # only the install prefix and the source checkout it does not know about.
+    # The shortcuts too: a .lnk pointing at a program that is gone is litter,
+    # and it is litter this script made.
+    foreach ($where in @([Environment]::GetFolderPath('Programs'),
+                         [Environment]::GetFolderPath('Desktop'))) {
+        if ($where) { Remove-Item (Join-Path $where 'Crucible.lnk') -Force -ErrorAction SilentlyContinue }
+    }
+
     $sweep = @($Prefix, $SrcDir)
     if (-not $handled) { $sweep += @($ConfigDir, $DataDir) }
     $sweep = @($sweep | Where-Object { $_ -and (Test-Path $_) })
@@ -482,13 +487,40 @@ function Remove-Crucible {
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
+# What makes this an application rather than a command.
+#
+# A .lnk in the Start Menu and one on the Desktop, both pointing at the binary
+# in the prefix. Windows has not allowed a program to pin itself to the taskbar
+# since Windows 10, so that stays the user's right-click -- but a Start Menu
+# entry is what they right-click on.
+function New-Shortcuts ([string] $Source) {
+    $exe = Join-Path $Prefix 'bin\crucible.exe'
+    if (-not (Test-Path $exe)) { return }
+
+    # The icon is copied into the prefix rather than referenced in the source
+    # checkout: the checkout is a build artifact and may be deleted, and a
+    # shortcut whose icon has gone shows a blank page.
+    $icon = Join-Path $Prefix 'crucible.ico'
+    $shipped = Join-Path $Source 'packaging\crucible.ico'
+    if (Test-Path $shipped) { Copy-Item $shipped $icon -Force }
+
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($where in @([Environment]::GetFolderPath('Programs'),
+                         [Environment]::GetFolderPath('Desktop'))) {
+        if (-not $where) { continue }
+        $link = $shell.CreateShortcut((Join-Path $where 'Crucible.lnk'))
+        $link.TargetPath       = $exe
+        $link.WorkingDirectory = Join-Path $Prefix 'bin'
+        $link.Description      = 'Crucible -- a local AI lab'
+        if (Test-Path $icon) { $link.IconLocation = $icon }
+        $link.Save()
+    }
+}
+
 function Invoke-Install {
     Write-Banner
 
     if ($Uninstall) { Remove-Crucible }
-
-    # -Gui is accepted and redundant; -NoGui is the one that changes anything.
-    $buildGui = -not $NoGui
 
     # What gets built: the checkout above, fetched fresh -- unless there is
     # already one to build. -Source names one. Run as a file from inside a
@@ -513,7 +545,7 @@ function Invoke-Install {
     if ($Check) {
         Write-Note "prefix     : $Prefix"
         Write-Note "source     : $(if ($fetch) { "$SrcDir (fetched from $Branch)" } else { $buildSrc })"
-        Write-Note "desktop app: $(if ($buildGui) { 'yes' } else { 'no (-NoGui)' })"
+        Write-Note "shortcuts  : Start Menu and Desktop"
         Write-Note "cmake      : $(if (Test-Command 'cmake') { 'found' } else { 'would install' })"
         Write-Note "git        : $(if (Test-Command 'git')   { 'found' } else { 'would install' })"
         Write-Note "compiler   : $(if ($null -ne (Find-VisualStudio)) { 'found' } else { 'would install' })"
@@ -588,8 +620,7 @@ Visual Studio Build Tools, then run this again:
     $configure = @('-S', $buildSrc, '-B', $buildDir) + $generator + @(
         '-DCMAKE_BUILD_TYPE=Release',
         "-DCMAKE_INSTALL_PREFIX=$Prefix",
-        '-DCRUCIBLE_BACKEND_DL=ON',
-        "-DCRUCIBLE_BUILD_GUI=$(if ($buildGui) { 'ON' } else { 'OFF' })")
+        '-DCRUCIBLE_BACKEND_DL=ON')
 
     $configureLog = @(Invoke-Native 'cmake' $configure)
     if ($LASTEXITCODE -ne 0 -and (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
@@ -643,6 +674,7 @@ Visual Studio Build Tools, then run this again:
     }
 
     New-Item -ItemType Directory -Force -Path $ConfigDir, $DataDir, $ModelsDir | Out-Null
+    New-Shortcuts $buildSrc
 
     $binDir   = Join-Path $Prefix 'bin'
     $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
@@ -658,9 +690,7 @@ Visual Studio Build Tools, then run this again:
     Write-Host '  Crucible is installed.' -ForegroundColor Green
     Write-Host ''
     Write-Host "    crucible      $(Join-Path $binDir 'crucible.exe')"
-    if ($buildGui) {
-        Write-Host "    crucible-gui  $(Join-Path $binDir 'crucible-gui.exe')"
-    }
+    Write-Host "    shortcuts     Start Menu, Desktop"
     Write-Host "    config        $ConfigDir"
     Write-Host "    models        $ModelsDir"
     if ($addedToPath) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The one piece of memory the engine thread and the UI thread share.
 //
-// The engine never touches FTXUI and the UI never touches llama.cpp. They meet
+// The engine never touches ImGui and the UI never touches llama.cpp. They meet
 // only here: the engine mutates this state under a lock and pokes the screen,
 // and the renderer takes a Snapshot under the same lock. Nothing else crosses.
 #pragma once

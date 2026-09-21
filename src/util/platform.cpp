@@ -30,8 +30,8 @@ bool stdin_is_a_terminal() {
 
 void use_utf8_console() {
 #if defined(_WIN32)
-    // Output only. The input code page is FTXUI's business, and changing it
-    // from under a console that is already reading would be rude.
+    // Output only. The input code page belongs to whoever is reading keys, and
+    // changing it from under a console already doing so would be rude.
     ::SetConsoleOutputCP(CP_UTF8);
 #endif
 }

@@ -12,7 +12,7 @@
 // It lives beside the router rather than under ui/ because there is no terminal
 // anywhere in it -- matching a prefix against a list of names is a fact about
 // strings. That is also what lets the unit tests reach it: they link the core
-// library, which does not drag FTXUI along.
+// library, which does not drag a window toolkit along.
 #pragma once
 
 #include <cstddef>

@@ -13,4 +13,4 @@ StartupNotify=true
 # Must match the class the window sets in App::run(), or the desktop treats the
 # running window as a different application from the icon that started it: two
 # entries in the dock, and the launcher stays in its "starting" state.
-StartupWMClass=crucible-gui
+StartupWMClass=crucible

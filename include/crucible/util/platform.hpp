@@ -3,7 +3,7 @@
 // The handful of things that are genuinely different per operating system.
 //
 // Crucible is otherwise portable C++: the standard library covers filesystem,
-// threads and time, and llama.cpp and FTXUI cover the rest. What is left is
+// threads and time, and llama.cpp and GLFW cover the rest. What is left is
 // three questions the standard has no answer to -- where am I, what time is it
 // locally, and how do I run a shell command -- and they are gathered here so
 // the rest of the program can be written once.
@@ -45,7 +45,7 @@ std::tm utc_time(std::time_t when);
 
 /// Is there a terminal on standard input to ask a question on?
 ///
-/// The difference between `crucible-gui` started from a shell and the same
+/// The difference between Crucible started from a shell and the same
 /// binary started from the application menu. Launched from a menu there is no
 /// terminal at all: a prompt written to stdout goes nowhere, the read of the
 /// answer fails at once, and a program that treats that as "no" exits without

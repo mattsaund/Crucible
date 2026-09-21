@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,6 +29,8 @@
 #include "crucible/config/config.hpp"
 #include "crucible/config/trust.hpp"
 #include "crucible/cook/journal.hpp"
+#include "crucible/lab/hub.hpp"
+#include "crucible/lab/recipe.hpp"
 #include "crucible/util/display_scale.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
@@ -60,7 +63,7 @@ private:
     /// No Experts pane: the sidebar section is called that, and managing them
     /// is a settings page like the rest of the configuration. Two things called
     /// Experts in one sidebar is a question the user should not have to answer.
-    enum class View { Chat, Cook, History, Settings };
+    enum class View { Chat, Cook, Create, History, Settings };
 
     /// Which page of the settings. One list down the left and one page on the
     /// right, which is the shape every desktop application settles on because
@@ -132,7 +135,21 @@ private:
     void draw_chat(const Snapshot& snapshot);
     void draw_cook(const Snapshot& snapshot);
     void draw_expert_list();
+
+    /// The models a seat can be pointed at: the ones Crucible fine-tuned in the
+    /// Create tab first, then the ones in the models directory. Returns what was
+    /// picked this frame -- an empty string for "(none)" -- and nothing on every
+    /// other frame.
+    std::optional<std::string> draw_model_picker(const char* id, const std::string& current,
+                                                 float width);
     void draw_history();
+
+    /// The Create tab: assembling a model rather than running one.
+    void draw_create(const Snapshot& snapshot);
+
+    /// The hub search box and its results, for whichever step is asking.
+    /// Returns what was picked this frame, and nothing on every other frame.
+    std::optional<lab::Asset> draw_hub_picker(lab::hub::Kind kind, const char* placeholder);
     void draw_settings();
 
     /// The settings pages that are large enough to be worth their own file.
@@ -160,6 +177,10 @@ private:
     /// one bar could only ever do one of them.
     void draw_chat_composer(const Snapshot& snapshot);
     void draw_cook_composer(const Snapshot& snapshot);
+
+    /// Tokens in and out this session, and how full the expert's context was on
+    /// the last turn. Under the box on both the chat and the cook screen.
+    void draw_usage_readout(const Snapshot& snapshot, float room, float column);
 
     /// How much room the composer needs this frame, so the pane above it can be
     /// given the rest. Computed rather than fixed: the boxes grow with what is
@@ -283,6 +304,37 @@ private:
     /// The display scale the fonts and style were last built for.
     util::DisplayScale display_scale_{};
 
+    // --- the lab ------------------------------------------------------------
+    //
+    // What the Create tab is assembling. Saved as it is filled in: gathering a
+    // few gigabytes of training data is not something anyone finishes in one
+    // sitting, and a recipe that only existed in memory would not survive it.
+    lab::Recipe lab_recipe_;
+    int         lab_step_ = 0;
+
+    /// Every recipe on disk, so several models are in progress at once. The
+    /// point of the tab is a roster of subject experts -- math, physics,
+    /// programming -- and one at a time is not a roster.
+    std::vector<lab::Recipe> lab_saved_;
+    bool                     lab_saved_read_ = false;
+
+    /// The hub search box, its answer, and what went wrong with it.
+    std::string                 lab_query_;
+    std::vector<lab::hub::Item> lab_results_;
+    std::string                 lab_error_;
+    std::string                 lab_local_path_;
+
+    /// A search in flight. Hugging Face takes a second or two to answer and the
+    /// window must not stop drawing while it does, so the worker fills this in
+    /// and the next frame picks it up.
+    struct LabSearch {
+        std::mutex                  mutex;
+        std::vector<lab::hub::Item> items;
+        std::string                 error;
+        bool                        done = false;
+    };
+    std::shared_ptr<LabSearch> lab_searching_;
+
     /// The width to reopen at. Set when the fold button closes the side menu,
     /// because closing it leaves `sidebar_width_` at zero and reopening to a
     /// hardcoded default would throw away a width the user chose.
@@ -307,6 +359,7 @@ private:
     /// The new-expert dialog's two boxes, and what to say when it is refused.
     bool        expert_modal_open_ = false;
     std::string new_expert_name_;
+    std::string new_expert_model_;   ///< what the new seat will run, or empty
     std::string new_expert_blurb_;
     std::string expert_error_;
 
@@ -340,6 +393,10 @@ private:
     bool                       runtime_activated_ = false;
 
     std::vector<ModelFile>   models_;   ///< the models directory, rescanned on demand
+
+    /// What the lab has finished, offered beside them. Rescanned with the
+    /// models directory, since both answer the same question.
+    std::vector<lab::Made>   lab_made_;
     std::vector<std::string> notices_;
     std::size_t persisted_turns_ = 0;
 };

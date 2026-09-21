@@ -1,0 +1,169 @@
+# The double-click installers.
+#
+# install.sh and install.ps1 compile from source, and that is the right default
+# for a program that also compiles its own compute backends -- but it costs a
+# toolchain, twenty minutes and a terminal. This workflow builds the other kind
+# on each of the three platforms: a disk image to drag into Applications, a
+# setup .exe, and an AppImage that runs where it lands. Each leaves an icon that
+# can be pinned to a dock or a taskbar, which is the whole point of them.
+#
+# Run it by pushing a tag (v0.1.0), or by hand from the Actions tab -- the
+# manual run uploads the artifacts and makes no release, which is how to check
+# the packaging without publishing anything.
+name: installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS disk image
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      # The staged prefix is an ordinary install; the packaging scripts turn
+      # that layout into a bundle without moving anything inside it.
+      - name: Stage
+        run: cmake --install build --config Release --component crucible --prefix "$PWD/stage"
+
+      - name: Disk image
+        run: |
+          version="$(./stage/bin/crucible --version | awk '{print $NF}')"
+          packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
+
+      # Mount it and look: a .dmg that builds is not the same as one that opens,
+      # and the failure mode is a download nobody can use.
+      - name: The image opens and holds an application
+        run: |
+          hdiutil attach dist/Crucible-macOS.dmg -mountpoint /tmp/crucible-dmg -nobrowse
+          test -x /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible
+          test -f /tmp/crucible-dmg/Crucible.app/Contents/Info.plist
+          ls /tmp/crucible-dmg/Crucible.app/Contents/lib/crucible/
+          hdiutil detach /tmp/crucible-dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Crucible-macOS
+          path: dist/Crucible-macOS.dmg
+
+  windows:
+    name: Windows setup
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      # --config matters here and nowhere else: the Visual Studio generator
+      # builds several configurations and an install that is not told which one
+      # to take goes looking for a Debug build that was never made.
+      - name: Stage
+        run: cmake --install build --config Release --component crucible --prefix "$PWD\stage"
+
+      # Inno Setup is on the Windows runner image already; installing it is the
+      # fallback rather than the plan, so a change in the image is a slower run
+      # and not a failed one.
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "no ISCC.exe at $iscc" }
+          $version = (& .\stage\bin\crucible.exe --version).Split(' ')[-1]
+          & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" `
+                  "/O$PWD\dist" packaging\windows\crucible.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Crucible-Windows
+          path: dist/Crucible-Setup.exe
+
+  linux:
+    name: Linux AppImage
+    # An AppImage is only as portable as the glibc it was linked against, so it
+    # is built on the oldest runner still supported rather than the newest.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      # No libglfw3-dev on purpose: without a system GLFW the build uses the
+      # pinned one and links it statically, which is one fewer library to carry
+      # and one fewer version to be wrong about. The X11 headers are what GLFW
+      # itself needs to compile.
+      - name: Window headers
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Stage
+        run: cmake --install build --component crucible --prefix "$PWD/stage"
+
+      - name: AppImage
+        run: packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"
+
+      # The runner has no display, so this is as far as the check goes: the file
+      # runs, finds its libraries, and prints its version.
+      - name: The AppImage runs
+        run: ./dist/Crucible-x86_64.AppImage --appimage-extract-and-run --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Crucible-Linux
+          path: dist/Crucible-x86_64.AppImage
+
+  release:
+    name: Attach to the release
+    needs: [macos, windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          draft: true
+          generate_release_notes: true

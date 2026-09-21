@@ -68,13 +68,6 @@ option(CRUCIBLE_WARNINGS "Enable a strict warning set for Crucible's own sources
 option(CRUCIBLE_BUILD_TESTS "Build the unit tests" ON)
 option(CRUCIBLE_BUILD_TOOLS "Build the developer tools (routebench)" ON)
 
-# The desktop application. Off by default because it is the one part of
-# Crucible that needs anything from the system -- OpenGL, and on Linux the X11
-# or Wayland development headers -- and someone who only wants the terminal
-# program should not have to install those to get it. install.sh turns it on
-# when the headers are there.
-option(CRUCIBLE_BUILD_GUI "Build the desktop application (crucible-gui)" OFF)
-
 # Needed before the dependencies are configured: ggml decides where to install
 # its backend modules while it is being added, so CRUCIBLE_LIBDIR has to exist by
 # then.
@@ -106,7 +99,8 @@ endif()
 # ---------------------------------------------------------------------------
 # crucible_core -- everything that is not the terminal UI.
 # Kept as its own library so the engine can be driven headlessly (tests, a
-# future `crucible --repl`, or a daemon) without dragging FTXUI along.
+# future `crucible --repl`, or a daemon) without dragging a window toolkit
+# along.
 # ---------------------------------------------------------------------------
 add_library(crucible_core STATIC
     # util: small standalone helpers with no Crucible dependencies
@@ -147,6 +141,11 @@ add_library(crucible_core STATIC
 
     # cook: the long-running improvement loop and the record it keeps
     src/cook/journal.cpp
+
+    # lab: making a model rather than running one -- what a custom model is
+    # made of, and browsing the hub for the pieces
+    src/lab/recipe.cpp
+    src/lab/hub.cpp
 
     # routing: the expert roster, the two routers, and the command list
     src/routing/expert.cpp
@@ -193,67 +192,31 @@ target_compile_definitions(crucible_core PUBLIC
     CRUCIBLE_LLAMA_TAG="${CRUCIBLE_LLAMA_TAG}")
 
 # ---------------------------------------------------------------------------
-# crucible -- the TUI binary
+# crucible -- the program
+#
+# One binary, and it is the window. There was a terminal face beside it sharing
+# this engine; it is gone rather than left to rot half-maintained, and the
+# history has it if it is ever wanted back. Everything it knew lives in
+# crucible::core, which is why removing it took no engine with it.
 # ---------------------------------------------------------------------------
 add_executable(crucible
-    src/main.cpp
-    src/ui/app.cpp
-    src/ui/commands.cpp
-    src/ui/transcript.cpp
-    src/ui/widgets/flame_sprite.cpp
-    src/ui/widgets/expert_panel.cpp
-    src/ui/widgets/markdown_view.cpp
-    src/ui/widgets/scroll.cpp
-    src/ui/widgets/resource_meter.cpp
-    src/ui/widgets/expert_form.cpp
-    src/ui/settings/settings_view.cpp
-    src/ui/settings/line_editor.cpp
-    src/ui/settings/model_picker.cpp
-    src/ui/settings/directory_browser.cpp
-    src/ui/settings/runtime_view.cpp
-    src/ui/settings/gpu_order_view.cpp
-    src/ui/settings/model_manager_view.cpp
-    src/ui/session_picker.cpp
-)
-
-target_link_libraries(crucible PRIVATE
-    crucible::core
-    ftxui::screen
-    ftxui::dom
-    ftxui::component)
-
-# ---------------------------------------------------------------------------
-# crucible-gui -- the desktop binary
-#
-# The same engine with a different face. It links crucible::core exactly as the
-# terminal program does and knows nothing about routing, cooking or models that
-# the terminal does not: if the two ever disagree about what an expert is, that
-# is a bug in one of the faces rather than a difference of opinion.
-# ---------------------------------------------------------------------------
-if(CRUCIBLE_BUILD_GUI)
-    add_executable(crucible-gui
-        src/gui/main.cpp
-        src/gui/app.cpp
-        src/gui/markdown_view.cpp
-        src/gui/theme.cpp
-        src/gui/widgets.cpp
-        src/gui/panels/topbar.cpp
-        src/gui/panels/sidebar.cpp
-        src/gui/panels/chat.cpp
-        src/gui/panels/cook.cpp
-        src/gui/panels/experts.cpp
-        src/gui/panels/settings.cpp
-        src/gui/panels/generation.cpp
-        src/gui/panels/hardware.cpp
-        src/gui/panels/runtimes.cpp
-        src/gui/panels/dialogs.cpp)
-    target_link_libraries(crucible-gui PRIVATE crucible::core crucible_imgui)
-    if(CRUCIBLE_BACKEND_DL AND NOT WIN32)
-        set_target_properties(crucible-gui PROPERTIES
-            BUILD_RPATH   "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}"
-            INSTALL_RPATH "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}")
-    endif()
-endif()
+    src/gui/main.cpp
+    src/gui/app.cpp
+    src/gui/markdown_view.cpp
+    src/gui/theme.cpp
+    src/gui/widgets.cpp
+    src/gui/panels/topbar.cpp
+    src/gui/panels/sidebar.cpp
+    src/gui/panels/chat.cpp
+    src/gui/panels/cook.cpp
+    src/gui/panels/create.cpp
+    src/gui/panels/experts.cpp
+    src/gui/panels/settings.cpp
+    src/gui/panels/generation.cpp
+    src/gui/panels/hardware.cpp
+    src/gui/panels/runtimes.cpp
+    src/gui/panels/dialogs.cpp)
+target_link_libraries(crucible PRIVATE crucible::core crucible_imgui)
 
 # ---------------------------------------------------------------------------
 # Warnings -- applied only to our own targets, never to the vendored deps.
@@ -265,9 +228,6 @@ if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         -Wunused -Woverloaded-virtual -Wdouble-promotion)
     target_compile_options(crucible_core PRIVATE ${_crucible_warnings})
     target_compile_options(crucible      PRIVATE ${_crucible_warnings})
-    if(CRUCIBLE_BUILD_GUI)
-        target_compile_options(crucible-gui PRIVATE ${_crucible_warnings})
-    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -302,18 +262,14 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_devices.cpp
         tests/test_runtime.cpp
         tests/test_session.cpp
-        tests/test_sprite.cpp
         tests/test_syntax.cpp
         tests/test_code_lines.cpp
         tests/test_transcript_edits.cpp
         tests/test_overflow.cpp
         tests/test_display_scale.cpp
-        tests/test_spelling.cpp
-        # The flame's own source, because it lives in the terminal program
-        # rather than in the core library. It draws text and nothing else, so it
-        # costs the test binary a link against FTXUI's color type and no more.
-        src/ui/widgets/flame_sprite.cpp)
-    target_link_libraries(crucible_tests PRIVATE crucible::core ftxui::screen)
+        tests/test_lab.cpp
+        tests/test_spelling.cpp)
+    target_link_libraries(crucible_tests PRIVATE crucible::core)
     # dbghelp turns a crash address into a function name, for the report
     # tests/test_main.cpp prints on Windows -- where a crash otherwise reaches
     # the log as one line from CTest and nothing else.
@@ -374,22 +330,18 @@ set(CRUCIBLE_INSTALL_COMPONENT crucible)
 install(TARGETS crucible
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
-if(CRUCIBLE_BUILD_GUI)
-    install(TARGETS crucible-gui
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-            COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
-endif()
 # --- the desktop entry ------------------------------------------------------
 #
-# What puts crucible-gui in the application menu. Linux only: macOS wants an
-# .app bundle and Windows a Start Menu shortcut, and neither is a .desktop file.
+# What puts Crucible in the application menu. Linux only: macOS wants an .app
+# bundle and Windows a Start Menu shortcut, and neither is a .desktop file --
+# both are made by the installers.
 #
 # The Exec line is the absolute installed path rather than the bare name. The
 # usual prefix is ~/.local, which a login shell puts on PATH and a desktop
-# launcher very often does not -- a bare "crucible-gui" there is an icon that
+# launcher very often does not -- a bare "crucible" there is an icon that
 # silently does nothing when clicked.
-if(CRUCIBLE_BUILD_GUI AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(CRUCIBLE_GUI_EXEC "${CMAKE_INSTALL_FULL_BINDIR}/crucible-gui")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(CRUCIBLE_GUI_EXEC "${CMAKE_INSTALL_FULL_BINDIR}/crucible")
     configure_file(packaging/crucible.desktop.in
                    "${CMAKE_CURRENT_BINARY_DIR}/crucible.desktop" @ONLY)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/crucible.desktop"
@@ -448,11 +400,6 @@ message(STATUS "  build type    : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  compiler      : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  native tuning : ${CRUCIBLE_NATIVE}")
 message(STATUS "  tests         : ${CRUCIBLE_BUILD_TESTS}")
-if(CRUCIBLE_BUILD_GUI)
-    message(STATUS "  desktop app   : yes -- crucible-gui")
-else()
-    message(STATUS "  desktop app   : no  -- configure with -DCRUCIBLE_BUILD_GUI=ON")
-endif()
 if(CRUCIBLE_BACKEND_DL)
     message(STATUS "  runtimes      : loadable, none built in -- add them from settings")
 else()

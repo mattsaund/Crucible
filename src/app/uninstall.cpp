@@ -2,8 +2,8 @@
 //
 // Removing Crucible.
 //
-// One question, and it takes everything: both programs, the libraries under
-// them, the application-menu entry, the configuration, the folder-trust list,
+// One question, and it takes everything: the program, the libraries under it,
+// the application entry a desktop clicks, the configuration, the trust list,
 // the models directory, the compute runtimes built into it, the project
 // history and the caches.
 //
@@ -147,11 +147,13 @@ constexpr std::string_view kExeSuffix = "";
 
 /// The other programs this install put beside the binary.
 ///
-/// `crucible` is not the whole install. `crucible-gui` is the desktop face of
-/// the same engine and `crucible-routebench` is the developer tool; both are
-/// placed in the same bin/ by the same install component, and both are useless
-/// once the libraries under them are gone. Leaving either behind puts a
-/// program on PATH that can only fail, and makes a clean reinstall test lie.
+/// `crucible` is not the whole install. `crucible-routebench` is the developer
+/// tool, placed in the same bin/ by the same install component and useless once
+/// the libraries under it are gone. `crucible-gui` is not installed any more --
+/// the window is `crucible` itself -- but it was, and an install that predates
+/// the rename still has it sitting there. Both are swept for the same reason:
+/// leaving either behind puts a program on PATH that can only fail, and makes a
+/// clean reinstall test lie.
 std::vector<std::filesystem::path> companion_programs(const std::filesystem::path& binary) {
     std::vector<std::filesystem::path> found;
     if (binary.empty()) {
@@ -195,7 +197,7 @@ std::vector<std::filesystem::path> companion_libraries(const std::filesystem::pa
 
 /// The desktop entry and its icon.
 ///
-/// Installed beside the binaries on Linux so crucible-gui appears in the
+/// Installed beside the binaries on Linux so Crucible appears in the
 /// application menu, which means uninstall has to take them too. A .desktop
 /// file left behind is worse than ordinary litter: the menu keeps offering
 /// Crucible, and clicking it does nothing.
@@ -208,6 +210,59 @@ std::vector<std::filesystem::path> desktop_files(const std::filesystem::path& bi
     for (const std::filesystem::path& candidate :
          {share / "applications" / "crucible.desktop",
           share / "icons" / "hicolor" / "scalable" / "apps" / "crucible.svg"}) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec)) {
+            found.push_back(candidate);
+        }
+    }
+    return found;
+}
+
+/// The thing you click, on the two platforms where it is not a .desktop file.
+///
+/// The installers make an application as well as a command: a launcher bundle
+/// in Applications on macOS, shortcuts in the Start Menu and on the Desktop on
+/// Windows, with the icon copied into the prefix so deleting the checkout does
+/// not blank it. None of that is under the prefix, so the sweep of bin/ and
+/// lib/ walks straight past it, and what is left behind is worse than litter:
+/// an icon still sitting in the dock or on the taskbar that now launches
+/// nothing. Both the system and the per-user location are checked, because the
+/// installer picks between them by what it can write.
+std::vector<std::filesystem::path> application_entries(const std::filesystem::path& binary) {
+    std::vector<std::filesystem::path> found;
+    std::vector<std::filesystem::path> candidates;
+    const char* home = std::getenv(
+#if defined(_WIN32)
+        "USERPROFILE"
+#else
+        "HOME"
+#endif
+    );
+
+#if defined(__APPLE__)
+    candidates.emplace_back("/Applications/Crucible.app");
+    if (home != nullptr && *home != '\0') {
+        candidates.push_back(std::filesystem::path(home) / "Applications" / "Crucible.app");
+    }
+#elif defined(_WIN32)
+    // The folders WScript.Shell calls Programs and Desktop, named the way the
+    // shell resolves them, so this does not need a COM call to find them.
+    if (const char* appdata = std::getenv("APPDATA"); appdata != nullptr && *appdata != '\0') {
+        candidates.push_back(std::filesystem::path(appdata) / "Microsoft" / "Windows" /
+                             "Start Menu" / "Programs" / "Crucible.lnk");
+    }
+    if (home != nullptr && *home != '\0') {
+        candidates.push_back(std::filesystem::path(home) / "Desktop" / "Crucible.lnk");
+    }
+    if (!binary.empty()) {
+        candidates.push_back(binary.parent_path().parent_path() / "crucible.ico");
+    }
+#else
+    (void)home;
+#endif
+    (void)binary;
+
+    for (const std::filesystem::path& candidate : candidates) {
         std::error_code ec;
         if (std::filesystem::exists(candidate, ec)) {
             found.push_back(candidate);
@@ -280,6 +335,7 @@ int run_uninstall(bool assume_yes) {
     const std::vector<std::filesystem::path> programs = companion_programs(binary);
     const std::vector<std::filesystem::path> beside   = companion_libraries(binary);
     const std::vector<std::filesystem::path> desktop  = desktop_files(binary);
+    const std::vector<std::filesystem::path> app      = application_entries(binary);
 
     // Everything to be removed, gathered before anything is said about it, so
     // the list on screen is exactly the list that will be acted on.
@@ -313,6 +369,10 @@ int run_uninstall(bool assume_yes) {
     for (const std::filesystem::path& entry : desktop) {
         take(entry);
         std::cout << "  desktop  " << entry.string() << "\n";
+    }
+    for (const std::filesystem::path& entry : app) {
+        take(entry);
+        std::cout << "  app      " << entry.string() << "\n";
     }
     if (std::filesystem::exists(config)) {
         take(config);

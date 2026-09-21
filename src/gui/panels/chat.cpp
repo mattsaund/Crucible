@@ -621,44 +621,47 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
         ImGui::SetKeyboardFocusHere(-1);
     }
 
-    // --- what this conversation is costing ---------------------------------
-    //
-    // Under the box, because both numbers are about the conversation rather
-    // than about the models -- which is why they are no longer in the side
-    // menu, where they sat under a list of experts they had nothing to do with.
-    //
-    // The percentage is the one that changes behavior. Tokens in and out are a
-    // running total that only goes up; how full the context is decides whether
-    // the next turn quietly loses the start of this one, and it is the number
-    // to watch before that happens rather than after.
-    {
-        const TokenUsage& usage = snapshot.session_usage;
-        if (column < room) {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (room - column) * 0.5F);
-        }
-        std::string line = format_tokens(usage.input_tokens) + " in  \xC2\xB7  "
-                         + format_tokens(usage.output_tokens) + " out";
-        if (snapshot.context_size > 0) {
-            const int percent = std::min(
-                100, static_cast<int>(std::lround(
-                         100.0 * snapshot.context_used / snapshot.context_size)));
-            line += "  \xC2\xB7  " + std::to_string(percent) + "% context used";
-        }
-        // Amber past three quarters. The prompt is allowed three quarters of
-        // the window and the answer needs the rest, so that is the point at
-        // which the next turn starts dropping things.
-        const bool tight = snapshot.context_size > 0
-                        && snapshot.context_used * 4 >= snapshot.context_size * 3;
-        text_colored(tight ? theme::kFlameBright : theme::kTextFaint, "%s", line.c_str());
-        ImGui::SetItemTooltip(
-            snapshot.context_size > 0
-                ? "Tokens this session, and how much of the expert's context the last "
-                  "turn filled.\nPast three quarters, the oldest exchanges start being "
-                  "dropped -- see Settings, Tools, Context."
-                : "Tokens this session. The context readout appears once a turn has run.");
-    }
+    draw_usage_readout(snapshot, room, column);
 
     ImGui::EndChild();
+}
+
+// --- what a conversation is costing -----------------------------------------
+//
+// Under the box on both screens, because both numbers are about the
+// conversation rather than about the models -- which is why they are no longer
+// in the side menu, where they sat under a list of experts they had nothing to
+// do with.
+//
+// The percentage is the one that changes behavior. Tokens in and out are a
+// running total that only goes up; how full the context is decides whether the
+// next turn quietly loses the start of this one, and it is the number to watch
+// before that happens rather than after.
+void App::draw_usage_readout(const Snapshot& snapshot, float room, float column) {
+    const TokenUsage& usage = snapshot.session_usage;
+    if (column < room) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (room - column) * 0.5F);
+    }
+    std::string line = format_tokens(usage.input_tokens) + " in  \xC2\xB7  "
+                     + format_tokens(usage.output_tokens) + " out";
+    if (snapshot.context_size > 0) {
+        const int percent = std::min(
+            100, static_cast<int>(std::lround(
+                     100.0 * snapshot.context_used / snapshot.context_size)));
+        line += "  \xC2\xB7  " + std::to_string(percent) + "% context used";
+    }
+    // Amber past three quarters. The prompt is allowed three quarters of
+    // the window and the answer needs the rest, so that is the point at
+    // which the next turn starts dropping things.
+    const bool tight = snapshot.context_size > 0
+                    && snapshot.context_used * 4 >= snapshot.context_size * 3;
+    text_colored(tight ? theme::kFlameBright : theme::kTextFaint, "%s", line.c_str());
+    ImGui::SetItemTooltip(
+        snapshot.context_size > 0
+            ? "Tokens this session, and how much of the expert's context the last "
+              "turn filled.\nPast three quarters, the oldest exchanges start being "
+              "dropped -- see Settings, Tools, Context."
+            : "Tokens this session. The context readout appears once a turn has run.");
 }
 
 }  // namespace crucible::gui

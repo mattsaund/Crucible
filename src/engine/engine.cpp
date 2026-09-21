@@ -5,7 +5,7 @@
 // Everything llama.cpp touches happens on this thread. The UI hands over a
 // prompt and learns how it went through AppState plus a wake callback -- it
 // never calls into the engine's internals, and the engine never calls into
-// FTXUI.
+// the window toolkit.
 //
 // Config changes and expert releases ride the same queue as prompts, so they
 // are applied in order and can never land in the middle of a generation.

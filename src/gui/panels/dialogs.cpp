@@ -58,6 +58,16 @@ void App::draw_new_expert_modal() {
     text_colored(theme::kTextFaint,
                   "The delegator routes on this, so name the things it should take.");
 
+    ImGui::Dummy(ImVec2(0, em(0.4F)));
+    text_colored(theme::kTextFaint, "Model");
+    if (const std::optional<std::string> chosen =
+            draw_model_picker("##new-expert-model", new_expert_model_, -FLT_MIN)) {
+        new_expert_model_ = *chosen;
+    }
+    text_colored(theme::kTextFaint,
+                  "One you fine-tuned in Create, or a file on this machine. It can be "
+                  "left empty and chosen later.");
+
     if (!expert_error_.empty()) {
         ImGui::Dummy(ImVec2(0, em(0.4F)));
         wrapped(theme::kError, expert_error_);
@@ -78,12 +88,15 @@ void App::draw_new_expert_modal() {
             expert_error_ = error;
         } else {
             const ExpertId id = make_expert_id(expert.name);
-            edited.experts[id] = ModelParams{};
+            ModelParams params;
+            params.model       = new_expert_model_;
+            edited.experts[id] = params;
             update_config([&edited](Config& config) { config = edited; });
             engine_->write_examples(id);
             say(expert.name + " has joined the experts");
             new_expert_name_.clear();
             new_expert_blurb_.clear();
+            new_expert_model_.clear();
             expert_error_.clear();
             ImGui::CloseCurrentPopup();
         }

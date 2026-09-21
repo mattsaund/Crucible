@@ -14,11 +14,10 @@ include(FetchContent)
 find_package(Threads REQUIRED)
 
 set(CRUCIBLE_LLAMA_TAG b10678     CACHE STRING "llama.cpp git tag to build against")
-set(CRUCIBLE_FTXUI_TAG v7.0.3     CACHE STRING "FTXUI git tag to build against")
 set(CRUCIBLE_JSON_TAG  v3.12.0    CACHE STRING "nlohmann/json git tag to build against")
 set(CRUCIBLE_IMGUI_TAG v1.91.9b   CACHE STRING "Dear ImGui git tag to build against")
 set(CRUCIBLE_GLFW_TAG  3.4        CACHE STRING "GLFW git tag, used only when the system has none")
-set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compile into the desktop app")
+set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compile into the binary")
 
 # ---------------------------------------------------------------------------
 # Symlink-free shared libraries
@@ -31,9 +30,10 @@ set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compil
 include(${CMAKE_CURRENT_LIST_DIR}/CrucibleUnversion.cmake)
 
 # ---------------------------------------------------------------------------
-# FTXUI and nlohmann/json are always static: they are Crucible's own code as far
-# as deployment is concerned, and there is no reason to ship them as separate
-# files. Only llama.cpp is built shared, and only when runtimes are loadable.
+# Dear ImGui, GLFW and nlohmann/json are always static: they are Crucible's own
+# code as far as deployment is concerned, and there is no reason to ship them as
+# separate files. Only llama.cpp is built shared, and only when runtimes are
+# loadable.
 # ---------------------------------------------------------------------------
 set(BUILD_SHARED_LIBS OFF)
 
@@ -45,24 +45,11 @@ FetchContent_Declare(nlohmann_json
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   TRUE)
 
-# --- FTXUI -----------------------------------------------------------------
-set(FTXUI_BUILD_EXAMPLES OFF CACHE INTERNAL "")
-set(FTXUI_BUILD_DOCS     OFF CACHE INTERNAL "")
-set(FTXUI_BUILD_TESTS    OFF CACHE INTERNAL "")
-set(FTXUI_BUILD_MODULES  OFF CACHE INTERNAL "")
-set(FTXUI_ENABLE_INSTALL OFF CACHE INTERNAL "")
-set(FTXUI_QUIET          ON  CACHE INTERNAL "")
-
-FetchContent_Declare(ftxui
-    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
-    GIT_TAG        ${CRUCIBLE_FTXUI_TAG}
-    GIT_SHALLOW    TRUE
-    GIT_PROGRESS   TRUE)
-
-FetchContent_MakeAvailable(nlohmann_json ftxui)
+FetchContent_MakeAvailable(nlohmann_json)
 
 # ---------------------------------------------------------------------------
-# The desktop window: GLFW and Dear ImGui.
+# The desktop window: GLFW and Dear ImGui. Not optional -- the window is the
+# program.
 #
 # Only fetched when the GUI is being built, because they are the one dependency
 # that needs anything from the system -- OpenGL and, on Linux, the X11 or
@@ -77,106 +64,104 @@ FetchContent_MakeAvailable(nlohmann_json ftxui)
 # larger; Electron or Tauri would mean a second language and an IPC layer whose
 # only job is to undo the fact that the engine is already right there.
 # ---------------------------------------------------------------------------
-if(CRUCIBLE_BUILD_GUI)
-    find_package(OpenGL REQUIRED)
+find_package(OpenGL REQUIRED)
 
-    # The system's GLFW when there is one -- it is a small, stable library and
-    # distributions package it well. Building our own is the fallback, and needs
-    # the X11 development headers that install.sh asks for.
-    find_package(glfw3 3.3 QUIET)
-    if(NOT glfw3_FOUND)
-        set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
-        set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
-        set(GLFW_BUILD_DOCS     OFF CACHE INTERNAL "")
-        set(GLFW_INSTALL        OFF CACHE INTERNAL "")
-        FetchContent_Declare(glfw
-            GIT_REPOSITORY https://github.com/glfw/glfw.git
-            GIT_TAG        ${CRUCIBLE_GLFW_TAG}
-            GIT_SHALLOW    TRUE
-            GIT_PROGRESS   TRUE)
-        FetchContent_MakeAvailable(glfw)
-        message(STATUS "GLFW: building from source (no system package found)")
-    else()
-        message(STATUS "GLFW: using the system package")
-    endif()
-
-    # ImGui ships no CMakeLists of its own, so the sources are named here. Only
-    # the two backends Crucible uses are compiled in.
-    FetchContent_Declare(imgui
-        GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG        ${CRUCIBLE_IMGUI_TAG}
+# The system's GLFW when there is one -- it is a small, stable library and
+# distributions package it well. Building our own is the fallback, and needs
+# the X11 development headers that install.sh asks for.
+find_package(glfw3 3.3 QUIET)
+if(NOT glfw3_FOUND)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+    set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
+    set(GLFW_BUILD_DOCS     OFF CACHE INTERNAL "")
+    set(GLFW_INSTALL        OFF CACHE INTERNAL "")
+    FetchContent_Declare(glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG        ${CRUCIBLE_GLFW_TAG}
         GIT_SHALLOW    TRUE
         GIT_PROGRESS   TRUE)
-    FetchContent_MakeAvailable(imgui)
+    FetchContent_MakeAvailable(glfw)
+    message(STATUS "GLFW: building from source (no system package found)")
+else()
+    message(STATUS "GLFW: using the system package")
+endif()
 
-    add_library(crucible_imgui STATIC
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-        # std::string overloads for the input widgets. Without these every text
-        # box needs a fixed char buffer and its own resize dance, which is a
-        # great deal of ceremony for a name and a description.
-        ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp)
-    target_include_directories(crucible_imgui PUBLIC
-        ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
-    target_link_libraries(crucible_imgui PUBLIC glfw OpenGL::GL)
+# ImGui ships no CMakeLists of its own, so the sources are named here. Only
+# the two backends Crucible uses are compiled in.
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        ${CRUCIBLE_IMGUI_TAG}
+    GIT_SHALLOW    TRUE
+    GIT_PROGRESS   TRUE)
+FetchContent_MakeAvailable(imgui)
 
-    # --- the interface font -------------------------------------------------
-    #
-    # JetBrains Mono, compiled in rather than looked for. A font is the one
-    # asset the program cannot draw for itself, and searching for it at runtime
-    # would mean an install layout and a search path for a typeface -- the same
-    # machinery the flame mark avoids by being vector shapes. Three faces, which
-    # is what rendering markdown needs: prose, **bold**, and *italic*.
-    #
-    # Fetched and pinned like everything else. If the download fails the build
-    # still works and the app falls back to whatever monospace face the system
-    # has, because a missing typeface is not a reason to have no program.
-    FetchContent_Declare(jetbrains_mono
-        URL      https://github.com/JetBrains/JetBrainsMono/releases/download/v${CRUCIBLE_FONT_TAG}/JetBrainsMono-${CRUCIBLE_FONT_TAG}.zip
-        URL_HASH SHA256=6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(jetbrains_mono)
+add_library(crucible_imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    # std::string overloads for the input widgets. Without these every text
+    # box needs a fixed char buffer and its own resize dance, which is a
+    # great deal of ceremony for a name and a description.
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp)
+target_include_directories(crucible_imgui PUBLIC
+    ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
+target_link_libraries(crucible_imgui PUBLIC glfw OpenGL::GL)
 
-    set(CRUCIBLE_FONT_DIR ${CMAKE_BINARY_DIR}/generated)
-    file(MAKE_DIRECTORY ${CRUCIBLE_FONT_DIR})
+# --- the interface font -------------------------------------------------
+#
+# JetBrains Mono, compiled in rather than looked for. A font is the one
+# asset the program cannot draw for itself, and searching for it at runtime
+# would mean an install layout and a search path for a typeface -- the same
+# machinery the flame mark avoids by being vector shapes. Three faces, which
+# is what rendering markdown needs: prose, **bold**, and *italic*.
+#
+# Fetched and pinned like everything else. If the download fails the build
+# still works and the app falls back to whatever monospace face the system
+# has, because a missing typeface is not a reason to have no program.
+FetchContent_Declare(jetbrains_mono
+    URL      https://github.com/JetBrains/JetBrainsMono/releases/download/v${CRUCIBLE_FONT_TAG}/JetBrainsMono-${CRUCIBLE_FONT_TAG}.zip
+    URL_HASH SHA256=6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(jetbrains_mono)
 
-    set(CRUCIBLE_FONT_SOURCES "")
-    set(CRUCIBLE_FONTS_EMBEDDED ON)
-    foreach(_face Regular Bold Italic)
-        string(TOLOWER ${_face} _symbol)
-        set(_ttf ${jetbrains_mono_SOURCE_DIR}/fonts/ttf/JetBrainsMono-${_face}.ttf)
-        set(_cpp ${CRUCIBLE_FONT_DIR}/font_${_symbol}.cpp)
-        if(NOT EXISTS ${_ttf})
-            message(WARNING "JetBrains Mono ${_face} not found; the desktop app will "
-                            "fall back to a system font")
+set(CRUCIBLE_FONT_DIR ${CMAKE_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${CRUCIBLE_FONT_DIR})
+
+set(CRUCIBLE_FONT_SOURCES "")
+set(CRUCIBLE_FONTS_EMBEDDED ON)
+foreach(_face Regular Bold Italic)
+    string(TOLOWER ${_face} _symbol)
+    set(_ttf ${jetbrains_mono_SOURCE_DIR}/fonts/ttf/JetBrainsMono-${_face}.ttf)
+    set(_cpp ${CRUCIBLE_FONT_DIR}/font_${_symbol}.cpp)
+    if(NOT EXISTS ${_ttf})
+        message(WARNING "JetBrains Mono ${_face} not found; the desktop app will "
+                        "fall back to a system font")
+        set(CRUCIBLE_FONTS_EMBEDDED OFF)
+        break()
+    endif()
+    # Configure time, not build time: the input never changes, so there is
+    # nothing for a dependency rule to track.
+    if(NOT EXISTS ${_cpp} OR ${_ttf} IS_NEWER_THAN ${_cpp})
+        execute_process(COMMAND ${CMAKE_COMMAND}
+            -DIN=${_ttf} -DOUT=${_cpp} -DSYMBOL=k${_face}
+            -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake
+            RESULT_VARIABLE _embed_status)
+        if(NOT _embed_status EQUAL 0)
+            message(WARNING "could not embed JetBrains Mono ${_face}")
             set(CRUCIBLE_FONTS_EMBEDDED OFF)
             break()
         endif()
-        # Configure time, not build time: the input never changes, so there is
-        # nothing for a dependency rule to track.
-        if(NOT EXISTS ${_cpp} OR ${_ttf} IS_NEWER_THAN ${_cpp})
-            execute_process(COMMAND ${CMAKE_COMMAND}
-                -DIN=${_ttf} -DOUT=${_cpp} -DSYMBOL=k${_face}
-                -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake
-                RESULT_VARIABLE _embed_status)
-            if(NOT _embed_status EQUAL 0)
-                message(WARNING "could not embed JetBrains Mono ${_face}")
-                set(CRUCIBLE_FONTS_EMBEDDED OFF)
-                break()
-            endif()
-        endif()
-        list(APPEND CRUCIBLE_FONT_SOURCES ${_cpp})
-    endforeach()
-
-    if(CRUCIBLE_FONTS_EMBEDDED)
-        add_library(crucible_fonts STATIC ${CRUCIBLE_FONT_SOURCES})
-        target_compile_definitions(crucible_fonts PUBLIC CRUCIBLE_HAS_EMBEDDED_FONT)
-        target_link_libraries(crucible_imgui PUBLIC crucible_fonts)
     endif()
+    list(APPEND CRUCIBLE_FONT_SOURCES ${_cpp})
+endforeach()
+
+if(CRUCIBLE_FONTS_EMBEDDED)
+    add_library(crucible_fonts STATIC ${CRUCIBLE_FONT_SOURCES})
+    target_compile_definitions(crucible_fonts PUBLIC CRUCIBLE_HAS_EMBEDDED_FONT)
+    target_link_libraries(crucible_imgui PUBLIC crucible_fonts)
 endif()
 
 # --- llama.cpp -------------------------------------------------------------
@@ -265,9 +250,9 @@ crucible_unversion_directory("${llama_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
 # Treat every dependency's headers as system headers, so Crucible can keep a
-# strict warning set without drowning in diagnostics from llama.cpp and FTXUI.
+# strict warning set without drowning in diagnostics from llama.cpp and ImGui.
 # ---------------------------------------------------------------------------
-foreach(_dep llama ggml ggml-base ggml-cpu nlohmann_json screen dom component)
+foreach(_dep llama ggml ggml-base ggml-cpu nlohmann_json)
     if(TARGET ${_dep})
         # ALIAS targets reject set_target_properties, so resolve through them.
         get_target_property(_aliased ${_dep} ALIASED_TARGET)

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 //
-// crucible-gui -- the desktop face.
+// crucible -- the entry point.
 //
-// As thin as src/main.cpp is, and for the same reason: parse the command line,
-// deal with the folder trust gate, then hand off. Everything interesting is
-// somewhere else, and almost all of it is shared with the terminal program.
+// Deliberately thin: parse the command line, deal with the folder trust gate,
+// then hand off. Everything interesting is somewhere else, and nearly all of it
+// is in crucible::core rather than in the window.
 
 #include <filesystem>
 #include <string>
@@ -53,8 +53,8 @@ std::filesystem::path where_to_open(bool from_a_terminal) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // Started from a terminal, `crucible-gui --help` prints the same braille
-    // mark the other binary does, and on Windows that needs saying first.
+    // Started from a terminal, `crucible --help` prints the braille mark, and
+    // on Windows the console needs telling before it can render it.
     crucible::util::use_utf8_console();
 
     const crucible::app::Options options = crucible::app::parse_arguments(argc, argv);

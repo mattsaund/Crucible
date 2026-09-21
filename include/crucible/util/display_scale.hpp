@@ -2,7 +2,7 @@
 //
 // How large to draw the desktop app, from what the window system reports.
 //
-// Two numbers that platforms disagree about, and that crucible-gui once
+// Two numbers that platforms disagree about, and that the window once
 // treated as one. On Windows and on Linux under X11 a window is measured in
 // pixels, so a 150% display needs everything drawn at 1.5x. On a Mac -- and on
 // Wayland -- a window is measured in points and the framebuffer behind it is

@@ -42,7 +42,7 @@ std::vector<std::filesystem::path> project_files() {
 
     static const std::vector<std::string> kExtensions{
         ".cpp", ".hpp", ".h", ".c", ".sh", ".ps1", ".md", ".txt", ".in", ".cmake",
-        ".svg", ".json",
+        ".svg", ".json", ".yml", ".iss",
     };
 
     for (std::filesystem::recursive_directory_iterator it{root, ec}, end;

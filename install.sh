@@ -6,8 +6,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
 #
-# Installs the program: the build toolchain, a compile, `crucible` and
-# `crucible-gui` on your PATH, and the directories they keep their files in.
+# Installs the program: the build toolchain, a compile, `crucible` on your
+# PATH, an application entry for it, and the directories it keeps its files in.
 # Nothing else. No compute runtime and no models -- Crucible manages its own
 # runtimes from the settings screen, on the machine that will run them, so an
 # installer that guessed at a GPU SDK was doing work the program does better
@@ -25,14 +25,22 @@ BRANCH="main"
 # The desktop application. Built by default: Crucible is two faces over one
 # engine, and someone who runs the one-line install should get both of them.
 #
-# It is the only part that needs anything from the system beyond a compiler --
-# OpenGL and, on Linux, a handful of X11 development headers, a few megabytes
-# in total, which this installs. Where those cannot be had the build steps
-# down to the terminal program with a warning rather than failing, so turning
-# this on cannot cost anyone their install. --no-gui skips it outright.
-WITH_GUI=1
+# It needs a little from the system beyond a compiler -- OpenGL and, on Linux,
+# a handful of X11 development headers, a few megabytes in total, which this
+# installs. There is no falling back to a terminal build any more: the window
+# is the program.
+#
+# Accepted and ignored: --gui and --no-gui chose between the window and the
+# terminal face beside it. That face is gone, and a script still passing
+# --no-gui should be told so rather than stopped.
+GUI_FLAG_SEEN=0
 
 PREFIX=""
+# macOS keeps applications in a folder rather than a menu file: /Applications
+# when it can be written to, the user's own otherwise. Both are in Spotlight,
+# and both can be dragged to the Dock.
+APP_BUNDLE_DIR="$HOME/Applications"
+[ -w /Applications ] && APP_BUNDLE_DIR="/Applications"
 INSTALL_DEPS=1
 ASSUME_YES=0
 DO_UNINSTALL=0
@@ -523,28 +531,23 @@ usage() {
     cat <<EOF
 usage: install.sh [options]
 
-  Installs the program and nothing else: crucible, crucible-gui, and the
-  directories they keep their files in. Compute runtimes are not an installer's
-  business -- Crucible builds one on demand from its settings screen, on the
-  machine that will run it.
+  Installs the program and nothing else: crucible, an application entry for it,
+  and the directories it keeps its files in. Compute runtimes are not an
+  installer's business -- Crucible builds one on demand from its settings
+  screen, on the machine that will run it.
 
   --prefix DIR     install location (default: /usr/local with sudo,
                    otherwise ~/.local)
   --branch NAME    git branch to build (default: main)
   --jobs N         parallel build jobs (default: all cores)
-  --no-gui         build only the terminal program, skipping crucible-gui.
-                   The desktop app is built by default; it needs OpenGL and,
-                   on Linux, the X11 development headers, which this installs.
-                   Where they are unavailable the build falls back to the
-                   terminal program on its own.
-  --gui            build the desktop application. On by default; the flag is
-                   kept so an explicit --gui still means what it says.
+  --gui, --no-gui  accepted and ignored. Crucible is one program and it is the
+                   window; the terminal face these chose between is gone.
   --no-deps        do not install system packages
   -y, --yes        assume yes; never prompt
   --check          report what would be installed, then exit without
                    changing anything
-  --uninstall      remove Crucible and everything it installed: both
-                   programs, the libraries, the menu entry, the config, the
+  --uninstall      remove Crucible and everything it installed: the program,
+                   the libraries, the application entry, the config, the
                    folder-trust list, the models, the runtimes and the history
   -h, --help       this message
 
@@ -555,7 +558,7 @@ examples:
   curl -fsSL $RAW_URL | bash
   curl -fsSL $RAW_URL | bash -s -- --uninstall
   ./install.sh --prefix ~/.local
-  ./install.sh --no-gui
+  ./install.sh --prefix /opt/crucible
 EOF
 }
 
@@ -564,8 +567,7 @@ EOF
 # --------------------------------------------------------------------------
 while [ $# -gt 0 ]; do
     case "$1" in
-        --gui)       WITH_GUI=1;       shift ;;
-        --no-gui)    WITH_GUI=0;       shift ;;
+        --gui|--no-gui) GUI_FLAG_SEEN=1; shift ;;
         --prefix)    PREFIX="${2:-}"; shift 2 ;;
         --prefix=*)  PREFIX="${1#*=}";shift ;;
         --branch)    BRANCH="${2:-}"; shift 2 ;;
@@ -951,7 +953,7 @@ install_dependencies() {
     #
     # Skipped entirely on macOS, where PKGS_GUI is empty because OpenGL comes
     # with the system.
-    if [ "$WITH_GUI" = "1" ] && [ "${#PKGS_GUI[@]}" -gt 0 ]; then
+    if [ "${#PKGS_GUI[@]}" -gt 0 ]; then
         phase 35 "installing the desktop app's dependencies"
         local gui_have=() gui_missing=() gui_pkg
         for gui_pkg in ${PKGS_GUI[@]+"${PKGS_GUI[@]}"}; do
@@ -1000,22 +1002,17 @@ have_header() {
 # What the build genuinely requires is GL/gl.h (find_package(OpenGL REQUIRED)),
 # plus either a system GLFW or the X11 headers, since CrucibleDependencies.cmake
 # compiles GLFW from source when the system has none.
+# A missing header is a stop with an instruction now, not a quieter install:
+# there is no terminal build to fall back to.
 verify_gui_prerequisites() {
-    [ "$WITH_GUI" = "1" ] || return 0
     # macOS: OpenGL is part of the system and there is no X11 in it.
     [ "$(uname -s)" = "Darwin" ] && return 0
 
     if ! have_header GL/gl.h; then
-        warn "the OpenGL headers (GL/gl.h) are not installed"
-        warn "building the terminal program only; install them and re-run for the desktop app"
-        WITH_GUI=0
-        return 0
+        die "the OpenGL headers (GL/gl.h) are needed to build Crucible. Install your distribution's mesa or OpenGL development package and run this again."
     fi
     if ! have_header GLFW/glfw3.h && ! have_header X11/Xlib.h; then
-        warn "neither GLFW nor the X11 headers are installed, and GLFW needs them to build"
-        warn "building the terminal program only; install them and re-run for the desktop app"
-        WITH_GUI=0
-        return 0
+        die "GLFW or the X11 development headers are needed to build the window. Install libglfw3-dev, or your distribution's equivalent, and run this again."
     fi
     return 0
 }
@@ -1153,9 +1150,52 @@ run_configure() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DCRUCIBLE_BACKEND_DL=ON \
-        -DCRUCIBLE_BUILD_GUI="$([ "$WITH_GUI" = "1" ] && echo ON || echo OFF)" \
         > "$BUILD_LOG" 2>&1 || status=$?
     return 0
+}
+
+# A real application on macOS.
+#
+# The bundle is a launcher rather than a copy: Contents/MacOS/Crucible execs the
+# binary in the prefix, so an upgrade that replaces that binary needs no new
+# bundle, and there is one copy of the program on the disk rather than two.
+make_app_bundle() {
+    [ "$(uname -s)" = "Darwin" ] || return 0
+    local app="$APP_BUNDLE_DIR/Crucible.app"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" 2>/dev/null || {
+        warn "could not write $app; skipping the application entry"
+        return 0
+    }
+    cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Crucible</string>
+    <key>CFBundleDisplayName</key><string>Crucible</string>
+    <key>CFBundleIdentifier</key><string>dev.crucible.app</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleExecutable</key><string>Crucible</string>
+    <key>CFBundleIconFile</key><string>crucible</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+    cat > "$app/Contents/MacOS/Crucible" <<LAUNCHER
+#!/bin/sh
+exec "$PREFIX/bin/crucible" "\$@"
+LAUNCHER
+    chmod +x "$app/Contents/MacOS/Crucible"
+    # sips and iconutil are part of macOS, so the icon costs nothing to make --
+    # and an application with the generic icon does not look like one you meant
+    # to install.
+    if [ -f "$SRC_DIR/packaging/crucible.png" ] && command -v sips >/dev/null 2>&1; then
+        sips -s format icns "$SRC_DIR/packaging/crucible.png" \
+             --out "$app/Contents/Resources/crucible.icns" >/dev/null 2>&1 || true
+    fi
+    ok "added Crucible to $APP_BUNDLE_DIR"
 }
 
 build_and_install() {
@@ -1169,7 +1209,7 @@ build_and_install() {
     BUILD_LOG="$(mktemp -t crucible-build-XXXXXX.log)"
 
     # --- configure ---------------------------------------------------------
-    # The first configure clones llama.cpp and FTXUI, so it is slow and has no
+    # The first configure clones llama.cpp and ImGui, so it is slow and has no
     # percentage of its own.
     # No GPU backend is compiled in. Crucible is built with ggml's loadable
     # backends, so a compute backend is a file the settings screen manages
@@ -1282,19 +1322,21 @@ build_and_install() {
     # the truth rather than repeating what was asked for. A desktop app that was
     # configured, compiled and then not installed is a bug worth naming here
     # instead of printing a path to a file that is not there.
-    if [ "$WITH_GUI" = "1" ] && [ ! -x "$PREFIX/bin/crucible-gui" ]; then
-        warn "crucible-gui was built but is not at $PREFIX/bin/crucible-gui"
+    if [ ! -x "$PREFIX/bin/crucible" ]; then
+        warn "crucible was built but is not at $PREFIX/bin/crucible"
         warn "details are in $BUILD_LOG"
         KEEP_BUILD_LOG=1
-        WITH_GUI=0
     fi
 
-    # Tell the desktop about the new application-menu entry.
+    # The half of an install that is not a command: something to click.
+    # macOS gets a bundle in Applications; Linux got its menu entry from the
+    # install itself and needs only to be told about it.
     #
     # Both tools are caches, both are optional, and neither failing is worth a
     # word: the entry is on disk either way and every desktop picks it up on the
     # next login. Running them just means the icon appears now rather than then.
-    if [ "$WITH_GUI" = "1" ] && [ "$(uname -s)" != "Darwin" ] \
+    make_app_bundle
+    if [ "$(uname -s)" != "Darwin" ] \
        && [ -f "$PREFIX/share/applications/crucible.desktop" ]; then
         command -v update-desktop-database >/dev/null 2>&1 \
             && update-desktop-database "$PREFIX/share/applications" >/dev/null 2>&1
@@ -1410,7 +1452,7 @@ uninstall() {
             [ "$seen" = "$p" ] && { settled=1; break; }
         done
         [ "$settled" = 1 ] && continue
-        for name in crucible crucible-gui crucible-routebench; do
+        for name in crucible crucible-routebench; do
             [ -e "$p/bin/$name" ] && sweep+=("$p/bin/$name")
         done
         # llama.cpp's shared libraries, the application-menu entry and its
@@ -1456,7 +1498,7 @@ uninstall() {
     # Say what survived rather than claiming success over the top of it.
     local left=0 leftover
     for p in "${prefixes[@]}"; do
-        for name in crucible crucible-gui crucible-routebench; do
+        for name in crucible crucible-routebench; do
             [ -e "$p/bin/$name" ] && { warn "still present: $p/bin/$name"; left=1; }
         done
         [ -e "$p/lib/crucible" ] && { warn "still present: $p/lib/crucible"; left=1; }
@@ -1538,16 +1580,11 @@ run_check() {
     # desktop app the install would then step down from. It is only the whole
     # answer when the headers are already here: --check installs nothing, so
     # packages the install would have added first are not counted.
-    local gui_before="$WITH_GUI"
-    verify_gui_prerequisites
-    if [ "$WITH_GUI" = "1" ]; then
-        info "desktop app: $PREFIX/bin/crucible-gui"
-    elif [ "$gui_before" = "0" ]; then
-        muted "desktop app: skipped (--no-gui)"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        info "application: $APP_BUNDLE_DIR/Crucible.app"
     else
-        muted "desktop app: only if the packages above supply the headers"
+        info "menu entry : $PREFIX/share/applications/crucible.desktop"
     fi
-    WITH_GUI="$gui_before"
     info "libraries  : $PREFIX/lib/crucible"
     info "config     : $CONFIG_DIR"
     info "models     : $MODELS_DIR"
@@ -1604,12 +1641,13 @@ main() {
 
     printf '\n%s%s  Crucible is installed.%s\n\n' "$C_GRN" "$C_BOLD" "$C_RESET"
     printf '    crucible      %s\n' "$PREFIX/bin/crucible"
-    # WITH_GUI is whatever survived the dependency step, so this reports what
-    # was actually built rather than what was asked for.
-    if [ "$WITH_GUI" = "1" ]; then
-        printf '    crucible-gui  %s\n' "$PREFIX/bin/crucible-gui"
-    else
-        printf '    crucible-gui  %snot installed%s\n' "$C_YEL" "$C_RESET"
+    # Where the icon went, since that is the part someone clicks rather than
+    # types. Reported from the disk rather than from what was asked for: an
+    # entry that was not written is worth naming here.
+    if [ "$(uname -s)" = "Darwin" ] && [ -d "$APP_BUNDLE_DIR/Crucible.app" ]; then
+        printf '    application   %s\n' "$APP_BUNDLE_DIR/Crucible.app"
+    elif [ -f "$PREFIX/share/applications/crucible.desktop" ]; then
+        printf '    application   %s\n' "in the application menu"
     fi
     printf '    config        %s\n' "$CONFIG_DIR"
     printf '    models        %s\n' "$MODELS_DIR"

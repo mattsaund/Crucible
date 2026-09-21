@@ -24,16 +24,15 @@ fi
 # These tests run the real binary, so a stale one reports failures that look
 # like product bugs and are not. Refuse rather than mislead.
 #
-# src/gui is excluded because nothing in it is linked into `crucible` -- it is
-# the desktop application, built from the same core into a different binary.
-# Editing it left this refusing to run against a `crucible` that was in fact
-# perfectly current.
+# src/gui used to be excluded, because it belonged to a second binary and
+# editing it left this refusing to run against a `crucible` that was in fact
+# current. There is one binary now and src/gui is most of it, so a change there
+# does make this one stale.
 #
 # The parentheses matter: without them find reads this as
 # "(-name '*.cpp') OR ('*.hpp' AND -newer)", which matches every source file
 # whatever its age.
 NEWER="$(find "$HERE/../src" "$HERE/../include" \
-         -path "$HERE/../src/gui" -prune -o \
          \( -name '*.cpp' -o -name '*.hpp' \) -newer "$CRUCIBLE" -print 2>/dev/null | head -1)"
 if [ -n "$NEWER" ]; then
     echo "$CRUCIBLE is older than $NEWER -- rebuild, or pass the right binary" >&2
@@ -95,12 +94,18 @@ setup() {
     echo '{"vulkan":{"llama_tag":"b10678"}}' > "$root/dat/crucible/runtimes/manifest.json"
     echo '{"turns":[]}' > "$root/dat/crucible/projects/demo-abc12345/usage.json"
     cp "$CRUCIBLE" "$root/bin/crucible"
-    # The installer puts these beside the binary, so uninstall has to take them.
-    # crucible-gui is the one that was missed: the desktop app is installed by
-    # the same component and was being left on PATH, pointing at libraries the
-    # uninstaller had just deleted.
+    # The installer puts routebench beside the binary, so uninstall has to take
+    # it: same component, and it points at libraries the uninstaller deletes.
     printf '#!/bin/sh\n' > "$root/bin/crucible-routebench"; chmod +x "$root/bin/crucible-routebench"
+    # crucible-gui is not installed any more -- the window is `crucible` itself.
+    # An install made before the rename still has it here, and upgrading over it
+    # does not take it away, so the uninstaller is what has to.
     printf '#!/bin/sh\n' > "$root/bin/crucible-gui";        chmod +x "$root/bin/crucible-gui"
+    # The application entry: a menu item pointing at a program that is gone is
+    # worse than litter, because the menu goes on offering it.
+    mkdir -p "$root/share/applications" "$root/share/icons/hicolor/scalable/apps"
+    printf '[Desktop Entry]\n' > "$root/share/applications/crucible.desktop"
+    printf '<svg/>\n'          > "$root/share/icons/hicolor/scalable/apps/crucible.svg"
     echo '{"models_dir":""}' > "$root/cfg/crucible/config.json"
     echo '{"trusted":[]}'    > "$root/cfg/crucible/trust.json"
     head -c 1048576 /dev/zero > "$root/dat/crucible/models/expensive-expert.gguf"
@@ -125,7 +130,8 @@ echo "  declining leaves everything in place"
 ROOT="$(setup declining)"
 run_uninstall "$ROOT" 'n\n'
 check "binary kept"           "$(exists "$ROOT/bin/crucible")"            "yes"
-check "desktop app kept"      "$(exists "$ROOT/bin/crucible-gui")"         "yes"
+check "old gui binary kept"   "$(exists "$ROOT/bin/crucible-gui")"        "yes"
+check "menu entry kept"       "$(exists "$ROOT/share/applications/crucible.desktop")" "yes"
 check "config kept"           "$(exists "$ROOT/cfg/crucible/config.json")" "yes"
 check "models kept"           "$(count_models "$ROOT")"                  "2"
 
@@ -141,7 +147,9 @@ check "data removed"          "$(exists "$ROOT/dat/crucible")"            "no"
 # would make "yes to everything" a lie.
 check "libraries removed"     "$(exists "$ROOT/lib/crucible")"            "no"
 check "routebench removed"    "$(exists "$ROOT/bin/crucible-routebench")"  "no"
-check "desktop app removed"  "$(exists "$ROOT/bin/crucible-gui")"         "no"
+check "old gui binary removed" "$(exists "$ROOT/bin/crucible-gui")"       "no"
+check "menu entry removed"    "$(exists "$ROOT/share/applications/crucible.desktop")" "no"
+check "menu icon removed"     "$(exists "$ROOT/share/icons/hicolor/scalable/apps/crucible.svg")" "no"
 check "user runtimes removed" "$(exists "$ROOT/dat/crucible/runtimes")"   "no"
 check "runtime source removed" "$(exists "$ROOT/dat/crucible/runtime-src")" "no"
 check "project history removed" "$(exists "$ROOT/dat/crucible/projects")" "no"
@@ -157,7 +165,9 @@ check "data removed"          "$(exists "$ROOT/dat/crucible")"            "no"
 # would make "yes to everything" a lie.
 check "libraries removed"     "$(exists "$ROOT/lib/crucible")"            "no"
 check "routebench removed"    "$(exists "$ROOT/bin/crucible-routebench")"  "no"
-check "desktop app removed"  "$(exists "$ROOT/bin/crucible-gui")"         "no"
+check "old gui binary removed" "$(exists "$ROOT/bin/crucible-gui")"       "no"
+check "menu entry removed"    "$(exists "$ROOT/share/applications/crucible.desktop")" "no"
+check "menu icon removed"     "$(exists "$ROOT/share/icons/hicolor/scalable/apps/crucible.svg")" "no"
 check "user runtimes removed" "$(exists "$ROOT/dat/crucible/runtimes")"   "no"
 check "runtime source removed" "$(exists "$ROOT/dat/crucible/runtime-src")" "no"
 check "project history removed" "$(exists "$ROOT/dat/crucible/projects")" "no"
@@ -199,7 +209,7 @@ check "an unreadable prompt fails rather than reporting success" "$?" "1"
 ROOT="$(setup delegated)"
 run_uninstall "$ROOT" 'y\n'
 check "binary removed"        "$(exists "$ROOT/bin/crucible")"            "no"
-check "desktop app removed"   "$(exists "$ROOT/bin/crucible-gui")"        "no"
+check "old gui binary removed" "$(exists "$ROOT/bin/crucible-gui")"       "no"
 check "config removed"        "$(exists "$ROOT/cfg/crucible")"            "no"
 check "data removed"          "$(exists "$ROOT/dat/crucible")"            "no"
 
@@ -239,6 +249,24 @@ check "a failed delegation falls back to the sweep" \
 # the whole prefix, which is exactly what was just declined.
 check "a declined delegation stops rather than sweeping" \
       "$(greps 'if [ "$status" -eq 0 ] && [ -e "$exe" ]; then')" "yes"
+echo "  the application entry goes too, on the platforms this test is not on"
+# macOS puts a launcher bundle in Applications and Windows puts shortcuts in the
+# Start Menu and on the Desktop. Neither is under the prefix, so the sweep of
+# bin/ and lib/ walks straight past both, and what survives is an icon in the
+# dock or on the taskbar that launches nothing. They cannot be made here, so
+# what is checked is that the uninstaller knows where to look.
+sees() { grep -qF -- "$1" "$HERE/../src/app/uninstall.cpp" && echo yes || echo no; }
+check "the macOS bundle is looked for in Applications" \
+      "$(sees '"/Applications/Crucible.app"')" "yes"
+check "and in the per-user one the installer falls back to" \
+      "$(sees '"Applications" / "Crucible.app"')" "yes"
+check "the Windows Start Menu shortcut is looked for" \
+      "$(sees '"Start Menu" / "Programs" / "Crucible.lnk"')" "yes"
+check "so is the one on the Desktop" \
+      "$(sees '"Desktop" / "Crucible.lnk"')" "yes"
+check "and the icon the shortcut was pointed at" \
+      "$(sees 'parent_path() / "crucible.ico"')" "yes"
+
 echo "  a bare install with nothing to remove does not fail"
 ROOT="$SANDBOX/bare"
 mkdir -p "$ROOT/bin" "$ROOT/cfg" "$ROOT/dat"

@@ -110,7 +110,8 @@ void App::draw_topbar() {
     // check before typing.
     struct Tab { const char* label; View view; };
     const Tab tabs[] = {
-        {"Chat", View::Chat}, {"Cook", View::Cook}, {"History", View::History},
+        {"Chat", View::Chat}, {"Cook", View::Cook}, {"Create", View::Create},
+        {"History", View::History},
     };
     float tab_room = 0.0F;
     for (const Tab& tab : tabs) {
@@ -218,6 +219,7 @@ void App::draw_topbar() {
         ImGui::SetItemTooltip(
             tab.view == View::Chat    ? "Ask, and the delegator picks the expert"
           : tab.view == View::Cook    ? "Set one goal and let the experts work it in passes"
+          : tab.view == View::Create  ? "Fine-tune a model on your own data until it is an expert in one subject"
                                       : "Everything this project has done");
         ImGui::SameLine();
     }

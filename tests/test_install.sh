@@ -110,7 +110,7 @@ check     "and an icon for it" \
 check     "both are in the crucible component" \
           test "$(grep -c 'COMPONENT ${CRUCIBLE_INSTALL_COMPONENT}' "$HERE/../CMakeLists.txt")" -ge 5
 # ~/.local/bin is on PATH for a login shell and very often not for a launcher,
-# so a bare Exec=crucible-gui is an icon that does nothing when clicked.
+# so a bare Exec=crucible is an icon that does nothing when clicked.
 check     "Exec is an absolute path, not a bare name" \
           grep -q 'CMAKE_INSTALL_FULL_BINDIR' "$HERE/../CMakeLists.txt"
 check     "the entry names the icon" \
@@ -118,9 +118,9 @@ check     "the entry names the icon" \
 # Must match the class the window actually sets, or the dock shows the running
 # window as a second, generic application.
 check     "StartupWMClass matches the window class the app sets" \
-          grep -q '^StartupWMClass=crucible-gui$' "$HERE/../packaging/crucible.desktop.in"
+          grep -q '^StartupWMClass=crucible$' "$HERE/../packaging/crucible.desktop.in"
 check     "and the app really sets that class" \
-          grep -q 'GLFW_X11_CLASS_NAME, "crucible-gui"' "$HERE/../src/gui/app.cpp"
+          grep -q 'GLFW_X11_CLASS_NAME, "crucible"' "$HERE/../src/gui/app.cpp"
 # Uninstall has to take them, or the menu keeps offering a Crucible that is gone.
 check     "the uninstaller removes the desktop entry" \
           grep -q 'crucible.desktop' "$HERE/../src/app/uninstall.cpp"
@@ -533,35 +533,26 @@ STEP_NUM=0; STEP_PCT=0
 # makes the choice of backend reversible.
 # --------------------------------------------------------------------------
 echo
-echo "  the one-line install builds both faces"
+echo "  the install makes an application"
 
-# Crucible is two faces over one engine, so the one-line install gives you
-# both. The GUI is still the only part that needs anything from the system
-# beyond a compiler, which is what the fallback below is for.
-check     "the installer builds the desktop app by default" \
-          grep -q '^WITH_GUI=1$' "$HERE/../install.sh"
-check     "--no-gui opts out" \
-          grep -q -- '--no-gui)    WITH_GUI=0' "$HERE/../install.sh"
-check     "--gui is still accepted, and still means yes" \
-          grep -q -- '--gui)       WITH_GUI=1' "$HERE/../install.sh"
-check     "the installer passes the choice through to cmake" \
+# One program, and it is the window. The terminal face it shared an engine with
+# is gone, so there is nothing left to choose between -- but a script that still
+# passes --no-gui should be told so rather than stopped by an unknown option.
+check     "the old face switches are accepted and ignored" \
+          grep -q -- '--gui|--no-gui) GUI_FLAG_SEEN=1' "$HERE/../install.sh"
+check_not "and there is no build flag left to pass to cmake" \
           grep -q 'DCRUCIBLE_BUILD_GUI=' "$HERE/../install.sh"
+check_not "nor an option in CMake to gate it" \
+          grep -q 'CRUCIBLE_BUILD_GUI' "$HERE/../CMakeLists.txt"
 
-# The CMake option stays off. The installers can add the OpenGL and X11 headers
-# first and step down to the terminal program when they cannot; a bare `cmake`
-# run can do neither, so defaulting it on there would turn a missing system
-# header into a failed build.
-check     "the CMake option itself stays off for a bare build" \
-          grep -q 'option(CRUCIBLE_BUILD_GUI .* OFF)' "$HERE/../CMakeLists.txt"
-
-check     "the GUI's packages are behind the flag" \
-          grep -q 'WITH_GUI" = "1" \] && \[ "${#PKGS_GUI\[@\]}"' "$HERE/../install.sh"
-# This is what makes the new default safe: a machine with no window library
-# gets the terminal program and a warning, not a failed install.
-check     "a missing window library falls back to the terminal app" \
+check     "the window's packages are always installed" \
+          grep -q 'if \[ "${#PKGS_GUI\[@\]}" -gt 0 \]; then' "$HERE/../install.sh"
+# With no terminal build to step down to, a missing header is a stop with an
+# instruction rather than a quieter install nobody asked for.
+check     "a missing window library stops with an instruction" \
+          grep -q 'are needed to build Crucible' "$HERE/../install.sh"
+check_not "and never quietly builds something else instead" \
           grep -q 'building the terminal program only' "$HERE/../install.sh"
-check     "the fallback leaves WITH_GUI off, so the summary tells the truth" \
-          grep -q 'WITH_GUI=0$' "$HERE/../install.sh"
 
 # The desktop app was being dropped whenever any one of its seven package names
 # was not installable, so a single renamed or retired package cost the whole
@@ -577,20 +568,38 @@ check     "GLFW's own headers count, so a system GLFW is enough" \
           grep -q 'have_header GLFW/glfw3.h' "$HERE/../install.sh"
 check     "the header check runs even under --no-deps" \
           grep -q '^    verify_gui_prerequisites$' "$HERE/../install.sh"
-# The summary used to print a path to crucible-gui whether or not it was there.
-check     "the install verifies the desktop binary actually landed" \
-          grep -qF '[ ! -x "$PREFIX/bin/crucible-gui" ]' "$HERE/../install.sh"
-check     "and says so when the desktop app was not installed" \
-          grep -q "crucible-gui  %snot installed" "$HERE/../install.sh"
+# The summary reports what is on the disk rather than what was asked for.
+check     "the install verifies the binary actually landed" \
+          grep -qF '[ ! -x "$PREFIX/bin/crucible" ]' "$HERE/../install.sh"
 
-# Windows: switches default to false, so the opt-out is the switch and the
-# build flag has to be derived from it rather than read directly.
-check     "Windows takes -NoGui" \
+# An application, not just a command: a bundle on macOS, a menu entry on Linux,
+# shortcuts on Windows. This is the part somebody clicks.
+check     "macOS gets an application bundle" \
+          grep -qF 'app="$APP_BUNDLE_DIR/Crucible.app"' "$HERE/../install.sh"
+check     "in /Applications when that is writable, and the home one when not" \
+          grep -qF '[ -w /Applications ] && APP_BUNDLE_DIR="/Applications"' "$HERE/../install.sh"
+check     "the bundle launches the installed binary rather than copying it" \
+          grep -q 'exec "$PREFIX/bin/crucible"' "$HERE/../install.sh"
+check     "and it carries the icon" \
+          grep -q 'format icns' "$HERE/../install.sh"
+check     "Windows gets a Start Menu and Desktop shortcut" \
+          grep -q "GetFolderPath('Programs')" "$HERE/../install.ps1"
+check     "with the icon copied out of the checkout, which may be deleted" \
+          grep -q 'crucible.ico' "$HERE/../install.ps1"
+check     "and the uninstall takes the shortcuts with it" \
+          grep -q "Remove-Item (Join-Path \$where 'Crucible.lnk')" "$HERE/../install.ps1"
+# The icons themselves are in the repository, because neither sips nor the
+# shortcut can rasterize an SVG.
+check     "the bitmap icons are shipped" \
+          test -f "$HERE/../packaging/crucible.png"
+check     "including the Windows one" \
+          test -f "$HERE/../packaging/crucible.ico"
+
+# Windows keeps the switches too, and ignores them the same way.
+check     "Windows still takes -NoGui without failing" \
           grep -q '\[switch\] \$NoGui' "$HERE/../install.ps1"
-check     "Windows derives the build flag from it" \
-          grep -q 'buildGui = -not \$NoGui' "$HERE/../install.ps1"
-check_not "Windows no longer gates the build on the bare -Gui switch" \
-          grep -q 'CRUCIBLE_BUILD_GUI="\$(if (\$Gui)' "$HERE/../install.ps1"
+check_not "and passes no build flag for it" \
+          grep -q 'CRUCIBLE_BUILD_GUI' "$HERE/../install.ps1"
 
 echo
 echo "  no runtimes are installed"
@@ -975,24 +984,11 @@ for _where in install.sh install.ps1 src/app/cli.cpp README.md; do
           grep -qF -- "$FLAME_ROW" "$ROOT/$_where"
 done
 
-# The terminal sprite is the fifth place, and the one that cannot paste: it has
-# to animate, and it has to sit in the nine columns a roster of seats leaves
-# beside it. So it carries the same drawing resampled rather than the rows
-# above -- braille either way, and a hash-filled silhouette for the terminal
-# whose font has no braille in it.
-check     "the terminal sprite is drawn in braille too" \
-          grep -q "⣿" "$ROOT/src/ui/widgets/flame_sprite.cpp"
-check     "and falls back to hashes rather than to boxes" \
-          grep -qF -- "#########" "$ROOT/src/ui/widgets/flame_sprite.cpp"
-check_not "it is not the full-size drawing pasted in, which would not fit" \
-          grep -qF -- "$FLAME_ROW" "$ROOT/src/ui/widgets/flame_sprite.cpp"
-
-# Braille is not ASCII, so both faces have to put the console into UTF-8 before
-# they print it. Without this the Windows console renders every byte of every
-# glyph as its own question mark, which is the first thing a Windows user sees.
-check     "the terminal binary sets the console to UTF-8 before printing" \
-          grep -q "use_utf8_console" "$ROOT/src/main.cpp"
-check     "so does the desktop one" \
+# Braille is not ASCII, so the program has to put the console into UTF-8 before
+# printing the banner. Without this the Windows console renders every byte of
+# every glyph as its own question mark, which is the first thing a Windows user
+# would see.
+check     "the binary sets the console to UTF-8 before printing" \
           grep -q "use_utf8_console" "$ROOT/src/gui/main.cpp"
 check     "and the Windows installer does the same for itself" \
           grep -q "OutputEncoding" "$ROOT/install.ps1"
@@ -1003,6 +999,64 @@ check     "the icon points at the source of the shape" \
           grep -q "flame_path" "$ROOT/packaging/crucible.svg"
 check     "and the shape says the icon is drawn from it" \
           grep -q "packaging/crucible.svg" "$ROOT/src/gui/theme.cpp"
+
+echo "  and there is a download that needs no compiler at all"
+# The other kind of installer: a file you double-click. The one-line install
+# compiles from source, which is right for a program that also compiles its own
+# compute backends and wrong as the only way in -- it wants a toolchain, twenty
+# minutes and a terminal. These three are built by the installers workflow from
+# a build that already happened.
+REL="$ROOT/.github/workflows/release.yml"
+check     "there is a workflow that builds them" \
+          test -f "$REL"
+check     "a tag is what publishes them" \
+          grep -q 'tags: \["v\*"\]' "$REL"
+check     "and it can be run by hand without publishing anything" \
+          grep -q 'workflow_dispatch' "$REL"
+
+# macOS: a disk image with an application in it, and the bundle is
+# self-contained rather than the launcher install.sh writes -- there is no
+# prefix on a machine that has only just downloaded this.
+check     "macOS builds a disk image" \
+          test -x "$ROOT/packaging/macos/dmg.sh"
+check     "the bundle carries llama.cpp's libraries inside it" \
+          grep -q 'cp -a "$PREFIX/lib/crucible" "$APP/Contents/lib/crucible"' \
+               "$ROOT/packaging/macos/dmg.sh"
+# @loader_path/../lib/crucible, which is what the binary was linked with: put
+# the libraries anywhere else in the bundle and it does not start.
+check     "in the one place the binary's own search path looks" \
+          grep -q 'loader_path' "$ROOT/CMakeLists.txt"
+check     "the image says how to get past Gatekeeper, since nothing is signed" \
+          grep -q 'Right-click it in Applications' "$ROOT/packaging/macos/dmg.sh"
+check     "and the workflow opens the image rather than trusting it built" \
+          grep -q 'hdiutil attach' "$REL"
+
+# Windows: a setup .exe, per-user so there is no administrator prompt.
+check     "Windows builds a setup program" \
+          test -f "$ROOT/packaging/windows/crucible.iss"
+check     "it installs without asking for administrator" \
+          grep -q '^PrivilegesRequired=lowest$' "$ROOT/packaging/windows/crucible.iss"
+check     "it makes a Start Menu shortcut" \
+          grep -q '{group}\\Crucible' "$ROOT/packaging/windows/crucible.iss"
+check     "and offers a Desktop one, which is what gets pinned" \
+          grep -q '{userdesktop}\\Crucible' "$ROOT/packaging/windows/crucible.iss"
+# Uninstalling the program is not a request to delete the models.
+check     "uninstalling it leaves the config and the models alone" \
+          grep -q 'dirifempty' "$ROOT/packaging/windows/crucible.iss"
+
+# Linux: one file, no install step, no root.
+check     "Linux builds an AppImage" \
+          test -x "$ROOT/packaging/linux/appimage.sh"
+check     "the AppDir keeps the install layout, so the RPATH still resolves" \
+          grep -q 'cp -a "$PREFIX/lib" "$APPDIR/usr/lib"' "$ROOT/packaging/linux/appimage.sh"
+# A system GLFW is linked by name, and an AppImage that needs a -dev package
+# installed is not an AppImage.
+check     "and carries GLFW when the build linked the system's" \
+          grep -q 'libglfw' "$ROOT/packaging/linux/appimage.sh"
+check     "appimagetool is run in the way that works without FUSE" \
+          grep -q 'appimage-extract-and-run' "$ROOT/packaging/linux/appimage.sh"
+check     "the Exec in the AppDir is a bare name, not an install path" \
+          grep -q "CRUCIBLE_GUI_EXEC@|crucible|" "$ROOT/packaging/linux/appimage.sh"
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

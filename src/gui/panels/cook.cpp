@@ -388,6 +388,8 @@ void App::draw_cook_composer(const Snapshot& snapshot) {
         }
     }
 
+    draw_usage_readout(snapshot, room, column);
+
     ImGui::EndChild();
 }
 

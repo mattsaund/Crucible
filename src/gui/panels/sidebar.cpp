@@ -272,12 +272,12 @@ void App::draw_sidebar(const Snapshot& snapshot) {
     // position: the sidebar scrolls when the roster is long, and a footer
     // pinned to the window height ends up either overlapping the list or below
     // the visible area depending on how far it has scrolled.
-    const float footer = em(4.4F);
+    const float footer = em(2.9F);
     const float slack  = ImGui::GetContentRegionAvail().y - footer;
     if (slack > 0.0F) {
         ImGui::Dummy(ImVec2(0, slack));
     }
-    // Eject, immediately above the rule.
+    // Eject, at the bottom of the menu.
     //
     // Sized to its own word rather than to the panel: it is a small, occasional
     // action, and a button stretched across a sidebar that can be dragged to
@@ -297,15 +297,6 @@ void App::draw_sidebar(const Snapshot& snapshot) {
                      "comes back on the next prompt."
                    : "Nothing is loaded.");
     }
-    ImGui::Dummy(ImVec2(0, em(0.2F)));
-
-    ImGui::Separator();
-
-    // The token counts used to be here. They are about the conversation rather
-    // than about the models, and they now sit under the box you type in --
-    // next to the context readout, which is the number they are read against.
-    ImGui::Dummy(ImVec2(0, em(0.1F)));
-
     ImGui::EndChild();
 }
 

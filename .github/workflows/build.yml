@@ -29,9 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # GLFW and OpenGL for the desktop app. macOS and Windows already have
-      # what it needs; Linux packages it.
-      - name: Desktop app headers
+      # GLFW and OpenGL: Crucible is a window, so these are not optional any
+      # more. macOS and Windows already have what it needs; Linux packages it.
+      - name: Window headers
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libglfw3-dev libgl-dev
 
@@ -43,7 +43,6 @@ jobs:
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
           -DCRUCIBLE_BACKEND_DL=ON
-          -DCRUCIBLE_BUILD_GUI=ON
           -DCRUCIBLE_BUILD_TESTS=ON
 
       # RelWithDebInfo on Windows: Release, plus the PDB files that let the test
@@ -88,6 +87,16 @@ jobs:
         run: |
           "$HOME/.local/bin/crucible" --version
 
+      # The other half of an install: something to click. The bundle goes to
+      # /Applications when that is writable and to ~/Applications when it is
+      # not, and the runner is the second case.
+      - name: And there is an application to click
+        if: runner.os == 'macOS'
+        run: |
+          app="$HOME/Applications/Crucible.app"
+          test -x "$app/Contents/MacOS/Crucible"
+          test -f "$app/Contents/Info.plist"
+
       # As people run it: from a string, with no script file behind it. That is
       # the case where a bare `exit` used to close the window, so it is the one
       # worth running. -Source points it at this checkout.
@@ -106,3 +115,15 @@ jobs:
         run: |
           & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --version
           exit $LASTEXITCODE
+
+      # Same again: the shortcuts are what somebody pins to a taskbar, and a
+      # shortcut that was never made is not an error anywhere else.
+      - name: And there are shortcuts to click
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          foreach ($where in @([Environment]::GetFolderPath('Programs'),
+                               [Environment]::GetFolderPath('Desktop'))) {
+            $link = Join-Path $where 'Crucible.lnk'
+            if (-not (Test-Path $link)) { throw "no shortcut at $link" }
+          }
