@@ -263,6 +263,17 @@ struct UiConfig {
     /// sign of life during the seconds before the answer starts -- and then
     /// replaced by the answer. On, it stays, dimmed, above every reply.
     bool show_reasoning = false;
+
+    /// Ask GitHub, once a day, whether there is a newer Crucible.
+    ///
+    /// On by default, and it is the one thing in this program that reaches the
+    /// network without being asked to. What it sends is a request for a public
+    /// version number -- nothing about the machine, the models, the config or
+    /// anything typed -- and what it does with the answer is show a word in the
+    /// corner. Crucible is installed by compiling, so without this a copy has
+    /// no way of learning that the crash it hits every morning was fixed a
+    /// month ago. See app/update.hpp.
+    bool check_updates = true;
 };
 
 /// The whole config file.

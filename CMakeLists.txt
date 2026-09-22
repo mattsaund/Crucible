@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.1.0
+    VERSION     0.5.0
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -170,10 +170,11 @@ add_library(crucible_core STATIC
     src/engine/engine.cpp
     src/engine/engine_cook.cpp
 
-    # app: process-level actions that are not the TUI
+    # app: process-level actions that are not the window
     src/app/cli.cpp
     src/app/trust_gate.cpp
     src/app/uninstall.cpp
+    src/app/update.cpp
 )
 add_library(crucible::core ALIAS crucible_core)
 
@@ -268,6 +269,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_overflow.cpp
         tests/test_display_scale.cpp
         tests/test_lab.cpp
+        tests/test_update.cpp
         tests/test_spelling.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # dbghelp turns a crash address into a function name, for the report

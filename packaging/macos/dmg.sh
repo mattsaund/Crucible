@@ -19,7 +19,7 @@ set -euo pipefail
 
 PREFIX="${1:?usage: dmg.sh <installed-prefix> <output.dmg> [version]}"
 OUTPUT="${2:?usage: dmg.sh <installed-prefix> <output.dmg> [version]}"
-VERSION="${3:-0.1.0}"
+VERSION="${3:-0.5.0}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 

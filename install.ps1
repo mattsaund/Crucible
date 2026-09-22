@@ -687,7 +687,14 @@ Visual Studio Build Tools, then run this again:
     Stop-Progress
 
     Write-Host ''
-    Write-Host '  Crucible is installed.' -ForegroundColor Green
+    # Asked of the binary, because re-running this script is also how an update
+    # lands and "which one did I just get" is the first thing to say.
+    $installed = (& (Join-Path $binDir 'crucible.exe') --version 2>$null | Select-Object -First 1)
+    if ($installed) {
+        Write-Host "  $installed is installed." -ForegroundColor Green
+    } else {
+        Write-Host '  Crucible is installed.' -ForegroundColor Green
+    }
     Write-Host ''
     Write-Host "    crucible      $(Join-Path $binDir 'crucible.exe')"
     Write-Host "    shortcuts     Start Menu, Desktop"

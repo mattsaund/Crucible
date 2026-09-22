@@ -1058,6 +1058,48 @@ check     "appimagetool is run in the way that works without FUSE" \
 check     "the Exec in the AppDir is a bare name, not an install path" \
           grep -q "CRUCIBLE_GUI_EXEC@|crucible|" "$ROOT/packaging/linux/appimage.sh"
 
+echo "  one version number, and a way to hear about the next one"
+# Crucible installs by compiling, so a copy of it is a snapshot of whatever main
+# looked like that afternoon and nothing on the machine says otherwise. The
+# check exists so a fix for a crash reaches the person who hit the crash.
+# The project's own VERSION line, not cmake_minimum_required's.
+VERSION="$(awk '/^project\(crucible/,/LANGUAGES/ { if ($1 == "VERSION") print $2 }' \
+           "$ROOT/CMakeLists.txt")"
+check     "CMakeLists names a version" \
+          test -n "$VERSION"
+check     "the binary is compiled with it, rather than a copy" \
+          grep -q 'CRUCIBLE_VERSION="${PROJECT_VERSION}"' "$ROOT/CMakeLists.txt"
+# Two packaging defaults carry a literal, used only when nothing passes one in.
+# They drift silently, and a .dmg that calls itself 0.1.0 is a Mac that will not
+# replace it with the newer copy.
+check     "the macOS packaging default matches it" \
+          grep -qF "VERSION=\"\${3:-$VERSION}\"" "$ROOT/packaging/macos/dmg.sh"
+check     "so does the Windows one" \
+          grep -qF "#define Version \"$VERSION\"" "$ROOT/packaging/windows/crucible.iss"
+# The installers ask the binary rather than keeping their own copy.
+check     "install.sh reports the version it just installed" \
+          grep -q 'installed_version=' "$ROOT/install.sh"
+check     "and the macOS bundle takes its plist version from the binary too" \
+          grep -qF '<key>CFBundleVersion</key><string>$version</string>' "$ROOT/install.sh"
+check     "install.ps1 reports it as well" \
+          grep -q "crucible.exe') --version" "$ROOT/install.ps1"
+
+check     "the update check asks GitHub for the newest release" \
+          grep -q 'api.github.com/repos/' "$ROOT/src/app/update.cpp"
+check     "and points at the same repository the installers are fetched from" \
+          grep -q 'mattsaund/Crucible' "$ROOT/src/app/update.cpp"
+check     "the notice hands over the one-line install, which is the update" \
+          grep -q 'install.sh | bash' "$ROOT/src/app/update.cpp"
+check     "including the PowerShell one on Windows" \
+          grep -q 'install.ps1 | iex' "$ROOT/src/app/update.cpp"
+# It can be turned off, and a release tag is what publishes the thing it finds.
+check     "there is a setting to turn it off" \
+          grep -q 'check_updates' "$ROOT/include/crucible/config/config.hpp"
+check     "a v-tag is what builds the installers it points at" \
+          grep -q 'tags: \["v\*"\]' "$ROOT/.github/workflows/release.yml"
+check     "and the README says how to update" \
+          grep -q '\*\*Updating:\*\*' "$ROOT/README.md"
+
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"
 [ "$FAIL" -eq 0 ]

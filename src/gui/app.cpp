@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <system_error>
+#include <thread>
+#include <utility>
 
 #include <GLFW/glfw3.h>
 #include <imgui_impl_glfw.h>
@@ -401,8 +403,46 @@ void App::open_browse(BrowseFor what, const std::filesystem::path& start) {
     browse_modal_open_ = true;
 }
 
+void App::begin_update_check() {
+    // The cache first, and always: it is a file read, it is what the last check
+    // found, and it is what the window shows until a new answer arrives.
+    update::read_cache(update_);
+
+    if (!config_.ui.check_updates || update_checking_ != nullptr) {
+        return;
+    }
+    // On a thread, like every other errand that leaves the machine. A version
+    // check that made the window wait for a network round trip at startup would
+    // be a worse bug than the one it is trying to tell you about.
+    auto check = std::make_shared<UpdateCheck>();
+    update_checking_ = check;
+    std::thread([check]() {
+        update::State state = update::refresh(/*allowed_to_ask=*/true);
+        {
+            const std::lock_guard<std::mutex> lock(check->mutex);
+            check->state = std::move(state);
+            check->done  = true;
+        }
+        glfwPostEmptyEvent();
+    }).detach();
+}
+
+void App::collect_update_check() {
+    if (update_checking_ == nullptr) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(update_checking_->mutex);
+    if (!update_checking_->done) {
+        return;
+    }
+    update_ = update_checking_->state;
+    update_checking_.reset();
+}
+
 void App::draw() {
     const Snapshot snapshot = state_.snapshot();
+
+    collect_update_check();
 
     // The folder-trust question, when there was no terminal to ask it on before
     // the window opened. Raised here rather than in the constructor because it
@@ -684,6 +724,10 @@ int App::run() {
     ImGui_ImplOpenGL3_Init("#version 150");
 
     engine_->start();
+
+    // Ask, once, whether this is still the newest Crucible. The answer is a
+    // mark on the gear and a line under Settings -> About; nothing waits on it.
+    begin_update_check();
 
     while (glfwWindowShouldClose(window_) == GLFW_FALSE) {
         // Waiting rather than spinning. An idle Crucible should cost nothing,

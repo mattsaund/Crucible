@@ -232,7 +232,23 @@ void App::draw_topbar() {
                          view_ == View::Settings ? theme::kFlame
                          : hit.hovered           ? theme::kFlameBright
                                                  : theme::kTextDim);
-        ImGui::SetItemTooltip("Settings");
+
+        // A newer Crucible exists: one dot on the gear, because that is where
+        // the rest of the sentence is. A banner across the top bar would be a
+        // notification about the program interrupting the work the program is
+        // for, and this is news that keeps for a week.
+        if (update_available()) {
+            const float r = em(0.22F);
+            draw->AddCircleFilled(
+                ImVec2(hit.center.x + em(0.62F), hit.center.y - em(0.55F)), r,
+                theme::kFlame);
+        }
+        if (update_available()) {
+            ImGui::SetItemTooltip("Settings  --  Crucible %s is available",
+                                  update_.latest.c_str());
+        } else {
+            ImGui::SetItemTooltip("Settings");
+        }
         if (hit.clicked) {
             // Back out of Settings to whichever view was showing before it, so
             // the gear is a way in and out rather than a one-way door that

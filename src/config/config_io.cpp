@@ -215,6 +215,7 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
             {"animation_ms",    config.ui.animation_ms},
             {"show_experts", config.ui.show_experts},
             {"show_reasoning", config.ui.show_reasoning},
+            {"check_updates",  config.ui.check_updates},
             {"unicode",         config.ui.unicode},
         }},
     };
@@ -319,6 +320,7 @@ void write_default_config(const std::filesystem::path& file) {
             {"animation_ms",    defaults.ui.animation_ms},
             {"show_experts", defaults.ui.show_experts},
             {"show_reasoning", defaults.ui.show_reasoning},
+            {"check_updates",  defaults.ui.check_updates},
             {"unicode",         defaults.ui.unicode},
         }},
     };
@@ -476,6 +478,7 @@ Config load_config(const std::filesystem::path& file, std::vector<std::string>& 
         read_field(*ui, "animation_ms",    config.ui.animation_ms,    "ui", warnings);
         read_field(*ui, "show_experts", config.ui.show_experts, "ui", warnings);
         read_field(*ui, "show_reasoning", config.ui.show_reasoning, "ui", warnings);
+        read_field(*ui, "check_updates",  config.ui.check_updates,  "ui", warnings);
         read_field(*ui, "unicode",         config.ui.unicode,         "ui", warnings);
     }
 

@@ -3,6 +3,7 @@
 
 #include <iostream>
 
+#include "crucible/app/update.hpp"
 #include "crucible/config/paths.hpp"
 
 namespace crucible::app {
@@ -65,6 +66,14 @@ Options parse_arguments(int argc, char** argv) {
         }
         if (argument == "-v" || argument == "--version") {
             std::cout << "crucible " CRUCIBLE_VERSION "\n";
+            // Whatever the last check found, read from the cache. No network:
+            // `--version` is what a script and a bug report run, and neither
+            // should wait on GitHub to hear what this binary already knows.
+            update::State state;
+            if (update::read_cache(state) && update::newer_than_this(state)) {
+                std::cout << "  " << state.latest << " is available -- update with:\n"
+                          << "  " << update::update_command() << "\n";
+            }
             options.should_exit = true;
             return options;
         }

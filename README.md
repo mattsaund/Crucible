@@ -18,8 +18,12 @@ routes each prompt to the right one, and lets you build the missing ones
 yourself. Ten specialists beat one generalist of the same size, and only one is
 in memory at a time.
 
-Everything happens locally. No account, no API key, no telemetry; web search is
-the one thing that leaves the machine, and it is off by default.
+Everything happens locally. No account, no API key, no telemetry. Two things
+reach the network and both can be turned off: web search, which is off by
+default, and a once-a-day check for a newer version, which sends nothing but the
+request itself.
+
+![Crucible routing a question to one of its experts](docs/images/chat.png)
 
 ___
 ## Install
@@ -54,6 +58,17 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 - No models and no compute runtimes are installed — both are picked later from
   the settings screen.
 
+**Updating:** the same command that installed it. Crucible checks GitHub once a
+day for a newer release; when there is one, the gear in the corner gets a dot
+and **Settings → About** names the version and the line to run. Downloads are
+replaced by the newer download from the releases page. Your config, models and
+history stay where they are — an update replaces the program and nothing else.
+The check is one request for a public version number, it says nothing about the
+machine, and the checkbox beside it turns it off.
+
+Versions are `MAJOR.MINOR.PATCH`, tagged `v0.5.0` on GitHub, and the release a
+tag builds carries the installers for all three platforms.
+
 **Uninstall:** `crucible --uninstall` removes the program, the config, the trust
 list, the history and — after naming them and asking — the models. If the binary
 is gone or too broken to run, the installers do it instead:
@@ -79,6 +94,8 @@ ___
 - Naming an expert that does not exist is impossible — the router scores the
   roster rather than generating a name.
 
+![The roster: five seats, each with a description and a model](docs/images/experts.png)
+
 ### Cook
 
 - Give it a goal and a time limit; it works in passes — read, change, run,
@@ -98,6 +115,10 @@ ___
   work today; the training run, downloads, test bench and export are being
   built.
 
+![Searching Huggingface for a base model without leaving the app](docs/images/create-huggingface.png)
+
+![The target step: QLoRA or LoRA, what it exports to, and what the card can hold](docs/images/create-target.png)
+
 ### Act on a project
 
 - Trust a folder once and experts can read, write and run things in it — in
@@ -110,6 +131,8 @@ ___
 - Auto mode off (the default) shows you each edit before it lands, old file
   beside new. Cook always applies and records what it did.
 
+![The question Crucible asks once per folder](docs/images/trust.png)
+
 ### Run on your hardware
 
 - Compute runtimes — CUDA, Vulkan, Metal, CPU — are compiled on demand from the
@@ -118,6 +141,8 @@ ___
 - Optional: keep every layer on the GPU, and refuse models that will not fit in
   video memory.
 
+![Runtimes: what is installed, what it found, and what it would take to add more](docs/images/runtimes.png)
+
 ### Keep the work
 
 - History is per project, and reopening a conversation hands the exchanges back
@@ -125,6 +150,8 @@ ___
 - A conversation that outgrows the context window rolls, truncates its middle,
   or stops — your choice — and says so in the transcript when it drops
   anything.
+
+![Every cook and conversation this project has had](docs/images/history.png)
 
 ___
 ## Configuration

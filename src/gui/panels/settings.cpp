@@ -15,7 +15,9 @@
 #include <imgui.h>
 #include <imgui_stdlib.h>
 #include <algorithm>
+#include <cfloat>
 #include <filesystem>
+#include <string>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/runtime/devices.hpp"
@@ -332,9 +334,43 @@ void App::draw_settings() {
         case SettingsPage::About: {
             title("Crucible " CRUCIBLE_VERSION);
             wrapped(theme::kTextDim,
-                    "A local forge: experts on demand, projects that cook. This window "
-                    "and the terminal program are the same engine -- same roster, same "
-                    "cook loop, same config file.");
+                    "A local AI lab: experts on demand, projects that cook, and a "
+                    "workshop for fine-tuning the experts you do not have yet.");
+
+            section("VERSION");
+            if (update_available()) {
+                text_colored(theme::kFlame, "Crucible %s is available.",
+                             update_.latest.c_str());
+                wrapped(theme::kTextDim,
+                        "Updating is the same command that installed it -- it builds the "
+                        "new version over this one and keeps your config, models and "
+                        "history where they are.");
+                // Selectable so it can be copied: an install line nobody can
+                // select is an install line somebody has to retype.
+                std::string command(update::update_command());
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                ImGui::InputText("##update-command", &command,
+                                 ImGuiInputTextFlags_ReadOnly);
+                if (!update_.page.empty()) {
+                    text_colored(theme::kTextFaint, "%s", update_.page.c_str());
+                }
+            } else if (!update_.latest.empty()) {
+                text_colored(theme::kTextDim, "This is the newest release (%s).",
+                             update_.latest.c_str());
+            } else {
+                text_colored(theme::kTextDim, "No release has been checked for yet.");
+            }
+
+            bool check = config_.ui.check_updates;
+            if (ImGui::Checkbox("Check for new versions", &check)) {
+                update_config([check](Config& config) {
+                    config.ui.check_updates = check;
+                });
+            }
+            ImGui::SetItemTooltip(
+                "Asks GitHub once a day for the newest version number. It is the only "
+                "thing Crucible sends without being asked to, it says nothing about "
+                "this machine, and turning it off means finding out by looking.");
 
             section("FILES");
             text_colored(theme::kTextDim, "config    %s",

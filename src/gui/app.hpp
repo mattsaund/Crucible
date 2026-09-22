@@ -29,6 +29,7 @@
 #include "crucible/config/config.hpp"
 #include "crucible/config/trust.hpp"
 #include "crucible/cook/journal.hpp"
+#include "crucible/app/update.hpp"
 #include "crucible/lab/hub.hpp"
 #include "crucible/lab/recipe.hpp"
 #include "crucible/util/display_scale.hpp"
@@ -334,6 +335,30 @@ private:
         bool                        done = false;
     };
     std::shared_ptr<LabSearch> lab_searching_;
+
+    /// Whether there is a newer Crucible than this one.
+    ///
+    /// Read from the cache at startup, which costs a file read and no network,
+    /// and refreshed at most once a day on a thread of its own -- a version
+    /// check is never worth making the window wait. The answer shows as a mark
+    /// on the gear and in full under Settings -> About. See app/update.hpp.
+    struct UpdateCheck {
+        std::mutex    mutex;
+        update::State state;
+        bool          done = false;
+    };
+    std::shared_ptr<UpdateCheck> update_checking_;
+    update::State                update_;
+
+    /// True when the cached answer names a version newer than this build.
+    bool update_available() const { return update::newer_than_this(update_); }
+
+    /// Start the daily check, if the config allows one. Cheap and safe to call
+    /// when it is off: it reads the cache and returns.
+    void begin_update_check();
+
+    /// Take the answer from a finished check. Called once a frame.
+    void collect_update_check();
 
     /// The width to reopen at. Set when the fold button closes the side menu,
     /// because closing it leaves `sidebar_width_` at zero and reopening to a

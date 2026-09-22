@@ -10,6 +10,10 @@
 
 #include "crucible/util/subprocess.hpp"
 
+#ifndef CRUCIBLE_VERSION
+#define CRUCIBLE_VERSION "0.0.0"
+#endif
+
 namespace crucible::lab::hub {
 namespace {
 
@@ -61,7 +65,7 @@ bool fetch(const std::string& url, std::string& body, std::string& error) {
     const std::vector<std::string> argv{
         "curl", "--silent", "--show-error", "--location", "--fail",
         "--max-time", "20",
-        "--user-agent", "Crucible/0.1 (+local model lab)",
+        "--user-agent", std::string("Crucible/") + CRUCIBLE_VERSION + " (+local model lab)",
         "--header", "Accept: application/json",
         url,
     };

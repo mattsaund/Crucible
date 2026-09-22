@@ -1162,6 +1162,13 @@ run_configure() {
 make_app_bundle() {
     [ "$(uname -s)" = "Darwin" ] || return 0
     local app="$APP_BUNDLE_DIR/Crucible.app"
+    # Asked of the binary that was just installed rather than kept in a variable
+    # here: one version number, in CMakeLists.txt, compiled into the program.
+    # A plist that says a different version from the program inside it is how a
+    # Mac ends up refusing to replace an application with a newer copy.
+    local version
+    version="$("$PREFIX/bin/crucible" --version 2>/dev/null | awk 'NR==1 {print $NF}')"
+    [ -n "$version" ] || version="0"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" 2>/dev/null || {
         warn "could not write $app; skipping the application entry"
         return 0
@@ -1174,8 +1181,8 @@ make_app_bundle() {
     <key>CFBundleName</key><string>Crucible</string>
     <key>CFBundleDisplayName</key><string>Crucible</string>
     <key>CFBundleIdentifier</key><string>dev.crucible.app</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$version</string>
+    <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleExecutable</key><string>Crucible</string>
     <key>CFBundleIconFile</key><string>crucible</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -1639,7 +1646,16 @@ main() {
 
     progress_end
 
-    printf '\n%s%s  Crucible is installed.%s\n\n' "$C_GRN" "$C_BOLD" "$C_RESET"
+    # The version, from the binary itself: re-running this script is also how
+    # an update is installed, so "which one did I just get" is the first thing
+    # somebody wants to read here.
+    installed_version="$("$PREFIX/bin/crucible" --version 2>/dev/null | awk 'NR==1 {print $NF}')"
+    if [ -n "$installed_version" ]; then
+        printf '\n%s%s  Crucible %s is installed.%s\n\n' \
+            "$C_GRN" "$C_BOLD" "$installed_version" "$C_RESET"
+    else
+        printf '\n%s%s  Crucible is installed.%s\n\n' "$C_GRN" "$C_BOLD" "$C_RESET"
+    fi
     printf '    crucible      %s\n' "$PREFIX/bin/crucible"
     # Where the icon went, since that is the part someone clicks rather than
     # types. Reported from the disk rather than from what was asked for: an
