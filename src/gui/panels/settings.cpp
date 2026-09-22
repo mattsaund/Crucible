@@ -342,9 +342,10 @@ void App::draw_settings() {
                 text_colored(theme::kFlame, "Crucible %s is available.",
                              update_.latest.c_str());
                 wrapped(theme::kTextDim,
-                        "Updating is the same command that installed it -- it builds the "
-                        "new version over this one and keeps your config, models and "
-                        "history where they are.");
+                        "Update with the line below, or with the download from the "
+                        "release page if that is how this copy got here. Either way it "
+                        "replaces the program and leaves your config, models and history "
+                        "where they are.");
                 // Selectable so it can be copied: an install line nobody can
                 // select is an install line somebody has to retype.
                 std::string command(update::update_command());
