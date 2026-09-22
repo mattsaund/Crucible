@@ -46,7 +46,7 @@ jobs:
 
       - name: Disk image
         run: |
-          version="$(./stage/bin/crucible --version | awk '{print $NF}')"
+          version="$(./stage/bin/crucible --version | awk 'NR==1 {print $NF}')"
           bash packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
 
       # Mount it and look: a .dmg that builds is not the same as one that opens,
@@ -97,7 +97,7 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           if (-not (Test-Path $iscc)) { throw "no ISCC.exe at $iscc" }
-          $version = (& .\stage\bin\crucible.exe --version).Split(' ')[-1]
+          $version = ((& .\stage\bin\crucible.exe --version) | Select-Object -First 1).Split(' ')[-1]
           & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" `
                   "/O$PWD\dist" packaging\windows\crucible.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
