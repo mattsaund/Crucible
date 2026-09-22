@@ -504,16 +504,33 @@ function New-Shortcuts ([string] $Source) {
     $shipped = Join-Path $Source 'packaging\crucible.ico'
     if (Test-Path $shipped) { Copy-Item $shipped $icon -Force }
 
-    $shell = New-Object -ComObject WScript.Shell
+    # A shortcut is a nicety on top of an install that has already succeeded, so
+    # nothing here may stop it. A locked-down profile with no Desktop folder, a
+    # policy that blocks the scripting host, a roaming profile mid-sync: all of
+    # them end with Crucible installed and one fewer icon, which is a warning
+    # rather than a failed install somebody has to work out how to repeat.
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+    } catch {
+        Write-Warn 'could not make the shortcuts (no Windows Script Host)'
+        return
+    }
     foreach ($where in @([Environment]::GetFolderPath('Programs'),
                          [Environment]::GetFolderPath('Desktop'))) {
         if (-not $where) { continue }
-        $link = $shell.CreateShortcut((Join-Path $where 'Crucible.lnk'))
-        $link.TargetPath       = $exe
-        $link.WorkingDirectory = Join-Path $Prefix 'bin'
-        $link.Description      = 'Crucible -- a local AI lab'
-        if (Test-Path $icon) { $link.IconLocation = $icon }
-        $link.Save()
+        try {
+            if (-not (Test-Path $where)) {
+                New-Item -ItemType Directory -Force -Path $where | Out-Null
+            }
+            $link = $shell.CreateShortcut((Join-Path $where 'Crucible.lnk'))
+            $link.TargetPath       = $exe
+            $link.WorkingDirectory = Join-Path $Prefix 'bin'
+            $link.Description      = 'Crucible -- a local AI lab'
+            if (Test-Path $icon) { $link.IconLocation = $icon }
+            $link.Save()
+        } catch {
+            Write-Warn "could not make a shortcut in $where"
+        }
     }
 }
 
