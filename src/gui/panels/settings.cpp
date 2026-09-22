@@ -194,10 +194,14 @@ void App::draw_settings() {
             // Trust is the decision; this page keeps the one number that is
             // genuinely a preference.
             section("PROJECT");
-            text_colored(theme::kFlame, "%s", store_->project().root.string().c_str());
-            wrapped(theme::kTextDim,
-                    "Experts can read, write and run things here because you trusted "
-                    "this folder. Paths outside it are refused.");
+            if (project_open()) {
+                text_colored(theme::kFlame, "%s", project_root().string().c_str());
+                wrapped(theme::kTextDim,
+                        "Experts can read, write and run things here because you trusted "
+                        "this folder. Paths outside it are refused.");
+            } else {
+                text_colored(theme::kTextDim, "No project open.");
+            }
 
             int timeout = config_.tools.workshop_timeout;
             ImGui::SetNextItemWidth(em(12.0F));
@@ -381,7 +385,8 @@ void App::draw_settings() {
             text_colored(theme::kTextDim, "runtimes  %s",
                           paths::runtimes_dir().string().c_str());
             text_colored(theme::kTextDim, "history   %s",
-                          store_->project().dir.string().c_str());
+                          project_open() ? project_dir().string().c_str()
+                                         : "(no project open)");
             text_colored(theme::kTextDim, "log       %s",
                           paths::log_file().string().c_str());
 

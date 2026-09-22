@@ -285,11 +285,17 @@ void App::draw_cook(const Snapshot& snapshot) {
 
 void App::draw_history() {
     title("History");
+    // History is per project, so with none open there is nothing to list --
+    // not an empty list, which would read as "you have never done anything".
+    if (!project_open()) {
+        wrapped(theme::kTextDim, "No project open. Open one to see its history.");
+        return;
+    }
     wrapped(theme::kTextDim, "Everything Crucible has done in this project.");
     ImGui::Dummy(ImVec2(0, em(0.6F)));
 
     section("COOKS");
-    const CookLog log(store_->project().dir);
+    const CookLog log(project_dir());
     const std::vector<CookSummary> cooks = log.list();
     if (cooks.empty()) {
         wrapped(theme::kTextDim, "No cooks yet.");
@@ -330,6 +336,10 @@ void App::draw_cook_composer(const Snapshot& snapshot) {
 
     ImGui::BeginChild("cook-composer", ImVec2(0, 0),
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+
+    // Closed until a project is open, for the same reason as the chat box: a
+    // cook works on a folder, and there is not one yet.
+    ImGui::BeginDisabled(!project_open());
 
     // The same column the transcript is set in -- see draw_chat_composer.
     const float room   = ImGui::GetContentRegionAvail().x;
@@ -387,6 +397,8 @@ void App::draw_cook_composer(const Snapshot& snapshot) {
             begin_cook();
         }
     }
+
+    ImGui::EndDisabled();
 
     draw_usage_readout(snapshot, room, column);
 

@@ -21,10 +21,17 @@ constexpr ImU32 kFlame      = IM_COL32(0xFF, 0x87, 0x00, 0xFF);
 constexpr ImU32 kFlameBright = IM_COL32(0xFF, 0xAF, 0x00, 0xFF);
 constexpr ImU32 kError      = IM_COL32(0xFF, 0x5F, 0x00, 0xFF);
 
-constexpr ImU32 kInk        = IM_COL32(0x0B, 0x0B, 0x0C, 0xFF);  ///< the ground
-constexpr ImU32 kPanel      = IM_COL32(0x14, 0x14, 0x16, 0xFF);
-constexpr ImU32 kPanelEdge  = IM_COL32(0x26, 0x26, 0x2A, 0xFF);
-constexpr ImU32 kRaised     = IM_COL32(0x1E, 0x1E, 0x21, 0xFF);
+// Four steps of near-black, and they are four rather than one because the
+// window has to say what is behind what: the ground, the panels on it, the
+// line between them, and the controls that sit proud. The steps are small on
+// purpose -- the room a dark interface has to work in is the top few percent
+// of the range, and spending it on contrast between panels leaves none for the
+// text. What used to be here was a step lighter at every level, which read as
+// gray rather than as dark.
+constexpr ImU32 kInk        = IM_COL32(0x08, 0x08, 0x0A, 0xFF);  ///< the ground
+constexpr ImU32 kPanel      = IM_COL32(0x0E, 0x0E, 0x10, 0xFF);
+constexpr ImU32 kPanelEdge  = IM_COL32(0x20, 0x20, 0x24, 0xFF);
+constexpr ImU32 kRaised     = IM_COL32(0x16, 0x16, 0x1A, 0xFF);
 
 constexpr ImU32 kText       = IM_COL32(0xEC, 0xEC, 0xEC, 0xFF);
 constexpr ImU32 kTextDim    = IM_COL32(0x8C, 0x8C, 0x92, 0xFF);

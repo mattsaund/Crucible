@@ -342,7 +342,13 @@ void App::draw_readiness() {
     const char*  label   = "Ask anything";
     SettingsPage page    = SettingsPage::General;
     bool         fixable = true;
-    if (!any_runtime_) {
+    // A project comes before either of the other two: with none open there is
+    // nowhere for a conversation to be kept and nothing for an expert to act
+    // on, and the button that fixes it is not the gear.
+    const bool   no_project = !project_open();
+    if (no_project) {
+        label = "No project open";
+    } else if (!any_runtime_) {
         label = "No runtime";
         page  = SettingsPage::Runtimes;
     } else if (config_.configured_experts().empty()) {
@@ -372,10 +378,14 @@ void App::draw_readiness() {
     // button.
     if (fixable) {
         ImGui::Dummy(ImVec2(0, em(0.9F)));
-        const float width = em(8.0F);
+        const float width = em(no_project ? 11.0F : 8.0F);  // "Open Project" needs the room
         center(width);
-        if (ImGui::Button("Settings", ImVec2(width, 0))) {
-            show_settings(page);
+        if (ImGui::Button(no_project ? "Open Project" : "Settings", ImVec2(width, 0))) {
+            if (no_project) {
+                open_browse(BrowseFor::Project);
+            } else {
+                show_settings(page);
+            }
         }
     }
 }
@@ -563,9 +573,15 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
     ImGui::BeginChild("chat-composer", ImVec2(0, 0),
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
 
-    const char* hint = asking  ? "answer the question on the cook screen"
+    const bool  closed = !project_open();
+    const char* hint = closed  ? "open a project to start"
+                     : asking  ? "answer the question on the cook screen"
                      : cooking ? "cooking -- ask anyway and it waits its turn"
                                : "ask anything";
+    // Typed into nothing, a prompt would be answered and then dropped: the
+    // transcript is saved per project and there is no project. Closed rather
+    // than hidden, so the window keeps its shape when one is opened.
+    ImGui::BeginDisabled(closed);
 
     // The box lines up with the answers above it. The bar reaches both edges
     // like the panel over it, and what you type sits in the same column the
@@ -620,6 +636,8 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
         // click to get back to typing.
         ImGui::SetKeyboardFocusHere(-1);
     }
+
+    ImGui::EndDisabled();
 
     draw_usage_readout(snapshot, room, column);
 

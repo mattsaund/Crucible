@@ -167,19 +167,26 @@ void App::draw_topbar() {
     // which disk and the end says which project; it is the part between them
     // that nobody reads.
     {
-        const std::string path  = store_->project().root.string();
+        // With nothing open there is no path to elide and no project to change:
+        // the label says so and the button offers the only thing to do about
+        // it. Same geometry either way, so the bar does not jump when a project
+        // is opened.
+        const bool        open   = project_open();
+        const std::string path   = project_root().string();
+        const char*       button = open ? "Change project" : "Open Project";
         const float       start = ImGui::GetCursorPosX();
         const float       stop  = width - right_room;
 
-        const std::string label = "Project: ";
+        const std::string label = open ? "Project: " : "";
         const float label_w  = ImGui::CalcTextSize(label.c_str()).x;
-        const float button_w = ImGui::CalcTextSize("Change project").x
+        const float button_w = ImGui::CalcTextSize(button).x
                              + style.FramePadding.x * 2.0F;
         const float gap      = em(0.8F);
 
         const float room = std::max(stop - start - em(1.2F), em(8.0F));
         const std::string shown =
-            middle_out(path, room - label_w - button_w - gap, advance);
+            open ? middle_out(path, room - label_w - button_w - gap, advance)
+                 : std::string("No Project");
         const float block = label_w + ImGui::CalcTextSize(shown.c_str()).x
                           + gap + button_w;
 
@@ -191,14 +198,17 @@ void App::draw_topbar() {
 
         const ImVec2 at = ImVec2(origin.x + at_x, middle - line * 0.5F);
         draw->AddText(at, theme::kTextFaint, label.c_str());
-        draw->AddText(ImVec2(at.x + label_w, at.y), theme::kText, shown.c_str());
+        draw->AddText(ImVec2(at.x + label_w, at.y),
+                      open ? theme::kText : theme::kTextDim, shown.c_str());
 
         ImGui::SetCursorPosX(at_x + block - button_w);
         center_y(ImGui::GetFrameHeight());
-        if (ImGui::Button("Change project")) {
-            open_browse(BrowseFor::Project, store_->project().root);
+        if (ImGui::Button(button)) {
+            open_browse(BrowseFor::Project, project_root());
         }
-        ImGui::SetItemTooltip("%s", path.c_str());
+        if (open) {
+            ImGui::SetItemTooltip("%s", path.c_str());
+        }
         left_used = at_x + block;
     }
 

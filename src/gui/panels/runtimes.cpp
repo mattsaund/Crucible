@@ -38,22 +38,29 @@ const char* backend_name(BackendKind kind) {
     return "?";
 }
 
-const char* backend_blurb(BackendKind kind) {
-    switch (kind) {
-        case BackendKind::Cpu:
-            return "Always works, and is the slowest thing here by two orders of "
-                   "magnitude. Worth having as a floor.";
-        case BackendKind::Cuda:
-            return "NVIDIA cards, via the CUDA toolkit. The fastest option where "
-                   "the hardware allows it.";
-        case BackendKind::Vulkan:
-            return "Any GPU with a Vulkan driver, NVIDIA and AMD alike. Slower "
-                   "than CUDA on NVIDIA, and needs no vendor toolkit.";
-        case BackendKind::Metal:
-            return "Apple GPUs. The only GPU backend that exists on macOS, and it "
-                   "needs no SDK beyond the developer tools.";
+/// The two facts about a runtime that decide anything: which llama.cpp it is
+/// built against, and what has to be installed to build it.
+///
+/// There used to be a sentence here about what each backend is for. It read as
+/// a sales pitch for a thing you already own -- nobody comes to this page to be
+/// told that CUDA is fast -- and it pushed the buttons down the screen. What is
+/// left is what you cannot work out by looking.
+std::string backend_facts(const RuntimeStatus& runtime) {
+    const BackendInfo& info = backend_info(runtime.kind);
+
+    std::string line = "llama.cpp ";
+    line += runtime.installed && !runtime.llama_tag.empty()
+              ? runtime.llama_tag
+              : std::string(RuntimeStatus::required_llama_tag());
+
+    if (!info.required_tool.empty()) {
+        line += "  ·  needs ";
+        line += std::string(info.required_tool);
     }
-    return "";
+    if (runtime.installed && !runtime.built_at.empty()) {
+        line += "  ·  built " + runtime.built_at;
+    }
+    return line;
 }
 
 }  // namespace
@@ -90,9 +97,8 @@ void App::take_runtime_activation() {
 void App::draw_settings_runtimes() {
     title("Runtimes");
     wrapped(theme::kTextDim,
-            "A runtime is a compute backend compiled for this machine. Crucible "
-            "ships none, because a backend built somewhere else is a backend that "
-            "crashes here. Building one takes a few minutes.");
+            "Compiled here, because a backend built somewhere else crashes here. "
+            "A few minutes each.");
 
     // Scanned when the page is first opened rather than at startup: it reads
     // the runtimes directory, and most sessions never come here.
@@ -143,7 +149,7 @@ void App::draw_settings_runtimes() {
             text_colored(theme::kTextFaint, "not installed");
         }
 
-        wrapped(theme::kTextFaint, backend_blurb(runtime.kind));
+        text_colored(theme::kTextFaint, "%s", backend_facts(runtime).c_str());
 
         ImGui::BeginDisabled(build.running());
         if (runtime.installed) {

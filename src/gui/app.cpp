@@ -33,18 +33,15 @@ namespace crucible::gui {
 // Lifetime
 // ---------------------------------------------------------------------------
 
-App::App(Config config, std::vector<std::string> warnings,
-         std::filesystem::path start, bool ask_trust)
+App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     : config_(std::move(config)),
-      store_(std::make_unique<SessionStore>(Project::at(start))),
       trust_(paths::trust_file()),
-      ask_trust_on_open_(ask_trust) {
+      skip_trust_(skip_trust) {
     for (std::string& warning : warnings) {
         notices_.push_back(std::move(warning));
     }
 
     state_.configure_seats(config_);
-    state_.set_project_usage(store_->project_usage());
 
     engine_ = std::make_unique<Engine>(config_, state_, [this] {
         // The engine runs on its own thread and the window may be parked in
@@ -52,23 +49,26 @@ App::App(Config config, std::vector<std::string> warnings,
         // mouse moved, which during a model load is most of a minute.
         glfwPostEmptyEvent();
     });
-    // The root is the permission, so it is withheld until the folder has been
-    // trusted. With the question still to be asked, the engine gets the history
-    // folder and no root -- an expert that tried a WRITE in that window would be
-    // refused, which is the right answer to "before you said yes".
-    engine_->set_project(ask_trust_on_open_ ? std::filesystem::path{}
-                                            : store_->project().root,
-                         store_->project().dir);
+    // No project, so no root and no history folder. The root is the permission
+    // an expert acts under, and there is nothing to act on yet: a WRITE in this
+    // state is refused, which is the right answer to "before you opened one".
+    engine_->set_project({}, {});
 
-    // Not remembered until it is trusted. A directory the launcher happened to
-    // hand over, and that the user is about to decline, has no business in the
-    // recent list -- it would be offered back to them on every later start.
-    if (!ask_trust_on_open_) {
-        remember_project(store_->project().root);
-    }
-    browse_      = store_->project().root;
+    // The browser has to start somewhere, and the most recent project is the
+    // best guess at where this person keeps their work -- offered as a starting
+    // directory, not opened.
+    const std::vector<Project> recent = recent_projects(1);
+    browse_      = recent.empty() ? paths::expand_user("~") : recent.front().root;
     browse_text_ = browse_.string();
     refresh_models();
+}
+
+std::filesystem::path App::project_root() const {
+    return store_ ? store_->project().root : std::filesystem::path{};
+}
+
+std::filesystem::path App::project_dir() const {
+    return store_ ? store_->project().dir : std::filesystem::path{};
 }
 
 App::~App() {
@@ -106,6 +106,13 @@ void App::update_config(const std::function<void(Config&)>& change) {
 }
 
 void App::persist_session() {
+    // Nothing to write a history into. A conversation cannot have happened
+    // without a project -- the composer is closed until one is open -- but this
+    // is called from the frame loop and from open_project, so it says so rather
+    // than trusting that.
+    if (!store_) {
+        return;
+    }
     const Snapshot snapshot = state_.snapshot();
     std::size_t finished = 0;
     for (const Turn& turn : snapshot.turns) {
@@ -155,10 +162,9 @@ void App::open_project(const std::filesystem::path& root) {
         return;
     }
 
-    // The same store the terminal program asks on first use in a directory. A
-    // folder trusted in one face is trusted in the other, because it is one
-    // decision about one directory.
-    if (!trust_.is_trusted(root)) {
+    // Asked once per directory, and remembered. `--no-trust` is the way past
+    // it for a scripted run, where there is nobody to answer a modal.
+    if (!skip_trust_ && !trust_.is_trusted(root)) {
         pending_trust_ = root;
         return;
     }
@@ -260,6 +266,12 @@ void App::rebuild_history() {
 }
 
 void App::begin_cook() {
+    // A cook is an hour of work on a directory, and its journal is keyed to
+    // one. Without a project there is nothing for it to be about.
+    if (!project_open()) {
+        say("open a project first -- a cook works on a folder");
+        return;
+    }
     const std::string goal = format::trim(cook_goal_);
     if (goal.empty()) {
         say("a cook needs a goal");
@@ -271,7 +283,7 @@ void App::begin_cook() {
     expanded_.clear();
     // No budget. A cook runs until it finishes or until one of the two Stop
     // buttons is pressed; the minutes slider that used to set this is gone.
-    engine_->start_cook(goal, 0, store_->project().root);
+    engine_->start_cook(goal, 0, project_root());
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +402,7 @@ void App::open_browse(BrowseFor what, const std::filesystem::path& start) {
     browse_     = start;
     if (browse_.empty()) {
         browse_ = what == BrowseFor::ModelsDir ? config_.resolved_models_dir()
-                                               : store_->project().root;
+                                               : project_root();
     }
     // A path that has gone missing would leave the list empty with nothing to
     // click, so the browser falls back to somewhere that certainly exists.
@@ -443,14 +455,6 @@ void App::draw() {
     const Snapshot snapshot = state_.snapshot();
 
     collect_update_check();
-
-    // The folder-trust question, when there was no terminal to ask it on before
-    // the window opened. Raised here rather than in the constructor because it
-    // is drawn as a modal, and there is no frame to draw into until now.
-    if (ask_trust_on_open_) {
-        ask_trust_on_open_ = false;
-        pending_trust_     = store_->project().root;
-    }
 
     // Negative means "never sized", not "closed". Zero is a width the user can
     // now reach by dragging the splitter to the edge, and testing for <= 0 here

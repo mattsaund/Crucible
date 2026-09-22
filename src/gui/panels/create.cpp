@@ -424,33 +424,29 @@ void App::draw_create(const Snapshot& snapshot) {
         case 4: {
             section("METHOD");
             const std::uint64_t vram = vram_here();
-            const auto method_row = [&](const char* label, lab::Method method,
-                                        const char* explain) {
+            // No sentence under each one saying what an adapter is. The number
+            // beside it -- what this run needs against what the card has -- is
+            // the thing that decides between them, and it was being read past.
+            const auto method_row = [&](const char* label, lab::Method method) {
                 const bool on = lab_recipe_.method == method;
                 if (ImGui::RadioButton(label, on)) {
                     lab_recipe_.method = method;
                     save_now();
                 }
-                ImGui::SameLine();
-                const lab::Fit fit =
-                    lab::estimate_fit(lab_recipe_.parameters_b, method, vram, 0);
-                text_colored(fit.possible ? theme::kTextDim : theme::kTextFaint, "%s", explain);
                 if (lab_recipe_.parameters_b > 0.0 && vram > 0) {
+                    const lab::Fit fit =
+                        lab::estimate_fit(lab_recipe_.parameters_b, method, vram, 0);
+                    ImGui::SameLine();
                     text_colored(fit.possible ? theme::kText : theme::kFlameBright,
-                                 "    needs about %s, this machine has %s",
+                                 "needs about %s, this machine has %s",
                                  format::bytes(fit.needed).c_str(),
                                  format::bytes(fit.have).c_str());
                 }
             };
-            method_row("QLoRA", lab::Method::Qlora,
-                       "An adapter over a four-bit base. What fits a big model on one card.");
-            method_row("LoRA", lab::Method::Lora,
-                       "An adapter over a sixteen-bit base: a shade better, where it fits.");
+            method_row("QLoRA", lab::Method::Qlora);
+            method_row("LoRA", lab::Method::Lora);
 
             section("SIZE");
-            wrapped(theme::kTextDim,
-                    "What the exported file is quantized to. Smaller is faster and "
-                    "coarser; the sizes are for the base model chosen.");
             for (const char* quant : kQuantizations) {
                 const bool on = lab_recipe_.quantization == quant;
                 ImGui::PushID(quant);
@@ -492,8 +488,6 @@ void App::draw_create(const Snapshot& snapshot) {
                 lab_recipe_.format = lab::Export::Mlx;
                 save_now();
             }
-            ImGui::SameLine();
-            text_colored(theme::kTextFaint, "GGUF runs anywhere; MLX is for Apple silicon");
             break;
         }
 

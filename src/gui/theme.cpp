@@ -68,8 +68,10 @@ void apply() {
     c[ImGuiCol_TextDisabled]    = to_vec(kTextFaint);
 
     c[ImGuiCol_FrameBg]         = to_vec(kRaised);
-    c[ImGuiCol_FrameBgHovered]  = ImVec4(0.16F, 0.16F, 0.18F, 1.0F);
-    c[ImGuiCol_FrameBgActive]   = ImVec4(0.20F, 0.20F, 0.22F, 1.0F);
+    // A step above kRaised and a step above that, so hover and press still read
+    // on the darker ground rather than all three looking like one color.
+    c[ImGuiCol_FrameBgHovered]  = ImVec4(0.11F, 0.11F, 0.13F, 1.0F);
+    c[ImGuiCol_FrameBgActive]   = ImVec4(0.15F, 0.15F, 0.17F, 1.0F);
 
     c[ImGuiCol_TitleBg]         = to_vec(kPanel);
     c[ImGuiCol_TitleBgActive]   = to_vec(kPanel);

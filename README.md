@@ -53,6 +53,8 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 
 - Builds the program and installs an application entry you can pin to a dock or
   taskbar. Typing `crucible` in a terminal starts the same thing.
+- It opens on no project: the top bar says **No Project** until you pick a
+  folder to work in.
 - Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `-y`, `--uninstall`.
 - Run either installer from inside a clone and it builds that clone.
 - No models and no compute runtimes are installed — both are picked later from

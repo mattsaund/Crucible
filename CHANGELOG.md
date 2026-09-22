@@ -6,6 +6,28 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.5.1 — 2026-09-22
+
+**It opens on nothing.** Crucible used to pick a directory for you -- the
+shell's working directory from a terminal, the most recent project from the
+application menu -- and both were guesses. The menu one guessed wrong every
+time the launcher handed over `/` or the home directory, and a window would
+open asking to be trusted with somewhere nobody meant to work. Now the top bar
+says **No Project**, the button beside it says **Open Project**, and the folder
+question is asked when a folder is actually chosen. Chat, Cook and History wait
+for one rather than pretending.
+
+**Less text.** The runtimes page carried a sentence per backend explaining what
+CUDA is for; it now lists the llama.cpp version it is built against and the tool
+it needs, which is what you cannot work out by looking. The Create tab's Target
+step lost the explanations under the method and the format -- the number beside
+each method, what it needs against what the card has, is what decides between
+them.
+
+**Darker.** The panels were a step lighter at every level than they should have
+been, which read as gray rather than as dark. The whole ladder moved down to
+near-black.
+
 ## 0.5.0 — 2026-09-21
 
 The release that makes Crucible a program you install rather than a checkout you

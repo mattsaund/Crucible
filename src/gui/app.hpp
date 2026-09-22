@@ -49,8 +49,7 @@ public:
     /// `start` is the project to open, and `ask_trust` says the window has to
     /// put the folder-trust question up itself because there was no terminal to
     /// ask it on.
-    App(Config config, std::vector<std::string> warnings,
-        std::filesystem::path start, bool ask_trust);
+    App(Config config, std::vector<std::string> warnings, bool skip_trust);
     ~App();
     App(const App&)            = delete;
     App& operator=(const App&) = delete;
@@ -279,8 +278,25 @@ private:
     /// directory trusted in one face is trusted in the other.
     void open_project(const std::filesystem::path& root);
 
+    /// Whether a project is open at all.
+    ///
+    /// Crucible starts with none: the window opens on no directory, the top bar
+    /// says so, and the one button there is Open Project. Everything a project
+    /// scopes -- the transcript, the cook, the history, the folder an expert may
+    /// touch -- is unavailable until one is chosen, which is the honest state
+    /// rather than quietly adopting whatever directory the launcher was in.
+    bool project_open() const { return store_ != nullptr; }
+
+    /// The open project's root, or nothing when none is open. Every caller that
+    /// used to read store_->project().root goes through this, because the store
+    /// is null half the time now.
+    std::filesystem::path project_root() const;
+    std::filesystem::path project_dir() const;
+
     Config                  config_;
     AppState                state_;
+
+    /// Null until a project is opened. See project_open().
     std::unique_ptr<SessionStore> store_;
     std::unique_ptr<Engine> engine_;
     TrustStore              trust_;
@@ -399,10 +415,10 @@ private:
     /// A directory waiting on the trust question, and the answer to it.
     std::optional<std::filesystem::path> pending_trust_;
 
-    /// Set when the startup directory has not been trusted yet, so the question
-    /// goes up on the first frame -- there was no terminal to ask it on before
-    /// the window existed. Cleared once asked.
-    bool ask_trust_on_open_ = false;
+    /// `--no-trust`: open whatever is asked for without the folder question.
+    /// For scripted runs and for driving the window in tests, where there is
+    /// nobody to answer a modal.
+    bool skip_trust_ = false;
 
     /// The runtime manager's state. Scanned on first sight of the page rather
     /// than at startup: it touches the filesystem, and most sessions never open
