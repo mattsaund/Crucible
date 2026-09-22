@@ -1017,6 +1017,9 @@ check     "and it can be run by hand without publishing anything" \
 # macOS: a disk image with an application in it, and the bundle is
 # self-contained rather than the launcher install.sh writes -- there is no
 # prefix on a machine that has only just downloaded this.
+# -x rather than -f: these are run as commands, and a script that ships without
+# its executable bit is a release that does not build. The bit lives in git's
+# index, which is the copy CI checks out.
 check     "macOS builds a disk image" \
           test -x "$ROOT/packaging/macos/dmg.sh"
 check     "the bundle carries llama.cpp's libraries inside it" \

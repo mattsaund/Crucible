@@ -47,7 +47,7 @@ jobs:
       - name: Disk image
         run: |
           version="$(./stage/bin/crucible --version | awk '{print $NF}')"
-          packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
+          bash packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
 
       # Mount it and look: a .dmg that builds is not the same as one that opens,
       # and the failure mode is a download nobody can use.
@@ -140,7 +140,7 @@ jobs:
         run: cmake --install build --component crucible --prefix "$PWD/stage"
 
       - name: AppImage
-        run: packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"
+        run: bash packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"
 
       # The runner has no display, so this is as far as the check goes: the file
       # runs, finds its libraries, and prints its version.
