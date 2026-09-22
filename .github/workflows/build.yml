@@ -89,13 +89,27 @@ jobs:
 
       # The other half of an install: something to click. The bundle goes to
       # /Applications when that is writable and to ~/Applications when it is
-      # not, and the runner is the second case.
+      # not -- and which one that is depends on the account, so this checks
+      # both rather than assuming the runner is the unprivileged case. It is
+      # not: the runner can write /Applications, which is how this check first
+      # went red against an install that had worked.
       - name: And there is an application to click
         if: runner.os == 'macOS'
         run: |
-          app="$HOME/Applications/Crucible.app"
-          test -x "$app/Contents/MacOS/Crucible"
-          test -f "$app/Contents/Info.plist"
+          for app in "/Applications/Crucible.app" "$HOME/Applications/Crucible.app"; do
+            if [ -d "$app" ]; then
+              echo "bundle at $app"
+              test -x "$app/Contents/MacOS/Crucible"
+              test -f "$app/Contents/Info.plist"
+              # The plist carries the version the binary reports, so a bundle
+              # that says 0 is a plist built from an unset variable.
+              /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+                                      "$app/Contents/Info.plist"
+              exit 0
+            fi
+          done
+          echo "no Crucible.app in /Applications or ~/Applications" >&2
+          exit 1
 
       # As people run it: from a string, with no script file behind it. That is
       # the case where a bare `exit` used to close the window, so it is the one
