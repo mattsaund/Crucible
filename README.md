@@ -67,7 +67,8 @@ The check is one request for a public version number, it says nothing about the
 machine, and the checkbox beside it turns it off.
 
 Versions are `MAJOR.MINOR.PATCH`, tagged `v0.5.0` on GitHub, and the release a
-tag builds carries the installers for all three platforms.
+tag builds carries the installers for all three platforms. What changed in each
+is in [CHANGELOG.md](CHANGELOG.md).
 
 **Uninstall:** `crucible --uninstall` removes the program, the config, the trust
 list, the history and — after naming them and asking — the models. If the binary

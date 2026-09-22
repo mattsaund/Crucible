@@ -1102,6 +1102,10 @@ check     "a v-tag is what builds the installers it points at" \
           grep -q 'tags: \["v\*"\]' "$ROOT/.github/workflows/release.yml"
 check     "and the README says how to update" \
           grep -q '\*\*Updating:\*\*' "$ROOT/README.md"
+# A version nobody wrote down is a number that went up. This is the forcing
+# function: bumping CMakeLists without saying what changed fails here.
+check     "the changelog has an entry for the version being shipped" \
+          grep -q "^## $VERSION" "$ROOT/CHANGELOG.md"
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

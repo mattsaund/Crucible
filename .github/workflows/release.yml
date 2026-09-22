@@ -118,12 +118,15 @@ jobs:
 
       # No libglfw3-dev on purpose: without a system GLFW the build uses the
       # pinned one and links it statically, which is one fewer library to carry
-      # and one fewer version to be wrong about. The X11 headers are what GLFW
-      # itself needs to compile.
+      # and one fewer version to be wrong about. The rest is what GLFW itself
+      # needs to compile -- the X11 headers, and the Wayland scanner and
+      # protocol XML, so the AppImage speaks to both kinds of desktop rather
+      # than reaching Wayland through XWayland.
       - name: Window headers
         run: >
           sudo apt-get update && sudo apt-get install -y
           libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+          libwayland-dev wayland-protocols libxkbcommon-dev extra-cmake-modules
 
       - name: Configure
         run: >

@@ -75,6 +75,36 @@ if(NOT glfw3_FOUND)
     set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
     set(GLFW_BUILD_DOCS     OFF CACHE INTERNAL "")
     set(GLFW_INSTALL        OFF CACHE INTERNAL "")
+
+    # GLFW 3.4 builds both display backends on Linux by default, and the
+    # Wayland one is generated code: without wayland-scanner and the protocol
+    # XML its configure step stops with "Failed to find wayland-scanner" -- on a
+    # machine that has every X11 header asked for and would have built fine.
+    #
+    # So the backend follows the tooling that is actually installed rather than
+    # being demanded: both when it is there, X11 alone when it is not. An X11
+    # build still runs on a Wayland desktop through XWayland, which is the trade
+    # being made when this says "X11 only".
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_program(CRUCIBLE_WAYLAND_SCANNER wayland-scanner)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            # Everything GLFW's Wayland backend compiles against, not just the
+            # generator: the protocol XML, the client library and the keyboard
+            # handling. Any one of them missing is the same failed configure.
+            pkg_check_modules(CRUCIBLE_WAYLAND QUIET
+                              wayland-protocols>=1.15 wayland-client xkbcommon)
+        endif()
+        if(CRUCIBLE_WAYLAND_SCANNER AND CRUCIBLE_WAYLAND_FOUND)
+            set(GLFW_BUILD_WAYLAND ON  CACHE INTERNAL "")
+            message(STATUS "GLFW: building X11 and Wayland backends")
+        else()
+            set(GLFW_BUILD_WAYLAND OFF CACHE INTERNAL "")
+            message(STATUS "GLFW: building the X11 backend only "
+                           "(no wayland-scanner or wayland-protocols)")
+        endif()
+        set(GLFW_BUILD_X11 ON CACHE INTERNAL "")
+    endif()
     FetchContent_Declare(glfw
         GIT_REPOSITORY https://github.com/glfw/glfw.git
         GIT_TAG        ${CRUCIBLE_GLFW_TAG}
