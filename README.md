@@ -23,6 +23,8 @@ reach the network and both can be turned off: web search, which is off by
 default, and a once-a-day check for a newer version, which sends nothing but the
 request itself.
 
+Website: https://msaunders.dev/crucible/
+
 ![Crucible routing a question to one of its experts](docs/images/chat.png)
 
 ___
