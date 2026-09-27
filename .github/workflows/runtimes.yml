@@ -145,7 +145,7 @@ jobs:
                  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
                  -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF
                  -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_CURL=OFF
-                 -DCMAKE_PROJECT_INCLUDE=$PWD/cmake/CrucibleUnversion.cmake)
+                 -DCMAKE_PROJECT_INCLUDE=$PWD/cmake/CrucibleUnversionHook.cmake)
           case "${{ matrix.backend }}" in
             cpu)    flags+=(-DGGML_CPU=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_METAL=OFF) ;;
             vulkan) flags+=(-DGGML_VULKAN=ON -DGGML_CPU=OFF -DGGML_METAL=OFF) ;;

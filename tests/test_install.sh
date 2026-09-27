@@ -1137,6 +1137,21 @@ check     "a failed backend does not block the rest" \
 check     "and the release takes whatever built" \
           grep -q "if: always() && startsWith(github.ref" "$RT"
 
+# The modules have to depend on the library names Crucible ships. Its own
+# libraries are unversioned -- exFAT cannot hold the symlinks a versioned
+# soname needs -- so a module asking for libggml-base.so.0 installs, fails to
+# dlopen and reads as "installed, no devices". The hook is what prevents that,
+# and passing the definitions file instead of the hook is the mistake that
+# looks identical in the log and produces modules nobody can load.
+check     "the workflow unversions what it builds" \
+          grep -q 'CMAKE_PROJECT_INCLUDE=$PWD/cmake/CrucibleUnversionHook.cmake' "$RT"
+check     "the hook defers the sweep until the targets exist" \
+          grep -q 'cmake_language(DEFER' "$ROOT/cmake/CrucibleUnversionHook.cmake"
+# The runtime builder writes the same hook at runtime, where there is no
+# checkout to read one from. Two copies by necessity; this keeps them in step.
+check     "and the runtime builder writes the same one" \
+          grep -q 'cmake_language(DEFER' "$ROOT/src/runtime/builder.cpp"
+
 check     "a download is tried before the toolchain is" \
           grep -q 'prebuilt::try_install' "$ROOT/src/runtime/builder.cpp"
 check_not "and a missing compiler no longer disables the button" \
