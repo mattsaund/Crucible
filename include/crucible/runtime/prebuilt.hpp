@@ -58,7 +58,7 @@ bool fetch_releases(std::string& body, std::string& error);
 /// `say` is given a line of progress at each step. `written` receives the
 /// module files that landed, so the caller can verify it got what it asked for
 /// before writing a manifest entry that claims it did.
-bool install(const std::string& url, const std::filesystem::path& into,
+bool install(BackendKind kind, const std::string& url, const std::filesystem::path& into,
              std::vector<std::filesystem::path>& written, std::string& error,
              const std::function<void(std::string)>& say);
 

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "crucible/runtime/registry.hpp"
 #include "crucible/util/subprocess.hpp"
 
 #ifndef CRUCIBLE_LLAMA_TAG
@@ -144,7 +145,7 @@ bool fetch_releases(std::string& body, std::string& error) {
     return true;
 }
 
-bool install(const std::string& url, const std::filesystem::path& into,
+bool install(BackendKind kind, const std::string& url, const std::filesystem::path& into,
              std::vector<std::filesystem::path>& written, std::string& error,
              const std::function<void(std::string)>& say) {
     if (!util::on_path("curl") || !util::on_path("tar")) {
@@ -171,9 +172,15 @@ bool install(const std::string& url, const std::filesystem::path& into,
         std::filesystem::remove(archive, cleanup);
     };
 
+    // Half an hour and two retries. A CUDA module is four hundred megabytes
+    // before compression and this is the one download here that a slow line
+    // can take real time over; ten minutes was a number picked for the small
+    // ones, and a timeout mid-download reads to the user as "it does not work"
+    // rather than "your connection is slow".
     say("downloading");
     if (run_quiet({"curl", "--location", "--fail", "--silent", "--show-error",
-                   "--max-time", "600", "--output", archive.string(), url}) != 0) {
+                   "--retry", "2", "--retry-delay", "2",
+                   "--max-time", "1800", "--output", archive.string(), url}) != 0) {
         error = "the download failed";
         clean();
         return false;
@@ -204,6 +211,28 @@ bool install(const std::string& url, const std::filesystem::path& into,
         error = "the archive held no modules";
         clean();
         return false;
+    }
+
+    // Out with the old set first.
+    //
+    // The modules are replaced by name, and a name is not stable across a
+    // llama.cpp bump: the CPU backend's variants are whatever feature levels
+    // that release's compiler knew about. Leave the old ones and the directory
+    // accumulates modules from two different llama.cpp builds, with ggml free
+    // to score the wrong one highest -- which loads, and then crashes on the
+    // first tensor.
+    //
+    // Best-effort on purpose: on Windows a module that is loaded right now
+    // cannot be unlinked, and those are precisely the ones about to be
+    // replaced by name anyway.
+    for (const RuntimeStatus& installed : RuntimeRegistry::scan()) {
+        if (installed.kind != kind) {
+            continue;
+        }
+        for (const std::filesystem::path& old_module : installed.files) {
+            std::error_code ignored;
+            std::filesystem::remove(old_module, ignored);
+        }
     }
 
     for (const std::filesystem::path& module : found) {
@@ -246,7 +275,7 @@ bool try_install(BackendKind kind, const std::filesystem::path& into,
     if (url.empty()) {
         return false;   // this backend is not published, or not for this tag
     }
-    if (!install(url, into, written, error, say)) {
+    if (!install(kind, url, into, written, error, say)) {
         return false;
     }
     return true;
