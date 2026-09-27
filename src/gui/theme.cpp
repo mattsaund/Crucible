@@ -30,6 +30,15 @@
 // system library exports them without a loader.
 #include <GLFW/glfw3.h>
 
+// Except this one, which is 1.2. Windows ships the 1.1 header Microsoft wrote
+// in the nineties and has never updated, so MSVC does not know the name -- on a
+// machine whose driver has supported it for twenty years. The context asked for
+// here is 3.3 core, where clamping to the edge is not optional, so the token is
+// simply spelled out rather than worked around.
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+
 #ifdef CRUCIBLE_HAS_EMBEDDED_MARK
 // Written by cmake/EmbedBinary.cmake from packaging/crucible-mark.rgba. Declared
 // here rather than in a header, because one translation unit uses it.
