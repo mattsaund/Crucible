@@ -993,12 +993,27 @@ check     "the binary sets the console to UTF-8 before printing" \
 check     "and the Windows installer does the same for itself" \
           grep -q "OutputEncoding" "$ROOT/install.ps1"
 
-# The window and the launcher icon are the same shape from the same numbers, so
-# a reshape that touches one and not the other is the failure to catch.
-check     "the icon points at the source of the shape" \
-          grep -q "flame_path" "$ROOT/packaging/crucible.svg"
-check     "and the shape says the icon is drawn from it" \
-          grep -q "packaging/crucible.svg" "$ROOT/src/gui/theme.cpp"
+# One piece of artwork, four files, one script. The mark used to be vector
+# shapes generated from theme.cpp's own control points, and the check here was
+# that the two agreed; the mark is a drawing now, and what has to agree is that
+# every icon still comes from it rather than from whichever copy somebody
+# happened to edit.
+check     "the icons are generated rather than drawn by hand" \
+          test -f "$ROOT/packaging/make_icons.py"
+for _icon in crucible.png crucible.ico crucible.svg crucible-mark.rgba; do
+    check "$_icon is there for the installers and the window" \
+          test -s "$ROOT/packaging/$_icon"
+done
+check     "the menu icon says it is generated, so nobody hand-edits it" \
+          grep -q "make_icons.py" "$ROOT/packaging/crucible.svg"
+# Raw pixels rather than a PNG: nothing in Crucible can decode one.
+check     "the window's mark is compiled in" \
+          grep -q "crucible-mark.rgba" "$ROOT/cmake/CrucibleDependencies.cmake"
+check     "and the window draws it rather than the old vector flame" \
+          grep -q "theme::draw_mark" "$ROOT/src/gui/panels/topbar.cpp"
+# A build without the artwork has to keep working.
+check     "with a fallback when there is no artwork compiled in" \
+          grep -q "draw_flame(draw, center, size \* 0.5F)" "$ROOT/src/gui/theme.cpp"
 
 echo "  and there is a download that needs no compiler at all"
 # The other kind of installer: a file you double-click. The one-line install

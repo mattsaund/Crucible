@@ -11,6 +11,8 @@
 
 #include <imgui.h>
 
+struct GLFWwindow;
+
 namespace crucible::gui::theme {
 
 // The palette, as the 256-color indices the TUI uses actually render.
@@ -117,6 +119,23 @@ ImFont* heading();
 ///
 /// It does not move. Nothing in this file does.
 void draw_flame(ImDrawList* draw, ImVec2 center, float radius, float alpha = 1.0F);
+
+/// Upload the window's mark, once, after the GL context exists.
+///
+/// The mark is the artwork the application icon is made from, compiled in as
+/// raw pixels. A build without it -- or a machine where the upload fails --
+/// draws the flame from its own control points instead, which is what every
+/// version before this one did.
+void load_mark();
+
+/// The mark, centered, `size` across. Falls back to draw_flame.
+void draw_mark(ImDrawList* draw, ImVec2 center, float size);
+
+/// Hand the mark to the window manager, so the taskbar, the dock and the
+/// alt-tab list show it rather than a generic placeholder. Does nothing where
+/// there is no artwork compiled in, or on macOS, where the icon belongs to the
+/// application bundle rather than to the window.
+void set_window_icon(GLFWwindow* window);
 
 /// A status diamond, the same vocabulary the terminal panel uses: filled
 /// means working, hollow means ready, faint means nothing assigned. Static --

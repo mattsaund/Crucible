@@ -140,6 +140,31 @@ target_include_directories(crucible_imgui PUBLIC
     ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
 target_link_libraries(crucible_imgui PUBLIC glfw OpenGL::GL)
 
+# --- the window's mark ----------------------------------------------------
+#
+# The flame in the corner of the window, and the same artwork the application
+# icon is made from. Compiled in for the same reason the font is: looking for
+# it on disk at runtime would mean an install layout and a search path for a
+# picture.
+#
+# Raw RGBA rather than the PNG, because nothing in Crucible can decode a PNG --
+# ImGui keeps its copy of stb_image to itself, and pulling in a decoder to read
+# one 128-pixel square would be a strange trade. packaging/make_icons.py writes
+# the .rgba beside the .png from the one piece of artwork.
+set(CRUCIBLE_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${CRUCIBLE_GENERATED_DIR})
+
+set(CRUCIBLE_MARK_RGBA ${CMAKE_CURRENT_LIST_DIR}/../packaging/crucible-mark.rgba)
+set(CRUCIBLE_MARK_CPP  ${CRUCIBLE_GENERATED_DIR}/icon_mark.cpp)
+if(EXISTS ${CRUCIBLE_MARK_RGBA})
+    if(NOT EXISTS ${CRUCIBLE_MARK_CPP} OR ${CRUCIBLE_MARK_RGBA} IS_NEWER_THAN ${CRUCIBLE_MARK_CPP})
+        execute_process(COMMAND ${CMAKE_COMMAND}
+            -DIN=${CRUCIBLE_MARK_RGBA} -DOUT=${CRUCIBLE_MARK_CPP}
+            -DSYMBOL=kMark -DNAMESPACE=crucible::gui::art
+            -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake)
+    endif()
+endif()
+
 # --- the interface font -------------------------------------------------
 #
 # JetBrains Mono, compiled in rather than looked for. A font is the one
@@ -192,6 +217,15 @@ if(CRUCIBLE_FONTS_EMBEDDED)
     add_library(crucible_fonts STATIC ${CRUCIBLE_FONT_SOURCES})
     target_compile_definitions(crucible_fonts PUBLIC CRUCIBLE_HAS_EMBEDDED_FONT)
     target_link_libraries(crucible_imgui PUBLIC crucible_fonts)
+endif()
+
+# The mark rides along with the fonts: same kind of asset, same reason for
+# being compiled in, and one fewer target. Without it the window falls back to
+# drawing the flame from its own control points.
+if(EXISTS ${CRUCIBLE_MARK_CPP})
+    add_library(crucible_mark STATIC ${CRUCIBLE_MARK_CPP})
+    target_compile_definitions(crucible_mark PUBLIC CRUCIBLE_HAS_EMBEDDED_MARK)
+    target_link_libraries(crucible_imgui PUBLIC crucible_mark)
 endif()
 
 # --- llama.cpp -------------------------------------------------------------

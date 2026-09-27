@@ -89,8 +89,8 @@ void App::draw_topbar() {
     // side menu is a list of models rather than a masthead.
     ImGui::SameLine();
     const float mark_x = ImGui::GetCursorPosX();
-    theme::draw_flame(draw, ImVec2(origin.x + mark_x + em(0.45F), middle), em(0.62F));
-    ImGui::SetCursorPosX(mark_x + em(1.15F));
+    theme::draw_mark(draw, ImVec2(origin.x + mark_x + em(0.85F), middle), em(1.9F));
+    ImGui::SetCursorPosX(mark_x + em(2.0F));
 
     float left_used = ImGui::GetCursorPosX();
     const float left_room = width - right_room - left_used;

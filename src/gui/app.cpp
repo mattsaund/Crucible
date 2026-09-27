@@ -788,6 +788,11 @@ int App::run() {
     // screen as often as not on a laptop with a monitor plugged in.
     apply_display_scale(/*rebuild_texture=*/false);
 
+    // The window's mark, uploaded once the context exists. Nothing waits on it:
+    // without a texture the corner draws the flame from its control points.
+    theme::load_mark();
+    theme::set_window_icon(window_);
+
     // Then the size: decided in points, set in this display's window units.
     {
         int work_x = 0;

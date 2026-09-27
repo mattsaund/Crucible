@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Build Crucible's icons from one piece of artwork.
+
+The mark is an ASCII flame: orange characters on black, drawn by hand. This
+turns it into the three things the program and its installers need, all from
+that one file so they cannot drift apart:
+
+  crucible.png        1024 square, rounded, transparent outside -- the master,
+                      and what the .icns and the Linux menu entry are made from
+  crucible.ico        the same, at the sizes Windows asks for
+  crucible-mark.rgba  128 square, raw RGBA, compiled into the binary and drawn
+                      in the corner of the window (no PNG decoder in the app)
+
+Rounded like every other icon on a modern dock: a superellipse would be closer
+to what macOS does, but a rounded rectangle at 22% is what reads as "an app
+icon" on all three platforms and is what LM Studio, VS Code and the rest use.
+
+    python3 packaging/make_icons.py <artwork.png>
+"""
+import sys
+from PIL import Image, ImageDraw
+
+# The ground the mark sits on. A touch above the window's own near-black, so
+# the icon still reads as a tile against a black dock rather than dissolving
+# into it.
+BACKGROUND = (18, 18, 20, 255)
+
+MASTER = 1024
+RADIUS = 0.22          # of the side, the modern app-icon convention
+MARK_HEIGHT = 0.68     # of the side: margin is what makes it look like an icon
+
+# Keying the artwork's black out, and lifting what is left.
+INK_FLOOR = 18         # below this it is background
+INK_FULL = 70          # above this it is solid ink; between, a ramp
+INK_LIFT = 1.35        # #EA6200 becomes #FF8400, the interface's flame
+MARK_PIXELS = 128      # what gets compiled into the binary
+
+
+def trimmed(image):
+    """The artwork with its black surround removed."""
+    rgb = image.convert("RGB")
+    box = rgb.point(lambda v: 255 if v > 24 else 0).convert("L").getbbox()
+    return image.crop(box) if box else image
+
+
+def master(artwork):
+    canvas = Image.new("RGBA", (MASTER, MASTER), (0, 0, 0, 0))
+
+    # The rounded tile, drawn into the alpha channel so the corners are cut
+    # rather than painted over -- an icon with black corners looks square on
+    # every dock that rounds it again.
+    tile = Image.new("RGBA", (MASTER, MASTER), BACKGROUND)
+    mask = Image.new("L", (MASTER, MASTER), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, MASTER - 1, MASTER - 1), radius=int(MASTER * RADIUS), fill=255)
+    canvas.paste(tile, (0, 0), mask)
+
+    art = trimmed(artwork).convert("RGBA")
+    # Two things at once, and both matter at 32 pixels.
+    #
+    # Black is the artwork's background rather than part of the drawing, so it
+    # is keyed out -- on a ramp rather than a cliff, which is what keeps the
+    # edges of each character from going jagged when this is scaled down.
+    #
+    # And the ink is lifted toward the flame the rest of the program is drawn
+    # in. The artwork's orange is #EA6200, which on a dark tile at icon size
+    # reads as brown; the interface's is #FF8700. Same hue, more of it.
+    pixels = art.load()
+    for y in range(art.height):
+        for x in range(art.width):
+            r, g, b, _ = pixels[x, y]
+            ink = max(r, g, b)
+            if ink <= INK_FLOOR:
+                pixels[x, y] = (0, 0, 0, 0)
+                continue
+            alpha = 255 if ink >= INK_FULL else int(
+                255 * (ink - INK_FLOOR) / (INK_FULL - INK_FLOOR))
+            pixels[x, y] = (min(255, int(r * INK_LIFT)),
+                            min(255, int(g * INK_LIFT)),
+                            min(255, int(b * INK_LIFT)), alpha)
+
+    tall = int(MASTER * MARK_HEIGHT)
+    wide = max(1, round(art.width * tall / art.height))
+    art = art.resize((wide, tall), Image.LANCZOS)
+    canvas.alpha_composite(art, ((MASTER - wide) // 2, (MASTER - tall) // 2))
+    return canvas
+
+
+def main():
+    source = sys.argv[1] if len(sys.argv) > 1 else "icon.png"
+    here = __file__.rsplit("/", 1)[0]
+
+    icon = master(Image.open(source))
+    icon.save(f"{here}/crucible.png", optimize=True)
+
+    icon.save(f"{here}/crucible.ico",
+              sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)])
+
+    # The Linux menu entry wants an SVG, and the artwork is not one. Wrapping
+    # the master in an <svg> is what every raster-icon project does about that:
+    # the file scales to whatever a theme asks for, and there is still only one
+    # drawing to keep up to date.
+    # At 256 rather than the master's 1024: this is drawn in menus and docks at
+    # 48 or 64, and embedding the full-size PNG made the file ten times larger
+    # for detail nothing renders.
+    import base64, io
+    menu_size = 256
+    buffer = io.BytesIO()
+    icon.resize((menu_size, menu_size), Image.LANCZOS).save(buffer, "PNG", optimize=True)
+    png = buffer.getvalue()
+    encoded = base64.b64encode(png).decode("ascii")
+    with open(f"{here}/crucible.svg", "w") as out:
+        out.write(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!-- Generated by packaging/make_icons.py from the artwork. Do not\n'
+            '     edit: edit the artwork and run the script. -->\n'
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+            f'width="{menu_size}" height="{menu_size}" viewBox="0 0 {menu_size} {menu_size}">\n'
+            f'  <image width="{menu_size}" height="{menu_size}" '
+            f'xlink:href="data:image/png;base64,{encoded}"/>\n'
+            '</svg>\n')
+
+    mark = icon.resize((MARK_PIXELS, MARK_PIXELS), Image.LANCZOS)
+    with open(f"{here}/crucible-mark.rgba", "wb") as out:
+        out.write(mark.tobytes("raw", "RGBA"))
+
+    print(f"crucible.png {icon.size}, crucible.ico, crucible.svg, "
+          f"crucible-mark.rgba {MARK_PIXELS}x{MARK_PIXELS}")
+
+
+if __name__ == "__main__":
+    main()

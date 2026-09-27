@@ -21,8 +21,23 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <system_error>
+
+// For the one texture Crucible uploads itself. GLFW brings the GL headers in,
+// and glGenTextures/glTexImage2D are GL 1.1 -- old enough that every platform's
+// system library exports them without a loader.
+#include <GLFW/glfw3.h>
+
+#ifdef CRUCIBLE_HAS_EMBEDDED_MARK
+// Written by cmake/EmbedBinary.cmake from packaging/crucible-mark.rgba. Declared
+// here rather than in a header, because one translation unit uses it.
+namespace crucible::gui::art {
+extern const unsigned char kMark[];
+extern const unsigned int  kMark_size;
+}  // namespace crucible::gui::art
+#endif
 
 namespace crucible::gui::theme {
 
@@ -285,6 +300,80 @@ void load_fonts(float layout, float density) {
         g_body = io.Fonts->AddFontDefault();
         io.FontGlobalScale = layout;
     }
+}
+
+namespace {
+
+/// The uploaded mark, or zero when there is none to draw.
+ImTextureID g_mark = 0;
+
+}  // namespace
+
+void load_mark() {
+#ifdef CRUCIBLE_HAS_EMBEDDED_MARK
+    if (g_mark != 0) {
+        return;
+    }
+    // Raw RGBA, so the side is the square root of a quarter of the byte count.
+    // Checked rather than assumed: a truncated asset would otherwise be
+    // uploaded as whatever shape happens to divide.
+    const unsigned int pixels = crucible::gui::art::kMark_size / 4;
+    auto side = static_cast<unsigned int>(std::lround(std::sqrt(static_cast<double>(pixels))));
+    if (side == 0 || side * side * 4 != crucible::gui::art::kMark_size) {
+        return;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    // Linear both ways: this is drawn at a twentieth of its size in the corner
+    // of the bar and at whatever the display scale asks for, so it is always
+    // being resampled.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(side),
+                 static_cast<GLsizei>(side), 0, GL_RGBA, GL_UNSIGNED_BYTE, crucible::gui::art::kMark);
+
+    g_mark = static_cast<ImTextureID>(static_cast<std::intptr_t>(texture));
+#endif
+}
+
+void set_window_icon(GLFWwindow* window) {
+#if defined(CRUCIBLE_HAS_EMBEDDED_MARK) && !defined(__APPLE__)
+    if (window == nullptr) {
+        return;
+    }
+    const unsigned int pixels = crucible::gui::art::kMark_size / 4;
+    auto side = static_cast<int>(std::lround(std::sqrt(static_cast<double>(pixels))));
+    if (side <= 0 || static_cast<unsigned>(side * side * 4) != crucible::gui::art::kMark_size) {
+        return;
+    }
+    // GLFW wants non-const pixels and copies them straight away, so a cast is
+    // honest here: nothing writes through it and nothing keeps it.
+    GLFWimage image{};
+    image.width  = side;
+    image.height = side;
+    image.pixels = const_cast<unsigned char*>(crucible::gui::art::kMark);
+    glfwSetWindowIcon(window, 1, &image);
+#else
+    // macOS takes the icon from the bundle, and glfwSetWindowIcon there is
+    // documented to do nothing but emit an error.
+    (void)window;
+#endif
+}
+
+void draw_mark(ImDrawList* draw, ImVec2 center, float size) {
+    if (g_mark == 0) {
+        // No artwork: the shape Crucible drew for itself before there was any.
+        draw_flame(draw, center, size * 0.5F);
+        return;
+    }
+    const float half = size * 0.5F;
+    draw->AddImage(g_mark, ImVec2(center.x - half, center.y - half),
+                   ImVec2(center.x + half, center.y + half));
 }
 
 void draw_flame(ImDrawList* draw, ImVec2 center, float radius, float alpha) {
