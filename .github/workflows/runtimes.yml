@@ -81,13 +81,28 @@ jobs:
       # 12.9 rather than 13: it emits real code for Blackwell, and it does not
       # need the driver generation 13 does. A runtime nobody can load is not
       # faster than one they have to compile.
-      - name: CUDA toolkit
-        if: matrix.backend == 'cuda'
+      #
+      # Two steps because the two platforms want different things of the same
+      # action. On Windows the subset has to include the Visual Studio
+      # integration -- without it cmake finds the toolkit, reports "CUDA Toolkit
+      # found", and then stops at "No CUDA toolset found" when it tries to
+      # compile with it. On Linux the sub-package names are apt's rather than
+      # the installer's, and asking for the installer's names failed apt
+      # outright, so that one takes the whole toolkit and the extra minutes.
+      - name: CUDA toolkit (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.9.1'
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "visual_studio_integration"]'
+
+      - name: CUDA toolkit (Linux)
+        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.9.1'
+          method: network
 
       # The same flags src/runtime/builder.cpp uses, with two differences that
       # come from building for somebody else's machine rather than this one:
