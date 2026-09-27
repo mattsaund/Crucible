@@ -140,8 +140,12 @@ ___
 
 ### Run on your hardware
 
-- Compute runtimes — CUDA, Vulkan, Metal, CPU — are compiled on demand from the
-  settings screen, against the same llama.cpp the program was built from.
+- Compute runtimes — CUDA, Vulkan, Metal, CPU — are installed from the settings
+  screen: downloaded where a build is published for your platform, compiled
+  here where it is not. Either way against the same llama.cpp the program was
+  built from, because a backend built against another one crashes on the first
+  tensor.
+- A downloaded CUDA backend needs only an NVIDIA driver — no toolkit.
 - Multiple GPUs: `auto`, `even`, `priority` (an order you arrange) or `single`.
 - Optional: keep every layer on the GPU, and refuse models that will not fit in
   video memory.
