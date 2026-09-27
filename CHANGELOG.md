@@ -6,7 +6,8 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
-## Unreleased
+## 0.6.0 — 2026-09-27
+
 
 **Runtimes can arrive already built.** Compiling a backend on the machine that
 will run it stays the fallback and stays correct, but for CUDA it cost four and
@@ -39,6 +40,19 @@ dots, each naming itself on hover.
 
 **Keys.** Ctrl+1..4 for the views, Ctrl+, for Settings, and the open project in
 the window title.
+
+**A real icon.** The mark was shapes Crucible generated from its own control
+points. It is a drawing now -- an ASCII flame -- and one script turns that file
+into all four the program needs: the application icon, the Windows `.ico`, the
+Linux menu icon, and the mark compiled into the binary. Rounded like the icons
+either side of it in a dock, and the window hands it to the window manager, so
+the taskbar and the alt-tab list stop showing a placeholder.
+
+**Less to read.** The slash-command completion and its nine tests went with the
+terminal interface they belonged to, along with a path elider nothing had
+called since the top bar stopped printing paths. The icons moved into
+`packaging/icons/`, the desktop entry in with the rest of the Linux packaging,
+and the ignore list grew to cover what the packaging scripts leave behind.
 
 ## 0.5.5 — 2026-09-27
 
