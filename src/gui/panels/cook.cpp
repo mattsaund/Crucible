@@ -291,8 +291,7 @@ void App::draw_history() {
         wrapped(theme::kTextDim, "No project open. Open one to see its history.");
         return;
     }
-    wrapped(theme::kTextDim, "Everything Crucible has done in this project.");
-    ImGui::Dummy(ImVec2(0, em(0.6F)));
+    ImGui::Dummy(ImVec2(0, em(0.4F)));
 
     section("COOKS");
     const CookLog log(project_dir());
@@ -334,8 +333,15 @@ void App::draw_cook_composer(const Snapshot& snapshot) {
     const std::shared_ptr<const Cook> cook = snapshot.cook;
     const bool asking = cook && cook->state == CookState::Asking;
 
+    // NoScrollbar, and it is not belt-and-braces. The composer is sized by hand
+    // from the text it holds, and any frame where that measurement is a pixel
+    // short -- a font reloaded at a new display scale, a readout that grew a
+    // digit -- answers with a scrollbar down the side of the box you type in,
+    // and a box that can scroll swallows the wheel over it. The height is the
+    // contract; nothing inside it may scroll.
     ImGui::BeginChild("cook-composer", ImVec2(0, 0),
-                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // Closed until a project is open, for the same reason as the chat box: a
     // cook works on a folder, and there is not one yet.

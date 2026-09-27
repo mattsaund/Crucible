@@ -415,6 +415,10 @@ private:
     /// A directory waiting on the trust question, and the answer to it.
     std::optional<std::filesystem::path> pending_trust_;
 
+    /// Set by the Jump to latest button; acted on at the top of the next frame,
+    /// where the pane's scroll range is known.
+    bool jump_to_end_ = false;
+
     /// `--no-trust`: open whatever is asked for without the folder question.
     /// For scripted runs and for driving the window in tests, where there is
     /// nobody to answer a modal.

@@ -91,10 +91,19 @@ bool grow_input(const char* id, const char* hint, std::string& text,
 }
 
 float reading_column(float available) {
-    // One measurement of one glyph: the face is monospace, so every column is
-    // this wide.
+    // Ninety characters. Typography puts comfortable prose at 65-75 and code at
+    // 80-100, and this column holds both -- a reply is a paragraph with a fenced
+    // block in the middle of it. Ninety is the width where the paragraph is
+    // still readable and an eighty-column diff has not started wrapping.
+    //
+    // It was 110, which is wider than any of those: on a maximized window a
+    // sentence ran a foot across the glass and the eye lost its place on the
+    // way back to the next line.
+    //
+    // One measurement of one glyph, because the face is monospace and every
+    // column is this wide.
     const float column = ImGui::CalcTextSize("0").x;
-    return column > 0.0F ? std::min(available, column * 110.0F) : available;
+    return column > 0.0F ? std::min(available, column * 90.0F) : available;
 }
 
 IconHit icon_slot(const char* id, float size, bool lit) {
@@ -148,12 +157,63 @@ bool top_tab(const char* label, bool selected, float height) {
     return pressed;
 }
 
+namespace {
+
+/// The width of one character. The face is monospace, so one measurement
+/// answers for every string drawn in it.
+float advance_here() {
+    return ImGui::CalcTextSize("0").x;
+}
+
+}  // namespace
+
+std::string elide(const std::string& text, float room) {
+    const float advance = advance_here();
+    if (advance <= 0.0F) {
+        return text;
+    }
+    const auto fits = static_cast<std::size_t>(std::max(room / advance, 0.0F));
+    if (text.size() <= fits) {
+        return text;
+    }
+    if (fits < 2) {
+        return {};
+    }
+    return text.substr(0, fits - 1) + "\xE2\x80\xA6";
+}
+
+std::string middle_out(const std::string& text, float room) {
+    const float advance = advance_here();
+    if (advance <= 0.0F) {
+        return text;
+    }
+    const auto fits = static_cast<std::size_t>(std::max(room / advance, 0.0F));
+    if (text.size() <= fits) {
+        return text;
+    }
+    if (fits < 8) {
+        return elide(text, room);   // too little room to keep two ends
+    }
+    const std::size_t keep = fits - 1;       // one column for the ellipsis
+    const std::size_t tail = keep * 2 / 3;   // the end is worth more than the start
+    const std::size_t head = keep - tail;
+    return text.substr(0, head) + "\xE2\x80\xA6" + text.substr(text.size() - tail);
+}
+
 std::string model_label(const std::string& reference) {
     if (reference.empty()) {
         return "(none)";
     }
     const std::size_t slash = reference.find_last_of("/\\");
-    return slash == std::string::npos ? reference : reference.substr(slash + 1);
+    std::string name = slash == std::string::npos ? reference : reference.substr(slash + 1);
+
+    // Without the extension. Every model here is a .gguf, so the five
+    // characters saying so are five characters of a name that does not fit --
+    // and the name is the part that tells two quantizations of one model apart.
+    if (name.size() > 5 && name.compare(name.size() - 5, 5, ".gguf") == 0) {
+        name.resize(name.size() - 5);
+    }
+    return name;
 }
 
 std::string tail_of(const std::filesystem::path& path, std::size_t width) {

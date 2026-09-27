@@ -26,54 +26,6 @@
 #include "../widgets.hpp"
 
 namespace crucible::gui {
-namespace {
-
-/// A string cut to fit `room` pixels, with an ellipsis where it was cut.
-///
-/// The face is monospace, so this is arithmetic rather than a search: one
-/// measurement gives the width of every column.
-std::string elide(const std::string& text, float room, float advance) {
-    if (advance <= 0.0F) {
-        return text;
-    }
-    const auto fits = static_cast<std::size_t>(std::max(room / advance, 0.0F));
-    if (text.size() <= fits) {
-        return text;
-    }
-    if (fits < 2) {
-        return {};
-    }
-    // Kept from the right. A path is identified by its tail -- two projects
-    // under the same parent differ in the last component and agree on every
-    // one before it.
-    return "\xE2\x80\xA6" + text.substr(text.size() - (fits - 1));
-}
-
-/// The same, but the cut is taken out of the middle.
-///
-/// For a path, which is identified at both ends and at neither of the places in
-/// between: the head says which disk or which home directory, the tail says
-/// which project, and the six nested directories in the middle are the part
-/// that can go. Cutting from the left alone loses the first and cutting from
-/// the right loses the second.
-std::string middle_out(const std::string& text, float room, float advance) {
-    if (advance <= 0.0F) {
-        return text;
-    }
-    const auto fits = static_cast<std::size_t>(std::max(room / advance, 0.0F));
-    if (text.size() <= fits) {
-        return text;
-    }
-    if (fits < 8) {
-        return elide(text, room, advance);   // too little room to keep two ends
-    }
-    const std::size_t keep = fits - 1;       // one column for the ellipsis
-    const std::size_t tail = keep * 2 / 3;   // the end is worth more than the start
-    const std::size_t head = keep - tail;
-    return text.substr(0, head) + "\xE2\x80\xA6" + text.substr(text.size() - tail);
-}
-
-}  // namespace
 
 void App::draw_topbar() {
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -90,7 +42,6 @@ void App::draw_topbar() {
     const ImVec2 origin  = ImGui::GetWindowPos();
     const float  width   = ImGui::GetWindowWidth();
     const float  middle  = origin.y + bar * 0.5F;
-    const float  advance = ImGui::CalcTextSize("0").x;
     const float  line    = ImGui::GetTextLineHeight();
 
     // The edge under the bar, which is what separates it from the panels
@@ -156,59 +107,50 @@ void App::draw_topbar() {
 
     // --- the project -------------------------------------------------------
     //
-    // Centered in the bar, because it is what the whole window is about and the
-    // controls on either side are not. Said in words rather than behind a
-    // folder glyph: a small drawn icon next to a path is decoration that has to
-    // be decoded, and "Project:" is four letters that never has to be.
+    // One chip in the middle of the bar, holding the folder's name, and
+    // clicking it is how you change project.
     //
-    // Measured first and placed from the middle out, so the path grows in both
-    // directions and the label stays where it was. It gives up the middle of
-    // the path rather than the end when there is not room -- the beginning says
-    // which disk and the end says which project; it is the part between them
-    // that nobody reads.
+    // It used to be the whole path -- "Project: /home/matt/Desktop/Code/Git/
+    // owner/public/Crucible" -- with a Change project button after it, and
+    // between them they took half the bar to say something the title of every
+    // other window says in one word. The path still matters, so it is the
+    // tooltip: there when you ask which checkout this is, gone the rest of the
+    // time. The chip doubles as the button because "the thing that says which
+    // project" and "the thing that changes project" being two separate targets
+    // was one target too many.
     {
-        // With nothing open there is no path to elide and no project to change:
-        // the label says so and the button offers the only thing to do about
-        // it. Same geometry either way, so the bar does not jump when a project
-        // is opened.
-        const bool        open   = project_open();
-        const std::string path   = project_root().string();
-        const char*       button = open ? "Change project" : "Open Project";
-        const float       start = ImGui::GetCursorPosX();
-        const float       stop  = width - right_room;
+        const bool        open = project_open();
+        const std::string path = project_root().string();
+        const std::string name = open ? project_root().filename().string() : std::string();
+        const std::string label =
+            open ? (name.empty() ? path : name) : std::string("Open Project");
 
-        const std::string label = open ? "Project: " : "";
-        const float label_w  = ImGui::CalcTextSize(label.c_str()).x;
-        const float button_w = ImGui::CalcTextSize(button).x
-                             + style.FramePadding.x * 2.0F;
-        const float gap      = em(0.8F);
+        const float start = ImGui::GetCursorPosX();
+        const float stop  = width - right_room;
+        const float room  = std::max(stop - start - em(1.2F), em(6.0F));
 
-        const float room = std::max(stop - start - em(1.2F), em(8.0F));
-        const std::string shown =
-            open ? middle_out(path, room - label_w - button_w - gap, advance)
-                 : std::string("No Project");
-        const float block = label_w + ImGui::CalcTextSize(shown.c_str()).x
-                          + gap + button_w;
+        const float pad   = style.FramePadding.x * 2.5F;
+        const std::string shown = middle_out(label, room - pad);
+        const float block = ImGui::CalcTextSize(shown.c_str()).x + pad;
 
-        // Centered on the window, then pushed right if the wordmark and the
-        // fold button have already taken that space. It never overlaps either
-        // side; it only stops being centered.
+        // Centered on the window, then pushed right if the wordmark has already
+        // taken that space. It never overlaps either side; it only stops being
+        // centered.
         float at_x = std::max((width - block) * 0.5F, start);
         at_x = std::min(at_x, std::max(stop - block, start));
 
-        const ImVec2 at = ImVec2(origin.x + at_x, middle - line * 0.5F);
-        draw->AddText(at, theme::kTextFaint, label.c_str());
-        draw->AddText(ImVec2(at.x + label_w, at.y),
-                      open ? theme::kText : theme::kTextDim, shown.c_str());
-
-        ImGui::SetCursorPosX(at_x + block - button_w);
+        ImGui::SetCursorPosX(at_x);
         center_y(ImGui::GetFrameHeight());
-        if (ImGui::Button(button)) {
+        // Flat until hovered: at rest it reads as a title, and it only offers
+        // itself as a control once the pointer is on it.
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              theme::to_vec(open ? theme::kText : theme::kTextDim));
+        if (ImGui::Button(shown.c_str(), ImVec2(block, 0))) {
             open_browse(BrowseFor::Project, project_root());
         }
-        if (open) {
-            ImGui::SetItemTooltip("%s", path.c_str());
-        }
+        ImGui::PopStyleColor(2);
+        ImGui::SetItemTooltip("%s", open ? path.c_str() : "Choose a folder to work in");
         left_used = at_x + block;
     }
 
@@ -227,10 +169,10 @@ void App::draw_topbar() {
             view_ = tab.view;
         }
         ImGui::SetItemTooltip(
-            tab.view == View::Chat    ? "Ask, and the delegator picks the expert"
-          : tab.view == View::Cook    ? "Set one goal and let the experts work it in passes"
-          : tab.view == View::Create  ? "Fine-tune a model on your own data until it is an expert in one subject"
-                                      : "Everything this project has done");
+            tab.view == View::Chat    ? "Ask one question"
+          : tab.view == View::Cook    ? "Work one goal in passes"
+          : tab.view == View::Create  ? "Fine-tune an expert"
+                                      : "Past cooks and conversations");
         ImGui::SameLine();
     }
 

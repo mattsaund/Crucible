@@ -188,7 +188,10 @@ void App::open_project(const std::filesystem::path& root) {
 
     remember_project(project.root);
     project_error_.clear();
-    say("opened " + project.root.string());
+    // The name, not the path. The path is in the top bar's tooltip and in
+    // Settings; a notice is a line in the transcript and a three-line path
+    // wrapping across it is the loudest thing on an empty screen.
+    say("opened " + (project.name.empty() ? project.root.string() : project.name));
 }
 
 // ---------------------------------------------------------------------------
@@ -553,11 +556,48 @@ void App::draw() {
         // Yanking someone reading back through an hour-old cook to the end
         // every time a token arrives is the single most irritating thing a
         // streaming view can do.
-        if (follow_ && (view_ == View::Chat || view_ == View::Cook)
-            && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0F) {
+        //
+        // "There" is a slack of a few lines rather than four pixels: a reader
+        // who nudged the wheel once is still at the bottom and still wants to
+        // be carried, and four pixels said they were not.
+        const bool streams_here = view_ == View::Chat || view_ == View::Cook;
+        const float slack   = em(4.0F);
+        const bool  at_end  = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - slack;
+        const bool  can_jump = streams_here && ImGui::GetScrollMaxY() > slack && !at_end;
+        if (jump_to_end_) {
+            jump_to_end_ = false;
+            ImGui::SetScrollY(ImGui::GetScrollMaxY());
+        } else if (follow_ && streams_here && at_end) {
             ImGui::SetScrollHereY(1.0F);
         }
+        // Measured here, inside the pane, and used after it closes: a button
+        // drawn in the pane would scroll away with the conversation, which is
+        // the one place a "jump to the end" control must not be.
+        const ImVec2 pane_at   = ImGui::GetWindowPos();
+        const ImVec2 pane_size = ImGui::GetWindowSize();
         ImGui::EndChild();
+
+        // Scrolled away from a conversation that is still moving. Everything
+        // else on this screen is flat, so this is the one floating thing in the
+        // window -- which is the point: it is the only control that is about
+        // where you are rather than about what is being said.
+        if (can_jump) {
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const ImVec2 here = ImGui::GetCursorScreenPos();
+            const char*  label = "Jump to latest";
+            const float  width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 3.0F;
+            const float  tall  = ImGui::GetFrameHeight();
+            ImGui::SetCursorScreenPos(ImVec2(pane_at.x + (pane_size.x - width) * 0.5F,
+                                             pane_at.y + pane_size.y - tall - em(0.8F)));
+            ImGui::PushStyleColor(ImGuiCol_Button, theme::to_vec(theme::kRaised));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(theme::kText));
+            if (ImGui::Button(label, ImVec2(width, tall))) {
+                jump_to_end_ = true;
+                follow_      = true;
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SetCursorScreenPos(here);
+        }
 
         if (has_composer) {
             draw_composer_splitter();

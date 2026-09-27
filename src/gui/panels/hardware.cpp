@@ -74,9 +74,7 @@ void App::draw_settings_hardware() {
 
     section("DEVICES");
     if (devices.empty()) {
-        wrapped(theme::kTextDim,
-                "No compute devices, because no runtime is installed. Build one on "
-                "the Runtimes page: it compiles a GPU backend for this machine.");
+        wrapped(theme::kTextDim, "No devices -- install a runtime first.");
         if (ImGui::Button("Go to Runtimes", ImVec2(em(12.0F), 0))) {
             settings_page_ = SettingsPage::Runtimes;
         }

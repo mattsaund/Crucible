@@ -127,11 +127,16 @@ void App::draw_model_tree(const Snapshot& snapshot) {
                     delegator_dot(config_, snapshot));
 
     {
-        const std::string name = model_label(config_.router.model);
         const ImU32 ink = config_.router.model.empty() ? theme::kTextFaint
                         : routing                      ? theme::kFlameBright
                                                        : theme::kText;
         ImGui::PushFont(routing ? theme::bold() : theme::body());
+        // Elided to the room there is. AddText clips at the panel edge, which
+        // ends a name mid-glyph and says nothing about there being more of it;
+        // an ellipsis is the difference between a truncated name and a name
+        // that looks misspelled.
+        const std::string name =
+            elide(model_label(config_.router.model), right - (left + em(kLabel)));
         draw->AddText(ImVec2(left + em(kLabel), trunk_y - line * 0.5F), ink,
                       name.c_str());
         ImGui::PopFont();
@@ -141,11 +146,9 @@ void App::draw_model_tree(const Snapshot& snapshot) {
     // Settings for anybody who has not already learned where it lives.
     ImGui::InvisibleButton("##delegator", ImVec2(right - left, row));
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s\n\nReads every prompt and picks the expert.\nClick to "
-                          "change which model does it.",
-                          config_.router.model.empty()
-                              ? "No delegator model assigned."
-                              : config_.router.model.c_str());
+        ImGui::SetTooltip("%s", config_.router.model.empty()
+                                    ? "No delegator model -- click to pick one"
+                                    : config_.router.model.c_str());
     }
     if (ImGui::IsItemActivated()) {
         show_settings(SettingsPage::General);
@@ -211,13 +214,14 @@ void App::draw_model_tree(const Snapshot& snapshot) {
 
         if (hot) {
             const std::string& file = config_.expert(expert.id).model;
+            // The subject, then the model under it. Both are facts about this
+            // seat that the row has no room for; the sentence telling you the
+            // row is clickable went, because every row here is.
             ImGui::SetTooltip(
-                "%s\n\n%s%s\n\nClick to assign a model to this expert.",
+                "%s\n%s%s",
                 expert.blurb.empty() ? expert.name.c_str() : expert.blurb.c_str(),
-                file.empty() ? "No model assigned." : file.c_str(),
-                seat.phase == SeatPhase::Missing
-                    ? "\nThat file is not where the config says it is."
-                    : "");
+                file.empty() ? "No model" : file.c_str(),
+                seat.phase == SeatPhase::Missing ? "  (missing)" : "");
         }
         if (ImGui::IsItemActivated()) {
             show_settings(SettingsPage::Experts);
@@ -293,9 +297,7 @@ void App::draw_sidebar(const Snapshot& snapshot) {
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip(
-            loaded ? "Unload every model and give the memory back.\nWhatever is needed "
-                     "comes back on the next prompt."
-                   : "Nothing is loaded.");
+            loaded ? "Unload every model" : "Nothing is loaded");
     }
     ImGui::EndChild();
 }

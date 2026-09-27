@@ -43,9 +43,7 @@ void App::draw_new_expert_modal() {
     // Two boxes and nothing else. The id, the chip, the keyword set and the
     // worked examples the delegator routes on are all derived or generated,
     // because those are things a person should not have to invent.
-    wrapped(theme::kTextDim,
-            "A name, and what it is trained in. Crucible works out the rest, and the "
-            "delegator writes its own example questions once it is loaded.");
+    text_colored(theme::kTextFaint, "A name and a subject. The rest is worked out.");
     ImGui::Dummy(ImVec2(0, em(0.5F)));
 
     text_colored(theme::kTextFaint, "Expert name");
@@ -123,13 +121,9 @@ void App::draw_browse_modal() {
         return;
     }
 
-    // Wrapped, not printed: both of these are longer than the dialog is wide,
-    // and an unwrapped line is simply cut off at the edge mid-word.
-    wrapped(theme::kTextDim, for_models
-        ? "Where your GGUF files are. Crucible reads this directory; it never "
-          "writes to it and never downloads into it."
-        : "The directory Crucible works in: its history, its cook journal and "
-          "the folder experts read and write inside.");
+    text_colored(theme::kTextFaint, "%s",
+                 for_models ? "Read for GGUF files. Never written to."
+                            : "Where experts read, write and keep history.");
     ImGui::Dummy(ImVec2(0, em(0.3F)));
 
     // A browser rather than a native file dialog. Crucible has no toolkit to
@@ -162,7 +156,20 @@ void App::draw_browse_modal() {
     // Sized to what is left rather than to a fixed height: the "create folder"
     // row that used to sit under it is gone, and a list that kept its old
     // height would just leave a strip of nothing where it was.
-    const float reserve = em(3.4F) + (project_error_.empty() ? 0.0F : em(1.8F));
+    //
+    // The error is measured rather than assumed to be one line. It was assumed,
+    // and a message holding a long path wraps to three -- which pushed Open and
+    // Cancel off the bottom of the dialog, leaving a file browser with no way
+    // to answer it but Escape.
+    float error_room = 0.0F;
+    if (!project_error_.empty()) {
+        const float wrap = ImGui::GetContentRegionAvail().x;
+        error_room = ImGui::CalcTextSize(project_error_.c_str(),
+                                         project_error_.c_str() + project_error_.size(),
+                                         false, wrap).y
+                   + ImGui::GetStyle().ItemSpacing.y;
+    }
+    const float reserve = em(3.4F) + error_room;
     ImGui::BeginChild("dirs", ImVec2(0, -reserve), ImGuiChildFlags_Borders);
     for (const std::filesystem::path& entry : subdirectories(browse_)) {
         // string(), not c_str(): on Windows a path is wide, and PushID would
@@ -231,10 +238,12 @@ void App::draw_trust_modal() {
     // behind it, which meant this question could be answered yes and nothing
     // could still be edited; now yes means yes, so it has to say what it grants
     // without hedging.
+    // The one place a paragraph earns its room: this is the consent, and what
+    // is being consented to is not obvious from the buttons. Two lines, and the
+    // second is the one people are surprised by.
     wrapped(theme::kTextDim,
-            "Crucible will read, write and run commands in this folder, and keep its "
-            "history. Paths outside it are refused -- but a command it runs is a "
-            "command, and can reach whatever you can.");
+            "Experts may read, write and run commands here. Paths outside are "
+            "refused -- a command they run is not.");
     ImGui::Dummy(ImVec2(0, em(0.6F)));
 
     if (ImGui::Button("Trust and open", ImVec2(em(11.0F), 0))) {

@@ -53,17 +53,16 @@ struct Step {
     const char* blurb;
 };
 
-/// The flow, in the order it is asked for. A step is not a page of settings:
-/// it is one decision, with the reason for it written next to it.
+/// The flow, in the order it is asked for. One line each, and the line says
+/// what the step takes rather than why the step exists -- the rail on the left
+/// already says where you are, and the controls say what they do.
 constexpr std::array<Step, 8> kSteps{{
-    {"Name",       "What this expert is for. Everything else is downstream of knowing that."},
-    {"Base model", "What it starts from. Fine-tuning specializes a model that already "
-                   "speaks; it does not teach one to speak from nothing."},
-    {"Data",       "What it learns from. A few megabytes of the right text beats a few "
-                   "gigabytes of the wrong."},
-    {"Tools",      "What it learns to reach for: reading files, running commands, searching."},
-    {"Target",     "How it trains and what comes out: the method, the size, the format."},
-    {"Train",      "The run itself."},
+    {"Name",       "What this expert is for."},
+    {"Base model", "What it starts from."},
+    {"Data",       "What it learns from."},
+    {"Tools",      "What it learns to reach for."},
+    {"Target",     "How it trains, and what comes out."},
+    {"Train",      "The run."},
     {"Test",       "Talk to it before you keep it."},
     {"Export",     "A file you can take anywhere."},
 }};
@@ -264,7 +263,7 @@ void App::draw_create(const Snapshot& snapshot) {
     const Step& step = kSteps[static_cast<std::size_t>(std::clamp(lab_step_, 0,
                                      static_cast<int>(kSteps.size()) - 1))];
     title(step.label);
-    wrapped(theme::kTextDim, step.blurb);
+    text_colored(theme::kTextFaint, "%s", step.blurb);
     if (!lab_error_.empty() && lab_step_ != 1 && lab_step_ != 2 && lab_step_ != 3) {
         // The picker prints its own; everywhere else this is the only place a
         // failed save would otherwise be seen, which is to say not at all.
@@ -311,7 +310,6 @@ void App::draw_create(const Snapshot& snapshot) {
             }
 
             section("OR A FILE ON THIS MACHINE");
-            wrapped(theme::kTextDim, "A GGUF or a directory of weights you already have.");
             ImGui::SetNextItemWidth(em(28.0F));
             ImGui::InputTextWithHint("##lab-base-local", "/models/llama-3.2-1b.gguf",
                                      &lab_local_path_);
@@ -364,10 +362,8 @@ void App::draw_create(const Snapshot& snapshot) {
             const bool tools = lab_step_ == 3;
             std::vector<lab::Asset>& into = tools ? lab_recipe_.tools : lab_recipe_.data;
             if (tools) {
-                wrapped(theme::kTextDim,
-                        "Tool use is learned from examples of it: transcripts where the model "
-                        "asks to read a file or run a command and uses what comes back. "
-                        "Crucible's own tool protocol is one of these.");
+                text_colored(theme::kTextFaint,
+                             "Transcripts of a model using tools.");
             }
             section("FROM HUGGINGFACE");
             if (const std::optional<lab::Asset> picked = draw_hub_picker(
@@ -379,9 +375,7 @@ void App::draw_create(const Snapshot& snapshot) {
             }
 
             section("OR FILES ON THIS MACHINE");
-            wrapped(theme::kTextDim,
-                    "A file or a folder: plain text, JSONL, markdown. This is the part that "
-                    "makes the model yours rather than another copy of what is already public.");
+            text_colored(theme::kTextFaint, "A file or a folder: text, JSONL, markdown.");
             ImGui::SetNextItemWidth(em(28.0F));
             ImGui::InputTextWithHint("##lab-data-local", "/home/you/notes", &lab_local_path_);
             ImGui::SameLine();
@@ -506,11 +500,7 @@ void App::draw_create(const Snapshot& snapshot) {
             if (lab_step_ == 7) {
                 ImGui::Dummy(ImVec2(0, em(0.5F)));
                 section("AND THEN A SEAT");
-                wrapped(theme::kTextDim,
-                        "Crucible routes by subject: the delegator reads each expert's "
-                        "description and picks the one a question belongs to. Exporting "
-                        "puts this model on the roster as a seat of its own, which is how "
-                        "five fine-tunes become five experts it can choose between.");
+                text_colored(theme::kTextFaint, "Exporting adds it to the roster.");
                 text_colored(theme::kText, "seat: %s",
                              lab_recipe_.name.empty() ? "(unnamed)" : lab_recipe_.name.c_str());
                 if (lab_recipe_.purpose.empty()) {
@@ -531,16 +521,8 @@ void App::draw_create(const Snapshot& snapshot) {
 
             ImGui::Dummy(ImVec2(0, em(0.5F)));
             section("NOT BUILT YET");
-            wrapped(theme::kTextDim,
-                    "The trainer, the test bench and the export are the next three pieces. "
-                    "Everything up to here -- what to start from, what to learn from, what it "
-                    "should fit in -- is real and is saved.");
-            ImGui::Dummy(ImVec2(0, em(0.4F)));
-            wrapped(theme::kTextDim,
-                    "Both methods train an adapter, which is PyTorch work rather than "
-                    "llama.cpp work, so the run will want a Python environment. Crucible "
-                    "will install and keep that itself, the way it builds a GPU runtime "
-                    "now -- nothing to set up by hand.");
+            wrapped(theme::kTextDim, "Not built yet. Everything above it is saved.");
+            text_colored(theme::kTextFaint, "It will install what the run needs.");
             break;
         }
     }

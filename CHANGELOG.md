@@ -6,6 +6,39 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.5.5 — 2026-09-27
+
+A pass over the whole window: less text, more room, and the small things that
+were wrong every day.
+
+**It says less.** Every panel had a paragraph under its heading explaining what
+the panel was for, and none of them were read twice. They are gone or down to a
+line. The controls and their names carry it now, and what genuinely needs
+saying -- what a folder is being trusted with -- is two lines in the one dialog
+that asks for consent.
+
+**It is easier to read.** The reading measure came down from 110 characters to
+90, which is where a paragraph and an eighty-column diff both sit comfortably.
+Panels round their corners, the spacing is looser, and the scrollbars are thin
+and dim instead of being the brightest thing on a near-black screen.
+
+**The top bar is a name, not a path.** It was `Project: /home/you/code/…/thing`
+plus a Change project button, taking half the bar to say what a window title
+says in a word. It is now the folder's name, and clicking it is how you change
+project. The path is the tooltip.
+
+**An empty chat suggests something to type.** Three chips that fill the box
+rather than sending, because the first thing anybody does with a suggestion is
+edit it.
+
+**Glitches.** The box you type in could grow a scrollbar of its own and swallow
+the wheel -- it cannot now, at any window size or font scale. A long error in
+the folder picker pushed Open and Cancel off the bottom of the dialog, leaving
+no way to answer it but Escape. Model names no longer end mid-glyph at the edge
+of the sidebar, and they no longer carry a `.gguf` that pushed the name out.
+Scrolling back through a conversation that is still streaming now offers a
+Jump to latest rather than either yanking you to the end or stranding you.
+
 ## 0.5.1 — 2026-09-22
 
 **It opens on nothing.** Crucible used to pick a directory for you -- the

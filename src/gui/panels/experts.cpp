@@ -71,10 +71,9 @@ std::optional<std::string> App::draw_model_picker(const char* id, const std::str
 
 void App::draw_expert_list() {
     title("Experts");
-    wrapped(theme::kTextDim,
-            "The delegator routes each prompt to one of these. Add your own with a "
-            "name and a description of what it handles; everything else is worked "
-            "out for you.");
+    // No paragraph. The page is a list of experts with a model beside each
+     // one, and a sentence telling you that is a sentence you read once.
+     
     ImGui::Dummy(ImVec2(0, em(0.5F)));
 
     if (ImGui::Button("+ New expert")) {
@@ -92,9 +91,7 @@ void App::draw_expert_list() {
     ImGui::Dummy(ImVec2(0, em(0.5F)));
 
     if (config_.roster.experts().empty()) {
-        wrapped(theme::kTextDim,
-                "The expert list is empty. Nothing can answer until there is an expert "
-                "on it.");
+        wrapped(theme::kTextDim, "No experts yet.");
     }
 
     std::optional<ExpertId> eject;

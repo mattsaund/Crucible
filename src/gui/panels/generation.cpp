@@ -32,9 +32,7 @@ void field() { ImGui::SetNextItemWidth(em(10.0F)); }
 
 void App::draw_settings_generation() {
     title("Generation");
-    wrapped(theme::kTextDim,
-            "What every expert inherits. An expert can override any of these for "
-            "itself; these are the starting point.");
+    text_colored(theme::kTextFaint, "Defaults every expert inherits.");
 
     section("LOADING");
 
@@ -153,7 +151,7 @@ void App::draw_settings_generation() {
     section("PROMPTING");
 
     std::string prompt = config_.system_prompt;
-    wrapped(theme::kTextDim, "Sent to every expert, ahead of your own words.");
+    text_colored(theme::kTextFaint, "Sent ahead of every prompt.");
     if (ImGui::InputTextMultiline("##system-prompt", &prompt,
                                   ImVec2(-FLT_MIN, em(6.0F)))) {
         update_config([&prompt](Config& config) { config.system_prompt = prompt; });

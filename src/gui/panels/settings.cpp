@@ -55,9 +55,7 @@ void App::draw_settings() {
             title("General");
 
             section("DELEGATOR");
-            wrapped(theme::kTextDim,
-                    "A small model that reads your prompt and names the expert it "
-                    "belongs to. It never answers; it only decides.");
+            text_colored(theme::kTextFaint, "Reads the prompt, names the expert. Never answers.");
             ImGui::SetNextItemWidth(em(20.0F));
             const bool open = ImGui::BeginCombo("Router model",
                                                 model_label(config_.router.model).c_str());
@@ -153,10 +151,7 @@ void App::draw_settings() {
             ImGui::Dummy(ImVec2(0, em(0.6F)));
             ImGui::Separator();
             section("DEFAULT EXPERT");
-            wrapped(theme::kTextDim,
-                    "Takes prompts the delegator could not place, and prompts routed to "
-                    "a seat with no model. Any expert can play this part; without one, "
-                    "an uncertain route is taken at face value.");
+            text_colored(theme::kTextFaint, "Takes what the delegator could not place.");
             const std::string current = config_.routing.default_expert.empty()
                 ? std::string("(none)")
                 : expert_label(config_.roster, config_.routing.default_expert);
@@ -196,9 +191,7 @@ void App::draw_settings() {
             section("PROJECT");
             if (project_open()) {
                 text_colored(theme::kFlame, "%s", project_root().string().c_str());
-                wrapped(theme::kTextDim,
-                        "Experts can read, write and run things here because you trusted "
-                        "this folder. Paths outside it are refused.");
+                text_colored(theme::kTextFaint, "Trusted. Paths outside it are refused.");
             } else {
                 text_colored(theme::kTextDim, "No project open.");
             }
@@ -337,19 +330,14 @@ void App::draw_settings() {
 
         case SettingsPage::About: {
             title("Crucible " CRUCIBLE_VERSION);
-            wrapped(theme::kTextDim,
-                    "A local AI lab: experts on demand, projects that cook, and a "
-                    "workshop for fine-tuning the experts you do not have yet.");
+            text_colored(theme::kTextFaint, "A local AI lab.");
 
             section("VERSION");
             if (update_available()) {
                 text_colored(theme::kFlame, "Crucible %s is available.",
                              update_.latest.c_str());
-                wrapped(theme::kTextDim,
-                        "Update with the line below, or with the download from the "
-                        "release page if that is how this copy got here. Either way it "
-                        "replaces the program and leaves your config, models and history "
-                        "where they are.");
+                text_colored(theme::kTextFaint,
+                             "Run this, or download it again. Your data stays.");
                 // Selectable so it can be copied: an install line nobody can
                 // select is an install line somebody has to retype.
                 std::string command(update::update_command());
@@ -391,9 +379,7 @@ void App::draw_settings() {
                           paths::log_file().string().c_str());
 
             section("TRUSTED FOLDERS");
-            wrapped(theme::kTextDim,
-                    "Crucible asks once per directory before it will read or write "
-                    "there. These are the ones you have said yes to.");
+            text_colored(theme::kTextFaint, "Asked once per folder.");
             for (const std::filesystem::path& entry : trust_.entries()) {
                 text_colored(theme::kTextFaint, "%s", entry.string().c_str());
             }

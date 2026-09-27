@@ -113,6 +113,18 @@ std::string model_label(const std::string& reference);
 /// which project this is -- survives.
 std::string tail_of(const std::filesystem::path& path, std::size_t width);
 
+/// `text` cut to fit `room` pixels, keeping the end and marking the cut with an
+/// ellipsis. For names, which are identified by their tail.
+///
+/// Anything drawn with AddText is clipped by whatever panel it is in, and a
+/// clip says nothing: the reader cannot tell a name that ended from a name that
+/// ran out of room. An ellipsis can.
+std::string elide(const std::string& text, float room);
+
+/// The same, with the cut taken out of the middle. For a path, which is
+/// identified at both ends and at neither of the places between them.
+std::string middle_out(const std::string& text, float room);
+
 /// The status mark for a seat, in the same vocabulary the terminal panel uses.
 theme::Dot dot_for(SeatPhase phase);
 

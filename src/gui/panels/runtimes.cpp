@@ -96,9 +96,7 @@ void App::take_runtime_activation() {
 
 void App::draw_settings_runtimes() {
     title("Runtimes");
-    wrapped(theme::kTextDim,
-            "Compiled here, because a backend built somewhere else crashes here. "
-            "A few minutes each.");
+    text_colored(theme::kTextFaint, "Compiled on this machine. A few minutes each.");
 
     // Scanned when the page is first opened rather than at startup: it reads
     // the runtimes directory, and most sessions never come here.

@@ -33,34 +33,51 @@ ImVec4 to_vec(ImU32 color) {
 void apply() {
     ImGuiStyle& style = ImGui::GetStyle();
 
-    // Square-ish, not rounded. The terminal face is drawn from box-drawing
-    // characters and has no curves in it at all; matching that keeps the two
-    // recognizably the same program rather than a program and its friendlier
-    // cousin.
-    style.WindowRounding    = 0.0F;
-    style.ChildRounding     = 2.0F;
-    style.FrameRounding     = 2.0F;
-    style.PopupRounding     = 2.0F;
-    style.ScrollbarRounding = 2.0F;
-    style.GrabRounding      = 2.0F;
-    style.TabRounding       = 2.0F;
+    // Softened. These were 2px on the argument that the terminal face was drawn
+    // from box characters and had no curves in it -- and the terminal face is
+    // gone. What is left is a window competing with the other windows on a
+    // desktop, all of which round their corners, and a 2px radius reads as an
+    // aliasing artifact rather than as a decision.
+    //
+    // The panels get the larger radius and the controls inside them a smaller
+    // one, because a control with the same corner as the panel holding it looks
+    // like it is falling out of the panel.
+    style.WindowRounding    = 0.0F;   // the window fills the viewport; nothing to round
+    style.ChildRounding     = 7.0F;
+    style.FrameRounding     = 5.0F;
+    style.PopupRounding     = 8.0F;
+    style.ScrollbarRounding = 6.0F;
+    style.GrabRounding      = 5.0F;
+    style.TabRounding       = 5.0F;
 
     style.WindowBorderSize = 0.0F;
     style.ChildBorderSize  = 1.0F;
     style.FrameBorderSize  = 1.0F;
     style.PopupBorderSize  = 1.0F;
 
-    style.WindowPadding    = ImVec2(16, 14);
-    style.FramePadding     = ImVec2(10, 7);
-    style.ItemSpacing      = ImVec2(10, 8);
-    style.ItemInnerSpacing = ImVec2(8, 6);
-    style.ScrollbarSize    = 11.0F;
-    style.GrabMinSize      = 11.0F;
+    // Roomier than it was. A dark interface has less contrast to separate
+    // things with, so it separates them with space instead -- and the panels
+    // here were packed tightly enough that a heading, its body and the next
+    // heading read as one block.
+    style.WindowPadding    = ImVec2(18, 16);
+    style.FramePadding     = ImVec2(11, 8);
+    style.ItemSpacing      = ImVec2(10, 10);
+    style.ItemInnerSpacing = ImVec2(8, 7);
+
+    // Thinner, because it is a position indicator and not a control anyone
+    // aims at in a window this size -- the wheel and the keyboard do the work.
+    style.ScrollbarSize    = 9.0F;
+    style.GrabMinSize      = 10.0F;
 
     ImVec4* c = style.Colors;
     c[ImGuiCol_WindowBg]        = to_vec(kInk);
     c[ImGuiCol_ChildBg]         = to_vec(kPanel);
-    c[ImGuiCol_PopupBg]         = to_vec(kPanel);
+    // A step above the panels rather than the same color as them. A tooltip or
+    // a menu painted in the panel color is a paragraph that appears to be
+    // floating on the page with nothing under it -- the border alone is one
+    // pixel of separation, and on this ground that is not enough to read as a
+    // surface.
+    c[ImGuiCol_PopupBg]         = to_vec(kRaised);
     c[ImGuiCol_Border]          = to_vec(kPanelEdge);
     c[ImGuiCol_BorderShadow]    = ImVec4(0, 0, 0, 0);
 
@@ -79,8 +96,11 @@ void apply() {
     c[ImGuiCol_MenuBarBg]       = to_vec(kPanel);
 
     c[ImGuiCol_ScrollbarBg]     = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_ScrollbarGrab]   = ImVec4(0.22F, 0.22F, 0.24F, 1.0F);
-    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.30F, 0.30F, 0.33F, 1.0F);
+    // Dim at rest and brighter under the pointer: on a near-black ground a
+    // resting scrollbar at full strength is the brightest thing on the screen,
+    // which is a strange thing for a position indicator to be.
+    c[ImGuiCol_ScrollbarGrab]   = ImVec4(0.17F, 0.17F, 0.19F, 1.0F);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.26F, 0.26F, 0.29F, 1.0F);
     c[ImGuiCol_ScrollbarGrabActive]  = to_vec(kFlame);
 
     // Orange is the only saturated color in the interface, so it is reserved
@@ -90,8 +110,11 @@ void apply() {
     c[ImGuiCol_SliderGrab]      = to_vec(kFlame);
     c[ImGuiCol_SliderGrabActive]= to_vec(kFlameBright);
 
+    // One step up from the panel at rest, two under the pointer. Both moved
+    // down with the palette: a hover at 0.24 on a 0.05 ground was a flash
+    // rather than a response.
     c[ImGuiCol_Button]          = to_vec(kRaised);
-    c[ImGuiCol_ButtonHovered]   = ImVec4(0.24F, 0.24F, 0.26F, 1.0F);
+    c[ImGuiCol_ButtonHovered]   = ImVec4(0.15F, 0.15F, 0.17F, 1.0F);
     c[ImGuiCol_ButtonActive]    = to_vec(kFlame);
 
     c[ImGuiCol_Header]          = ImVec4(1.0F, 0.53F, 0.0F, 0.22F);

@@ -14,6 +14,7 @@
 #include "../app.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -387,7 +388,51 @@ void App::draw_readiness() {
                 show_settings(page);
             }
         }
+        return;
     }
+
+    // Ready, and the screen is empty. An empty box with a blinking caret asks
+    // the reader to invent a use for the program; three chips answer the
+    // question it is really asking, which is "what is this for". They fill the
+    // box rather than sending -- the first thing anybody does with a suggestion
+    // is edit it.
+    static constexpr std::array<const char*, 3> kOpeners{{
+        "What is in this project?",
+        "Explain a file to me",
+        "Find and fix a failing test",
+    }};
+
+    ImGui::Dummy(ImVec2(0, em(1.2F)));
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float chips = 0.0F;
+    for (const char* opener : kOpeners) {
+        chips += ImGui::CalcTextSize(opener).x + style.FramePadding.x * 2.5F
+               + style.ItemSpacing.x;
+    }
+    chips -= style.ItemSpacing.x;
+
+    // One row while they fit, stacked when they do not: three chips wrapping
+    // mid-phrase reads as a broken sentence rather than as three choices.
+    const bool in_a_row = chips <= room;
+    if (in_a_row) {
+        center(chips);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::to_vec(theme::kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(theme::kTextDim));
+    for (std::size_t i = 0; i < kOpeners.size(); ++i) {
+        const float chip = ImGui::CalcTextSize(kOpeners[i]).x
+                         + style.FramePadding.x * 2.5F;
+        if (!in_a_row) {
+            center(chip);
+        }
+        if (ImGui::Button(kOpeners[i], ImVec2(chip, 0))) {
+            prompt_ = kOpeners[i];
+        }
+        if (in_a_row && i + 1 < kOpeners.size()) {
+            ImGui::SameLine();
+        }
+    }
+    ImGui::PopStyleColor(2);
 }
 
 void App::draw_chat(const Snapshot& snapshot) {
@@ -570,8 +615,15 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
     const bool asking  = cook && cook->state == CookState::Asking;
     const bool cooking = engine_->cooking();
 
+    // NoScrollbar, and it is not belt-and-braces. The composer is sized by hand
+    // from the text it holds, and any frame where that measurement is a pixel
+    // short -- a font reloaded at a new display scale, a readout that grew a
+    // digit -- answers with a scrollbar down the side of the box you type in,
+    // and a box that can scroll swallows the wheel over it. The height is the
+    // contract; nothing inside it may scroll.
     ImGui::BeginChild("chat-composer", ImVec2(0, 0),
-                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     const bool  closed = !project_open();
     const char* hint = closed  ? "open a project to start"
@@ -620,12 +672,8 @@ void App::draw_chat_composer(const Snapshot& snapshot) {
             update_config([on](Config& config) { config.tools.auto_edits = !on; });
         }
         ImGui::PopStyleColor(3);
-        ImGui::SetItemTooltip(
-            on ? "Auto is on: file edits are applied as the expert makes them.\n"
-                 "Click to be asked about each one instead."
-               : "Auto is off: every file edit stops and shows you the file as it "
-                 "is\nbeside the file as it would be, and you pick one.\n"
-                 "Click to apply edits without asking.\n\nCook always applies.");
+        ImGui::SetItemTooltip(on ? "Edits apply as they are made"
+                                 : "Every edit is shown before it lands");
     }
 
     ImGui::SameLine();
