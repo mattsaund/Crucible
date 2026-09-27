@@ -305,6 +305,14 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
             status.device_count = counted->second;
         }
 
+        if (status.files.size() > 1) {
+            // Asked of the modules themselves, the same way activation asks:
+            // each exports a score and ggml takes the highest. Reading it here
+            // costs a dlopen per module and is what lets the list say which of
+            // the fourteen is the one doing the work.
+            status.preferred = best_module(status.files);
+        }
+
         if (const auto entry = manifest.find(std::string(info.id)); entry != manifest.end()) {
             status.llama_tag = entry->value("llama_tag", "");
             status.built_at  = entry->value("built_at", "");

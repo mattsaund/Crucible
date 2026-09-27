@@ -18,6 +18,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include "crucible/config/paths.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/util/format.hpp"
 
@@ -149,6 +150,35 @@ void App::draw_settings_runtimes() {
 
         text_colored(theme::kTextFaint, "%s", backend_facts(runtime).c_str());
 
+        // What is actually on the disk under this name.
+        //
+        // A runtime is not one file. The CPU backend installs fourteen modules,
+        // one per x86-64 feature level, and runs exactly one of them; a stale
+        // build leaves its own set sitting there taking room. Folded away by
+        // default because the answer is usually "the one it says", and openable
+        // because when it is not, nothing else in the program will tell you.
+        if (runtime.installed && !runtime.files.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+            const std::string summary =
+                std::to_string(runtime.files.size())
+                + (runtime.files.size() == 1 ? " module" : " modules") + "###files";
+            if (ImGui::TreeNodeEx(summary.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                for (const std::filesystem::path& file : runtime.files) {
+                    std::error_code ec;
+                    const std::uintmax_t bytes = std::filesystem::file_size(file, ec);
+                    const bool in_use = !runtime.preferred.empty()
+                                            ? file == runtime.preferred
+                                            : runtime.files.size() == 1;
+                    text_colored(in_use ? theme::kText : theme::kTextFaint,
+                                 "%s   %s%s", file.filename().string().c_str(),
+                                 ec ? "?" : format::bytes(bytes).c_str(),
+                                 in_use ? "   in use" : "");
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopStyleColor();
+        }
+
         ImGui::BeginDisabled(build.running());
         if (runtime.installed) {
             if (ImGui::Button(runtime.stale ? "Rebuild" : "Reinstall",
@@ -192,6 +222,38 @@ void App::draw_settings_runtimes() {
 
     if (!runtime_error_.empty()) {
         wrapped(theme::kError, runtime_error_);
+    }
+
+    // Where they are and what they cost. A runtime is the largest thing
+    // Crucible puts on the disk that is not a model, and until this line
+    // existed the only way to find out how much of it there was, or where to
+    // look, was to know the XDG layout by heart.
+    {
+        std::uintmax_t total = 0;
+        int            stale = 0;
+        for (const RuntimeStatus& runtime : runtimes_) {
+            total += runtime.bytes;
+            stale += runtime.stale ? 1 : 0;
+        }
+        ImGui::Dummy(ImVec2(0, em(0.4F)));
+        ImGui::Separator();
+        // Elided from the middle: this is the one line on the page holding a
+        // path, and a path that runs off the edge of the panel says neither
+        // which disk it is on nor which directory it ends in.
+        const std::string where = paths::runtimes_dir().string();
+        const std::string size  = total == 0 ? "empty" : format::bytes(total);
+        const float room = ImGui::GetContentRegionAvail().x
+                         - ImGui::CalcTextSize(size.c_str()).x - em(2.0F);
+        text_colored(theme::kTextFaint, "%s   %s",
+                     middle_out(where, room).c_str(), size.c_str());
+        if (stale > 0) {
+            // Built against another llama.cpp: they load and then crash on the
+            // first tensor, so saying "installed" without saying this would be
+            // the most expensive kind of true.
+            text_colored(theme::kError,
+                         "%d built against another llama.cpp -- rebuild or remove",
+                         stale);
+        }
     }
 
     if (build.phase != BuildProgress::Phase::Idle) {

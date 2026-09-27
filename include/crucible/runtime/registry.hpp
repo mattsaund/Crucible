@@ -58,6 +58,12 @@ struct RuntimeStatus {
     /// The module files, so uninstall knows what to delete.
     std::vector<std::filesystem::path> files;
 
+    /// The one of them ggml will actually load, empty when there is no choice
+    /// to make. The CPU backend installs fourteen modules -- one per x86-64
+    /// feature level -- and runs exactly one of them; without this the other
+    /// thirteen look like thirteen runtimes.
+    std::filesystem::path preferred;
+
     /// "4.1 MB", for the list.
     std::string size_label() const;
 };
