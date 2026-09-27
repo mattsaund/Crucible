@@ -369,6 +369,12 @@ private:
     /// True when the cached answer names a version newer than this build.
     bool update_available() const { return update::newer_than_this(update_); }
 
+    /// Ctrl+1..4 for the views and Ctrl+, for Settings, read once a frame.
+    void take_shortcuts();
+
+    /// Put the open project's name in the window title.
+    void name_the_window();
+
     /// Start the daily check, if the config allows one. Cheap and safe to call
     /// when it is off: it reads the cache and returns.
     void begin_update_check();

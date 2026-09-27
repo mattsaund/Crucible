@@ -63,6 +63,18 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     refresh_models();
 }
 
+void App::name_the_window() {
+    // "thing — Crucible", like every editor: the window list and the dock read
+    // the title, and four windows all called Crucible are four windows nobody
+    // can tell apart.
+    if (window_ == nullptr) {
+        return;
+    }
+    const std::string name = store_ ? store_->project().name : std::string();
+    const std::string title = name.empty() ? "Crucible" : name + " \xE2\x80\x94 Crucible";
+    glfwSetWindowTitle(window_, title.c_str());
+}
+
 std::filesystem::path App::project_root() const {
     return store_ ? store_->project().root : std::filesystem::path{};
 }
@@ -187,6 +199,7 @@ void App::open_project(const std::filesystem::path& root) {
     browse_text_ = browse_.string();
 
     remember_project(project.root);
+    name_the_window();
     project_error_.clear();
     // The name, not the path. The path is in the top bar's tooltip and in
     // Settings; a notice is a line in the transcript and a three-line path
@@ -418,6 +431,37 @@ void App::open_browse(BrowseFor what, const std::filesystem::path& start) {
     browse_modal_open_ = true;
 }
 
+void App::take_shortcuts() {
+    // Ctrl and a digit for the views, Ctrl+comma for settings -- the two
+    // conventions every desktop application already taught the user. A chord
+    // rather than a bare key because the thing the keyboard is usually doing
+    // here is typing a prompt, and a bare 1 belongs to the box.
+    //
+    // IsKeyChordPressed asks ImGui rather than GLFW, so a chord pressed while a
+    // text box has focus still arrives, and one pressed while a modal is up
+    // does not: switching tabs out from under the folder-trust question would
+    // leave it unanswered and the project unopened.
+    struct Jump { ImGuiKeyChord chord; View view; };
+    static const std::array<Jump, 4> kJumps{{
+        {ImGuiMod_Ctrl | ImGuiKey_1, View::Chat},
+        {ImGuiMod_Ctrl | ImGuiKey_2, View::Cook},
+        {ImGuiMod_Ctrl | ImGuiKey_3, View::Create},
+        {ImGuiMod_Ctrl | ImGuiKey_4, View::History},
+    }};
+    for (const Jump& jump : kJumps) {
+        if (ImGui::IsKeyChordPressed(jump.chord)) {
+            view_ = jump.view;
+        }
+    }
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) {
+        if (view_ == View::Settings) {
+            view_ = before_settings_;
+        } else {
+            show_settings(settings_page_);
+        }
+    }
+}
+
 void App::begin_update_check() {
     // The cache first, and always: it is a file read, it is what the last check
     // found, and it is what the window shows until a new answer arrives.
@@ -458,6 +502,7 @@ void App::draw() {
     const Snapshot snapshot = state_.snapshot();
 
     collect_update_check();
+    take_shortcuts();
 
     // Negative means "never sized", not "closed". Zero is a width the user can
     // now reach by dragging the splitter to the edge, and testing for <= 0 here
