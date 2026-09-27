@@ -577,7 +577,7 @@ void RuntimeBuilder::run(BackendKind kind) {
             // still the CPU runtime's business and `produces` must say only
             // what this archive actually held.
             std::vector<BackendKind> downloaded{kind};
-            record_and_activate(downloaded);
+            record_and_activate(downloaded, "downloaded");
             set_phase(BuildProgress::Phase::Done);
             running_.store(false);
             return;
@@ -823,12 +823,13 @@ void RuntimeBuilder::run(BackendKind kind) {
         return;
     }
 
-    record_and_activate(produces);
+    record_and_activate(produces, "built here");
     set_phase(BuildProgress::Phase::Done);
     running_.store(false);
 }
 
-void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces) {
+void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces,
+                                         std::string_view how) {
     // --- record what is now installed ----------------------------------------
     const std::filesystem::path manifest_path = paths::runtimes_dir() / "manifest.json";
     json manifest = json::object();
@@ -843,6 +844,7 @@ void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces) {
         manifest[std::string(backend_info(produced).id)] = {
             {"llama_tag", CRUCIBLE_LLAMA_TAG},
             {"built_at", built_at},
+            {"source", std::string(how)},
         };
     }
     if (std::ofstream out(manifest_path); out) {

@@ -54,6 +54,13 @@ std::string backend_facts(const RuntimeStatus& runtime) {
               ? runtime.llama_tag
               : std::string(RuntimeStatus::required_llama_tag());
 
+    // Which way it arrived. Worth a word: a downloaded module was compiled on a
+    // machine that is not this one, and that is the first thing to know when
+    // one of them behaves oddly.
+    if (runtime.installed && !runtime.source.empty()) {
+        line += "  \xC2\xB7  " + runtime.source;
+    }
+
     if (!info.required_tool.empty()) {
         line += "  ·  needs ";
         line += std::string(info.required_tool);
@@ -97,7 +104,7 @@ void App::take_runtime_activation() {
 
 void App::draw_settings_runtimes() {
     title("Runtimes");
-    text_colored(theme::kTextFaint, "Compiled on this machine. A few minutes each.");
+    text_colored(theme::kTextFaint, "Downloaded where one is published, compiled here where not.");
 
     // Scanned when the page is first opened rather than at startup: it reads
     // the runtimes directory, and most sessions never come here.

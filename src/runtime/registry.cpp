@@ -316,6 +316,7 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
         if (const auto entry = manifest.find(std::string(info.id)); entry != manifest.end()) {
             status.llama_tag = entry->value("llama_tag", "");
             status.built_at  = entry->value("built_at", "");
+            status.source    = entry->value("source", "");
         }
         // An unrecorded tag is "cannot tell", not "wrong": a manifest can be
         // lost without the modules being any less valid.

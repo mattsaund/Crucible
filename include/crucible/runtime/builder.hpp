@@ -122,7 +122,7 @@ private:
     /// Write the manifest entry for everything just installed and hand the
     /// modules to ggml. Shared by the two ways a runtime arrives: compiled
     /// here, or downloaded already built.
-    void record_and_activate(std::vector<BackendKind>& produces);
+    void record_and_activate(std::vector<BackendKind>& produces, std::string_view how);
 
     void run(BackendKind kind);
 

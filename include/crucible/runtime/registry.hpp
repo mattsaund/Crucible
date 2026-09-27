@@ -38,6 +38,10 @@ struct RuntimeStatus {
     std::string llama_tag;
     std::string built_at;
 
+    /// "downloaded" or "built here", from the manifest. Empty for a runtime
+    /// installed before the manifest recorded it.
+    std::string source;
+
     /// Built against a different llama.cpp than this binary.
     ///
     /// Runtimes outlive the Crucible that made them -- they survive an uninstall
