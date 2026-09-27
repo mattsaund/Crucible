@@ -6,6 +6,38 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## Unreleased
+
+**Runtimes can arrive already built.** Compiling a backend on the machine that
+will run it stays the fallback and stays correct, but for CUDA it cost four and
+a half minutes and a multi-gigabyte toolkit that had to be installed first --
+and that toolkit, not the minutes, is what stopped people. The release now
+carries the same modules built from the same llama.cpp tag, and the app asks for
+one by a name holding everything that has to match. The shipped CUDA module
+links cudart statically, so it needs a driver and nothing else. Install is never
+disabled now: it used to switch off on a missing `nvcc`, which shut out exactly
+the people a download is for.
+
+**Runtimes list what they are.** Each one folds open to its modules -- the file,
+its size, and which of them ggml actually loads. A CPU runtime is fourteen
+modules, one per processor feature level, and runs one; nothing said so before.
+Under the list is where they live, what they cost together, and a warning for
+any built against a different llama.cpp.
+
+**Fetching the source needs no git.** It takes the tarball with curl and tar,
+which every platform has, and falls back to cloning. Anyone who installed from
+a `.dmg`, a setup `.exe` or an AppImage used to hit "git is needed" on their
+first GPU backend. Missing cmake is now reported before the button rather than
+five minutes into a log.
+
+**Closing the side menu keeps the dots.** It used to close completely, taking
+the one picture of what the program is doing at the moment you most want it --
+you close it to give a long cook the width. Closed is now a rail of the same
+dots, each naming itself on hover.
+
+**Keys.** Ctrl+1..4 for the views, Ctrl+, for Settings, and the open project in
+the window title.
+
 ## 0.5.5 — 2026-09-27
 
 A pass over the whole window: less text, more room, and the small things that
