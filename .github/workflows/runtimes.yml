@@ -65,30 +65,27 @@ jobs:
           tar -xzf llama.tar.gz
           mv "llama.cpp-${LLAMA_TAG}" llama-src
 
-      # Vulkan needs a shader compiler and headers; the CPU and Metal backends
-      # need nothing that is not already on the runner.
-      - name: Vulkan SDK (Linux)
-        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan-dev glslc
-
-      - name: Vulkan SDK (Windows)
-        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
-        uses: jakoch/install-vulkan-sdk-action@v1
+      # Vulkan needs glslc and the headers. Not from apt: jammy has no glslc
+      # package, and pinning a LunarG version is a build that breaks the day
+      # they rotate it off their download server -- which is exactly how the
+      # first run of this workflow failed. No version asked for means the
+      # newest, which is the only pin that does not rot.
+      - name: Vulkan SDK
+        if: matrix.backend == 'vulkan'
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
         with:
-          vulkan_version: 1.3.283.0
           install_runtime: true
           cache: true
           stripdown: true
 
-      # 12.8 is the first toolkit that can emit real code for Blackwell, which
-      # is the newest thing anybody is running this on.
+      # 12.9 rather than 13: it emits real code for Blackwell, and it does not
+      # need the driver generation 13 does. A runtime nobody can load is not
+      # faster than one they have to compile.
       - name: CUDA toolkit
         if: matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: '12.8.0'
+          cuda: '12.9.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev"]'
 
