@@ -101,16 +101,16 @@ jobs:
       # compile with it. On Linux the sub-package names are apt's rather than
       # the installer's, and asking for the installer's names failed apt
       # outright, so that one takes the whole toolkit and the extra minutes.
-      - name: CUDA toolkit (Windows)
-        if: matrix.backend == 'cuda' && runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@v0.2.36
-        with:
-          cuda: '13.3.1'
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "visual_studio_integration"]'
-
-      - name: CUDA toolkit (Linux)
-        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+      # The whole toolkit, not a subset.
+      #
+      # Both platforms were given a hand-written sub-package list and both
+      # failed on it, differently: apt has its own names for them, and on
+      # Windows a 13.x subset that looks complete leaves out crt/host_config.h,
+      # which every single .cu file includes. Picking the right names is a
+      # round trip through CI each time it is wrong, and the whole toolkit is a
+      # few minutes on a job that already takes half an hour.
+      - name: CUDA toolkit
+        if: matrix.backend == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '13.3.1'
