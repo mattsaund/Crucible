@@ -1,0 +1,168 @@
+# Prebuilt compute backends.
+#
+# Crucible compiles a runtime on the machine that will run it, which is correct
+# -- a backend built against another llama.cpp loads and then crashes on the
+# first tensor -- and expensive: four and a half minutes for CUDA on a fast
+# machine, and a multi-gigabyte toolkit that has to be installed before any of
+# it can start. The toolkit is the real barrier. Somebody with an NVIDIA card
+# and no nvcc cannot have a GPU runtime at all, however long they will wait.
+#
+# These are the same modules, built here from the same llama.cpp tag the binary
+# was built from, and downloaded instead. The asset name carries everything that
+# has to match -- backend, platform, tag -- so a mismatch cannot be asked for.
+# src/runtime/prebuilt.cpp is the other half.
+#
+# A job that fails takes only its own backend with it: the app falls back to
+# compiling whatever is not published, which is what it did before any of this.
+name: runtimes
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.backend }} on ${{ matrix.platform }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x64,   runs-on: ubuntu-22.04,  backend: cpu }
+          - { platform: linux-x64,   runs-on: ubuntu-22.04,  backend: vulkan }
+          - { platform: linux-x64,   runs-on: ubuntu-22.04,  backend: cuda }
+          - { platform: windows-x64, runs-on: windows-latest, backend: cpu }
+          - { platform: windows-x64, runs-on: windows-latest, backend: vulkan }
+          - { platform: windows-x64, runs-on: windows-latest, backend: cuda }
+          - { platform: macos-arm64, runs-on: macos-latest,  backend: cpu }
+          - { platform: macos-arm64, runs-on: macos-latest,  backend: metal }
+    steps:
+      - uses: actions/checkout@v5
+
+      # The tag is the contract between this workflow and the binary that will
+      # load what it produces, so it is read from the same file the build reads
+      # rather than written down twice.
+      - name: The llama.cpp tag
+        shell: bash
+        run: |
+          tag="$(grep -m1 'CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake \
+                 | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:]]+).*/\1/')"
+          test -n "$tag"
+          echo "LLAMA_TAG=$tag" >> "$GITHUB_ENV"
+          echo "using llama.cpp $tag"
+
+      - name: llama.cpp source
+        shell: bash
+        run: |
+          curl --location --fail --silent --show-error \
+               --output llama.tar.gz \
+               "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_TAG}.tar.gz"
+          tar -xzf llama.tar.gz
+          mv "llama.cpp-${LLAMA_TAG}" llama-src
+
+      # Vulkan needs a shader compiler and headers; the CPU and Metal backends
+      # need nothing that is not already on the runner.
+      - name: Vulkan SDK (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc
+
+      - name: Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.283.0
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      # 12.8 is the first toolkit that can emit real code for Blackwell, which
+      # is the newest thing anybody is running this on.
+      - name: CUDA toolkit
+        if: matrix.backend == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.8.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev"]'
+
+      # The same flags src/runtime/builder.cpp uses, with two differences that
+      # come from building for somebody else's machine rather than this one:
+      #
+      #  - the CUDA architectures are a list rather than the cards present.
+      #    Ampere, Ada and Blackwell cover what people are running; the PTX for
+      #    the newest lets a card past it start at all.
+      #  - cudart is linked statically, so the module carries no NVIDIA
+      #    redistributable and needs only a driver.
+      - name: Configure
+        shell: bash
+        run: |
+          flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+                 -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF
+                 -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF
+                 -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+                 -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF
+                 -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_CURL=OFF
+                 -DCMAKE_PROJECT_INCLUDE=$PWD/cmake/CrucibleUnversion.cmake)
+          case "${{ matrix.backend }}" in
+            cpu)    flags+=(-DGGML_CPU=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_METAL=OFF) ;;
+            vulkan) flags+=(-DGGML_VULKAN=ON -DGGML_CPU=OFF -DGGML_METAL=OFF) ;;
+            metal)  flags+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_CPU=OFF) ;;
+            cuda)   flags+=(-DGGML_CUDA=ON -DGGML_CPU=OFF -DGGML_METAL=OFF
+                            -DCMAKE_CUDA_ARCHITECTURES=86-real\;89-real\;120-real\;120-virtual
+                            -DCMAKE_CUDA_RUNTIME_LIBRARY=Static) ;;
+          esac
+          cmake -S llama-src -B build "${flags[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release --target ggml --parallel 4
+
+      # Only the modules. Everything else the build leaves in bin/ is either a
+      # copy of one under another name or something ggml never opens.
+      - name: Pack
+        shell: bash
+        run: |
+          mkdir -p out dist
+          for dir in build/bin build/bin/Release; do
+            [ -d "$dir" ] || continue
+            find "$dir" -maxdepth 1 -type f \
+                 \( -name "*ggml-${{ matrix.backend }}*.so" \
+                 -o -name "*ggml-${{ matrix.backend }}*.dll" \
+                 -o -name "*ggml-${{ matrix.backend }}*.dylib" \) \
+                 -exec cp {} out/ \;
+          done
+          ls -la out
+          test "$(ls out | wc -l)" -gt 0
+          name="runtime-${{ matrix.backend }}-${{ matrix.platform }}-${LLAMA_TAG}.tar.gz"
+          tar -czf "dist/$name" -C out .
+          ls -la dist
+          echo "ASSET=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.backend }}-${{ matrix.platform }}
+          path: dist/*.tar.gz
+
+  attach:
+    name: Attach to the release
+    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Whatever built. A backend whose job failed is simply not published, and
+      # the app compiles that one the way it always has.
+      - name: Attach
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          draft: true

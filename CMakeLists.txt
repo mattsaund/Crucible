@@ -131,6 +131,7 @@ add_library(crucible_core STATIC
 
     # runtime: the loadable compute backends and the devices they expose
     src/runtime/backend.cpp
+    src/runtime/prebuilt.cpp
     src/runtime/registry.cpp
     src/runtime/builder.cpp
     src/runtime/devices.cpp
@@ -268,6 +269,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_overflow.cpp
         tests/test_display_scale.cpp
         tests/test_lab.cpp
+        tests/test_prebuilt.cpp
         tests/test_update.cpp
         tests/test_spelling.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)

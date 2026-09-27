@@ -1107,6 +1107,41 @@ check     "and the README says how to update" \
 check     "the changelog has an entry for the version being shipped" \
           grep -q "^## $VERSION" "$ROOT/CHANGELOG.md"
 
+echo "  a runtime can arrive already built"
+# Compiling a backend on the machine that runs it is right and slow, and for
+# CUDA it needs a multi-gigabyte toolkit first -- which is the part that stops
+# people rather than the four minutes. The workflow builds the same modules
+# from the same tag; the app downloads them and compiles only what is missing.
+RT="$ROOT/.github/workflows/runtimes.yml"
+check     "there is a workflow that builds them" \
+          test -f "$RT"
+check     "a tag publishes them, like the installers" \
+          grep -q 'tags: \["v\*"\]' "$RT"
+# The name is the safety mechanism: backend, platform and llama.cpp tag, so a
+# module built against another llama.cpp cannot be asked for by accident.
+check     "the workflow names assets by backend, platform and tag" \
+          grep -q 'runtime-\${{ matrix.backend }}-\${{ matrix.platform }}-\${LLAMA_TAG}' "$RT"
+check     "and the app builds the same name" \
+          grep -q '"runtime-" + std::string(backend_info(kind).id)' "$ROOT/src/runtime/prebuilt.cpp"
+check     "the workflow reads the tag from the file the build reads" \
+          grep -q "CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake" "$RT"
+# Shipping somebody else's CUDA build means shipping no NVIDIA redistributable:
+# static cudart, so the module needs a driver and nothing else.
+check     "the shipped CUDA module links cudart statically" \
+          grep -q 'CMAKE_CUDA_RUNTIME_LIBRARY=Static' "$RT"
+check     "it covers the architectures people actually have" \
+          grep -q 'CMAKE_CUDA_ARCHITECTURES=86-real' "$RT"
+# One backend failing to build must not take the others with it.
+check     "a failed backend does not block the rest" \
+          grep -q 'fail-fast: false' "$RT"
+check     "and the release takes whatever built" \
+          grep -q "if: always() && startsWith(github.ref" "$RT"
+
+check     "a download is tried before the toolchain is" \
+          grep -q 'prebuilt::try_install' "$ROOT/src/runtime/builder.cpp"
+check_not "and a missing compiler no longer disables the button" \
+          grep -q 'BeginDisabled(!runtime.buildable)' "$ROOT/src/gui/panels/runtimes.cpp"
+
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -142,8 +142,6 @@ void App::draw_settings_runtimes() {
         } else if (runtime.installed) {
             text_colored(theme::kTextDim, "installed, no devices   %s",
                           runtime.size_label().c_str());
-        } else if (!runtime.buildable) {
-            text_colored(theme::kTextFaint, "%s", runtime.blocker.c_str());
         } else {
             text_colored(theme::kTextFaint, "not installed");
         }
@@ -201,12 +199,24 @@ void App::draw_settings_runtimes() {
                 }
             }
         } else {
-            ImGui::BeginDisabled(!runtime.buildable);
-            if (ImGui::Button("Build and install", ImVec2(em(13.0F), 0))) {
+            // Never disabled any more.
+            //
+            // The blocker says what compiling this backend would need, and
+            // compiling is now the second thing tried: a prebuilt module for
+            // this platform and this llama.cpp tag is downloaded when there is
+            // one, and that is exactly the path for the person with an NVIDIA
+            // card and no toolkit. Disabling the button on a missing nvcc would
+            // shut out the people the download is for. If it does come to
+            // compiling, the build says what is missing and stops.
+            if (ImGui::Button("Install", ImVec2(em(9.0F), 0))) {
                 runtime_error_.clear();
                 runtime_builder_.start(runtime.kind, [] { glfwPostEmptyEvent(); });
             }
-            ImGui::EndDisabled();
+            if (!runtime.buildable) {
+                ImGui::SameLine();
+                text_colored(theme::kTextFaint, "downloads, or %s to compile",
+                             runtime.blocker.c_str());
+            }
         }
         ImGui::EndDisabled();
 

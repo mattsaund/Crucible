@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/runtime/prebuilt.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
@@ -556,6 +557,33 @@ void RuntimeBuilder::run(BackendKind kind) {
         return;
     }
 
+    // --- one that is already built ------------------------------------------
+    //
+    // Tried before the toolchain is: the whole point is the machine that has no
+    // nvcc, and asking it for one first would turn a working install into an
+    // error message. A failure here is not reported -- it means "compile it",
+    // and the compile is what happens next.
+    {
+        std::vector<std::filesystem::path> landed;
+        set_phase(BuildProgress::Phase::FetchingSource, "looking for a prebuilt runtime");
+        const bool got = prebuilt::try_install(
+            kind, paths::runtimes_dir(), landed,
+            [this](std::string note) {
+                set_phase(BuildProgress::Phase::FetchingSource, std::move(note));
+            });
+        if (got && !landed.empty()) {
+            // The CPU backend rides along with every GPU one, and a prebuilt
+            // GPU archive carries only its own module -- so the CPU runtime is
+            // still the CPU runtime's business and `produces` must say only
+            // what this archive actually held.
+            std::vector<BackendKind> downloaded{kind};
+            record_and_activate(downloaded);
+            set_phase(BuildProgress::Phase::Done);
+            running_.store(false);
+            return;
+        }
+    }
+
     std::string error;
     if (!ensure_source(error)) {
         set_phase(cancel_.load() ? BuildProgress::Phase::Canceled : BuildProgress::Phase::Failed);
@@ -795,8 +823,14 @@ void RuntimeBuilder::run(BackendKind kind) {
         return;
     }
 
-    // --- record what was built ---------------------------------------------
-    const std::filesystem::path manifest_path = target / "manifest.json";
+    record_and_activate(produces);
+    set_phase(BuildProgress::Phase::Done);
+    running_.store(false);
+}
+
+void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces) {
+    // --- record what is now installed ----------------------------------------
+    const std::filesystem::path manifest_path = paths::runtimes_dir() / "manifest.json";
     json manifest = json::object();
     if (std::ifstream in(manifest_path); in) {
         json parsed = json::parse(in, nullptr, false);
@@ -832,9 +866,6 @@ void RuntimeBuilder::run(BackendKind kind) {
             break;
         }
     }
-
-    set_phase(BuildProgress::Phase::Done);
-    running_.store(false);
 }
 
 }  // namespace crucible

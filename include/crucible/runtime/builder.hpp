@@ -119,6 +119,11 @@ public:
     BuildProgress progress() const;
 
 private:
+    /// Write the manifest entry for everything just installed and hand the
+    /// modules to ggml. Shared by the two ways a runtime arrives: compiled
+    /// here, or downloaded already built.
+    void record_and_activate(std::vector<BackendKind>& produces);
+
     void run(BackendKind kind);
 
     /// Make sure runtime-src holds llama.cpp at the tag this binary was built
