@@ -4,6 +4,7 @@
 #include "crucible/runtime/registry.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -165,6 +166,38 @@ json read_manifest(const std::filesystem::path& file) {
 
 }  // namespace
 
+namespace {
+
+/// Is there a C++ compiler this build could use?
+///
+/// Linux only, and deliberately. There PATH is how a compiler is found and its
+/// absence is the whole story. It is not the story anywhere else: MSVC lives
+/// behind a developer prompt and cmake finds it through the registry, so `cl`
+/// missing from PATH is the normal case on a machine that builds perfectly --
+/// and a check saying otherwise would disable the button for everyone on
+/// Windows. On a Mac /usr/bin/clang++ is a stub that is always present and
+/// only works once the command line tools are, which a PATH lookup cannot see.
+///
+/// So: answer where the answer is knowable, and let cmake report it where it
+/// is not.
+bool any_compiler() {
+#if defined(_WIN32) || defined(__APPLE__)
+    return true;
+#else
+    if (const char* named = std::getenv("CXX"); named != nullptr && *named != '\0') {
+        return util::on_path(named);
+    }
+    for (const char* tool : {"g++", "clang++", "c++"}) {
+        if (util::on_path(tool)) {
+            return true;
+        }
+    }
+    return false;
+#endif
+}
+
+}  // namespace
+
 /// The llama.cpp tag this binary was compiled against. CMake passes it in; the
 /// fallback keeps a hand-rolled build compiling rather than failing here.
 #ifndef CRUCIBLE_LLAMA_TAG
@@ -281,9 +314,23 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
         status.stale = status.installed && !status.llama_tag.empty() &&
                        status.llama_tag != RuntimeStatus::required_llama_tag();
 
+        // What the build needs, checked before the button is offered rather
+        // than discovered five minutes into a log.
+        //
+        // cmake and a compiler are new here. They were assumed, which was true
+        // of an install that compiled Crucible itself and false of every one
+        // that did not: somebody who dragged the application out of a .dmg has
+        // neither, and the only way they found out was a build that ran for a
+        // while and then failed with a line about cmake not being found.
         if (!info.required_tool.empty() && !util::on_path(std::string(info.required_tool))) {
             status.buildable = false;
             status.blocker   = std::string(info.required_tool) + " is not installed";
+        } else if (!util::on_path("cmake")) {
+            status.buildable = false;
+            status.blocker   = "cmake is not installed";
+        } else if (!any_compiler()) {
+            status.buildable = false;
+            status.blocker   = "no C++ compiler found";
         }
 
         result.push_back(std::move(status));

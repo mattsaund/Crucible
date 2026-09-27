@@ -488,16 +488,55 @@ bool RuntimeBuilder::ensure_source(std::string& error) {
     std::filesystem::create_directories(src.parent_path(), ec);
     std::filesystem::remove_all(src, ec);
 
-    if (!util::on_path("git")) {
-        error = "git is needed to fetch the llama.cpp source and is not installed";
-        return false;
+    // The tarball first, and git only if that fails.
+    //
+    // A shallow clone was the only way in, and it made git a requirement for
+    // installing a runtime. That was invisible while every copy of Crucible had
+    // been compiled by a script that needed git anyway -- and wrong for every
+    // copy that was dragged out of a .dmg or unpacked from a setup .exe, where
+    // the first GPU backend ended at "git is needed". curl and tar are on all
+    // three platforms out of the box, and the tarball is smaller than the
+    // clone: no history, no refs, no .git.
+    const std::filesystem::path archive = src.parent_path() / "llama-src.tar.gz";
+    const std::filesystem::path unpacked =
+        src.parent_path() / ("llama.cpp-" CRUCIBLE_LLAMA_TAG);
+
+    bool ok = false;
+    if (util::on_path("curl") && util::on_path("tar")) {
+        std::filesystem::remove_all(unpacked, ec);
+        std::filesystem::remove(archive, ec);
+        ok = run_command({"curl", "--location", "--fail", "--silent", "--show-error",
+                          "--output", archive.string(),
+                          "https://github.com/ggml-org/llama.cpp/archive/refs/tags/"
+                          CRUCIBLE_LLAMA_TAG ".tar.gz"},
+                         {}, BuildProgress::Phase::FetchingSource, false)
+          && run_command({"tar", "-xzf", archive.string(),
+                          "-C", src.parent_path().string()},
+                         {}, BuildProgress::Phase::FetchingSource, false);
+        std::filesystem::remove(archive, ec);
+        if (ok) {
+            // GitHub names the directory after the tag, which is not where the
+            // build expects to find it.
+            std::filesystem::rename(unpacked, src, ec);
+            ok = !ec && std::filesystem::exists(src / "CMakeLists.txt", ec);
+        }
+        if (!ok) {
+            std::filesystem::remove_all(unpacked, ec);
+            std::filesystem::remove_all(src, ec);
+        }
     }
 
-    const bool ok = run_command({"git", "clone", "--depth", "1", "--branch", CRUCIBLE_LLAMA_TAG,
-                                 "https://github.com/ggml-org/llama.cpp.git", src.string()},
-                                {}, BuildProgress::Phase::FetchingSource, false);
     if (!ok) {
-        error = "could not clone llama.cpp " CRUCIBLE_LLAMA_TAG;
+        if (!util::on_path("git")) {
+            error = "curl and tar (or git) are needed to fetch the llama.cpp source";
+            return false;
+        }
+        ok = run_command({"git", "clone", "--depth", "1", "--branch", CRUCIBLE_LLAMA_TAG,
+                          "https://github.com/ggml-org/llama.cpp.git", src.string()},
+                         {}, BuildProgress::Phase::FetchingSource, false);
+    }
+    if (!ok) {
+        error = "could not fetch llama.cpp " CRUCIBLE_LLAMA_TAG;
         return false;
     }
     return true;
