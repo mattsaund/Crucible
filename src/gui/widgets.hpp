@@ -109,10 +109,6 @@ bool top_tab(const char* label, bool selected, float height);
 /// says nothing about which model it is. The full path is the tooltip.
 std::string model_label(const std::string& reference);
 
-/// A path trimmed from the left, so the end -- which is the part that says
-/// which project this is -- survives.
-std::string tail_of(const std::filesystem::path& path, std::size_t width);
-
 /// `text` cut to fit `room` pixels, keeping the end and marking the cut with an
 /// ellipsis. For names, which are identified by their tail.
 ///

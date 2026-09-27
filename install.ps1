@@ -501,7 +501,7 @@ function New-Shortcuts ([string] $Source) {
     # checkout: the checkout is a build artifact and may be deleted, and a
     # shortcut whose icon has gone shows a blank page.
     $icon = Join-Path $Prefix 'crucible.ico'
-    $shipped = Join-Path $Source 'packaging\crucible.ico'
+    $shipped = Join-Path $Source 'packaging\icons\crucible.ico'
     if (Test-Path $shipped) { Copy-Item $shipped $icon -Force }
 
     # A shortcut is a nicety on top of an install that has already succeeded, so

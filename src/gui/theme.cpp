@@ -40,7 +40,7 @@
 #endif
 
 #ifdef CRUCIBLE_HAS_EMBEDDED_MARK
-// Written by cmake/EmbedBinary.cmake from packaging/crucible-mark.rgba. Declared
+// Written by cmake/EmbedBinary.cmake from packaging/icons/crucible-mark.rgba. Declared
 // here rather than in a header, because one translation unit uses it.
 namespace crucible::gui::art {
 extern const unsigned char kMark[];
@@ -205,7 +205,9 @@ ImFont* first_available(const char* const* candidates, std::size_t count, float 
 /// way from the body. Coordinates are fractions of `radius` about `base`, which
 /// is the point the flame stands on.
 ///
-/// packaging/crucible.svg is these same numbers. Reshape one and reshape both.
+/// Kept as the fallback for a build with no artwork compiled in -- see
+/// draw_mark. It was the launcher icon too, until the icons became one drawing
+/// run through packaging/icons/make_icons.py.
 void flame_path(ImDrawList* draw, ImVec2 base, float radius, float lean) {
     const auto at = [&](float x, float y) {
         return ImVec2(base.x + x * radius, base.y + y * radius);

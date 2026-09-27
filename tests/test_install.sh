@@ -114,11 +114,11 @@ check     "both are in the crucible component" \
 check     "Exec is an absolute path, not a bare name" \
           grep -q 'CMAKE_INSTALL_FULL_BINDIR' "$HERE/../CMakeLists.txt"
 check     "the entry names the icon" \
-          grep -q '^Icon=crucible$' "$HERE/../packaging/crucible.desktop.in"
+          grep -q '^Icon=crucible$' "$HERE/../packaging/linux/crucible.desktop.in"
 # Must match the class the window actually sets, or the dock shows the running
 # window as a second, generic application.
 check     "StartupWMClass matches the window class the app sets" \
-          grep -q '^StartupWMClass=crucible$' "$HERE/../packaging/crucible.desktop.in"
+          grep -q '^StartupWMClass=crucible$' "$HERE/../packaging/linux/crucible.desktop.in"
 check     "and the app really sets that class" \
           grep -q 'GLFW_X11_CLASS_NAME, "crucible"' "$HERE/../src/gui/app.cpp"
 # Uninstall has to take them, or the menu keeps offering a Crucible that is gone.
@@ -591,9 +591,9 @@ check     "and the uninstall takes the shortcuts with it" \
 # The icons themselves are in the repository, because neither sips nor the
 # shortcut can rasterize an SVG.
 check     "the bitmap icons are shipped" \
-          test -f "$HERE/../packaging/crucible.png"
+          test -f "$HERE/../packaging/icons/crucible.png"
 check     "including the Windows one" \
-          test -f "$HERE/../packaging/crucible.ico"
+          test -f "$HERE/../packaging/icons/crucible.ico"
 
 # Windows keeps the switches too, and ignores them the same way.
 check     "Windows still takes -NoGui without failing" \
@@ -999,13 +999,13 @@ check     "and the Windows installer does the same for itself" \
 # every icon still comes from it rather than from whichever copy somebody
 # happened to edit.
 check     "the icons are generated rather than drawn by hand" \
-          test -f "$ROOT/packaging/make_icons.py"
+          test -f "$ROOT/packaging/icons/make_icons.py"
 for _icon in crucible.png crucible.ico crucible.svg crucible-mark.rgba; do
     check "$_icon is there for the installers and the window" \
-          test -s "$ROOT/packaging/$_icon"
+          test -s "$ROOT/packaging/icons/$_icon"
 done
 check     "the menu icon says it is generated, so nobody hand-edits it" \
-          grep -q "make_icons.py" "$ROOT/packaging/crucible.svg"
+          grep -q "make_icons.py" "$ROOT/packaging/icons/crucible.svg"
 # Raw pixels rather than a PNG: nothing in Crucible can decode one.
 check     "the window's mark is compiled in" \
           grep -q "crucible-mark.rgba" "$ROOT/cmake/CrucibleDependencies.cmake"

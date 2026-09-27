@@ -16,3 +16,35 @@ models/
 
 # Claude Code's per-project settings
 .claude/
+
+# What the packaging scripts leave behind when they are run by hand. Each of
+# these is somewhere a build or an archive lands; none of it belongs in the
+# history, and all of it is a regeneratable copy of something that does.
+dist/
+out/
+stage/
+*.AppImage
+*.dmg
+*.tar.gz
+Crucible-Setup.exe
+
+# Crash and profiling leftovers, which appear next to whatever was being
+# debugged and are worthless an hour later.
+core
+core.*
+vgcore.*
+perf.data
+perf.data.old
+*.log
+
+# Python, for packaging/make_icons.py and anything else run from a checkout.
+__pycache__/
+*.pyc
+.venv/
+
+# Merge and patch debris.
+*.orig
+*.rej
+
+# macOS writes one of these into every directory it looks at.
+.DS_Store

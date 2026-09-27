@@ -82,6 +82,17 @@ Export export_from_id(std::string_view id) {
     return id == "mlx" ? Export::Mlx : Export::Gguf;
 }
 
+/// A name turned into something that can be a directory.
+///
+/// Lowercase, alphanumerics kept, every run of anything else collapsed to one
+/// dash, no dash left at the end. "Organic Chemistry II" becomes
+/// "organic-chemistry-ii", and so does "organic chemistry, ii" -- two recipes
+/// named that closely would share a directory, which is a good reason for a
+/// person not to name them that closely and not a reason for the slug to grow
+/// a disambiguating number nobody asked for.
+///
+/// An empty result is how missing() tells that a recipe has no usable name: a
+/// name of nothing but punctuation is not a name.
 std::string slug_of(std::string_view name) {
     std::string out;
     out.reserve(name.size());
@@ -99,6 +110,11 @@ std::string slug_of(std::string_view name) {
     return out;
 }
 
+/// What this recipe still needs, in the words the Export step shows.
+///
+/// Three things, and the order is the order the steps ask for them, so the
+/// list reads as a path through the flow rather than as an inventory. Tools
+/// are not here: a fine-tune with no tool examples is an ordinary fine-tune.
 std::vector<std::string> missing(const Recipe& recipe) {
     std::vector<std::string> gaps;
     if (slug_of(recipe.name).empty()) {
@@ -130,6 +146,11 @@ double bits_per_weight(std::string_view quantization) {
     return 0.0;
 }
 
+/// What the finished file will weigh.
+///
+/// Parameters times bits, and nothing else: a GGUF's metadata and its
+/// tokenizer are kilobytes against a model's gigabytes, and a size estimate
+/// that tried to account for them would be precise about the wrong digit.
 std::uint64_t export_bytes(double parameters_b, std::string_view quantization) {
     const double bits = bits_per_weight(quantization);
     if (parameters_b <= 0.0 || bits <= 0.0) {
@@ -139,6 +160,17 @@ std::uint64_t export_bytes(double parameters_b, std::string_view quantization) {
     return static_cast<std::uint64_t>(bytes);
 }
 
+/// Whether this machine can hold the run, and what to say about it.
+///
+/// The number the Target step puts beside each method, and the only thing on
+/// that page that can save somebody forty minutes: a run that will not fit
+/// fails at the first optimizer step, long after the download and the tokenizer
+/// pass have finished looking like progress.
+///
+/// Deliberately one number rather than a breakdown. A reader deciding between
+/// QLoRA and LoRA wants "2.0 GB against your 40" -- the split between weights,
+/// gradients and activations is a thing to know when tuning the run, not when
+/// choosing between two of them.
 Fit estimate_fit(double parameters_b, Method method, std::uint64_t vram, std::uint64_t ram) {
     Fit fit;
     // The card is where an adapter trains. The machine's own memory is not a
@@ -204,6 +236,12 @@ std::string serialize(const Recipe& recipe) {
     return out.dump(2);
 }
 
+/// Read a recipe back, filling in anything the file does not say.
+///
+/// Every field has a default and a missing one is not an error: a recipe
+/// written by an older Crucible is still a recipe, and the alternative --
+/// refusing to open it -- loses work that is perfectly good. Only JSON that is
+/// not an object at all is rejected, because there is nothing to read.
 bool parse(std::string_view json_text, Recipe& out, std::string& error) {
     const json parsed = json::parse(json_text, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object()) {
@@ -239,6 +277,12 @@ bool parse(std::string_view json_text, Recipe& out, std::string& error) {
     return true;
 }
 
+/// Every model the lab has finished, for the roster to offer.
+///
+/// Read from the disk rather than from the recipes: a recipe says where its
+/// export was meant to go, and a file that is not there is not a model. The
+/// expert picker shows these above the ones in the models directory, which is
+/// how a fine-tune made here becomes a seat without anybody copying a file.
 std::vector<Made> finished_models() {
     std::vector<Made> made;
     for (const Recipe& recipe : saved_recipes()) {

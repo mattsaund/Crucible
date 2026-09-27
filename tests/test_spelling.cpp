@@ -98,7 +98,7 @@ const std::vector<std::string>& british() {
 /// spell their way or not compile. Matched before the word list, so the line
 /// they appear on is not reported.
 std::string without_foreign_names(std::string line) {
-    static const std::vector<std::string> theirs{"Color::Grey", "ftxui::Color::Grey"};
+    static const std::vector<std::string> theirs{"Color::Grey"};
     for (const std::string& name : theirs) {
         for (std::string::size_type at = line.find(name); at != std::string::npos;
              at = line.find(name, at)) {

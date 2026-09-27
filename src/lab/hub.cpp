@@ -110,6 +110,9 @@ std::string search_url(Kind kind, std::string_view query, int limit) {
     return url;
 }
 
+/// What is in a repository. Always main: a fine-tune starts from whatever the
+/// author currently calls finished, and offering a branch picker for a decision
+/// nobody in this flow has an opinion about would be a control in the way.
 std::string tree_url(Kind kind, std::string_view id) {
     return std::string(kApi) + std::string(segment(kind)) + "/" + std::string(id)
          + "/tree/main";
@@ -171,6 +174,14 @@ double parameters_from_name(std::string_view name) {
     return best;
 }
 
+/// The search results, out of whatever the hub sent.
+///
+/// Nothing here throws and nothing here is required. A reply that is not an
+/// array gives no results; an entry missing a field gives an item without it.
+/// That is deliberate: this is one endpoint of somebody else's API, its shape
+/// changes without warning, and a picker that showed nothing because one model
+/// in the list lacked a download count would be worse than one that shows the
+/// model with no number beside it.
 std::vector<Item> parse_search(std::string_view json_text) {
     std::vector<Item> items;
     const json parsed = json::parse(json_text, nullptr, false);
@@ -214,6 +225,12 @@ std::vector<Item> parse_search(std::string_view json_text) {
     return items;
 }
 
+/// The files in a repository, with the size a download will actually cost.
+///
+/// Directories are skipped rather than descended: the tree endpoint returns one
+/// level, and a model's weights are at the root of it. What matters here is the
+/// size -- see the LFS note below, which is the whole reason this is not two
+/// lines.
 std::vector<File> parse_tree(std::string_view json_text) {
     std::vector<File> files;
     const json parsed = json::parse(json_text, nullptr, false);

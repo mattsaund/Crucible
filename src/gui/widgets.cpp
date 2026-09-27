@@ -216,13 +216,6 @@ std::string model_label(const std::string& reference) {
     return name;
 }
 
-std::string tail_of(const std::filesystem::path& path, std::size_t width) {
-    const std::string text = path.string();
-    if (text.size() <= width) {
-        return text;
-    }
-    return "..." + text.substr(text.size() - width);
-}
 
 theme::Dot dot_for(SeatPhase phase) {
     switch (phase) {

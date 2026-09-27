@@ -152,7 +152,6 @@ add_library(crucible_core STATIC
     src/routing/expert.cpp
     src/routing/router.cpp
     src/routing/benchmark.cpp
-    src/routing/completion.cpp
 
     # llm: everything that touches llama.cpp
     src/llm/model_catalog.cpp
@@ -345,14 +344,14 @@ install(TARGETS crucible
 # silently does nothing when clicked.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CRUCIBLE_GUI_EXEC "${CMAKE_INSTALL_FULL_BINDIR}/crucible")
-    configure_file(packaging/crucible.desktop.in
+    configure_file(packaging/linux/crucible.desktop.in
                    "${CMAKE_CURRENT_BINARY_DIR}/crucible.desktop" @ONLY)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/crucible.desktop"
             DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications"
             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
     # hicolor/scalable is the theme every desktop falls back to, so one SVG
     # covers every icon size the panel, dock and menu ask for.
-    install(FILES packaging/crucible.svg
+    install(FILES packaging/icons/crucible.svg
             DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps"
             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
 endif()

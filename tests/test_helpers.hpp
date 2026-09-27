@@ -29,7 +29,6 @@
 #include "crucible/config/config.hpp"
 #include "crucible/config/gpu_policy.hpp"
 #include "crucible/routing/benchmark.hpp"
-#include "crucible/routing/completion.hpp"
 #include "crucible/engine/route_policy.hpp"
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/llm/model_shape.hpp"

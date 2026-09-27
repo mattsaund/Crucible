@@ -1198,8 +1198,8 @@ LAUNCHER
     # sips and iconutil are part of macOS, so the icon costs nothing to make --
     # and an application with the generic icon does not look like one you meant
     # to install.
-    if [ -f "$SRC_DIR/packaging/crucible.png" ] && command -v sips >/dev/null 2>&1; then
-        sips -s format icns "$SRC_DIR/packaging/crucible.png" \
+    if [ -f "$SRC_DIR/packaging/icons/crucible.png" ] && command -v sips >/dev/null 2>&1; then
+        sips -s format icns "$SRC_DIR/packaging/icons/crucible.png" \
              --out "$app/Contents/Resources/crucible.icns" >/dev/null 2>&1 || true
     fi
     ok "added Crucible to $APP_BUNDLE_DIR"

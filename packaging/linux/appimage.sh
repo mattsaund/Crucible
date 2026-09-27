@@ -42,11 +42,11 @@ fi
 
 # Exec is a bare name here, unlike the installed entry: AppRun puts the right
 # directory on the path before anything reads it.
-sed -e 's|@CRUCIBLE_GUI_EXEC@|crucible|' "$ROOT/packaging/crucible.desktop.in" \
+sed -e 's|@CRUCIBLE_GUI_EXEC@|crucible|' "$ROOT/packaging/linux/crucible.desktop.in" \
     > "$APPDIR/crucible.desktop"
 cp "$APPDIR/crucible.desktop" "$APPDIR/usr/share/applications/crucible.desktop"
-cp "$ROOT/packaging/crucible.png" "$APPDIR/crucible.png"
-cp "$ROOT/packaging/crucible.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/crucible.png"
+cp "$ROOT/packaging/icons/crucible.png" "$APPDIR/crucible.png"
+cp "$ROOT/packaging/icons/crucible.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/crucible.png"
 
 # AppRun is what the outer file runs, and it resolves its own path rather than
 # trusting the caller's: the AppImage is mounted somewhere different on every

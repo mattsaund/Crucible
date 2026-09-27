@@ -740,7 +740,7 @@ int App::run() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
     // The name the desktop identifies this window by, and it has to match
-    // StartupWMClass in packaging/crucible.desktop.in. Without it the running
+    // StartupWMClass in packaging/linux/crucible.desktop.in. Without it the running
     // window is a different application from the icon that launched it: the
     // dock shows two entries, one of them generic, and the launcher never
     // stops looking like it is still starting up.

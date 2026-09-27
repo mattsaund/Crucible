@@ -56,13 +56,13 @@ PLIST
 # An .icns with the sizes the Finder actually asks for. iconutil is part of
 # macOS; sips alone produces a single-resolution file that looks soft in the
 # dock, which is the one place this icon is going to be seen.
-if [ -f "$ROOT/packaging/crucible.png" ]; then
+if [ -f "$ROOT/packaging/icons/crucible.png" ]; then
     set="$WORK/crucible.iconset"
     mkdir -p "$set"
     for size in 16 32 64 128 256 512; do
-        sips -z "$size" "$size" "$ROOT/packaging/crucible.png" \
+        sips -z "$size" "$size" "$ROOT/packaging/icons/crucible.png" \
              --out "$set/icon_${size}x${size}.png" >/dev/null
-        sips -z "$((size * 2))" "$((size * 2))" "$ROOT/packaging/crucible.png" \
+        sips -z "$((size * 2))" "$((size * 2))" "$ROOT/packaging/icons/crucible.png" \
              --out "$set/icon_${size}x${size}@2x.png" >/dev/null
     done
     iconutil -c icns "$set" -o "$APP/Contents/Resources/crucible.icns"

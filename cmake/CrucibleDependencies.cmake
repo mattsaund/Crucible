@@ -149,12 +149,12 @@ target_link_libraries(crucible_imgui PUBLIC glfw OpenGL::GL)
 #
 # Raw RGBA rather than the PNG, because nothing in Crucible can decode a PNG --
 # ImGui keeps its copy of stb_image to itself, and pulling in a decoder to read
-# one 128-pixel square would be a strange trade. packaging/make_icons.py writes
+# one 128-pixel square would be a strange trade. packaging/icons/make_icons.py writes
 # the .rgba beside the .png from the one piece of artwork.
 set(CRUCIBLE_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${CRUCIBLE_GENERATED_DIR})
 
-set(CRUCIBLE_MARK_RGBA ${CMAKE_CURRENT_LIST_DIR}/../packaging/crucible-mark.rgba)
+set(CRUCIBLE_MARK_RGBA ${CMAKE_CURRENT_LIST_DIR}/../packaging/icons/crucible-mark.rgba)
 set(CRUCIBLE_MARK_CPP  ${CRUCIBLE_GENERATED_DIR}/icon_mark.cpp)
 if(EXISTS ${CRUCIBLE_MARK_RGBA})
     if(NOT EXISTS ${CRUCIBLE_MARK_CPP} OR ${CRUCIBLE_MARK_RGBA} IS_NEWER_THAN ${CRUCIBLE_MARK_CPP})
