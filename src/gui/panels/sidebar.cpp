@@ -249,14 +249,73 @@ void App::draw_model_tree(const Snapshot& snapshot) {
 // The panel around it
 // ---------------------------------------------------------------------------
 
+/// The sidebar closed down to its dots.
+///
+/// Closing it used to mean closing it: the panel went away and took the one
+/// picture of what the program is doing with it. That is the wrong thing to
+/// lose, and it is lost at exactly the moment it is wanted -- you close the
+/// panel to give a long cook the width, and now nothing on the screen says
+/// which expert has the turn or whether a model is still loading.
+///
+/// So the closed state is a rail two characters wide: the same dots in the same
+/// order, the same colors, and a tooltip naming each. Forty pixels to keep the
+/// answer to "what is it doing" on the screen at every width.
+void App::draw_sidebar_rail(const Snapshot& snapshot) {
+    const Roster& roster = snapshot.roster ? *snapshot.roster : config_.roster;
+
+    ImGui::BeginChild("sidebar-rail", ImVec2(sidebar_rail_width(), 0),
+                      ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float dot  = em(0.42F);
+    const float row  = ImGui::GetTextLineHeightWithSpacing() * 1.15F;
+    const float mid  = ImGui::GetWindowPos().x + sidebar_rail_width() * 0.5F;
+
+    ImGui::Dummy(ImVec2(0, em(0.6F)));
+
+    const auto mark = [&](theme::Dot kind, const char* name, const char* id,
+                          bool clickable) {
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        theme::draw_dot(draw, ImVec2(mid, at.y + row * 0.5F), dot, kind);
+        ImGui::InvisibleButton(id, ImVec2(sidebar_rail_width() - em(0.4F), row));
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", name);
+        }
+        if (clickable && ImGui::IsItemActivated()) {
+            show_settings(SettingsPage::Experts);
+        }
+    };
+
+    mark(delegator_dot(config_, snapshot), "Delegator", "##rail-delegator", false);
+    ImGui::Dummy(ImVec2(0, em(0.35F)));
+
+    for (std::size_t i = 0; i < roster.size(); ++i) {
+        const Expert&    expert = roster.at(i);
+        const SeatState& seat   = i < snapshot.seats.size() ? snapshot.seats[i]
+                                                            : SeatState{};
+        const bool linked = snapshot.linked && *snapshot.linked == expert.id;
+        ImGui::PushID(static_cast<int>(i));
+        mark(linked && seat.phase != SeatPhase::Loading ? theme::Dot::Active
+                                                        : dot_for(seat.phase),
+             expert.name.c_str(), "##rail-seat", true);
+        ImGui::PopID();
+    }
+
+    ImGui::EndChild();
+    ImGui::SameLine();
+}
+
 void App::draw_sidebar(const Snapshot& snapshot) {
-    // Collapsed is a width, not a mode.
+    // Closed is a width, not a mode.
     //
     // The button in the top bar sets that width to zero and back; dragging the
     // splitter to the left edge does the same thing by hand. One property, two
     // ways to reach it, and no separate "is it open" flag to fall out of step
-    // with the width.
+    // with the width. Below the threshold it is a rail rather than nothing --
+    // see draw_sidebar_rail.
     if (sidebar_collapsed()) {
+        draw_sidebar_rail(snapshot);
         return;
     }
 
@@ -321,6 +380,7 @@ void App::show_settings(SettingsPage page) {
 // cannot slam shut on one pixel of movement while you are trimming its width,
 // and there is a narrowest width you can rest at.
 
+float App::sidebar_rail_width() const   { return em(2.6F); }
 float App::sidebar_min_width() const   { return em(13.0F); }
 float App::sidebar_collapse_at() const { return em(8.0F); }
 

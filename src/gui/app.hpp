@@ -131,6 +131,13 @@ private:
     bool  sidebar_collapsed() const;
     float sidebar_drawn_width() const;
     float sidebar_min_width() const;
+
+    /// The width of the closed sidebar: two characters of dots, so what the
+    /// program is doing stays on the screen at every width.
+    float sidebar_rail_width() const;
+
+    /// The closed sidebar. See the comment on the definition.
+    void draw_sidebar_rail(const Snapshot& snapshot);
     float sidebar_collapse_at() const;
     void draw_chat(const Snapshot& snapshot);
     void draw_cook(const Snapshot& snapshot);
