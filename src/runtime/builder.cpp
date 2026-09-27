@@ -79,12 +79,34 @@ int parse_build_percent(const std::string& line, std::string& step) {
     return std::stoi(digits);
 }
 
-/// How many compile jobs to run. Builds are the background task here, not the
-/// foreground one, so leave the machine usable: the user is still typing at a
-/// TUI while this runs.
+/// How many compile jobs to run.
+///
+/// One core is held back, and only one. This used to be justified as leaving
+/// the machine usable while the terminal program was being typed at; the window
+/// is what is being typed at now, it draws on the GPU, and its own thread is
+/// asleep between frames. On a 28-core machine giving up 27 of them to keep one
+/// free is minutes of build time for latency nobody can feel.
 std::string job_count() {
     const unsigned int cores = std::max(1U, std::thread::hardware_concurrency());
     return std::to_string(std::max(1U, cores > 2 ? cores - 1 : cores));
+}
+
+/// A compiler cache, when one is installed.
+///
+/// A runtime build is thirty thousand lines of ggml compiled the same way every
+/// time, and the two builds most likely to happen are a reinstall of the one
+/// you have and a second backend beside it -- both of which recompile files
+/// that have not changed a byte since the last run. ccache turns the second of
+/// those into a copy. It is not a dependency: without it the build is what it
+/// always was, and nothing tells the user to go and install one.
+std::vector<std::string> cache_flags() {
+    for (const char* tool : {"ccache", "sccache"}) {
+        if (util::on_path(tool)) {
+            return {std::string("-DCMAKE_C_COMPILER_LAUNCHER=") + tool,
+                    std::string("-DCMAKE_CXX_COMPILER_LAUNCHER=") + tool};
+        }
+    }
+    return {};
 }
 
 /// Is the CPU runtime already installed? Read from the directory rather than
@@ -541,7 +563,14 @@ void RuntimeBuilder::run(BackendKind kind) {
             "-DLLAMA_BUILD_SERVER=OFF",
             "-DLLAMA_BUILD_COMMON=OFF",
             "-DLLAMA_CURL=OFF",
+            // Not built by `--target ggml`, but it is configured, and a
+            // configure that reaches for common/ is a configure that can fail
+            // for a reason this build does not care about.
+            "-DLLAMA_BUILD_APP=OFF",
         };
+        for (std::string& flag : cache_flags()) {
+            configure.push_back(std::move(flag));
+        }
         if (!unversion.empty()) {
             configure.emplace_back("-DCMAKE_PROJECT_INCLUDE=" + unversion.string());
         }
