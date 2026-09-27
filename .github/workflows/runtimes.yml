@@ -112,6 +112,18 @@ jobs:
       #    the newest lets a card past it start at all.
       #  - cudart is linked statically, so the module carries no NVIDIA
       #    redistributable and needs only a driver.
+      # Windows CUDA builds through Ninja rather than Visual Studio.
+      #
+      # The VS generator compiles CUDA through MSBuild, which needs the toolkit's
+      # integration files inside the Visual Studio installation -- and a network
+      # install of the toolkit does not put them there, so cmake finds the
+      # toolkit, says so, and then stops at "No CUDA toolset found". Ninja calls
+      # nvcc directly and needs none of it. The other two Windows backends build
+      # fine as they are and are left alone.
+      - name: MSVC environment
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
         shell: bash
         run: |
@@ -130,6 +142,9 @@ jobs:
                             -DCMAKE_CUDA_ARCHITECTURES=86-real\;89-real\;120-real\;120-virtual
                             -DCMAKE_CUDA_RUNTIME_LIBRARY=Static) ;;
           esac
+          if [ "${{ matrix.backend }}" = "cuda" ] && [ "${{ runner.os }}" = "Windows" ]; then
+            flags+=(-G Ninja)
+          fi
           cmake -S llama-src -B build "${flags[@]}"
 
       - name: Build
