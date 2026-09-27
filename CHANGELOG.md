@@ -14,7 +14,9 @@ a half minutes and a multi-gigabyte toolkit that had to be installed first --
 and that toolkit, not the minutes, is what stopped people. The release now
 carries the same modules built from the same llama.cpp tag, and the app asks for
 one by a name holding everything that has to match. The shipped CUDA module
-links cudart statically, so it needs a driver and nothing else. Install is never
+links cudart statically, so it needs a driver and nothing else -- a 580-series
+driver or newer, since it is built with CUDA 13; anything older compiles
+locally as before. Install is never
 disabled now: it used to switch off on a missing `nvcc`, which shut out exactly
 the people a download is for.
 

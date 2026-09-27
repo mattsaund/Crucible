@@ -78,9 +78,21 @@ jobs:
           cache: true
           stripdown: true
 
-      # 12.9 rather than 13: it emits real code for Blackwell, and it does not
-      # need the driver generation 13 does. A runtime nobody can load is not
-      # faster than one they have to compile.
+      # 13.3 rather than 12.9, and not by preference.
+      #
+      # 12.9 was the wider choice: it emits real code for Blackwell and asks
+      # less of the driver. It also refuses to compile here -- the Windows image
+      # ships Visual Studio 18 with MSVC 14.51, and 12.9's host_config.h stops
+      # at "unsupported Microsoft Visual Studio version". nvcc offers
+      # -allow-unsupported-compiler to force it, which is a reasonable thing to
+      # do to your own machine and the wrong thing to do to a binary other
+      # people will download: the flag's own warning is that it may cause
+      # compilation failure, and a miscompiled matmul does not announce itself.
+      #
+      # So: a toolkit that supports the host compiler it is given. The cost is
+      # that the shipped module wants a driver from the 580 series or newer, and
+      # a machine older than that falls back to compiling -- which is what it
+      # did before any of this existed.
       #
       # Two steps because the two platforms want different things of the same
       # action. On Windows the subset has to include the Visual Studio
@@ -93,7 +105,7 @@ jobs:
         if: matrix.backend == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: '12.9.1'
+          cuda: '13.3.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "visual_studio_integration"]'
 
@@ -101,7 +113,7 @@ jobs:
         if: matrix.backend == 'cuda' && runner.os == 'Linux'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: '12.9.1'
+          cuda: '13.3.1'
           method: network
 
       # The same flags src/runtime/builder.cpp uses, with two differences that
