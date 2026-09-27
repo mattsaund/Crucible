@@ -15,7 +15,10 @@ Rounded like every other icon on a modern dock: a superellipse would be closer
 to what macOS does, but a rounded rectangle at 22% is what reads as "an app
 icon" on all three platforms and is what LM Studio, VS Code and the rest use.
 
-    python3 packaging/make_icons.py <artwork.png>
+    python3 packaging/make_icons.py [artwork.png]
+
+The artwork lives beside this script, so it takes no arguments in the ordinary
+case: edit packaging/artwork.png and run it.
 """
 import sys
 from PIL import Image, ImageDraw
@@ -87,8 +90,8 @@ def master(artwork):
 
 
 def main():
-    source = sys.argv[1] if len(sys.argv) > 1 else "icon.png"
     here = __file__.rsplit("/", 1)[0]
+    source = sys.argv[1] if len(sys.argv) > 1 else f"{here}/artwork.png"
 
     icon = master(Image.open(source))
     icon.save(f"{here}/crucible.png", optimize=True)
