@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -80,6 +81,42 @@ std::string_view export_id(Export format) {
 
 Export export_from_id(std::string_view id) {
     return id == "mlx" ? Export::Mlx : Export::Gguf;
+}
+
+std::string_view stage_id(Stage stage) {
+    switch (stage) {
+        case Stage::Training: return "training";
+        case Stage::Testing:  return "testing";
+        case Stage::Finished: return "finished";
+        case Stage::Draft:    break;
+    }
+    return "draft";
+}
+
+Stage stage_from_id(std::string_view id) {
+    if (id == "training") { return Stage::Training; }
+    if (id == "testing")  { return Stage::Testing; }
+    if (id == "finished") { return Stage::Finished; }
+    return Stage::Draft;
+}
+
+/// Two words at most, lowercase, because this is read as a status beside a
+/// name rather than as a heading. "ready to test" rather than "testing": the
+/// stage is a thing waiting for the user, and naming it after the activity
+/// would suggest something is happening on its own.
+const char* stage_text(Stage stage) {
+    switch (stage) {
+        case Stage::Training: return "training";
+        case Stage::Testing:  return "ready to test";
+        case Stage::Finished: return "finished";
+        case Stage::Draft:    break;
+    }
+    return "draft";
+}
+
+std::int64_t now_seconds() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 }
 
 /// A name turned into something that can be a directory.
@@ -233,6 +270,9 @@ std::string serialize(const Recipe& recipe) {
     if (!recipe.trained_path.empty()) {
         out["trained_path"] = recipe.trained_path;
     }
+    out["stage"] = std::string(stage_id(recipe.stage));
+    if (recipe.started_at != 0)  { out["started_at"]  = recipe.started_at; }
+    if (recipe.finished_at != 0) { out["finished_at"] = recipe.finished_at; }
     return out.dump(2);
 }
 
@@ -273,20 +313,36 @@ bool parse(std::string_view json_text, Recipe& out, std::string& error) {
     recipe.context       = parsed.value("context", 512);
     recipe.learning_rate = parsed.value("learning_rate", 1e-5F);
     recipe.trained_path  = parsed.value("trained_path", "");
+
+    // A recipe written before stages existed says nothing about where it is,
+    // and the file it points at is the only evidence there is: something was
+    // trained, and nobody has said whether it was any good. That is Testing.
+    // Guessing Finished instead would seat an untested model on the roster on
+    // the strength of an upgrade.
+    recipe.stage = parsed.contains("stage")
+                       ? stage_from_id(parsed.value("stage", "draft"))
+                       : (recipe.trained_path.empty() ? Stage::Draft : Stage::Testing);
+    recipe.started_at  = parsed.value("started_at", std::int64_t{0});
+    recipe.finished_at = parsed.value("finished_at", std::int64_t{0});
+
     out = std::move(recipe);
     return true;
 }
 
 /// Every model the lab has finished, for the roster to offer.
 ///
-/// Read from the disk rather than from the recipes: a recipe says where its
-/// export was meant to go, and a file that is not there is not a model. The
-/// expert picker shows these above the ones in the models directory, which is
-/// how a fine-tune made here becomes a seat without anybody copying a file.
+/// Read from the disk rather than from the recipes alone: a recipe says where
+/// its export was meant to go, and a file that is not there is not a model.
+/// The expert picker shows these above the ones in the models directory, which
+/// is how a fine-tune made here becomes a seat without anybody copying a file.
+///
+/// Finished only. Pressing Finish in the test window is what puts a model
+/// here, and that press is the user saying the thing works -- which is a
+/// judgment no amount of looking at the file can make for them.
 std::vector<Made> finished_models() {
     std::vector<Made> made;
     for (const Recipe& recipe : saved_recipes()) {
-        if (recipe.trained_path.empty()) {
+        if (recipe.stage != Stage::Finished || recipe.trained_path.empty()) {
             continue;
         }
         std::error_code ec;

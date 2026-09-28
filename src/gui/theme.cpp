@@ -127,6 +127,14 @@ void apply() {
     c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.26F, 0.26F, 0.29F, 1.0F);
     c[ImGuiCol_ScrollbarGrabActive]  = to_vec(kFlame);
 
+    // The corner of a resizable window. Left alone it is ImGui's default blue,
+    // which is the one saturated color in the interface that is not the flame
+    // -- and it only shows on modals, which is exactly where a stray blue
+    // triangle is most noticeable.
+    c[ImGuiCol_ResizeGrip]        = ImVec4(0.17F, 0.17F, 0.19F, 1.0F);
+    c[ImGuiCol_ResizeGripHovered] = ImVec4(0.26F, 0.26F, 0.29F, 1.0F);
+    c[ImGuiCol_ResizeGripActive]  = to_vec(kFlame);
+
     // Orange is the only saturated color in the interface, so it is reserved
     // for the thing the eye should go to: what is selected, what is active,
     // what is running.

@@ -31,7 +31,9 @@
 #include "crucible/cook/journal.hpp"
 #include "crucible/app/update.hpp"
 #include "crucible/lab/hub.hpp"
+#include "crucible/lab/pyenv.hpp"
 #include "crucible/lab/recipe.hpp"
+#include "crucible/lab/trainer.hpp"
 #include "crucible/util/display_scale.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
@@ -69,7 +71,7 @@ private:
     /// right, which is the shape every desktop application settles on because
     /// a single scrolling wall of switches cannot be navigated.
     enum class SettingsPage {
-        General, Experts, Generation, Hardware, Runtimes, Tools, About
+        General, Experts, Generation, Hardware, Runtimes, Training, Tools, About
     };
 
     // --- frame ------------------------------------------------------------
@@ -152,7 +154,43 @@ private:
     void draw_history();
 
     /// The Create tab: assembling a model rather than running one.
+    /// The Create tab, which is three screens rather than one.
+    ///
+    /// The list is what it opens on: the experts that have been made, with
+    /// what each is and where it got to. A recipe clicked from there opens its
+    /// own page, and `New` opens the wizard over the top of either. The test
+    /// window is a modal on its own, because talking to a candidate is a thing
+    /// you do to decide something, not a place you browse to.
     void draw_create(const Snapshot& snapshot);
+    void draw_create_list();
+    void draw_create_detail(lab::Recipe recipe);
+    void draw_create_wizard();
+    void draw_create_test(const Snapshot& snapshot);
+
+    /// Put `recipe` in the wizard at `step` and ask for it to open next frame.
+    /// The one way in, so that every caller clears the search boxes the same
+    /// way -- results left over from the last visit are litter, not answers.
+    void draw_create_wizard_open(lab::Recipe recipe, int step);
+
+    /// One step of the wizard, drawn into whatever is current. Split out
+    /// because the wizard draws one of six and the chrome around them is the
+    /// same for all six.
+    void draw_create_step(lab::Recipe& recipe, int step);
+
+    /// Write a recipe to disk and refresh the list from it, so the list and
+    /// the page looking at it can never disagree about what was saved.
+    void lab_store(const lab::Recipe& recipe);
+
+    /// Put `recipe`'s file on the roster as a temporary seat, and take it off
+    /// again.
+    ///
+    /// There is one model host in the process -- llama.cpp's backend is
+    /// global -- so testing a candidate cannot mean standing up a second
+    /// engine beside the first. It means handing the engine a roster with one
+    /// more seat on it and pinning prompts there. The copy never reaches the
+    /// config file, so closing the window is the whole of the undo.
+    void lab_seat_test(const lab::Recipe& recipe);
+    void lab_unseat_test();
 
     /// The hub search box and its results, for whichever step is asking.
     /// Returns what was picked this frame, and nothing on every other frame.
@@ -165,6 +203,13 @@ private:
     void draw_settings_generation();
     void draw_settings_hardware();
     void draw_settings_runtimes();
+
+    /// The Python environment fine-tuning runs in: what is installed, and
+    /// the one button that installs or repairs it. A page of its own beside
+    /// Runtimes because it is the same kind of thing -- something large that
+    /// Crucible puts on the machine for a feature, which somebody will
+    /// eventually want to look at, fix or reclaim the disk from.
+    void draw_settings_training();
 
     /// Notice a runtime that has just finished building, once.
     ///
@@ -335,6 +380,67 @@ private:
     // sitting, and a recipe that only existed in memory would not survive it.
     lab::Recipe lab_recipe_;
     int         lab_step_ = 0;
+
+    /// Which recipe the tab has open, by slug; empty is the list.
+    ///
+    /// The tab opens on the list because most visits are to look at what has
+    /// been made rather than to make something: a roster of experts is the
+    /// point of the thing, and a form was the first screen for as long as
+    /// there was nothing to list.
+    std::string lab_open_;
+
+    /// The wizard: whether to open it this frame, and whether it is up.
+    /// `lab_recipe_` is what it is filling in and `lab_step_` is where it has
+    /// got to.
+    bool lab_wizard_want_ = false;
+    bool lab_wizard_up_   = false;
+
+    /// The test window: which recipe is in it, and where its conversation
+    /// starts in the engine's transcript. Everything before `lab_test_from_`
+    /// belongs to the project and is not drawn in the window.
+    std::string lab_test_;
+    bool        lab_test_want_ = false;
+    bool        lab_test_up_   = false;
+    std::size_t lab_test_from_ = 0;
+    std::string lab_test_prompt_;
+
+    /// The box on the training page for a file trained somewhere else. Still
+    /// here now that Crucible can train: a model fine-tuned with unsloth or
+    /// axolotl is a real model, and there is no reason the rest of the flow
+    /// should refuse to take it.
+    std::string lab_attach_;
+
+    /// The fine-tune in flight, and what installs what it needs.
+    ///
+    /// One of each: llama.cpp holds the card while a model is loaded and a
+    /// training run wants all of it, so two at once is a way to fail twice.
+    lab::Trainer            trainer_;
+    lab::pyenv::Installer   pyenv_installer_;
+
+    /// The training environment as last measured. Reading it starts a Python
+    /// and imports torch, which is a second, so it is asked for when a page
+    /// that shows it opens rather than every frame.
+    lab::pyenv::Status pyenv_status_;
+    bool               pyenv_checked_ = false;
+
+    /// The run whose result has already been written back to its recipe.
+    ///
+    /// A latch, because the trainer publishes Done for as long as nobody
+    /// dismisses it and the write must happen once: without this, every
+    /// frame after a run finishes would rewrite the recipe and re-scan the
+    /// models directory.
+    std::string lab_run_applied_;
+
+    /// Re-measure the environment on the next frame that needs it.
+    void refresh_pyenv(bool force = false);
+
+    /// Start `recipe` training, reporting why not if it cannot.
+    void start_training(const lab::Recipe& recipe);
+
+    /// llama.cpp's exporter and quantizer, for turning a trained model into a
+    /// GGUF. Either may be empty, and the run then stops at a model directory.
+    std::filesystem::path convert_script() const;
+    std::filesystem::path quantize_bin() const;
 
     /// Every recipe on disk, so several models are in progress at once. The
     /// point of the tab is a roster of subject experts -- math, physics,

@@ -50,6 +50,12 @@ param(
     [switch] $Gui,
     [switch] $NoGui,
     [switch] $NoDeps,
+    # The Python environment fine-tuning runs in. Installed by default and
+    # several gigabytes, so the size is printed before it starts. Skipping it
+    # costs nothing permanent: crucible --install-trainer does the same job
+    # afterwards.
+    [switch] $NoTrainer,
+    [string] $TrainerFlavor = '',
     [switch] $Yes,
     [switch] $Check,
     [switch] $Uninstall
@@ -701,6 +707,31 @@ Visual Studio Build Tools, then run this again:
         [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
         $addedToPath = $true
     }
+    # The fine-tuner's Python environment, done by the program rather than
+    # here: `crucible --install-trainer` drives the same code the settings
+    # screen does, so there is one implementation of "find a Python, make a
+    # venv, resolve the right torch" instead of one in shell, one here and
+    # one in C++ that could disagree.
+    #
+    # Never fatal. No Python, a proxy that blocks PyPI, a full disk -- none of
+    # those is a reason to fail an install of a program that runs models
+    # perfectly well without a trainer.
+    $trainerReady = $false
+    if (-not $NoTrainer) {
+        Stop-Progress
+        Write-Host ''
+        Step-Begin 'Setting up the fine-tuner'
+        $trainerArgs = @('--install-trainer')
+        if ($TrainerFlavor) { $trainerArgs += @('--trainer-flavor', $TrainerFlavor) }
+        & (Join-Path $binDir 'crucible.exe') @trainerArgs
+        if ($LASTEXITCODE -eq 0) {
+            $trainerReady = $true
+        } else {
+            Write-Host ''
+            Write-Warn 'the fine-tuner is not set up. Crucible works without it; training does not.'
+            Write-Note "try again later with:  $(Join-Path $binDir 'crucible.exe') --install-trainer"
+        }
+    }
     Stop-Progress
 
     Write-Host ''
@@ -717,6 +748,13 @@ Visual Studio Build Tools, then run this again:
     Write-Host "    shortcuts     Start Menu, Desktop"
     Write-Host "    config        $ConfigDir"
     Write-Host "    models        $ModelsDir"
+    if (-not $NoTrainer) {
+        if ($trainerReady) {
+            Write-Host "    fine-tuner    ready"
+        } else {
+            Write-Host "    fine-tuner    not set up -- crucible --install-trainer"
+        }
+    }
     if ($addedToPath) {
         Write-Host ''
         Write-Warn 'open a new terminal for the PATH change to take effect'

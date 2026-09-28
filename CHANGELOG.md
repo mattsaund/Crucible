@@ -6,6 +6,80 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.6.5 — 2026-09-28
+
+
+**Create is a list of experts, not a form.** The tab used to open on step one
+of eight whether or not you had come to fill anything in, with the models you
+had already made listed in a rail beside it. It opens on them now: what has
+been made, what each one is for, what it was built from, and where it got to.
+Making another is a **New expert** button that walks the same questions through
+a wizard and gets out of the way when the run starts.
+
+**A recipe has a life now, and the list is sorted by it.** Draft, training,
+ready to test, finished. Starting a run closes the wizard and puts the model in
+the list as training; clicking it opens its own page, with its specs and its
+progress. Finishing is what puts a model on the roster -- so a half-trained
+adapter no longer becomes routable because a file with its name turned up on
+disk, which is what the old "has it got a path" test amounted to. Recipes
+written by 0.6.0 and earlier are read as ready to test when they point at a
+file and as drafts when they do not.
+
+**A test window, and it really runs the model.** Ready-to-test opens a window
+that seats the candidate and talks to it through the same engine Chat uses --
+one model host in the process, so the seat is temporary and never reaches the
+config file. **Finish** keeps it and gives it a seat on the roster, with its
+description as what the delegator routes on; **Edit** goes back to the
+fine-tune parameters.
+
+**Crucible trains the model now, and the installer sets that up.** The gap was
+a Python environment: adapter training is peft, bitsandbytes and a torch built
+for the card, none of which a C++ program has any business reimplementing. So
+the installer builds one -- a private virtual environment in Crucible's own
+data folder, made from whatever Python the machine already has, removable by
+deleting a folder. It cannot break a system package and cannot be broken by
+one. Start training and the run actually runs: the page shows the phase, the
+step count, the loss curve, what card it is on and how long is left, and Stop
+works within a step.
+
+It is several gigabytes -- about 3 GB down the wire and 7 GB on disk for the
+CUDA stack -- so the size is printed before it starts, `--no-trainer` skips
+it, and `crucible --install-trainer` does it afterwards, which is also the
+repair command for a machine that had no Python at install time.
+**Settings -> Training** shows what is installed, what it can train on, and
+removes it.
+
+Worth knowing where that goes, because it is not Crucible: about three fifths
+is NVIDIA's own CUDA libraries, which any PyTorch install pulls in, and
+PyTorch itself is another 1.6 GB. pip is told not to keep its download cache,
+which would otherwise leave 2.7 GB in `~/.cache/pip` that removing the
+environment would not reclaim -- the folder this promises to be removable by
+deleting is now actually all of it.
+
+**Which PyTorch, decided by the cards rather than pinned.** A torch wheel
+carries kernels for a fixed list of architectures, and a card newer than the
+list is not slow, it is unusable -- while `import torch` succeeds and
+`cuda.is_available()` still says true. Pinning CUDA 12.4 cost an RTX 5060 Ti
+on the machine this was built on: two cards worked, the third sat idle, and
+nothing said so. The index now follows the newest compute capability present,
+and the environment reports any card its torch has no kernels for.
+
+A run is a child of the window that started it and ends with it, as a runtime
+build does. The page says that rather than letting somebody close a window on
+an hour of training.
+
+Export: a fine-tune comes out as a GGUF at F16 or Q8_0, or as a Huggingface
+model directory when llama.cpp's converter is not on the machine. The k-quants
+need `llama-quantize`, which Crucible does not build yet, and the run says so
+instead of silently producing something the recipe did not ask for.
+
+Attaching a file trained elsewhere still works, and is still the right answer
+for a model fine-tuned with unsloth or axolotl.
+
+Smaller things: a learning rate reads as `1.0e-05` rather than `10.0e-06`; long
+model paths are cut from the middle instead of running off the window; a
+resizable window's corner grip is no longer ImGui's default blue.
+
 ## 0.6.0 — 2026-09-27
 
 

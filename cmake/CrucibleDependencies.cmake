@@ -165,6 +165,26 @@ if(EXISTS ${CRUCIBLE_MARK_RGBA})
     endif()
 endif()
 
+# --- the trainer script -------------------------------------------------
+#
+# Fine-tuning is a Python script, and it is compiled in for the same reason
+# the mark is: an AppImage, a .app bundle and a Windows install put their data
+# files in three different places, and a trainer that is always exactly the
+# one this build expects beats one that could be looked for, found stale, or
+# edited. It is written out beside its virtual environment when that is
+# installed, so upgrading Crucible upgrades the trainer.
+set(CRUCIBLE_TRAINER_PY  ${CMAKE_CURRENT_LIST_DIR}/../scripts/trainer/finetune.py)
+set(CRUCIBLE_TRAINER_CPP ${CRUCIBLE_GENERATED_DIR}/trainer_script.cpp)
+if(EXISTS ${CRUCIBLE_TRAINER_PY})
+    if(NOT EXISTS ${CRUCIBLE_TRAINER_CPP} OR
+       ${CRUCIBLE_TRAINER_PY} IS_NEWER_THAN ${CRUCIBLE_TRAINER_CPP})
+        execute_process(COMMAND ${CMAKE_COMMAND}
+            -DIN=${CRUCIBLE_TRAINER_PY} -DOUT=${CRUCIBLE_TRAINER_CPP}
+            -DSYMBOL=kFinetunePy -DNAMESPACE=crucible::lab::embedded
+            -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake)
+    endif()
+endif()
+
 # --- the interface font -------------------------------------------------
 #
 # JetBrains Mono, compiled in rather than looked for. A font is the one

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.6.0
+    VERSION     0.6.5
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -147,6 +147,8 @@ add_library(crucible_core STATIC
     # made of, and browsing the hub for the pieces
     src/lab/recipe.cpp
     src/lab/hub.cpp
+    src/lab/pyenv.cpp
+    src/lab/trainer.cpp
 
     # routing: the expert roster, the two routers, and the command list
     src/routing/expert.cpp
@@ -173,6 +175,7 @@ add_library(crucible_core STATIC
     # app: process-level actions that are not the window
     src/app/cli.cpp
     src/app/uninstall.cpp
+    src/app/setup_trainer.cpp
     src/app/update.cpp
 )
 add_library(crucible::core ALIAS crucible_core)
@@ -183,6 +186,16 @@ target_include_directories(crucible_core PUBLIC
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
     PRIVATE Threads::Threads)
+
+# The fine-tuning script, compiled in. Absent only if someone deleted it from
+# the source tree; the trainer then reports that rather than writing a file
+# that is not there.
+if(EXISTS ${CRUCIBLE_TRAINER_CPP})
+    target_sources(crucible_core PRIVATE ${CRUCIBLE_TRAINER_CPP})
+    target_compile_definitions(crucible_core PUBLIC CRUCIBLE_HAS_TRAINER_SCRIPT)
+else()
+    message(WARNING "scripts/trainer/finetune.py not found; training will be unavailable")
+endif()
 
 target_compile_definitions(crucible_core PUBLIC
     CRUCIBLE_VERSION="${PROJECT_VERSION}"
@@ -210,6 +223,7 @@ add_executable(crucible
     src/gui/panels/chat.cpp
     src/gui/panels/cook.cpp
     src/gui/panels/create.cpp
+    src/gui/panels/training.cpp
     src/gui/panels/experts.cpp
     src/gui/panels/settings.cpp
     src/gui/panels/generation.cpp
@@ -268,6 +282,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_overflow.cpp
         tests/test_display_scale.cpp
         tests/test_lab.cpp
+        tests/test_trainer.cpp
         tests/test_prebuilt.cpp
         tests/test_update.cpp
         tests/test_spelling.cpp)

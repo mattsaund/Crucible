@@ -69,6 +69,34 @@ enum class Export { Gguf, Mlx };
 std::string_view export_id(Export format);
 Export           export_from_id(std::string_view id);
 
+/// Where a recipe is in its life.
+///
+/// The Create tab is a list of experts before it is a form, so the first thing
+/// it has to know about a recipe is what that recipe is doing right now. Four
+/// answers, in the order they happen:
+///
+///   Draft     still being assembled; the wizard has not been through
+///   Training  a run has been started and has not produced a file yet
+///   Testing   there is a file, and nobody has said yet whether it is any good
+///   Finished  it was tested and kept, and it is a seat on the roster
+///
+/// Only Finished reaches the expert picker, and that is the whole reason the
+/// stage is stored rather than inferred from whether a file exists: a
+/// half-trained adapter should not become something the delegator can send
+/// work to because a file with its name landed on the disk.
+enum class Stage { Draft, Training, Testing, Finished };
+
+std::string_view stage_id(Stage stage);
+Stage            stage_from_id(std::string_view id);
+
+/// The stage as the list writes it: "draft", "training", "ready to test",
+/// "finished".
+const char* stage_text(Stage stage);
+
+/// Now, in seconds since the epoch, which is what the recipe timestamps are
+/// measured in.
+std::int64_t now_seconds();
+
 /// A model being built.
 struct Recipe {
     /// What the expert will be called, as typed. `id` is its slug, and is what
@@ -102,6 +130,17 @@ struct Recipe {
     /// Set once training has produced something, so the tab can offer to test
     /// and export it rather than train it again.
     std::string trained_path;
+
+    Stage stage = Stage::Draft;
+
+    /// Epoch seconds for the two moments worth keeping: when the run was
+    /// started, and when the result was kept. Zero means it has not happened.
+    ///
+    /// Stored because both are questions a list of ten experts gets asked
+    /// straight away -- how long has that one been going, how old is that one
+    /// -- and neither can be recovered from the file afterwards.
+    std::int64_t started_at  = 0;
+    std::int64_t finished_at = 0;
 };
 
 /// The slug for a name: lower case, dashes, nothing a filesystem dislikes.
@@ -156,9 +195,10 @@ struct Made {
     std::uint64_t         bytes = 0;
 };
 
-/// Every finished model, newest name order. A recipe whose file has been moved
-/// or deleted is left out: offering a seat a model that is not there produces a
-/// seat that cannot answer.
+/// Every finished model, in name order. Two things keep a recipe out of this
+/// list, and they fail differently: one that has not been tested and kept is
+/// not finished, and one whose file has been moved or deleted is not a model.
+/// Either way, seating it would produce a seat that cannot answer.
 std::vector<Made> finished_models();
 
 std::filesystem::path recipe_file(const Recipe& recipe);

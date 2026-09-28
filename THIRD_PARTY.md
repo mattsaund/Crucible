@@ -1,5 +1,12 @@
 # Third-party licenses
 
+Two separate things: what the `crucible` binary is built from, and what it
+installs for you afterwards. The first is below and is small; the second is
+the training environment, further down, and is neither distributed with
+Crucible nor MIT.
+
+## Linked into the binary
+
 Crucible links these projects statically. Each is MIT-licensed, the same as
 Crucible itself, so a distributed `crucible` binary carries no obligations beyond
 retaining the copyright notices below.
@@ -12,6 +19,49 @@ exact tags. No third-party source is vendored into this repository.
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b10678` | MIT | loads GGUF models and runs inference |
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file |
 
+## The training environment
+
+Fine-tuning runs in a Python environment that Crucible builds on request --
+`crucible --install-trainer`, which the installers offer and `--no-trainer`
+declines. **None of it is distributed with Crucible.** pip fetches it from
+PyPI and from PyTorch's own index onto your machine, into a folder under
+Crucible's data directory, exactly as if you had run pip yourself. Crucible
+carries no copy, and a `crucible` binary is unaffected by any of these
+licenses.
+
+What it asks for directly:
+
+| package | license | what it does here |
+|---|---|---|
+| [PyTorch](https://github.com/pytorch/pytorch) | BSD-3-Clause | the tensor library everything below stands on |
+| [transformers](https://github.com/huggingface/transformers) | Apache-2.0 | loads the base model and its tokenizer |
+| [peft](https://github.com/huggingface/peft) | Apache-2.0 | LoRA and QLoRA adapters |
+| [accelerate](https://github.com/huggingface/accelerate) | Apache-2.0 | places the model on the device |
+| [datasets](https://github.com/huggingface/datasets) | Apache-2.0 | reads a Huggingface dataset |
+| [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) | MIT | the four-bit quantization QLoRA is |
+| [safetensors](https://github.com/huggingface/safetensors) | Apache-2.0 | the weight format the result is saved in |
+| [sentencepiece](https://github.com/google/sentencepiece) | Apache-2.0 | tokenizers that need it |
+| [protobuf](https://github.com/protocolbuffers/protobuf) | BSD-3-Clause | a sentencepiece dependency |
+| [gguf](https://github.com/ggml-org/llama.cpp/tree/master/gguf-py) | MIT | writes the exported GGUF |
+| [numpy](https://github.com/numpy/numpy) | BSD-3-Clause | arrays, everywhere |
+| [MLX](https://github.com/ml-explore/mlx) and [mlx-lm](https://github.com/ml-explore/mlx-lm) | MIT | the Apple Silicon path, instead of PyTorch |
+
+Their own dependencies come with them -- around seventy packages in total,
+under Apache-2.0, MIT, BSD, MPL-2.0 and the Python Software Foundation
+license. `crucible --trainer-status` names the folder; the `*.dist-info`
+directories inside it carry each package's own license text.
+
+**The CUDA libraries are proprietary.** A PyTorch built for NVIDIA hardware
+pulls in cuBLAS, cuDNN, NCCL and a dozen more as `nvidia-*` wheels, and those
+are published by NVIDIA under NVIDIA's own license, not an open-source one.
+They are the majority of the environment's size. This is what installing
+PyTorch on an NVIDIA machine has always meant, and it is worth being explicit
+that Crucible asking pip for `torch` is what puts them there. The CPU and MLX
+flavors pull in none of them.
+
 **Models are not covered by any of this.** Crucible ships no model weights and
-downloads none. Whatever GGUF files you put in your models directory carry
-their own licenses, which are between you and whoever trained them.
+downloads none of its own. Whatever GGUF files you put in your models
+directory carry their own licenses, which are between you and whoever trained
+them -- and so does any base model a fine-tune starts from, which the trainer
+downloads from Huggingface on your instruction and under whatever terms that
+repository sets.

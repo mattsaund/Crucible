@@ -193,6 +193,7 @@ TEST(a_finished_model_is_offered_to_the_roster_and_a_missing_one_is_not) {
     done.base           = hub_asset("unsloth/Llama-3.2-1B");
     done.purpose        = "algebra, calculus, proofs";
     done.trained_path   = file.string();
+    done.stage          = Stage::Finished;
     std::string error;
     CHECK(save(done, error));
 
@@ -201,7 +202,18 @@ TEST(a_finished_model_is_offered_to_the_roster_and_a_missing_one_is_not) {
     CHECK(save(building, error));
     Recipe gone       = started("Chemistry");
     gone.trained_path = (temp.path() / "went-away.gguf").string();
+    gone.stage        = Stage::Finished;
     CHECK(save(gone, error));
+
+    // And one that trained into a real file nobody has tested yet. It is not
+    // a finished model: pressing Finish is the user saying it works, and no
+    // amount of looking at the file makes that judgment for them.
+    const std::filesystem::path candidate = temp.path() / "biology.Q4_K_M.gguf";
+    { std::ofstream out(candidate); out << "not really a model either"; }
+    Recipe untested       = started("Biology");
+    untested.trained_path = candidate.string();
+    untested.stage        = Stage::Testing;
+    CHECK(save(untested, error));
 
     const std::vector<Made> made = finished_models();
     CHECK_EQ(made.size(), std::size_t{1});
@@ -211,6 +223,55 @@ TEST(a_finished_model_is_offered_to_the_roster_and_a_missing_one_is_not) {
         CHECK_EQ(made[0].path, file);
         CHECK(made[0].bytes > 0);
     }
+}
+
+TEST(a_stage_survives_the_round_trip_and_is_named_in_the_file) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+
+    Recipe recipe      = started("Kitchen Physicist");
+    recipe.stage       = Stage::Training;
+    recipe.started_at  = 1'700'000'000;
+    recipe.finished_at = 0;
+
+    Recipe      back;
+    std::string error;
+    CHECK(parse(serialize(recipe), back, error));
+    CHECK(back.stage == Stage::Training);
+    CHECK_EQ(back.started_at, std::int64_t{1'700'000'000});
+    CHECK_EQ(back.finished_at, std::int64_t{0});
+
+    // Written as a word rather than a number, so a recipe file can be read and
+    // edited by hand without a table of what 2 means.
+    CHECK(serialize(recipe).find("\"stage\": \"training\"") != std::string::npos);
+}
+
+TEST(every_stage_has_a_name_and_comes_back_as_itself) {
+    const Stage all[] = {Stage::Draft, Stage::Training, Stage::Testing, Stage::Finished};
+    for (const Stage stage : all) {
+        CHECK(stage_from_id(stage_id(stage)) == stage);
+        CHECK(std::string(stage_text(stage)).find(' ') != 0);
+        CHECK(!std::string(stage_text(stage)).empty());
+    }
+    // Anything else is a draft. A recipe written by a newer Crucible with a
+    // stage this one has never heard of is still a recipe, and the safe place
+    // to put it is at the start rather than on the roster.
+    CHECK(stage_from_id("sous-vide") == Stage::Draft);
+    CHECK(stage_from_id("") == Stage::Draft);
+}
+
+TEST(a_recipe_written_before_stages_existed_reads_as_one_waiting_to_be_tested) {
+    // The file it points at is the only evidence there is: something was
+    // trained, and nobody has said whether it was any good.
+    const std::string trained = R"({"name":"Math","id":"math","trained_path":"/tmp/m.gguf"})";
+    Recipe            back;
+    std::string       error;
+    CHECK(parse(trained, back, error));
+    CHECK(back.stage == Stage::Testing);
+
+    const std::string bare = R"({"name":"Math","id":"math"})";
+    CHECK(parse(bare, back, error));
+    CHECK(back.stage == Stage::Draft);
 }
 
 // ---------------------------------------------------------------------------

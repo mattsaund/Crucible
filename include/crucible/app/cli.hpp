@@ -13,6 +13,17 @@ struct Options {
     bool uninstall  = false;  ///< --uninstall
     bool assume_yes = false;  ///< -y, only meaningful with --uninstall
 
+    /// --install-trainer: put the Python training environment in place and
+    /// exit. What the installer runs once the program is built, and what
+    /// repairs the environment afterwards without a reinstall.
+    bool install_trainer = false;
+    bool trainer_status  = false;  ///< --trainer-status
+    bool force           = false;  ///< --force, with --install-trainer
+    bool quiet           = false;  ///< --quiet, for an installer's own output
+
+    /// --trainer-flavor cuda|cpu|mlx. Empty means whatever the hardware says.
+    std::string trainer_flavor;
+
     /// Set when the program should stop after parsing -- --help, --version and
     /// --config all print something and exit, as does a bad option.
     bool should_exit = false;

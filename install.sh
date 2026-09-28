@@ -42,9 +42,22 @@ PREFIX=""
 APP_BUNDLE_DIR="$HOME/Applications"
 [ -w /Applications ] && APP_BUNDLE_DIR="/Applications"
 INSTALL_DEPS=1
+# The Python environment the fine-tuner runs in, installed by default.
+#
+# This is the opposite of the rule next door for GPU runtimes, and the
+# difference is worth stating. Which runtime to build is a question only the
+# machine can answer, so it is asked from the settings screen. This is not a
+# question: there is one training environment, its shape follows from the
+# hardware, and the alternative to installing it here is a fine-tune that
+# stops for four gigabytes the first time somebody tries one. It is several
+# gigabytes, so the size is printed before it starts and --no-trainer skips
+# it -- and skipping it costs nothing permanent, since
+# `crucible --install-trainer` does the same job afterwards.
+INSTALL_TRAINER=1
 ASSUME_YES=0
 DO_UNINSTALL=0
 DO_CHECK=0
+TRAINER_FLAVOR=""
 # nproc is GNU coreutils; macOS has sysctl instead. Four is the fallback when
 # neither answers, which is a build that is slower than it could be rather than
 # one that does not happen.
@@ -543,6 +556,10 @@ usage: install.sh [options]
   --gui, --no-gui  accepted and ignored. Crucible is one program and it is the
                    window; the terminal face these chose between is gone.
   --no-deps        do not install system packages
+  --no-trainer     skip the Python environment for fine-tuning (several
+                   gigabytes). Add it later with: crucible --install-trainer
+  --trainer-flavor cuda|cpu|mlx -- which training stack to install
+                   (default: whatever the hardware says)
   -y, --yes        assume yes; never prompt
   --check          report what would be installed, then exit without
                    changing anything
@@ -575,6 +592,10 @@ while [ $# -gt 0 ]; do
         --jobs)      JOBS="${2:-}";   shift 2 ;;
         --jobs=*)    JOBS="${1#*=}";  shift ;;
         --no-deps)   INSTALL_DEPS=0;  shift ;;
+        --no-trainer) INSTALL_TRAINER=0; shift ;;
+        --trainer)    INSTALL_TRAINER=1; shift ;;
+        --trainer-flavor)   TRAINER_FLAVOR="${2:-}"; shift 2 ;;
+        --trainer-flavor=*) TRAINER_FLAVOR="${1#*=}"; shift ;;
         -y|--yes)    ASSUME_YES=1;    shift ;;
         --uninstall) DO_UNINSTALL=1;  shift ;;
         --check)     DO_CHECK=1;      shift ;;
@@ -892,6 +913,7 @@ ensure_cmake() {
 # --------------------------------------------------------------------------
 PKGS_BASE=()
 PKGS_GUI=()
+PKGS_PY=()
 
 # Which packages this distribution needs. Two lists, and only two: a C++
 # toolchain, and the headers the desktop app links against. There used to be a
@@ -904,27 +926,35 @@ PKGS_GUI=()
 # Split out from the install so --check can report them without touching
 # anything.
 resolve_packages() {
-    PKGS_BASE=(); PKGS_GUI=()
+    PKGS_BASE=(); PKGS_GUI=(); PKGS_PY=()
     case "$PKG" in
         apt)    PKGS_BASE=(build-essential cmake git pkg-config curl ca-certificates)
                 # The desktop app. GLFW itself is preferred from the system;
                 # these are what it needs either way, and what building it from
                 # source needs when the distribution has no package.
                 PKGS_GUI=(libgl1-mesa-dev libglfw3-dev libx11-dev libxrandr-dev
-                          libxinerama-dev libxcursor-dev libxi-dev) ;;
+                          libxinerama-dev libxcursor-dev libxi-dev)
+                # What the fine-tuner is built on. python3-venv is separate on
+                # Debian and Ubuntu and its absence is the single most common
+                # reason `python3 -m venv` fails on a machine that has Python.
+                PKGS_PY=(python3 python3-venv python3-pip) ;;
         dnf)    PKGS_BASE=(gcc-c++ make cmake git pkgconf-pkg-config curl)
                 PKGS_GUI=(mesa-libGL-devel glfw-devel libX11-devel libXrandr-devel
-                          libXinerama-devel libXcursor-devel libXi-devel) ;;
+                          libXinerama-devel libXcursor-devel libXi-devel)
+                PKGS_PY=(python3 python3-pip) ;;
         pacman) PKGS_BASE=(base-devel cmake git curl)
-                PKGS_GUI=(mesa glfw libx11 libxrandr libxinerama libxcursor libxi) ;;
+                PKGS_GUI=(mesa glfw libx11 libxrandr libxinerama libxcursor libxi)
+                PKGS_PY=(python python-pip) ;;
         zypper) PKGS_BASE=(gcc-c++ make cmake git-core curl)
                 PKGS_GUI=(Mesa-libGL-devel libglfw-devel libX11-devel libXrandr-devel
-                          libXinerama-devel libXcursor-devel libXi-devel) ;;
+                          libXinerama-devel libXcursor-devel libXi-devel)
+                PKGS_PY=(python3 python3-pip) ;;
         # macOS: the compiler, git, curl and OpenGL all come with the system
         # or the command line tools. Only cmake is actually missing, and GLFW
         # is built from source because Homebrew's is not always there.
         brew)   PKGS_BASE=(cmake)
-                PKGS_GUI=() ;;
+                PKGS_GUI=()
+                PKGS_PY=(python@3.12) ;;
     esac
     return 0
 }
@@ -971,6 +1001,23 @@ install_dependencies() {
                 warn "some desktop packages did not install; checking for the headers anyway"
         else
             warn "none of the desktop packages are on this distribution"
+        fi
+        phase_end
+    fi
+
+    # Python, for the fine-tuner. Only when it is going to be used: this is
+    # the one dependency that exists for a feature rather than for the build,
+    # and --no-trainer should not install it.
+    if [ "$INSTALL_TRAINER" = 1 ] && [ "${#PKGS_PY[@]}" -gt 0 ]; then
+        phase 20 "installing Python for the fine-tuner"
+        local py_have=() py_pkg
+        for py_pkg in ${PKGS_PY[@]+"${PKGS_PY[@]}"}; do
+            if pkg_available "$py_pkg"; then py_have+=("$py_pkg"); fi
+        done
+        if [ "${#py_have[@]}" -gt 0 ]; then
+            pkg_install ${py_have[@]+"${py_have[@]}"} ||
+                warn "Python did not install; the fine-tuner can be set up later with
+      crucible --install-trainer"
         fi
         phase_end
     fi
@@ -1549,6 +1596,43 @@ path_advice() {
 }
 
 # --------------------------------------------------------------------------
+# The fine-tuner's Python environment
+# --------------------------------------------------------------------------
+# Done by the program rather than here. `crucible --install-trainer` drives
+# the same code the settings screen does, which means one implementation of
+# "find a Python, make a venv, resolve the right torch" instead of one here,
+# one in PowerShell and one in C++ that could disagree about what "installed"
+# means.
+#
+# Never fatal. A machine with no Python, a proxy that blocks PyPI, a disk that
+# fills up -- none of those are a reason to fail an install of a program that
+# runs models perfectly well without a trainer. It says what happened and
+# names the command that tries again.
+install_trainer() {
+    [ "$INSTALL_TRAINER" = 1 ] || { muted "skipping the fine-tuner (--no-trainer)"; return 0; }
+
+    local args=(--install-trainer)
+    [ -n "$TRAINER_FLAVOR" ] && args+=(--trainer-flavor "$TRAINER_FLAVOR")
+
+    # Progress goes straight to the terminal, so the block-drawing progress
+    # display has to be out of the way first: this is minutes of downloading
+    # and a bar that cannot move for four of them is worse than the lines pip
+    # is already printing.
+    progress_end
+    printf '\n'
+    step "Setting up the fine-tuner"
+    if "$PREFIX/bin/crucible" "${args[@]}"; then
+        TRAINER_READY=1
+    else
+        TRAINER_READY=0
+        printf '\n'
+        warn "the fine-tuner is not set up. Crucible works without it; training does not."
+        info "try again later with:  $PREFIX/bin/crucible --install-trainer"
+    fi
+    return 0
+}
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 # Report what an install would do, changing nothing. Deliberately never asks
@@ -1573,6 +1657,11 @@ run_check() {
     fi
 
     printf '\n%swould install:%s\n' "$C_BOLD" "$C_RESET"
+    if [ "$INSTALL_TRAINER" = 1 ]; then
+        info "fine-tuner : a private Python environment, a few GB (--no-trainer skips it)"
+    else
+        info "fine-tuner : skipped (--no-trainer)"
+    fi
     if [ "$INSTALL_DEPS" = 1 ]; then
         resolve_packages
         info "toolchain  : ${PKGS_BASE[*]:-none}"
@@ -1644,6 +1733,9 @@ main() {
     # onto somewhere that exists rather than reporting a path that does not.
     make_directories
 
+    # Last, and after the binary exists, because it is the binary that does
+    # it. Ends the progress display itself.
+    install_trainer
     progress_end
 
     # The version, from the binary itself: re-running this script is also how
@@ -1667,6 +1759,13 @@ main() {
     fi
     printf '    config        %s\n' "$CONFIG_DIR"
     printf '    models        %s\n' "$MODELS_DIR"
+    if [ "$INSTALL_TRAINER" = 1 ]; then
+        if [ "${TRAINER_READY:-0}" = 1 ]; then
+            printf '    fine-tuner    ready\n'
+        else
+            printf '    fine-tuner    not set up -- crucible --install-trainer\n'
+        fi
+    fi
 
     path_advice
 

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "crucible/app/cli.hpp"
+#include "crucible/app/setup_trainer.hpp"
 #include "crucible/app/uninstall.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/config/paths.hpp"
@@ -36,6 +37,16 @@ int main(int argc, char** argv) {
 
     if (options.uninstall) {
         return crucible::run_uninstall(options.assume_yes);
+    }
+
+    // Both of these are the installer talking to the program it just built,
+    // and both finish without opening a window.
+    if (options.trainer_status) {
+        return crucible::run_trainer_status();
+    }
+    if (options.install_trainer) {
+        return crucible::run_trainer_setup(options.trainer_flavor, options.force,
+                                           options.quiet);
     }
 
     // No project, and so no folder question yet.

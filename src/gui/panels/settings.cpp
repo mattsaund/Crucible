@@ -43,6 +43,7 @@ void App::draw_settings() {
     page("Generation", SettingsPage::Generation);
     page("Hardware",   SettingsPage::Hardware);
     page("Runtimes",   SettingsPage::Runtimes);
+    page("Training",   SettingsPage::Training);
     page("Tools",      SettingsPage::Tools);
     page("About",      SettingsPage::About);
     ImGui::EndChild();
@@ -178,6 +179,7 @@ void App::draw_settings() {
         case SettingsPage::Generation: draw_settings_generation(); break;
         case SettingsPage::Hardware:   draw_settings_hardware();   break;
         case SettingsPage::Runtimes:   draw_settings_runtimes();   break;
+        case SettingsPage::Training:   draw_settings_training();   break;
 
         case SettingsPage::Tools: {
             title("Tools");

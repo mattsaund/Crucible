@@ -43,6 +43,12 @@ usage: crucible [options]
       --no-trust   skip the folder trust prompt for this run
   -y, --yes        with --uninstall, answer yes to everything
 
+      --install-trainer   install the Python environment fine-tuning needs
+      --trainer-status    say whether that environment is usable, and exit
+      --trainer-flavor F  cuda, cpu or mlx (default: what the hardware says)
+      --force             with --install-trainer, rebuild one that is already there
+      --quiet             less output, for a script
+
 Crucible reads its configuration from:
 )" << "  " << paths::config_file().string() << "\n\n";
 }
@@ -81,6 +87,20 @@ Options parse_arguments(int argc, char** argv) {
             std::cout << paths::config_file().string() << "\n";
             options.should_exit = true;
             return options;
+        }
+        if (argument == "--install-trainer") { options.install_trainer = true; continue; }
+        if (argument == "--trainer-status")  { options.trainer_status  = true; continue; }
+        if (argument == "--force")           { options.force           = true; continue; }
+        if (argument == "--quiet")           { options.quiet           = true; continue; }
+        if (argument == "--trainer-flavor") {
+            if (i + 1 >= argc) {
+                std::cerr << "crucible: --trainer-flavor needs cuda, cpu or mlx\n";
+                options.should_exit = true;
+                options.exit_code   = 2;
+                return options;
+            }
+            options.trainer_flavor = argv[++i];
+            continue;
         }
         if (argument == "--no-trust") { options.skip_trust = true;  continue; }
         if (argument == "--uninstall") { options.uninstall = true;  continue; }

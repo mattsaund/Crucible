@@ -30,6 +30,7 @@
 
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/config/paths.hpp"
+#include "crucible/lab/pyenv.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -382,6 +383,15 @@ int run_uninstall(bool assume_yes) {
         take(data);
         std::cout << "  data     " << data.string() << "  ("
                   << format::bytes(directory_size(data)) << ")\n";
+        // Named inside it, because it is most of that number. Several
+        // gigabytes appearing under one word called "data" is the kind of
+        // line somebody reads twice and still does not know what they are
+        // about to delete.
+        const std::filesystem::path trainer = lab::pyenv::root();
+        if (std::filesystem::exists(trainer)) {
+            std::cout << "             including the fine-tuner's Python  ("
+                      << format::bytes(directory_size(trainer)) << ")\n";
+        }
     }
     if (!cache.empty() && std::filesystem::exists(cache)) {
         take(cache);
