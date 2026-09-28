@@ -78,14 +78,33 @@ jobs:
       # than fetching main -- so this installs the commit being tested. --yes
       # because there is nobody to answer, and a prefix of its own so the check
       # below knows where to look without guessing whether sudo was there.
+      # --no-trainer, because what this job tests is the installer, not PyPI.
+      # Left on, every push would pull a torch stack onto the runner: minutes
+      # of download, gigabytes of disk, and a new way for an unrelated commit
+      # to go red when an index is having a bad morning. The flag's own logic
+      # is covered by tests/test_install.sh, and the command that would do the
+      # work is exercised below.
       - name: install.sh
         if: runner.os == 'macOS'
-        run: /bin/bash ./install.sh --yes --prefix "$HOME/.local"
+        run: /bin/bash ./install.sh --yes --no-trainer --prefix "$HOME/.local"
 
       - name: The installed crucible starts
         if: runner.os == 'macOS'
         run: |
           "$HOME/.local/bin/crucible" --version
+
+      # The trainer was skipped, so this has to say so -- and say it with a
+      # non-zero status, which is what the installer branches on. A machine
+      # with no environment reporting itself ready would be the one failure
+      # here that nothing else would catch.
+      - name: And reports honestly that training is not set up
+        if: runner.os == 'macOS'
+        run: |
+          set +e
+          out="$("$HOME/.local/bin/crucible" --trainer-status)"; status=$?
+          echo "$out"
+          test "$status" -ne 0 || { echo "expected a non-zero status" >&2; exit 1; }
+          case "$out" in *"not installed"*) ;; *) echo "unexpected: $out" >&2; exit 1 ;; esac
 
       # The other half of an install: something to click. The bundle goes to
       # /Applications when that is writable and to ~/Applications when it is
@@ -119,7 +138,7 @@ jobs:
         shell: powershell   # Windows PowerShell 5.1, the one Windows ships
         run: |
           $installer = [scriptblock]::Create((Get-Content -Raw -Encoding UTF8 .\install.ps1))
-          & $installer -Source $PWD.Path
+          & $installer -Source $PWD.Path -NoTrainer
 
       # With no file there is no exit code to fail the step above on, so this
       # is the check: the program is where the installer said, and it runs.
@@ -128,6 +147,16 @@ jobs:
         shell: powershell
         run: |
           & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --version
+
+      - name: And reports honestly that training is not set up
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $out = & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --trainer-status
+          $code = $LASTEXITCODE
+          $out
+          if ($code -eq 0) { throw "expected a non-zero status" }
+          if ($out -notmatch 'not installed') { throw "unexpected: $out" }
           exit $LASTEXITCODE
 
       # Same again: the shortcuts are what somebody pins to a taskbar, and a
