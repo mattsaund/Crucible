@@ -148,15 +148,27 @@ jobs:
         run: |
           & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --version
 
+      # Two PowerShell traps here, and the bash twin above falls into neither.
+      #
+      # `$out` is an array of lines, and -match/-notmatch against an array
+      # *filters* it rather than returning a boolean -- so `-notmatch` hands
+      # back the second line, which is a non-empty array, which is true. It
+      # has to be joined into one string first.
+      #
+      # And the runner appends `exit $LASTEXITCODE` to every PowerShell step.
+      # A command that deliberately returns 1 therefore fails the step even
+      # when every check passed, so this ends by saying otherwise.
       - name: And reports honestly that training is not set up
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $out = & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --trainer-status
+          $out  = & "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible.exe" --trainer-status
           $code = $LASTEXITCODE
-          $out
-          if ($code -eq 0) { throw "expected a non-zero status" }
-          if ($out -notmatch 'not installed') { throw "unexpected: $out" }
+          $text = ($out | Out-String)
+          Write-Output $text
+          if ($code -eq 0) { throw "expected a non-zero status, got 0" }
+          if ($text -notmatch 'not installed') { throw "unexpected output: $text" }
+          exit 0
           exit $LASTEXITCODE
 
       # Same again: the shortcuts are what somebody pins to a taskbar, and a
