@@ -229,8 +229,12 @@ Every push is built and tested on Linux, macOS and Windows.
 ___
 ## License
 
-MIT — see [LICENSE](LICENSE). Every dependency Crucible links is MIT too, and
-[THIRD_PARTY.md](THIRD_PARTY.md) lists them with their pinned versions.
+MIT — see [LICENSE](LICENSE). What is compiled into the binary is listed in
+[THIRD_PARTY.md](THIRD_PARTY.md) with pinned versions, and `crucible
+--licenses` prints the notices from the program itself. Most of it is MIT;
+GLFW is zlib/libpng and the JetBrains Mono typeface is under the SIL Open Font
+License, which is why the notices travel inside the binary rather than beside
+it.
 
 The fine-tuner is separate and is not shipped with Crucible: pip fetches it
 onto your machine when you ask for it. It is mostly Apache-2.0, BSD and MIT,

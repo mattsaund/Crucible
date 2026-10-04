@@ -43,11 +43,13 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
 
     state_.configure_seats(config_);
 
+    // The ImGui window is the default, so that is what wake_ starts as. The
+    // web interface replaces it for the life of its own loop.
+    wake_   = [] { glfwPostEmptyEvent(); };
     engine_ = std::make_unique<Engine>(config_, state_, [this] {
-        // The engine runs on its own thread and the window may be parked in
-        // glfwWaitEvents. Without this the screen would not repaint until the
-        // mouse moved, which during a model load is most of a minute.
-        glfwPostEmptyEvent();
+        if (wake_) {
+            wake_();
+        }
     });
     // No project, so no root and no history folder. The root is the permission
     // an expert acts under, and there is nothing to act on yet: a WRITE in this

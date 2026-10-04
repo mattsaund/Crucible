@@ -56,6 +56,11 @@ public:
     App(const App&)            = delete;
     App& operator=(const App&) = delete;
 
+    /// Open the webview interface instead of the ImGui window. Same engine,
+    /// same configuration, same session -- a different thing drawing it. See
+    /// The window is the one people use; the web interface is in progress.
+    int run_web();
+
     /// Open the window and run until it is closed. Returns a process exit code.
     int run();
 
@@ -344,6 +349,16 @@ private:
     /// is null half the time now.
     std::filesystem::path project_root() const;
     std::filesystem::path project_dir() const;
+
+    /// What to poke when the engine has news.
+    ///
+    /// The engine runs on its own thread and whatever is drawing may be
+    /// parked waiting for input; without a nudge the screen would not change
+    /// until the mouse moved, which during a model load is most of a minute.
+    /// Which nudge depends on who is drawing -- GLFW for the window, the
+    /// webview's dispatch queue for the web interface -- so the engine is
+    /// given this rather than either of them.
+    std::function<void()> wake_;
 
     Config                  config_;
     AppState                state_;

@@ -139,7 +139,13 @@ json model_params_to_json(const ModelParams& params, bool include_model = true) 
 
 }  // namespace
 
-bool save_config(const Config& config, const std::filesystem::path& file) {
+/// The configuration as the file would hold it.
+///
+/// Split out from save_config so that the API can hand the same document to
+/// an interface without a second serializer beside this one. Two writers for
+/// one format drift, and the settings screen reading a shape the file does
+/// not use is the kind of difference nobody finds until a field stops saving.
+json config_to_json(const Config& config) {
     // An array, not an object: the order seats are drawn in is the order they
     // are listed here, and a JSON object has no order to preserve.
     json experts = json::array();
@@ -219,6 +225,11 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
             {"unicode",         config.ui.unicode},
         }},
     };
+    return doc;
+}
+
+bool save_config(const Config& config, const std::filesystem::path& file) {
+    const json doc = config_to_json(config);
 
     std::error_code ec;
     std::filesystem::create_directories(file.parent_path(), ec);
@@ -250,6 +261,10 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
         return out.good();
     }
     return true;
+}
+
+std::string config_to_json_text(const Config& config) {
+    return config_to_json(config).dump();
 }
 
 bool save_config(const Config& config) {

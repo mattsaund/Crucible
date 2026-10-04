@@ -11,12 +11,35 @@
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
+# --- embedding a source file into the binary -----------------------------
+#
+# Three things are compiled in from files someone edits: the trainer script,
+# the web interface's page, and the third-party notices. A custom command
+# rather than execute_process, because execute_process runs at configure time
+# -- so editing one of them and rebuilding did nothing until cmake was rerun,
+# which is a very quiet way to spend an hour wondering why an edit had no
+# effect. DEPENDS is the rule make and ninja actually track.
+function(crucible_embed out_var source symbol name_space label)
+    set(generated ${CRUCIBLE_GENERATED_DIR}/${label}.cpp)
+    add_custom_command(
+        OUTPUT  ${generated}
+        COMMAND ${CMAKE_COMMAND}
+                -DIN=${source} -DOUT=${generated}
+                -DSYMBOL=${symbol} -DNAMESPACE=${name_space}
+                -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake
+        DEPENDS ${source} ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake
+        COMMENT "Embedding ${label}"
+        VERBATIM)
+    set(${out_var} ${generated} PARENT_SCOPE)
+endfunction()
+
 find_package(Threads REQUIRED)
 
 set(CRUCIBLE_LLAMA_TAG b10678     CACHE STRING "llama.cpp git tag to build against")
 set(CRUCIBLE_JSON_TAG  v3.12.0    CACHE STRING "nlohmann/json git tag to build against")
 set(CRUCIBLE_IMGUI_TAG v1.91.9b   CACHE STRING "Dear ImGui git tag to build against")
 set(CRUCIBLE_GLFW_TAG  3.4        CACHE STRING "GLFW git tag, used only when the system has none")
+set(CRUCIBLE_WEBVIEW_TAG 0.12.0   CACHE STRING "webview git tag for the web interface")
 set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compile into the binary")
 
 # ---------------------------------------------------------------------------
@@ -116,6 +139,63 @@ else()
     message(STATUS "GLFW: using the system package")
 endif()
 
+# --- the web interface's window ------------------------------------------
+#
+# webview is one MIT header wrapping the webview each platform already has:
+# WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. Nothing is
+# embedded and no browser is shipped -- it is the same relationship Crucible
+# has with OpenGL, which is also a thing the machine provides.
+#
+# Optional on purpose. The interface being built out in TypeScript runs in
+# this; the ImGui window does not need it, and a machine missing the headers
+# should still be able to build the program that exists today. See
+# the ImGui window, which is still the default.
+set(CRUCIBLE_HAS_WEBVIEW OFF)
+if(CRUCIBLE_BUILD_WEBUI)
+    set(_webview_ok TRUE)
+    if(UNIX AND NOT APPLE)
+        # WebKitGTK is the one platform where this is a package rather than
+        # part of the system, so it is the one that can be missing.
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(WEBKIT2 QUIET webkit2gtk-4.1)
+            if(NOT WEBKIT2_FOUND)
+                pkg_check_modules(WEBKIT2 QUIET webkit2gtk-4.0)
+            endif()
+        endif()
+        if(NOT WEBKIT2_FOUND)
+            message(WARNING
+                "webkit2gtk development files not found; the web interface will "
+                "not be built. On Debian and Ubuntu: "
+                "sudo apt-get install libwebkit2gtk-4.1-dev")
+            set(_webview_ok FALSE)
+        endif()
+    endif()
+
+    if(_webview_ok)
+        # Static only, and no symlinked sonames. The shared build writes
+        # libwebview.so.0.12 as a symlink to the real file, which an exFAT
+        # build directory cannot hold -- the same wall llama.cpp hit, solved
+        # there by CrucibleUnversionHook.cmake. A static library sidesteps it
+        # and suits the single-binary story better anyway.
+        set(WEBVIEW_BUILD_SHARED_LIBRARY OFF CACHE INTERNAL "")
+        set(WEBVIEW_BUILD_STATIC_LIBRARY ON  CACHE INTERNAL "")
+        set(WEBVIEW_BUILD_TESTS          OFF CACHE INTERNAL "")
+        set(WEBVIEW_BUILD_EXAMPLES       OFF CACHE INTERNAL "")
+        set(WEBVIEW_BUILD_DOCS           OFF CACHE INTERNAL "")
+        set(WEBVIEW_INSTALL_TARGETS      OFF CACHE INTERNAL "")
+
+        FetchContent_Declare(webview
+            GIT_REPOSITORY https://github.com/webview/webview.git
+            GIT_TAG        ${CRUCIBLE_WEBVIEW_TAG}
+            GIT_SHALLOW    TRUE
+            GIT_PROGRESS   TRUE)
+        FetchContent_MakeAvailable(webview)
+        set(CRUCIBLE_HAS_WEBVIEW ON)
+        message(STATUS "web interface: building against the system webview")
+    endif()
+endif()
+
 # ImGui ships no CMakeLists of its own, so the sources are named here. Only
 # the two backends Crucible uses are compiled in.
 FetchContent_Declare(imgui
@@ -174,15 +254,37 @@ endif()
 # edited. It is written out beside its virtual environment when that is
 # installed, so upgrading Crucible upgrades the trainer.
 set(CRUCIBLE_TRAINER_PY  ${CMAKE_CURRENT_LIST_DIR}/../scripts/trainer/finetune.py)
-set(CRUCIBLE_TRAINER_CPP ${CRUCIBLE_GENERATED_DIR}/trainer_script.cpp)
+set(CRUCIBLE_TRAINER_CPP "")
 if(EXISTS ${CRUCIBLE_TRAINER_PY})
-    if(NOT EXISTS ${CRUCIBLE_TRAINER_CPP} OR
-       ${CRUCIBLE_TRAINER_PY} IS_NEWER_THAN ${CRUCIBLE_TRAINER_CPP})
-        execute_process(COMMAND ${CMAKE_COMMAND}
-            -DIN=${CRUCIBLE_TRAINER_PY} -DOUT=${CRUCIBLE_TRAINER_CPP}
-            -DSYMBOL=kFinetunePy -DNAMESPACE=crucible::lab::embedded
-            -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake)
-    endif()
+    crucible_embed(CRUCIBLE_TRAINER_CPP ${CRUCIBLE_TRAINER_PY}
+                   kFinetunePy crucible::lab::embedded trainer_script)
+endif()
+
+# --- third-party notices -------------------------------------------------
+#
+# Compiled in, because they have to travel with the thing they are notices
+# for. A dmg, an exe and an AppImage each carry the binary and not the source
+# tree, and JetBrains Mono's license requires its notice to accompany the font
+# wherever the font goes -- and the font goes inside the binary.
+set(CRUCIBLE_NOTICES_TXT ${CMAKE_CURRENT_LIST_DIR}/../packaging/licenses/NOTICES.txt)
+set(CRUCIBLE_NOTICES_CPP "")
+if(EXISTS ${CRUCIBLE_NOTICES_TXT})
+    crucible_embed(CRUCIBLE_NOTICES_CPP ${CRUCIBLE_NOTICES_TXT}
+                   kNotices crucible::app::embedded notices)
+endif()
+
+# --- the web interface's page -------------------------------------------
+#
+# Compiled in for the same reason the trainer script is: an AppImage, a .app
+# bundle and a Windows install put their data in three different places, and a
+# page that is always exactly the one this build expects beats one that could
+# be looked for and found stale. When this becomes a Vite build the output
+# bundle is embedded the same way.
+set(CRUCIBLE_WEBUI_HTML ${CMAKE_CURRENT_LIST_DIR}/../ui/index.html)
+set(CRUCIBLE_WEBUI_CPP  "")
+if(EXISTS ${CRUCIBLE_WEBUI_HTML})
+    crucible_embed(CRUCIBLE_WEBUI_CPP ${CRUCIBLE_WEBUI_HTML}
+                   kIndexHtml crucible::gui::web web_index)
 endif()
 
 # --- the interface font -------------------------------------------------

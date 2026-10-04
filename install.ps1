@@ -54,6 +54,11 @@ param(
     # several gigabytes, so the size is printed before it starts. Skipping it
     # costs nothing permanent: crucible --install-trainer does the same job
     # afterwards.
+    # The compute backends. Installed by default: the releases carry a
+    # prebuilt module for every platform, so this is seconds and tens of
+    # megabytes, and an install that cannot load a model until you find a
+    # settings page is not an install.
+    [switch] $NoRuntimes,
     [switch] $NoTrainer,
     [string] $TrainerFlavor = '',
     [switch] $Yes,
@@ -716,6 +721,21 @@ Visual Studio Build Tools, then run this again:
     # Never fatal. No Python, a proxy that blocks PyPI, a full disk -- none of
     # those is a reason to fail an install of a program that runs models
     # perfectly well without a trainer.
+    $runtimesReady = $false
+    if (-not $NoRuntimes) {
+        Stop-Progress
+        Write-Host ''
+        Step-Begin 'Installing compute runtimes'
+        & (Join-Path $binDir 'crucible.exe') --install-runtimes
+        if ($LASTEXITCODE -eq 0) {
+            $runtimesReady = $true
+        } else {
+            Write-Host ''
+            Write-Warn 'not every runtime installed. Crucible will use whichever did.'
+            Write-Note "see what is there with:  $(Join-Path $binDir 'crucible.exe') --runtime-status"
+        }
+    }
+
     $trainerReady = $false
     if (-not $NoTrainer) {
         Stop-Progress
@@ -748,6 +768,13 @@ Visual Studio Build Tools, then run this again:
     Write-Host "    shortcuts     Start Menu, Desktop"
     Write-Host "    config        $ConfigDir"
     Write-Host "    models        $ModelsDir"
+    if (-not $NoRuntimes) {
+        if ($runtimesReady) {
+            Write-Host "    runtimes      installed"
+        } else {
+            Write-Host "    runtimes      incomplete -- crucible --runtime-status"
+        }
+    }
     if (-not $NoTrainer) {
         if ($trainerReady) {
             Write-Host "    fine-tuner    ready"

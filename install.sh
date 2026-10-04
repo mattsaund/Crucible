@@ -54,6 +54,15 @@ INSTALL_DEPS=1
 # it -- and skipping it costs nothing permanent, since
 # `crucible --install-trainer` does the same job afterwards.
 INSTALL_TRAINER=1
+# The compute backends, installed by default.
+#
+# This reverses the rule the program shipped with, and the reason is that the
+# reason has gone. Installing none of these made sense while a runtime meant a
+# multi-gigabyte toolkit and four minutes of nvcc; the releases now carry a
+# prebuilt module for every platform, so "which backend does this machine
+# want" is answered in seconds and a few tens of megabytes. An install that
+# cannot load a model until you find a settings page is not an install.
+INSTALL_RUNTIMES=1
 ASSUME_YES=0
 DO_UNINSTALL=0
 DO_CHECK=0
@@ -556,6 +565,8 @@ usage: install.sh [options]
   --gui, --no-gui  accepted and ignored. Crucible is one program and it is the
                    window; the terminal face these chose between is gone.
   --no-deps        do not install system packages
+  --no-runtimes    skip the compute backends. Add them later from the
+                   settings screen, or with: crucible --install-runtimes
   --no-trainer     skip the Python environment for fine-tuning (several
                    gigabytes). Add it later with: crucible --install-trainer
   --trainer-flavor cuda|cpu|mlx -- which training stack to install
@@ -592,6 +603,7 @@ while [ $# -gt 0 ]; do
         --jobs)      JOBS="${2:-}";   shift 2 ;;
         --jobs=*)    JOBS="${1#*=}";  shift ;;
         --no-deps)   INSTALL_DEPS=0;  shift ;;
+        --no-runtimes) INSTALL_RUNTIMES=0; shift ;;
         --no-trainer) INSTALL_TRAINER=0; shift ;;
         --trainer)    INSTALL_TRAINER=1; shift ;;
         --trainer-flavor)   TRAINER_FLAVOR="${2:-}"; shift 2 ;;
@@ -1608,6 +1620,26 @@ path_advice() {
 # fills up -- none of those are a reason to fail an install of a program that
 # runs models perfectly well without a trainer. It says what happened and
 # names the command that tries again.
+# The compute backends. Quick -- tens of megabytes over the wire -- so it runs
+# before the trainer, and a machine that gives up partway through the big
+# download still ends up able to run a model.
+install_runtimes() {
+    [ "$INSTALL_RUNTIMES" = 1 ] || { muted "skipping the compute runtimes (--no-runtimes)"; return 0; }
+
+    progress_end
+    printf '\n'
+    step "Installing compute runtimes"
+    if "$PREFIX/bin/crucible" --install-runtimes; then
+        RUNTIMES_READY=1
+    else
+        RUNTIMES_READY=0
+        printf '\n'
+        warn "not every runtime installed. Crucible will use whichever did."
+        info "see what is there with:  $PREFIX/bin/crucible --runtime-status"
+    fi
+    return 0
+}
+
 install_trainer() {
     [ "$INSTALL_TRAINER" = 1 ] || { muted "skipping the fine-tuner (--no-trainer)"; return 0; }
 
@@ -1657,6 +1689,11 @@ run_check() {
     fi
 
     printf '\n%swould install:%s\n' "$C_BOLD" "$C_RESET"
+    if [ "$INSTALL_RUNTIMES" = 1 ]; then
+        info "runtimes   : the compute backends this machine can use (--no-runtimes skips)"
+    else
+        info "runtimes   : skipped (--no-runtimes)"
+    fi
     if [ "$INSTALL_TRAINER" = 1 ]; then
         info "fine-tuner : a private Python environment, a few GB (--no-trainer skips it)"
     else
@@ -1733,8 +1770,9 @@ main() {
     # onto somewhere that exists rather than reporting a path that does not.
     make_directories
 
-    # Last, and after the binary exists, because it is the binary that does
-    # it. Ends the progress display itself.
+    # Both after the binary exists, because it is the binary that does them.
+    # Each ends the progress display itself.
+    install_runtimes
     install_trainer
     progress_end
 
@@ -1759,6 +1797,13 @@ main() {
     fi
     printf '    config        %s\n' "$CONFIG_DIR"
     printf '    models        %s\n' "$MODELS_DIR"
+    if [ "$INSTALL_RUNTIMES" = 1 ]; then
+        if [ "${RUNTIMES_READY:-0}" = 1 ]; then
+            printf '    runtimes      installed\n'
+        else
+            printf '    runtimes      incomplete -- crucible --runtime-status\n'
+        fi
+    fi
     if [ "$INSTALL_TRAINER" = 1 ]; then
         if [ "${TRAINER_READY:-0}" = 1 ]; then
             printf '    fine-tuner    ready\n'

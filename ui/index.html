@@ -1,0 +1,684 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: MIT
+
+  The web interface.
+
+  Everything it can ask Crucible to do goes through window.rpc, which is
+  api/surface.hpp and nothing else. It gets no privileged access the Python
+  orchestrator will not also have, which is the point of building it this way.
+
+  Still one file. It becomes a Vite build with components when it outgrows
+  that; the contract it talks to does not change when it does.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crucible</title>
+<style>
+  /* The palette is gui/theme.hpp, to the byte. The window and this page have
+     to be the same program, and "close enough" across a port is how two
+     interfaces start looking like two products. */
+  :root {
+    --ink:        #08080A;
+    --panel:      #0E0E10;
+    --panel-edge: #202024;
+    --raised:     #16161A;
+    --hover:      #1E1E24;
+    --flame:      #FF8700;
+    --flame-lit:  #FFAF00;
+    --error:      #FF5F00;
+    --text:       #ECECEC;
+    --dim:        #8C8C92;
+    --faint:      #5A5A60;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+    /* Without this the platform draws its own form controls in the light
+       theme -- a white dropdown in the middle of a near-black page -- and no
+       amount of styling the closed control fixes the list it opens. */
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--ink); color: var(--text);
+    font: 13px/1.6 var(--mono);
+  }
+  body { display: grid; grid-template-rows: auto 1fr; }
+  button, input, select, textarea { font: inherit; color: var(--text); }
+
+  /* --- the bar across the top ------------------------------------------ */
+  header {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 0 1rem; height: 46px;
+    background: var(--panel); border-bottom: 1px solid var(--panel-edge);
+  }
+  .mark { color: var(--flame); letter-spacing: .22em; font-size: 12px; }
+  .project {
+    background: var(--raised); border: 1px solid var(--panel-edge);
+    border-radius: 5px; padding: .3rem .8rem; cursor: pointer; color: var(--dim);
+  }
+  .project:hover { color: var(--text); border-color: var(--faint); }
+  .project.none { color: var(--faint); }
+  nav { margin-left: auto; display: flex; gap: .3rem; }
+  nav button {
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    padding: .5rem .9rem; color: var(--faint); cursor: pointer;
+  }
+  nav button:hover { color: var(--dim); }
+  nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
+
+  main { display: grid; grid-template-columns: 15rem 1fr; min-height: 0; }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--panel-edge);
+    padding: 1.2rem 1rem; overflow-y: auto;
+  }
+  h2 {
+    font-size: 11px; font-weight: 400; letter-spacing: .08em;
+    color: var(--faint); margin: 0 0 .7rem;
+  }
+  .seat { display: flex; align-items: center; gap: .6rem; padding: .3rem 0; }
+  .dot { width: 7px; height: 7px; border: 1px solid var(--faint); transform: rotate(45deg); flex: none; }
+  .seat[data-phase="dormant"] .dot { border-color: var(--dim); }
+  .seat[data-phase="active"]  .dot { background: var(--flame); border-color: var(--flame); }
+  .seat[data-phase="loading"] .dot { background: var(--flame-lit); border-color: var(--flame-lit); }
+  .seat[data-phase="missing"] .dot { border-color: var(--error); }
+  .seat[data-phase="unconfigured"] .name { color: var(--faint); }
+
+  /* --- the conversation ------------------------------------------------- */
+  .pane { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+  #transcript { overflow-y: auto; padding: 1.6rem 2.5rem; }
+  /* Full width with a gutter, rather than set to a measure. Prose reads
+     better at 90 characters and the window still does that -- this is a
+     deliberate difference, asked for because a reply boxed into the middle of
+     a wide screen wastes the screen. The gutter is what keeps it off the
+     edge. */
+  .turn { max-width: none; margin: 0 0 2rem; }
+  .you { color: var(--flame); margin-bottom: .3rem; }
+  .who { color: var(--flame-lit); margin: 1rem 0 .3rem; }
+  .body { white-space: pre-wrap; }
+  .thinking { color: var(--dim); }
+  .failed { color: var(--error); }
+  .empty { color: var(--faint); text-align: center; margin-top: 18vh; }
+  .status { color: var(--faint); }
+
+  form.composer {
+    display: flex; gap: .6rem; padding: 1rem 2.5rem;
+    border-top: 1px solid var(--panel-edge); background: var(--panel);
+  }
+  input, select, button.action {
+    background: var(--raised); border: 1px solid var(--panel-edge);
+    border-radius: 5px; padding: .55rem .8rem;
+  }
+  select option { background: var(--panel); color: var(--text); }
+  ::selection { background: var(--flame); color: var(--ink); }
+  /* The platform's focus ring is blue, which is the one saturated color this
+     interface does not use. Keyboard focus still has to be visible, so it is
+     drawn in the flame instead of switched off. */
+  :focus-visible { outline: 2px solid var(--flame); outline-offset: 1px; }
+  input { flex: 1; }
+  input:focus, select:focus { outline: none; border-color: var(--flame); }
+  button.action { cursor: pointer; }
+  button.action:hover:not(:disabled) { background: var(--flame); color: var(--ink); border-color: var(--flame); }
+  button.action:disabled { color: var(--faint); cursor: default; }
+
+  /* --- settings --------------------------------------------------------- */
+  .settings { display: grid; grid-template-columns: 11rem 1fr; min-height: 0; }
+  .settings-nav { border-right: 1px solid var(--panel-edge); padding: 1.2rem .6rem; }
+  .settings-nav button {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: .45rem .7rem; border-radius: 5px; color: var(--dim); cursor: pointer;
+  }
+  .settings-nav button:hover { background: var(--raised); }
+  .settings-nav button[aria-current="true"] { background: var(--raised); color: var(--text); }
+  .settings-page { overflow-y: auto; padding: 1.6rem 2.5rem; }
+  .settings-page h1 { color: var(--flame); font-size: 1.25em; font-weight: 400; margin: 0 0 .3rem; }
+  .lede { color: var(--faint); margin: 0 0 1.6rem; }
+  .field { margin: 0 0 1.4rem; max-width: 46rem; }
+  .field label { display: block; color: var(--dim); margin-bottom: .35rem; }
+  .field .hint { color: var(--faint); margin-top: .35rem; }
+  .field input, .field select { width: 100%; }
+  .row { display: flex; gap: .6rem; align-items: center; }
+  .card {
+    background: var(--raised); border: 1px solid var(--panel-edge);
+    border-radius: 7px; padding: .9rem 1.1rem; margin-bottom: .7rem; max-width: 46rem;
+  }
+  .card .title { display: flex; align-items: baseline; gap: .6rem; }
+  .card .tag { color: var(--faint); font-size: 11px; }
+  .ok { color: var(--flame); } .bad { color: var(--error); } .meh { color: var(--faint); }
+
+  /* --- the folder picker ------------------------------------------------ */
+  dialog {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--panel-edge); border-radius: 9px;
+    padding: 0; width: min(44rem, 90vw);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  dialog .head { padding: 1rem 1.2rem; border-bottom: 1px solid var(--panel-edge); }
+  dialog .head strong { font-weight: 400; }
+  dialog .body-pad { padding: 1.2rem; }
+  .crumbs { color: var(--faint); margin-bottom: .6rem; word-break: break-all; }
+  .listing {
+    height: 17rem; overflow-y: auto; background: var(--ink);
+    border: 1px solid var(--panel-edge); border-radius: 6px; padding: .4rem;
+  }
+  .listing button {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: .3rem .6rem; border-radius: 4px; color: var(--text); cursor: pointer;
+  }
+  .listing button:hover { background: var(--hover); }
+  dialog .feet { display: flex; gap: .6rem; padding: 0 1.2rem 1.2rem; }
+
+  /* Markdown. The set matches util/markdown.hpp exactly -- the window and
+     this page are one program, and a reply that renders as a table in one and
+     as pipes in the other is two products. */
+  .md { white-space: normal; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child  { margin-bottom: 0; }
+  .md p { margin: 0 0 .9rem; white-space: pre-wrap; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    margin: 1.4rem 0 .5rem; font-weight: 400; color: var(--flame-lit);
+  }
+  .md h1 { font-size: 1.3em; } .md h2 { font-size: 1.15em; }
+  .md h3, .md h4, .md h5, .md h6 { font-size: 1em; }
+  .md ul, .md ol { margin: 0 0 .9rem; padding-left: 1.6rem; }
+  .md li { margin: .15rem 0; }
+  .md li::marker { color: var(--flame); }
+  .md blockquote {
+    margin: 0 0 .9rem; padding-left: .9rem;
+    border-left: 2px solid var(--panel-edge); color: var(--dim);
+  }
+  .md hr { border: 0; border-top: 1px solid var(--panel-edge); margin: 1.2rem 0; }
+  .md code { background: var(--raised); color: #D4D7DD; padding: .1em .35em; border-radius: 3px; }
+  .md pre {
+    background: var(--raised); border: 1px solid var(--panel-edge);
+    border-radius: 6px; padding: .8rem 1rem; margin: 0 0 .9rem; overflow-x: auto;
+  }
+  .md pre code { background: none; padding: 0; }
+  .md pre .lang { display: block; color: var(--faint); font-size: 11px; margin-bottom: .5rem; }
+  .md table { border-collapse: collapse; margin: 0 0 .9rem; }
+  .md th, .md td { border: 1px solid var(--panel-edge); padding: .3rem .7rem; text-align: left; }
+  .md th { color: var(--dim); font-weight: 400; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="mark">CRUCIBLE</span>
+    <button class="project none" id="project">No Project</button>
+    <span class="status" id="status"></span>
+    <nav>
+      <button data-view="chat" aria-current="true">Chat</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+  </header>
+  <main id="main"></main>
+
+  <dialog id="trust">
+    <div class="head"><strong>Trust this folder?</strong></div>
+    <div class="body-pad">
+      <div class="crumbs" id="trust-path"></div>
+      <div class="status">Experts may read, write and run commands here. Paths
+        outside it are refused &mdash; a command they run is not.</div>
+    </div>
+    <div class="feet">
+      <button class="action" id="trust-yes">Trust and open</button>
+      <button class="action" id="trust-no">Cancel</button>
+    </div>
+  </dialog>
+
+  <dialog id="picker">
+    <div class="head"><strong>Choose a folder</strong>
+      <div class="status">Where experts read, write and keep history.</div></div>
+    <div class="body-pad">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="listing" id="listing"></div>
+    </div>
+    <div class="feet">
+      <button class="action" id="pick">Open this folder</button>
+      <button class="action" id="pick-up">Up</button>
+      <button class="action" id="pick-cancel">Cancel</button>
+    </div>
+  </dialog>
+
+<script>
+// --- the one door ---------------------------------------------------------
+//
+// window.rpc is bound from C++ and takes a JSON request. Everything below
+// only knows about this, which is what keeps the interface from growing a
+// second way to reach the engine.
+async function call(method, params) {
+  const reply = JSON.parse(await window.rpc(JSON.stringify({ method, params: params || {} })));
+  if (!reply.ok) throw new Error(reply.error);
+  return reply.result;
+}
+
+const el = (id) => document.getElementById(id);
+const escape = (text) =>
+  String(text ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+// Everything the page knows. The snapshot is pushed by the engine; the rest
+// is fetched when a view that needs it opens, because none of it changes
+// without this page having asked for the change.
+const state = {
+  view: 'chat', settingsPage: 'general',
+  snapshot: { experts: [], turns: [] },
+  project: { open: false }, config: null, models: [], runtimes: [],
+  draft: '', error: '',
+};
+
+// --- markdown -------------------------------------------------------------
+//
+// The block set is util/markdown.hpp's, deliberately: headings, bullets,
+// numbered items, quotes, fences with a language, rules, tables, and bold /
+// italic / code inline. Two parsers for one format is a thing that drifts, so
+// the rule for changing either is to change both.
+//
+// Everything is escaped before a single tag is inserted, and no tag ever
+// comes from the model: a reply is text that chose some emphasis, not a
+// document that gets to bring its own HTML.
+
+function inline(text) {
+  // Code spans first and separately, so backticked content is never looked at
+  // again -- `a ** b` is code containing asterisks, not emphasis.
+  return text.split(/(`[^`]+`)/).map((part) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
+      return `<code>${escape(part.slice(1, -1))}</code>`;
+    }
+    return escape(part)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=$|[\s).,!?;:])/g, '$1<em>$2</em>');
+  }).join('');
+}
+
+function cells(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+}
+
+function markdown(src) {
+  const lines = String(src ?? '').split('\n');
+  const out = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // A fence runs to its closing fence, or to the end -- a reply still
+    // streaming has an opening fence and no closing one for a while, and it
+    // should read as code the whole time rather than flickering.
+    const fence = line.match(/^\s*```(\w*)\s*$/);
+    if (fence) {
+      const body = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
+      i += 1;
+      const lang = fence[1] ? `<span class="lang">${escape(fence[1])}</span>` : '';
+      out.push(`<pre>${lang}<code>${escape(body.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (!line.trim()) { i += 1; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    // A table is a row whose next line is the |---|---| delimiter. Without
+    // that line it is a paragraph with pipes in it, which is usually what a
+    // model meant.
+    if (line.includes('|') && i + 1 < lines.length &&
+        /^\s*\|?[\s:-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        rows.push(cells(lines[i])); i += 1;
+      }
+      out.push(`<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead>`
+             + `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const body = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        body.push(lines[i].replace(/^\s*>\s?/, '')); i += 1;
+      }
+      out.push(`<blockquote>${markdown(body.join('\n'))}</blockquote>`);
+      continue;
+    }
+
+    // Consecutive items become one list, so three bullets are one block with
+    // one margin rather than three lists stacked.
+    const bullet = /^\s*[-*+]\s+(.*)$/;
+    const numbered = /^\s*\d+[.)]\s+(.*)$/;
+    if (bullet.test(line) || numbered.test(line)) {
+      const ordered = !bullet.test(line);
+      const pattern = ordered ? numbered : bullet;
+      const items = [];
+      while (i < lines.length && pattern.test(lines[i])) {
+        items.push(lines[i].match(pattern)[1]); i += 1;
+      }
+      const tag = ordered ? 'ol' : 'ul';
+      out.push(`<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
+      continue;
+    }
+
+    const body = [];
+    while (i < lines.length && lines[i].trim()
+           && !/^\s*```/.test(lines[i]) && !/^(#{1,6})\s/.test(lines[i])
+           && !/^\s*>/.test(lines[i]) && !bullet.test(lines[i]) && !numbered.test(lines[i])
+           && !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
+      body.push(lines[i]); i += 1;
+    }
+    if (body.length) { out.push(`<p>${inline(body.join('\n'))}</p>`); }
+  }
+  return out.join('');
+}
+
+// --- views ----------------------------------------------------------------
+
+function roster() {
+  const s = state.snapshot;
+  const seats = (s.experts || []).map((e) => `
+    <div class="seat" data-phase="${e.phase}">
+      <span class="dot"></span><span class="name">${escape(e.name)}</span>
+    </div>`).join('') || '<div class="status">None yet.</div>';
+  return `<aside>
+      <h2>DELEGATOR</h2>
+      <div class="seat" data-phase="${s.delegator_ready ? 'dormant' : 'unconfigured'}">
+        <span class="dot"></span><span class="name">${escape(modelLabel(state.config?.router?.model) || '(none)')}</span>
+      </div>
+      <h2 style="margin-top:1.6rem">EXPERTS</h2>${seats}
+    </aside>`;
+}
+
+function chatView() {
+  const turns = state.snapshot.turns || [];
+  const body = turns.length ? turns.map((turn) => {
+    const who = turn.route ? turn.route.expert : 'crucible';
+    let reply;
+    if (turn.failed)                        reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
+    else if (!turn.reply && turn.streaming) reply = '<div class="body thinking">thinking...</div>';
+    else                                    reply = `<div class="body md">${markdown(turn.reply)}</div>`;
+    return `<div class="turn">
+        <div class="you">you</div><div class="body">${escape(turn.prompt)}</div>
+        <div class="who">${escape(who)}</div>${reply}
+      </div>`;
+  }).join('') : '<div class="empty">Ask it something.</div>';
+
+  return roster() + `<div class="pane">
+      <div id="transcript">${body}</div>
+      <form class="composer" id="composer">
+        <input id="prompt" placeholder="Ask it something" autocomplete="off"
+               value="${escape(state.draft)}">
+        <button class="action" id="send" ${state.snapshot.busy ? 'disabled' : ''}>Send</button>
+      </form>
+    </div>`;
+}
+
+const PAGES = [
+  ['general',  'General'],
+  ['experts',  'Experts'],
+  ['runtimes', 'Runtimes'],
+  ['about',    'About'],
+];
+
+function modelLabel(reference) {
+  if (!reference) return '';
+  // A path is identified by its tail; a bare file name is already the name.
+  const tail = String(reference).split('/').pop();
+  return tail.replace(/\.gguf$/i, '');
+}
+
+function modelOptions(selected) {
+  const options = ['<option value="">(none)</option>'];
+  for (const model of state.models) {
+    const value = model.made_here ? model.path : model.name;
+    const chosen = value === selected || model.path === selected ? ' selected' : '';
+    options.push(`<option value="${escape(value)}"${chosen}>${escape(model.name)}${
+      model.made_here ? '  (made here)' : ''}</option>`);
+  }
+  return options.join('');
+}
+
+function settingsPage() {
+  const c = state.config;
+  if (!c) return '<div class="settings-page"><p class="lede">Reading the configuration...</p></div>';
+
+  if (state.settingsPage === 'general') {
+    return `<div class="settings-page">
+      <h1>General</h1><p class="lede">Where the models are, and who reads the prompt first.</p>
+      <div class="field">
+        <label>Models directory</label>
+        <input id="models-dir" value="${escape(c.models_dir || '')}">
+        <div class="hint">Read for GGUF files. Never written to.</div>
+      </div>
+      <div class="field">
+        <label>Delegator</label>
+        <select id="router-model">${modelOptions(c.router?.model || '')}</select>
+        <div class="hint">Scores every expert on the roster and picks one. A small model is the right choice.</div>
+      </div>
+      <div class="field">
+        <label>Reasoning effort</label>
+        <select id="reasoning">
+          ${['low', 'medium', 'high'].map((v) =>
+            `<option value="${v}"${c.reasoning_effort === v ? ' selected' : ''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <button class="action" id="save-general">Save</button>
+    </div>`;
+  }
+
+  if (state.settingsPage === 'experts') {
+    const seats = (state.snapshot.experts || []).map((e) => `
+      <div class="card">
+        <div class="title"><strong>${escape(e.name)}</strong><span class="tag">${escape(e.tag)}</span></div>
+        <div class="hint" style="color:var(--faint)">${escape(e.blurb || 'no description')}</div>
+        <div class="row" style="margin-top:.6rem">
+          <select data-seat="${escape(e.id)}">${modelOptions(seatModel(e.id))}</select>
+        </div>
+      </div>`).join('') || '<p class="lede">No experts yet.</p>';
+    return `<div class="settings-page">
+      <h1>Experts</h1><p class="lede">Which model answers for each subject.</p>
+      ${seats}
+      <button class="action" id="save-experts">Save</button>
+    </div>`;
+  }
+
+  if (state.settingsPage === 'runtimes') {
+    const rows = state.runtimes.map((r) => {
+      const how = r.active ? `<span class="ok">active</span>  ${r.devices} device${r.devices === 1 ? '' : 's'}`
+                : r.installed ? '<span class="meh">installed, no devices</span>'
+                              : '<span class="meh">not installed</span>';
+      return `<div class="card">
+          <div class="title"><strong>${escape(r.id.toUpperCase())}</strong><span class="tag">${how}</span></div>
+          ${r.installed ? `<div class="hint" style="color:var(--faint)">${
+            (r.bytes / 1048576).toFixed(1)} MB${r.source ? '  ·  ' + escape(r.source) : ''}${
+            r.stale ? '  ·  <span class="bad">built against another llama.cpp</span>' : ''}</div>` : ''}
+        </div>`;
+    }).join('') || '<p class="lede">Nothing scanned yet.</p>';
+    return `<div class="settings-page">
+      <h1>Runtimes</h1>
+      <p class="lede">What Crucible can run a model on. The installer puts these in place.</p>
+      ${rows}
+    </div>`;
+  }
+
+  return `<div class="settings-page">
+    <h1>About</h1>
+    <p class="lede">A local LLM engine that delegates.</p>
+    <div class="card"><div class="title"><strong>Crucible</strong>
+      <span class="tag">${escape(state.version || '')}</span></div>
+      <div class="hint" style="color:var(--faint)">Everything happens on this machine.</div>
+    </div>
+  </div>`;
+}
+
+function seatModel(id) {
+  const seat = (state.config?.experts || []).find((e) => e.id === id);
+  return seat ? (seat.model || '') : '';
+}
+
+function settingsView() {
+  return roster() + `<div class="settings">
+      <div class="settings-nav">${PAGES.map(([id, label]) =>
+        `<button data-page="${id}" aria-current="${state.settingsPage === id}">${label}</button>`).join('')}
+      </div>${settingsPage()}
+    </div>`;
+}
+
+// --- drawing --------------------------------------------------------------
+
+function render() {
+  const t = el('transcript');
+  const stuck = !t || t.scrollHeight - t.scrollTop - t.clientHeight < 80;
+
+  el('status').textContent = state.error || state.snapshot.status || '';
+  el('status').style.color = state.error ? 'var(--error)' : '';
+  const project = el('project');
+  project.textContent = state.project.open ? state.project.name : 'No Project';
+  project.classList.toggle('none', !state.project.open);
+  for (const button of document.querySelectorAll('nav button')) {
+    button.setAttribute('aria-current', String(button.dataset.view === state.view));
+  }
+
+  el('main').innerHTML = state.view === 'settings' ? settingsView() : chatView();
+  wire();
+
+  const after = el('transcript');
+  if (after && stuck) after.scrollTop = after.scrollHeight;
+}
+
+/// Re-attached after each render, because the markup is replaced wholesale.
+/// A page this size does not need the machinery that would avoid that.
+function wire() {
+  const composer = el('composer');
+  if (composer) {
+    const prompt = el('prompt');
+    prompt.addEventListener('input', () => { state.draft = prompt.value; });
+    composer.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const text = prompt.value.trim();
+      if (!text || state.snapshot.busy) return;
+      state.draft = '';
+      prompt.value = '';
+      await guard(() => call('submit', { prompt: text }));
+    });
+    if (state.view === 'chat') prompt.focus();
+  }
+
+  for (const button of document.querySelectorAll('.settings-nav button')) {
+    button.addEventListener('click', () => { state.settingsPage = button.dataset.page; render(); });
+  }
+  el('save-general')?.addEventListener('click', () => guard(async () => {
+    await call('config.set', {
+      models_dir: el('models-dir').value,
+      router_model: el('router-model').value,
+      reasoning_effort: el('reasoning').value,
+    });
+    await loadSettings();
+  }));
+  el('save-experts')?.addEventListener('click', () => guard(async () => {
+    const experts = {};
+    for (const select of document.querySelectorAll('[data-seat]')) {
+      experts[select.dataset.seat] = select.value;
+    }
+    await call('config.set', { experts });
+    await loadSettings();
+  }));
+}
+
+async function guard(work) {
+  try { state.error = ''; await work(); }
+  catch (error) { state.error = error.message; }
+  render();
+}
+
+// --- settings and project data -------------------------------------------
+
+async function loadSettings() {
+  [state.config, state.models, state.runtimes] =
+    await Promise.all([call('config'), call('models'), call('runtimes')]);
+}
+
+for (const button of document.querySelectorAll('nav button')) {
+  button.addEventListener('click', () => guard(async () => {
+    state.view = button.dataset.view;
+    if (state.view === 'settings' && !state.config) await loadSettings();
+  }));
+}
+
+// --- the folder picker ----------------------------------------------------
+
+let browsing = '';
+
+async function browse(path) {
+  const listing = await call('browse', path ? { path } : {});
+  browsing = listing.path;
+  el('crumbs').textContent = listing.path;
+  el('listing').innerHTML = listing.entries.length
+    ? listing.entries.map((name) => `<button data-dir="${escape(name)}">${escape(name)}/</button>`).join('')
+    : '<div class="status" style="padding:.4rem .6rem">no folders here</div>';
+  for (const button of el('listing').querySelectorAll('[data-dir]')) {
+    button.addEventListener('click', () =>
+      guard(() => browse(browsing.replace(/\/$/, '') + '/' + button.dataset.dir)));
+  }
+}
+
+el('project').addEventListener('click', () => guard(async () => {
+  await browse(state.project.open ? state.project.root : '');
+  el('picker').showModal();
+}));
+el('pick-up').addEventListener('click', () => guard(async () => {
+  const listing = await call('browse', { path: browsing });
+  if (listing.parent) await browse(listing.parent);
+}));
+el('pick-cancel').addEventListener('click', () => el('picker').close());
+el('pick').addEventListener('click', () => guard(async () => {
+  await call('project.open', { path: browsing });
+  el('picker').close();
+  await refreshProject();
+}));
+
+// Opening an untrusted folder asks rather than opens, so the answer to
+// project.open is "what happened", not "it worked".
+async function refreshProject() {
+  state.project = await call('project');
+  if (state.project.pending_trust) {
+    el('trust-path').textContent = state.project.pending_trust;
+    if (!el('trust').open) el('trust').showModal();
+  }
+}
+
+el('trust-yes').addEventListener('click', () => guard(async () => {
+  await call('trust.answer', { trusted: true });
+  el('trust').close();
+  await refreshProject();
+}));
+el('trust-no').addEventListener('click', () => guard(async () => {
+  await call('trust.answer', { trusted: false });
+  el('trust').close();
+  await refreshProject();
+}));
+
+// --- start ----------------------------------------------------------------
+//
+// The engine pushes rather than the page polling: it already wakes the loop
+// when something changed, and a timer would either lag behind that or burn a
+// redraw a second doing nothing.
+window.crucibleSnapshot = (snapshot) => { state.snapshot = snapshot; render(); };
+
+guard(async () => {
+  const [snapshot, ping] = await Promise.all([call('snapshot'), call('ping')]);
+  state.snapshot = snapshot;
+  state.version  = ping.version;
+  await refreshProject();
+});
+</script>
+</body>
+</html>

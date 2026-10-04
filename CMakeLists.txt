@@ -68,6 +68,12 @@ option(CRUCIBLE_WARNINGS "Enable a strict warning set for Crucible's own sources
 option(CRUCIBLE_BUILD_TESTS "Build the unit tests" ON)
 option(CRUCIBLE_BUILD_TOOLS "Build the developer tools (routebench)" ON)
 
+# The interface being built out in TypeScript, rendered in the platform's own
+# webview. Off by default while the ImGui window is still the one people use;
+# until it reaches parity. Turning it on needs webkit2gtk's
+# development files on Linux and nothing extra elsewhere.
+option(CRUCIBLE_BUILD_WEBUI "Build the webview interface (in progress)" OFF)
+
 # Needed before the dependencies are configured: ggml decides where to install
 # its backend modules while it is being added, so CRUCIBLE_LIBDIR has to exist by
 # then.
@@ -173,9 +179,13 @@ add_library(crucible_core STATIC
     src/engine/engine_cook.cpp
 
     # app: process-level actions that are not the window
+    # api: the one JSON door every interface comes through
+    src/api/surface.cpp
+
     src/app/cli.cpp
     src/app/uninstall.cpp
     src/app/setup_trainer.cpp
+    src/app/setup_runtimes.cpp
     src/app/update.cpp
 )
 add_library(crucible::core ALIAS crucible_core)
@@ -190,11 +200,21 @@ target_link_libraries(crucible_core
 # The fine-tuning script, compiled in. Absent only if someone deleted it from
 # the source tree; the trainer then reports that rather than writing a file
 # that is not there.
-if(EXISTS ${CRUCIBLE_TRAINER_CPP})
+if(CRUCIBLE_TRAINER_CPP)
     target_sources(crucible_core PRIVATE ${CRUCIBLE_TRAINER_CPP})
     target_compile_definitions(crucible_core PUBLIC CRUCIBLE_HAS_TRAINER_SCRIPT)
 else()
     message(WARNING "scripts/trainer/finetune.py not found; training will be unavailable")
+endif()
+
+# The notices, compiled in so `crucible --licenses` can print them on a
+# machine that has only the binary.
+if(CRUCIBLE_NOTICES_CPP)
+    target_sources(crucible_core PRIVATE ${CRUCIBLE_NOTICES_CPP})
+    target_compile_definitions(crucible_core PUBLIC CRUCIBLE_HAS_NOTICES)
+else()
+    message(WARNING "packaging/licenses/NOTICES.txt not found; "
+                    "crucible --licenses will have nothing to print")
 endif()
 
 target_compile_definitions(crucible_core PUBLIC
@@ -281,6 +301,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_transcript_edits.cpp
         tests/test_overflow.cpp
         tests/test_display_scale.cpp
+        tests/test_api.cpp
         tests/test_lab.cpp
         tests/test_trainer.cpp
         tests/test_prebuilt.cpp
@@ -369,6 +390,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES packaging/icons/crucible.svg
             DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps"
             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+endif()
+
+# The webview interface, when this build has one. Added to the program rather
+# than to the core library: it is a way of drawing Crucible, and crucible_core
+# is what both ways of drawing it share.
+# Always compiled, so --ui web is always a definition and never a link error.
+# What the option decides is whether there is a webview behind it.
+target_sources(crucible PRIVATE src/gui/webui.cpp)
+if(CRUCIBLE_HAS_WEBVIEW AND CRUCIBLE_WEBUI_CPP)
+    target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP})
+    target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
+    target_link_libraries(crucible PRIVATE webview::core_static)
+    message(STATUS "web interface: compiled in (crucible --ui web)")
+else()
+    message(STATUS "web interface: not built (-DCRUCIBLE_BUILD_WEBUI=ON to build it)")
 endif()
 
 if(CRUCIBLE_BUILD_TOOLS)

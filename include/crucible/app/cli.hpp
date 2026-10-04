@@ -18,11 +18,21 @@ struct Options {
     /// repairs the environment afterwards without a reinstall.
     bool install_trainer = false;
     bool trainer_status  = false;  ///< --trainer-status
+
+    /// --install-runtimes: put the compute backends this machine can use in
+    /// place. What the installer runs so a fresh install can load a model
+    /// without a visit to the settings screen.
+    bool install_runtimes = false;
+    bool runtime_status   = false;  ///< --runtime-status
     bool force           = false;  ///< --force, with --install-trainer
     bool quiet           = false;  ///< --quiet, for an installer's own output
 
     /// --trainer-flavor cuda|cpu|mlx. Empty means whatever the hardware says.
     std::string trainer_flavor;
+
+    /// --ui window|web. The ImGui window is the default while the webview
+    /// interface is being built out and is not yet at parity.
+    bool web_ui = false;
 
     /// Set when the program should stop after parsing -- --help, --version and
     /// --config all print something and exit, as does a bad option.

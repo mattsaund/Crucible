@@ -5,19 +5,31 @@ installs for you afterwards. The first is below and is small; the second is
 the training environment, further down, and is neither distributed with
 Crucible nor MIT.
 
-## Linked into the binary
+## Compiled into the binary
 
-Crucible links these projects statically. Each is MIT-licensed, the same as
-Crucible itself, so a distributed `crucible` binary carries no obligations beyond
-retaining the copyright notices below.
+Fetched at build time by `cmake/CrucibleDependencies.cmake`, pinned to exact
+tags. No third-party source is vendored into this repository.
 
-They are fetched at build time by `cmake/CrucibleDependencies.cmake`, pinned to
-exact tags. No third-party source is vendored into this repository.
+`crucible --licenses` prints the full notices for everything below, so they
+travel with the program rather than only with the source — which is what
+JetBrains Mono's license requires, since the font is inside the binary.
 
 | project | version | license | what it does here |
 |---|---|---|---|
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b10678` | MIT | loads GGUF models and runs inference |
-| [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file |
+| [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file, and is the API's encoder |
+| [Dear ImGui](https://github.com/ocornut/imgui) | `v1.91.9b` | MIT | draws the window |
+| [GLFW](https://github.com/glfw/glfw) | `3.4` | zlib/libpng | creates the window and reads the mouse and keyboard. Preferred from the system; built from source only where there is no package |
+| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | `2.304` | SIL OFL 1.1 | the interface typeface, compiled in rather than looked for |
+| [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the web interface in the platform's own webview. Optional: only with `-DCRUCIBLE_BUILD_WEBUI=ON` |
+
+Two of these are not MIT, which is worth stating plainly rather than leaving
+to a reader to notice. GLFW is under the zlib/libpng license, which asks that
+altered versions be marked as altered and that its notice is not removed —
+Crucible alters nothing and keeps the notice. JetBrains Mono is under the SIL
+Open Font License, which requires its copyright notice and license to
+accompany the font wherever the font goes. The font goes inside the binary, so
+the notice does too.
 
 ## The training environment
 

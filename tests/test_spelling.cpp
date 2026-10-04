@@ -141,6 +141,7 @@ bool spelled_the_same_everywhere(const std::string& word) {
         "analysis",  "analyses", "analyst",     "analysts",  "organism",
         "organisms", "realistic", "specialist", "specialists", "liaison",
         "cancellation", "cancellations", "excellence", "modelling_note",
+        "programmer", "programmers", "programmed",
     };
     return std::find(fine.begin(), fine.end(), word) != fine.end();
 }

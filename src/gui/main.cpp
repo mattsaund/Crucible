@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "crucible/app/cli.hpp"
+#include "crucible/app/setup_runtimes.hpp"
 #include "crucible/app/setup_trainer.hpp"
 #include "crucible/app/uninstall.hpp"
 #include "crucible/config/config.hpp"
@@ -41,6 +42,12 @@ int main(int argc, char** argv) {
 
     // Both of these are the installer talking to the program it just built,
     // and both finish without opening a window.
+    if (options.runtime_status) {
+        return crucible::run_runtime_status();
+    }
+    if (options.install_runtimes) {
+        return crucible::run_runtime_setup(options.quiet, options.force);
+    }
     if (options.trainer_status) {
         return crucible::run_trainer_status();
     }
@@ -65,5 +72,5 @@ int main(int argc, char** argv) {
 
     crucible::gui::App app(std::move(config), std::move(warnings),
                            options.skip_trust);
-    return app.run();
+    return options.web_ui ? app.run_web() : app.run();
 }

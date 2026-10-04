@@ -841,27 +841,41 @@ else
 fi
 
 echo
-echo "  the installer installs the program, and only the program"
+echo "  the installer sets the program up, and asks the program to do it"
 
 ROOT="$HERE/.."
 
-# It used to detect the GPU, pick a backend, install a Vulkan SDK on every
-# machine and offer several gigabytes of CUDA on some -- all so that a runtime
-# could be compiled later, from the settings screen, by the program. None of
-# that is an installer's work: which backend to build is a question that can
-# only be answered on the machine at the moment it is asked, and the program
-# asks it there. What is left is a compile and a copy.
+# The installer once detected the GPU itself, picked a backend, installed a
+# Vulkan SDK on every machine and offered several gigabytes of CUDA on some --
+# all so that a runtime could be compiled later. That logic is gone and is not
+# coming back: what replaced it is one line asking the program, which is the
+# only thing that can see what ggml actually registered on this machine.
 for _gone in decide_backend cuda_required_for_cap nvcc_version apt_cuda_candidate \
-             seed_runtime_source CUDA_NOTE PKGS_VULKAN PKGS_CUDA RUNTIME BACKEND_LIST; do
+             seed_runtime_source CUDA_NOTE PKGS_VULKAN PKGS_CUDA BACKEND_LIST; do
     check_not "install.sh no longer carries $_gone" \
               grep -q "$_gone" "$ROOT/install.sh"
 done
 check_not "and takes no --gpu option to argue about" \
           grep -q -- "--gpu" "$ROOT/install.sh"
-check_not "it does not go looking for a graphics card" \
+check_not "it does not go looking for a graphics card itself" \
           grep -q "nvidia-smi" "$ROOT/install.sh"
 check_not "the Windows installer does not either" \
           grep -q "Win32_VideoController\|Resolve-Runtime" "$ROOT/install.ps1"
+
+# What it does instead. A fresh install that cannot load a model until someone
+# finds the settings screen is not an install, so the backends go on with the
+# program -- by asking the binary, which answers from the hardware rather than
+# from a guess made in shell.
+check     "it installs the compute runtimes by default" \
+          grep -q "INSTALL_RUNTIMES=1" "$ROOT/install.sh"
+check     "by asking the program, not by deciding for itself" \
+          grep -q -- "--install-runtimes" "$ROOT/install.sh"
+check     "and --no-runtimes opts out" \
+          grep -q -- "--no-runtimes" "$ROOT/install.sh"
+check     "the Windows installer does the same" \
+          grep -q -- "--install-runtimes" "$ROOT/install.ps1"
+check     "and takes -NoRuntimes" \
+          grep -q -- "NoRuntimes" "$ROOT/install.ps1"
 
 # The program's own SDK advice is what replaced all of it: refuse before the
 # build rather than fail inside it, and name the command for the package

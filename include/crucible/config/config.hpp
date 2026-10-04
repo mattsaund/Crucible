@@ -365,6 +365,13 @@ void write_default_config(const std::filesystem::path& file);
 /// Serialize `config` back to disk. This is what the in-app settings editor
 /// calls, so it must round-trip everything the loader understands.
 /// Returns false if the file could not be written.
+/// The configuration as JSON text, exactly as save_config would write it.
+///
+/// For the API, so an interface and the config file cannot disagree about the
+/// shape. Returned as a string rather than an nlohmann value to keep that
+/// header out of this one, which half the program includes.
+std::string config_to_json_text(const Config& config);
+
 bool save_config(const Config& config, const std::filesystem::path& file);
 
 /// Convenience overload using `paths::config_file()`.

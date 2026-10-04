@@ -48,3 +48,8 @@ __pycache__/
 
 # macOS writes one of these into every directory it looks at.
 .DS_Store
+
+# Matt's own notes. Thinking-in-progress that belongs on this machine rather
+# than in the repository -- direction, scratch plans, anything not yet a
+# decision the code has to honor.
+notes/
