@@ -249,6 +249,22 @@ TEST(a_table_ends_where_its_rows_do) {
               "</table><p>back to prose</p>"));
 }
 
+TEST(a_code_block_says_what_it_is_and_numbers_its_lines) {
+    // The header and the gutter are what make a block readable: a model that
+    // says "line 12" is talking about something that has to be findable.
+    const std::string call = "markdown('```python\\na = 1\\nb = 2\\n```')";
+    CHECK(has(call, "<span class=\"lang\">python</span>"));
+    CHECK(has(call, "2 lines"));
+    CHECK(has(call, "code-gutter"));
+    // The gutter counts the lines of code, not the fence.
+    CHECK_EQ(js().eval(call + ".match(/code-gutter[^>]*>([^<]*)</)[1]"), "1\n2");
+    CHECK(has(call, "data-copy"));
+}
+
+TEST(one_line_of_code_is_one_line) {
+    CHECK(has("markdown('```\\nonly\\n```')", "1 line<"));
+}
+
 TEST(a_fenced_block_is_code_all_the_way_to_its_close) {
     const std::string source =
         "Here:\n```python\n# not a heading\n- not a bullet\n**not bold**\n```\ndone\n";
@@ -310,7 +326,9 @@ TEST(markdown_never_lets_a_tag_through_from_the_model) {
 TEST(a_fence_still_open_renders_as_code) {
     // A reply mid-stream has an opening fence and no closing one, and it
     // should read as code for the whole time it is arriving.
-    CHECK(has("markdown('```c\\nint x;')", "<pre>"));
+    CHECK(has("markdown('```c\\nint x;')", "class=\"code\""));
+    // The text is there, in pieces: the lexer has colored `int` by now.
+    CHECK_EQ(js().eval("markdown('```c\\nint x;').includes('int')"), "true");
 }
 
 // --- syntax coloring --------------------------------------------------
@@ -406,6 +424,51 @@ TEST(coloring_never_loses_or_invents_text) {
             ".replace(/&amp;/g,String.fromCharCode(38));})()";
         CHECK_EQ(js().eval(expression), text);
     }
+}
+
+// --- a file an expert wants to write ----------------------------------
+//
+// The one screen where the two answers are not interchangeable, so what it
+// shows has to be right: which file, whether it exists, and what would be in
+// it afterwards.
+
+TEST(a_new_file_is_shown_whole_and_marked_as_an_addition) {
+    const std::string call =
+        "pendingEdit({path:'src/hello.py', before:'', after:'print(1)\\nprint(2)'})";
+    CHECK(has(call, "New file"));
+    CHECK(has(call, "src/hello.py"));
+    // The language comes from the extension, since nothing else says.
+    CHECK(has(call, "<span class=\"lang\">python</span>"));
+    CHECK(has(call, "code-add"));
+    CHECK(has(call, "2 lines"));
+    CHECK(has(call, "id=\"edit-yes\""));
+    CHECK(has(call, "id=\"edit-no\""));
+}
+
+TEST(a_change_to_a_file_is_shown_as_the_lines_that_move) {
+    const std::string call =
+        "pendingEdit({path:'a.py', before:'one\\ntwo', after:'one\\nthree'})";
+    CHECK(has(call, "Edit"));
+    CHECK_EQ(js().eval(call + ".includes('New file')"), "false");
+    // The rest of the file is not what is being decided, so it is not shown
+    // whole: one line leaves and one arrives.
+    CHECK(has(call, "dl-del"));
+    CHECK(has(call, "dl-add"));
+    CHECK(has(call, "+1"));
+}
+
+TEST(an_edit_that_would_write_nothing_says_so) {
+    // An empty code block reporting "1 line" reads as the interface being
+    // broken rather than the request being odd.
+    CHECK(has("pendingEdit({path:'a.py', before:'', after:''})", "an empty file"));
+    CHECK(has("pendingEdit({path:'a.py', before:'x', after:'  '})",
+              "this would empty the file"));
+    CHECK_EQ(js().eval("pendingEdit({path:'a.py', before:'', after:''}).includes('1 line')"),
+             "false");
+}
+
+TEST(a_path_from_a_model_is_escaped_like_everything_else) {
+    CHECK(has("pendingEdit({path:'<b>x</b>', before:'', after:'y'})", "&lt;b&gt;"));
 }
 
 // --- diffs ------------------------------------------------------------

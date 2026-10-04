@@ -155,6 +155,8 @@ int App::run_web() {
             }
         },
         [this](std::string session) -> std::string { return resume_session(session); },
+        [this](std::size_t index) { retry_turn(index); },
+        [this](std::size_t index) { delete_turn(index); },
         [this](std::string recipe) -> std::string { return begin_test(recipe); },
         [this] { end_test(); },
         [this](std::string recipe) -> std::string { return keep_tested(recipe); },

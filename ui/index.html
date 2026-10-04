@@ -70,11 +70,42 @@
   nav button:hover { color: var(--dim); }
   nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
 
-  main { display: grid; grid-template-columns: 15rem 1fr; min-height: 0; }
+  /* The side menu's width is set on the element, so the grid takes it from
+     there rather than keeping a second copy of the same number. */
+  main { display: grid; grid-template-columns: auto auto 1fr; min-height: 0; }
   aside {
-    background: var(--panel); border-right: 1px solid var(--panel-edge);
-    padding: 1.2rem 1rem; overflow-y: auto;
+    background: var(--panel); padding: 1.2rem 1rem;
+    display: flex; flex-direction: column; min-height: 0;
   }
+  aside .roster-scroll { overflow-y: auto; flex: 1; min-height: 0; }
+  /* Pushed down by the scroller above rather than pinned to the window: the
+     roster scrolls when it is long, and a footer fixed to the viewport ends
+     up either over the list or below the visible area. */
+  aside .roster-foot { padding-top: .9rem; }
+
+  /* Folded: a rail of dots, which is the one thing worth a glance when the
+     names are not there. */
+  aside.rail { width: 2.6rem; padding: 1.2rem 0; align-items: center; }
+  aside.rail .seat { padding: .35rem 0; }
+  aside.rail .rail-gap { height: 1.2rem; }
+
+  /* The edge, which is also the handle. An element rather than a CSS resize
+     because the width has to be readable from script to be remembered. */
+  .splitter {
+    width: 5px; margin-left: -2px; cursor: col-resize;
+    background: var(--panel-edge); border: 0;
+  }
+  .splitter:hover, .splitter.dragging { background: var(--flame); }
+
+  button.icon {
+    background: none; border: 0; color: var(--faint);
+    cursor: pointer; padding: .3rem; display: flex; align-items: center;
+  }
+  button.icon:hover { color: var(--text); }
+  nav button.icon { padding: .5rem .7rem; }
+  nav button.icon[aria-current="true"] { color: var(--text); }
+
+  .action.wide { display: block; width: 100%; margin-top: 1.2rem; }
   h2 {
     font-size: 11px; font-weight: 400; letter-spacing: .08em;
     color: var(--faint); margin: 0 0 .7rem;
@@ -95,19 +126,82 @@
      deliberate difference, asked for because a reply boxed into the middle of
      a wide screen wastes the screen. The gutter is what keeps it off the
      edge. */
-  .turn { max-width: none; margin: 0 0 2rem; }
-  .you { color: var(--flame); margin-bottom: .3rem; }
-  .who { color: var(--flame-lit); margin: 1rem 0 .3rem; }
+  .turn {
+    max-width: none; margin: 0 0 2.2rem; padding-bottom: 2.2rem;
+    border-bottom: 1px solid var(--panel-edge);
+  }
+  .turn:last-of-type { border-bottom: 0; }
+
+  /* What you said, as a thing you said: a card with the flame down its edge.
+     It used to be a line of body text under the word "you", which left the
+     question and the answer looking like the same voice. */
+  .said {
+    background: var(--panel); border-left: 2px solid var(--flame);
+    border-radius: 0 6px 6px 0; padding: .8rem 1.1rem;
+    white-space: pre-wrap; margin-bottom: 1.1rem;
+  }
+
+  /* Who answered, and how the delegator got there. */
+  .who { display: flex; align-items: baseline; gap: .55rem; margin: 0 0 1.1rem; }
+  .who .seat { color: var(--flame-lit); font-weight: 500; }
+  .who span:not(.seat) { color: var(--faint); font-size: .92em; }
+  .who .sep { color: var(--panel-edge); }
+
   .body { white-space: pre-wrap; }
+  .body.md { white-space: normal; }
   .thinking { color: var(--dim); }
   .failed { color: var(--error); }
   .empty { color: var(--faint); text-align: center; margin-top: 18vh; }
   .status { color: var(--faint); }
+  /* What the program did, above the first turn. */
+  .notices { color: var(--faint); margin: 0 0 2rem; }
+  .notices div { padding: .12rem 0; }
 
-  form.composer {
-    display: flex; gap: .6rem; padding: 1rem 2.5rem;
-    border-top: 1px solid var(--panel-edge); background: var(--panel);
+  /* --- a fenced block ----------------------------------------------------- */
+  .code {
+    border: 1px solid var(--panel-edge); border-radius: 7px;
+    background: var(--panel); margin: 1.2rem 0; overflow: hidden;
   }
+  .code-head {
+    display: flex; align-items: center; gap: .6rem;
+    padding: .5rem .9rem; color: var(--faint); font-size: .88em;
+  }
+  .code-head .lang { color: var(--dim); }
+  .code-head .code-count { margin-left: auto; }
+  .code-head .copy {
+    background: none; border: 0; color: var(--faint); cursor: pointer;
+    padding: .2rem; display: flex; border-radius: 4px;
+  }
+  .code-head .copy:hover { color: var(--text); background: var(--hover); }
+  .code-head .copy.done { color: var(--flame); }
+
+  /* The gutter and the code scroll as one, so a long line does not slide the
+     numbers off with it. */
+  .code-body { display: flex; overflow-x: auto; background: var(--ink); }
+  /* Both paddings set at the same specificity as the margin reset above
+     them. `.code-body pre` out-specifies a bare `.code-gutter`, so setting
+     the horizontal padding there alone lost to `padding: .7rem 0` and the
+     line numbers ended up flush against the code. */
+  .code-body pre { margin: 0; }
+  .code-body .code-gutter {
+    flex: none; padding: .7rem .9rem;
+    color: var(--faint); text-align: right; user-select: none;
+    border-right: 1px solid var(--panel-edge);
+  }
+  .code-body .code-text { flex: 1; padding: .7rem .9rem; }
+  .code-text code { white-space: pre; }
+  /* A file being created: the whole block is an addition. */
+  .code.code-add .code-body { background: rgba(46, 107, 71, .14); }
+
+  /* Inline code is a name, not a block: the flame says "this is a thing in
+     the program" the way the reference did. */
+  .md :not(pre) > code {
+    color: var(--flame-lit); background: var(--raised);
+    border-radius: 4px; padding: .08em .35em;
+  }
+
+  .foot { background: var(--panel); border-top: 1px solid var(--panel-edge); }
+  form.composer { display: flex; gap: .6rem; padding: 1rem 2.5rem; }
   input, select, button.action {
     background: var(--raised); border: 1px solid var(--panel-edge);
     border-radius: 5px; padding: .55rem .8rem;
@@ -137,6 +231,30 @@
   .settings-page h1 { color: var(--flame); font-size: 1.25em; font-weight: 400; margin: 0 0 .3rem; }
   .lede { color: var(--faint); margin: 0 0 1.6rem; }
   .field { margin: 0 0 1.4rem; max-width: 46rem; }
+  .field .row { gap: .6rem; }
+  .runtime-detail {
+    margin: .7rem 0 0; padding-top: .7rem;
+    border-top: 1px solid var(--panel-edge); color: var(--dim); font-size: .9em;
+  }
+  .runtime-detail div { display: flex; gap: .6rem; padding: .15rem 0; }
+  .runtime-detail span { flex: 0 0 11rem; color: var(--faint); }
+  .card .title .link.right { margin-left: auto; }
+
+  .order { display: flex; flex-direction: column; gap: .4rem; }
+  .order-row {
+    display: flex; align-items: center; gap: .6rem;
+    background: var(--raised); border: 1px solid var(--panel-edge);
+    border-radius: 5px; padding: .45rem .7rem;
+  }
+  .order-n { color: var(--faint); flex: 0 0 1.2rem; }
+  .order-name { flex: 1; min-width: 0; }
+  .order-row .action { padding: .2rem .6rem; }
+
+  .slider-row { display: flex; gap: .8rem; align-items: center; }
+  .slider-row input[type="range"] { flex: 1; min-width: 0; padding: 0; accent-color: var(--flame); }
+  .slider-row input:not([type="range"]) { flex: 0 0 6.5rem; text-align: right; }
+  .field .row input { flex: 1; min-width: 0; }
+  .card.pick { max-width: 46rem; }
   .field label { display: block; color: var(--dim); margin-bottom: .35rem; }
   .field .hint { color: var(--faint); margin-top: .35rem; }
   .field input, .field select { width: 100%; }
@@ -157,11 +275,28 @@
 
   .ok { color: var(--flame); } .bad { color: var(--error); } .meh { color: var(--faint); }
 
+  /* --- what can be done to a turn ---------------------------------------- */
+  .turn { position: relative; }
+  .turn-controls {
+    position: absolute; top: 0; right: 0; display: flex; gap: .2rem;
+    opacity: 0; transition: opacity .12s ease;
+  }
+  .turn:hover .turn-controls, .turn-controls:focus-within { opacity: 1; }
+  button.link {
+    background: none; border: 0; color: var(--faint);
+    font: inherit; font-size: .85em; cursor: pointer; padding: .2rem .5rem;
+    border-radius: 4px;
+  }
+  button.link:hover { color: var(--text); background: var(--hover); }
+
   /* --- what a turn cost, and what it did on the way ---------------------- */
   .meta { color: var(--faint); font-size: .85em; margin-top: .6rem; }
+  /* Always drawn, zeros and all. A line that appears after the first reply
+     is a line that moves the composer, and because it is the width of the
+     window that reads as the window jumping rather than as a label arriving. */
   .tally {
     color: var(--faint); font-size: .85em;
-    padding: .5rem 2.5rem 1rem; text-align: right;
+    padding: 0 2.5rem .8rem; text-align: right;
   }
   details.work { margin: .5rem 0 .9rem; }
   details.work > summary {
@@ -210,15 +345,19 @@
   .tok-del { color: #E5847B; }
 
   /* --- a file an expert wants to change --------------------------------- */
-  .edit {
-    border: 1px solid var(--panel-edge); border-radius: 7px;
-    background: var(--panel); margin: 0 0 2rem; overflow: hidden;
-  }
-  .edit-head {
-    padding: .7rem 1rem; border-bottom: 1px solid var(--panel-edge);
-    color: var(--flame-lit);
-  }
-  .diff { max-height: 26rem; overflow: auto; padding: .5rem 0; }
+  .edit { margin: 0 0 2rem; }
+  .edit-head { margin-bottom: .2rem; overflow-wrap: anywhere; }
+  .edit-head .new { color: #7EC699; }
+  .edit-head .changed { color: var(--flame-lit); }
+  .edit-feet { padding: 0; gap: .6rem; }
+  /* Green and red, because this is the one place on the screen where the two
+     answers are not interchangeable. */
+  .action.yes { background: rgba(46, 107, 71, .35); border-color: #2E6B47; }
+  .action.yes:hover { background: rgba(46, 107, 71, .55); }
+  .action.no  { background: rgba(122, 51, 44, .35); border-color: #7A332C; }
+  .action.no:hover  { background: rgba(122, 51, 44, .55); }
+
+  .diff { max-height: 26rem; overflow: auto; padding: .5rem 0; background: var(--ink); }
   .dl { white-space: pre; padding: 0 1rem; }
   .sign { display: inline-block; width: 1.2rem; color: var(--faint); }
   /* The same wash the window used: enough to find the changed lines at a
@@ -330,6 +469,14 @@
 </head>
 <body>
   <header>
+    <button id="fold" class="icon" title="Show or hide the side menu"
+            aria-label="Show or hide the side menu">
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"
+              fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.2"/>
+      </svg>
+    </button>
     <img class="flame" src="CRUCIBLE_MARK_SRC" alt="">
     <span class="mark">CRUCIBLE</span>
     <button class="project none" id="project">No Project</button>
@@ -339,7 +486,14 @@
       <button data-view="cook">Cook</button>
       <button data-view="create">Create</button>
       <button data-view="history">History</button>
-      <button data-view="settings">Settings</button>
+      <button class="icon" data-view="settings" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"
+             fill="none" stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
     </nav>
   </header>
   <main id="main"></main>
@@ -442,52 +596,89 @@ const state = {
   snapshot: { experts: [], turns: [] },
   project: { open: false }, config: null, models: [], runtimes: [],
   draft: '', error: '',
-  cookGoal: '', cookMinutes: '30',
+  cookGoal: '',
   history: null, cookDetail: null,
   recipes: null, openRecipe: null, editing: null, trainer: null, run: null,
-  hub: { items: [], searching: false, query: '', kind: 'model' },
+  openRuntime: null,
+  hub:     { items: [], searching: false, query: '', kind: 'model' },
+  dataHub: { items: [], searching: false, query: '', kind: 'dataset' },
   build: null, flavors: null,
   // The fine-tune being tried, and where its conversation starts in the
   // transcript: everything before that belongs to the project.
   testing: null, testFrom: 0,
+  // How wide the side menu is, in rem. Per viewer and per machine, so it
+  // belongs in browser storage rather than in the config file -- it is a
+  // window shape, not a setting about how Crucible works.
+  sidebar: 15,
 };
+
+try {
+  const saved = parseFloat(localStorage.getItem('crucible.sidebar'));
+  if (Number.isFinite(saved)) state.sidebar = saved;
+} catch (e) { /* private window, blocked storage: the default is fine */ }
+
+function setSidebar(rem) {
+  state.sidebar = Math.max(0, Math.min(rem, 34));
+  try { localStorage.setItem('crucible.sidebar', String(state.sidebar)); } catch (e) {}
+  render();
+}
 
 // escape(), markdown(), highlight() and diffLines() come from render.js,
 // which is injected above this script. They are the pure text-to-markup
 // half of the interface and are tested on their own; see tests/test_ui_js.cpp.
-function pendingEdit(edit) {
-  const rows = diffLines(edit.before || '', edit.after || '').map((line) => {
-    if (line.kind === 'note') return `<div class="status">${escape(line.text)}</div>`;
-    const sign = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' ';
-    return `<div class="dl dl-${line.kind}"><span class="sign">${sign}</span>${
-      escape(line.text) || '&nbsp;'}</div>`;
-  }).join('');
-  return `<div class="edit">
-      <div class="edit-head">${escape(edit.path)}${
-        edit.before ? '' : '  <span class="status">(new file)</span>'}</div>
-      <div class="diff">${rows}</div>
-      <div class="row" style="padding:.8rem">
-        <button class="action" id="edit-yes">Apply it</button>
-        <button class="action" id="edit-no">Leave it</button>
-      </div>
-    </div>`;
-}
+// pendingEdit() is in render.js with the other text-to-markup functions.
 
 // --- views ----------------------------------------------------------------
 
+// Closed is a width, not a mode: the fold button sets it to zero and back,
+// and dragging the edge to the left does the same thing by hand. One property
+// and two ways to reach it, rather than a width and an is-it-open flag that
+// can fall out of step with each other.
+const SIDEBAR_MIN = 13;     // rem; the narrowest it will rest at
+const SIDEBAR_SHUT = 8;     // rem; drag below this and it closes
+
+function sidebarOpen() { return state.sidebar >= SIDEBAR_SHUT; }
+function sidebarWidth() { return Math.max(state.sidebar, SIDEBAR_MIN); }
+
 function roster() {
   const s = state.snapshot;
+  // Closed, it is a rail rather than nothing: the dots still say which seat is
+  // loaded, which is the one thing worth a glance while it is folded away.
+  if (!sidebarOpen()) {
+    const dots = (s.experts || []).map((e) =>
+      `<div class="seat" data-phase="${e.phase}" title="${escape(e.name)}">
+         <span class="dot"></span></div>`).join('');
+    return `<aside class="rail">
+        <div class="seat" data-phase="${s.delegator_ready ? 'dormant' : 'unconfigured'}"
+             title="${escape(modelLabel(state.config?.router?.model) || 'no delegator')}">
+          <span class="dot"></span></div>
+        <div class="rail-gap"></div>${dots}
+      </aside>`;
+  }
+
   const seats = (s.experts || []).map((e) => `
     <div class="seat" data-phase="${e.phase}">
       <span class="dot"></span><span class="name">${escape(e.name)}</span>
     </div>`).join('') || '<div class="status">None yet.</div>';
-  return `<aside>
-      <h2>DELEGATOR</h2>
-      <div class="seat" data-phase="${s.delegator_ready ? 'dormant' : 'unconfigured'}">
-        <span class="dot"></span><span class="name">${escape(modelLabel(state.config?.router?.model) || '(none)')}</span>
+  // Eject is sized to its own word rather than to the panel: it is an
+  // occasional action, and a button stretched across a sidebar that can be
+  // dragged to four hundred pixels reads as the most important thing here.
+  const loaded = !!s.resident || s.delegator_ready;
+  return `<aside style="width:${sidebarWidth()}rem">
+      <div class="roster-scroll">
+        <h2>DELEGATOR</h2>
+        <div class="seat" data-phase="${s.delegator_ready ? 'dormant' : 'unconfigured'}">
+          <span class="dot"></span><span class="name">${escape(modelLabel(state.config?.router?.model) || '(none)')}</span>
+        </div>
+        <h2 style="margin-top:1.6rem">EXPERTS</h2>${seats}
+        <button class="action wide" id="manage-experts">Manage experts</button>
       </div>
-      <h2 style="margin-top:1.6rem">EXPERTS</h2>${seats}
-    </aside>`;
+      <div class="roster-foot">
+        <button class="action" id="eject" ${loaded ? '' : 'disabled'}
+                title="${loaded ? 'Unload every model' : 'Nothing is loaded'}">Eject</button>
+      </div>
+    </aside>
+    <div class="splitter" id="splitter" title="Drag to resize -- drag to the edge to close"></div>`;
 }
 
 /// The name on the roster, not the id the router returns.
@@ -504,14 +695,27 @@ function expertName(id) {
 /// Which expert answered and how sure the router was, then the throughput.
 /// It is a line of small gray text and it is the only place the routing is
 /// visible -- without it a delegating program looks like a chat box.
+/// Who answered, and how the delegator got there. Above the reply, because
+/// it is the first thing to know about what follows.
+function turnWho(turn) {
+  const route = turn.route;
+  const who = route ? expertName(route.expert) : 'crucible';
+  const bits = [];
+  if (route && route.confidence > 0) bits.push(`${Math.round(route.confidence * 100)}%`);
+  if (route && route.source) bits.push(route.source);
+  // Only when it actually swapped. A turn answered by the model already
+  // resident paid nothing, and a "0.0s" there is noise.
+  if (turn.load_ms > 200) bits.push(`swapped in ${(turn.load_ms / 1000).toFixed(1)}s`);
+  return `<div class="who"><span class="seat">◆ ${escape(who)}</span>${
+    bits.map((b) => `<span class="sep">·</span><span>${escape(b)}</span>`).join('')}</div>`;
+}
+
+/// What the turn cost, under it.
 function turnMeta(turn) {
   const bits = [];
-  if (turn.route && turn.route.confidence > 0) {
-    bits.push(`${Math.round(turn.route.confidence * 100)}%`);
-  }
-  if (turn.tokens_per_second > 0) {
-    bits.push(`${turn.tokens_per_second.toFixed(1)} tok/s`);
-  }
+  if (turn.tokens_per_second > 0) bits.push(`${turn.tokens_per_second.toFixed(1)} tok/s`);
+  if (turn.prompt_tokens > 0) bits.push(`${turn.prompt_tokens} in`);
+  if (turn.output_tokens > 0) bits.push(`${turn.output_tokens} out`);
   if (turn.canceled) bits.push('stopped');
   return bits.length ? `<div class="meta">${bits.map(escape).join('  ·  ')}</div>` : '';
 }
@@ -527,10 +731,27 @@ function turnActions(turn) {
   return `<details class="work"><summary>${count(turn.actions.length, 'step')}</summary>${items}</details>`;
 }
 
+/// What can be done to a turn, which depends on what is happening.
+///
+/// While something is running the only honest offer is to stop it, and only
+/// on the turn that is actually running: retrying or deleting a turn
+/// mid-flight would renumber the one the engine is writing into. The row is
+/// revealed by hovering the whole turn rather than the buttons, because a
+/// control that only appears once the pointer is on top of it can never be
+/// found.
+function turnControls(turn, index, busy) {
+  const buttons = turn.streaming
+    ? `<button class="link" data-stop="1">Stop</button>`
+    : busy ? ''
+    : `<button class="link" data-retry="${index}">Ask again</button>
+       <button class="link" data-drop="${index}">Delete</button>`;
+  return buttons ? `<div class="turn-controls">${buttons}</div>` : '';
+}
+
 function chatView() {
   const turns = state.snapshot.turns || [];
-  const body = turns.length ? turns.map((turn) => {
-    const who = turn.route ? expertName(turn.route.expert) : 'crucible';
+  const busy = !!state.snapshot.busy;
+  const body = turns.length ? turns.map((turn, index) => {
     let reply;
     if (turn.failed)                        reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
     else if (!turn.reply && turn.streaming) reply = '<div class="body thinking">thinking...</div>';
@@ -543,13 +764,18 @@ function chatView() {
           markdown(turn.reasoning)}</div></details>`
       : '';
     return `<div class="turn">
-        <div class="you">you</div><div class="body">${escape(turn.prompt)}</div>
-        <div class="who">${escape(who)}</div>${thought}${turnActions(turn)}${reply}${turnMeta(turn)}
+        ${turnControls(turn, index, busy)}
+        <div class="said">${escape(turn.prompt)}</div>
+        ${turnWho(turn)}${thought}${turnActions(turn)}${reply}${turnMeta(turn)}
       </div>`;
   }).join('') : '<div class="empty">Ask it something.</div>';
 
-  const edit = state.snapshot.pending_edit;
   const s = state.snapshot;
+  const edit = s.pending_edit;
+  const notices = (s.notices || []).length
+    ? `<div class="notices">${(s.notices || []).map((n) =>
+        `<div>- ${escape(n)}</div>`).join('')}</div>`
+    : '';
   // Auto sits beside the box rather than in Settings because whether you are
   // watching an expert edit your files is a decision that changes between one
   // prompt and the next, and a switch you have to go and find is a switch
@@ -559,22 +785,23 @@ function chatView() {
   // second number is the one that matters: a context that is nearly full is
   // about to start forgetting the beginning, and nothing else says so.
   const used = s.context_size > 0 ? Math.round((s.context_used / s.context_size) * 100) : 0;
-  const tally = (s.session_usage && s.session_usage.turns)
-    ? `<div class="tally">${s.session_usage.input_tokens} in  ·  ${
-        s.session_usage.output_tokens} out  ·  ${used}% context used</div>`
-    : '';
+  const usage = s.session_usage || {};
+  const tally = `<div class="tally">${usage.input_tokens || 0} in  ·  ${
+      usage.output_tokens || 0} out  ·  ${used}% context used</div>`;
   return roster() + `<div class="pane">
-      <div id="transcript">${body}${edit ? pendingEdit(edit) : ''}</div>
-      <form class="composer" id="composer">
-        <input id="prompt" placeholder="Ask it something" autocomplete="off"
-               value="${escape(state.draft)}">
-        <button type="button" class="action toggle" id="auto-edits"
-                aria-pressed="${!!auto_}"
-                title="${auto_ ? 'Edits apply as they are made'
-                               : 'Every edit is shown before it lands'}">Auto</button>
-        <button class="action" id="send" ${s.busy ? 'disabled' : ''}>Send</button>
-      </form>
-      ${tally}
+      <div id="transcript">${notices}${body}${edit ? pendingEdit(edit) : ''}</div>
+      <div class="foot">
+        <form class="composer" id="composer">
+          <input id="prompt" placeholder="Ask it something" autocomplete="off"
+                 value="${escape(state.draft)}">
+          <button type="button" class="action toggle" id="auto-edits"
+                  aria-pressed="${!!auto_}"
+                  title="${auto_ ? 'Edits apply as they are made'
+                                 : 'Every edit is shown before it lands'}">Auto</button>
+          <button class="action" id="send" ${s.busy ? 'disabled' : ''}>Send</button>
+        </form>
+        ${tally}
+      </div>
     </div>`;
 }
 
@@ -607,16 +834,21 @@ function cookView() {
   }
 
   if (!cook) {
+    // The goal, and the button that starts it. Nothing else.
+    //
+    // There was a minutes box here, and it asked you to commit to a number
+    // before you knew what the work was. A cook runs until it is finished or
+    // until you stop it, which is what the two buttons below are for.
     return roster() + `<div class="pane">
       <div id="transcript"><div class="empty">
-        Give it a goal and however long you want to give it.</div></div>
-      <form class="composer" id="cook-form">
-        <input id="cook-goal" placeholder="make the tests pass" autocomplete="off"
-               value="${escape(state.cookGoal)}">
-        <input id="cook-minutes" style="flex:0 0 7rem" placeholder="minutes"
-               value="${escape(state.cookMinutes)}">
-        <button class="action">Start</button>
-      </form>
+        Give it a goal. It works until it is done or until you stop it.</div></div>
+      <div class="foot">
+        <form class="composer" id="cook-form">
+          <input id="cook-goal" placeholder="make the tests pass" autocomplete="off"
+                 value="${escape(state.cookGoal)}">
+          <button class="action">Start</button>
+        </form>
+      </div>
     </div>`;
   }
 
@@ -629,13 +861,20 @@ function cookView() {
         ${cook.outcome ? `<div class="md" style="margin-bottom:1.4rem">${markdown(cook.outcome)}</div>` : ''}
         ${cookSteps(cook.steps, cook.total, cook.shown_from)}
       </div>
-      <form class="composer" id="cook-form">
-        ${asking
-          ? `<input id="cook-answer" placeholder="answer it" autocomplete="off">
-             <button class="action">Answer</button>`
-          : `<button class="action" id="cook-stop" type="button">Stop and wrap up</button>
-             <span class="status" style="align-self:center">Stopping lets it leave the project working.</span>`}
-      </form>
+      <div class="foot">
+        <form class="composer" id="cook-form">
+          ${asking
+            ? `<input id="cook-answer" placeholder="answer it" autocomplete="off">
+               <button class="action">Answer</button>`
+            // Two stops, because they are different things. The first makes a
+            // finishing pass so the project is left in a state that runs; the
+            // second is a cancel and leaves it wherever it got to.
+            : `<button class="action" id="cook-stop" type="button">Stop and finish</button>
+               <button class="action" id="cook-kill" type="button"
+                       title="Stops immediately, without the finishing pass">Stop now</button>
+               <span class="status" style="align-self:center">Finishing leaves the project working.</span>`}
+        </form>
+      </div>
     </div>`;
 }
 
@@ -828,20 +1067,38 @@ function createForm(r) {
       </div>
 
       <h2>BASE MODEL</h2>
-      <div class="field"><input id="r-base" value="${escape((r.base && r.base.id) || '')}"
-        placeholder="unsloth/Llama-3.2-1B, or a path on this machine">
-        <div class="hint">A Huggingface repository, or a folder of safetensors.
-          A GGUF cannot be fine-tuned.</div></div>
-      <div class="row">
-        <input id="hub-query" value="${escape(hub.query)}" placeholder="search Huggingface">
-        <button class="action" id="hub-go">${hub.searching ? 'searching...' : 'Search'}</button>
+      <div class="field"><label>Search Huggingface</label>
+        <div class="row">
+          <input id="hub-query" value="${escape(hub.query)}" placeholder="llama 3.2 1b">
+          <button class="action" id="hub-go">${hub.searching ? 'searching...' : 'Search'}</button>
+        </div>
+        <div class="hint">Picking a result fills the box below.</div>
       </div>
       ${results}
+      <div class="field"><label>Or from this machine</label>
+        <input id="r-base" value="${escape((r.base && r.base.id) || '')}"
+          placeholder="unsloth/Llama-3.2-1B, or a path on this machine">
+        <div class="hint">A Huggingface repository, or a folder of safetensors.
+          A GGUF cannot be fine-tuned.</div></div>
 
       <h2 style="margin-top:1.6rem">DATA</h2>
-      <div class="field"><input id="r-data"
-        value="${escape((r.data || []).map((d) => d.id).join(', '))}"
-        placeholder="a Huggingface dataset, or a folder of text">
+      <div class="field"><label>Search Huggingface</label>
+        <div class="row">
+          <input id="data-query" value="${escape(state.dataHub.query)}" placeholder="instruction tuning">
+          <button class="action" id="data-go">${
+            state.dataHub.searching ? 'searching...' : 'Search'}</button>
+        </div>
+        <div class="hint">Picking a result adds it to the box below.</div>
+      </div>
+      ${state.dataHub.items.map((item) => `
+        <div class="card pick" data-dataset="${escape(item.id)}">
+          <div class="title"><strong>${escape(item.id)}</strong>
+            <span class="tag">${Math.round(item.downloads / 1000)}k downloads</span></div>
+        </div>`).join('')}
+      <div class="field"><label>Or from this machine</label>
+        <input id="r-data"
+          value="${escape((r.data || []).map((d) => d.id).join(', '))}"
+          placeholder="a Huggingface dataset, or a folder of text">
         <div class="hint">Comma separated.</div></div>
 
       <h2>TARGET</h2>
@@ -902,6 +1159,21 @@ function field(path, label, kind, hint, extra) {
         ${control}<span>${label}</span></label>
       ${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
   }
+  // A slider and the number it is setting, side by side and tied together.
+  // The slider is for finding a value by feel and the box is for typing one
+  // you already know; neither is a substitute for the other, so both are here.
+  if (kind === 'slider') {
+    const { min, max, step } = extra;
+    return `<div class="field"><label for="${id}">${label}</label>
+      <div class="slider-row">
+        <input type="range" id="${id}-range" min="${min}" max="${max}" step="${step}"
+               value="${value ?? min}" data-slider="${id}">
+        <input id="${id}" data-path="${path}" data-kind="${
+          Number.isInteger(step) && Number.isInteger(min) ? 'int' : 'num'}"
+          data-slider-box="${id}" value="${escape(value ?? min)}">
+      </div>
+      ${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+  }
   if (kind === 'choice') {
     control = `<select id="${id}" data-path="${path}" data-kind="string">${
       extra.map((v) => `<option value="${v}"${v === value ? ' selected' : ''}>${v}</option>`).join('')
@@ -920,6 +1192,18 @@ function at(root, path) {
 }
 
 /// Build the patch from every bound control currently on screen.
+/// `patch` over `into`, objects merged and everything else replaced. The same
+/// rule config.set applies on the other side of the door.
+function mergeDeep(into, patch) {
+  const out = { ...into };
+  for (const [key, value] of Object.entries(patch || {})) {
+    out[key] = value && typeof value === 'object' && !Array.isArray(value)
+      ? mergeDeep(out[key] || {}, value)
+      : value;
+  }
+  return out;
+}
+
 function patchFromFields() {
   const patch = {};
   for (const node of document.querySelectorAll('[data-path]')) {
@@ -990,8 +1274,11 @@ function settingsPage() {
     return `<div class="settings-page">
       <h1>General</h1><p class="lede">Where the models are, and who reads the prompt first.</p>
       <div class="field">
-        <label>Models directory</label>
-        <input id="models-dir" value="${escape(c.models_dir || '')}">
+        <label for="models-dir">Models directory</label>
+        <div class="row">
+          <input id="models-dir" value="${escape(c.models_dir || '')}">
+          <button class="action" id="browse-models" type="button">Browse</button>
+        </div>
         <div class="hint">Read for GGUF files. Never written to.</div>
       </div>
       <div class="field">
@@ -999,6 +1286,16 @@ function settingsPage() {
         <select id="router-model">${modelOptions(c.router?.model || '')}</select>
         <div class="hint">Scores every expert on the roster and picks one. A small model is the right choice.</div>
       </div>
+      ${field('routing.keep_delegator_loaded', 'Keep the delegator loaded between prompts', 'bool',
+              `Off, exactly one model is in memory at a time: the delegator is freed the
+               instant it has routed and comes back when the expert is done, so the peak
+               is the larger of the two rather than their sum. On, it stays -- and its
+               whole footprint is gone from every expert that follows.`)}
+      ${field('routing.min_confidence', 'Confidence floor', 'slider',
+              `Below this the delegator is treated as undecided and the prompt goes to the
+               default expert instead, or is taken at face value when there is none.
+               0 turns the check off.`,
+              { min: 0, max: 1, step: 0.01 })}
       <div class="field">
         <label>Reasoning effort</label>
         <select id="reasoning">
@@ -1019,9 +1316,28 @@ function settingsPage() {
           <select data-seat="${escape(e.id)}">${modelOptions(seatModel(e.id))}</select>
         </div>
       </div>`).join('') || '<p class="lede">No experts yet.</p>';
+    const roster = state.snapshot.experts || [];
     return `<div class="settings-page">
       <h1>Experts</h1><p class="lede">Which model answers for each subject.</p>
+      <div class="row" style="margin-bottom:1.4rem">
+        <button class="action" id="new-expert" type="button">New expert</button>
+        <button class="action" id="rescan-models" type="button"
+                title="Read the models directory again">Rescan models</button>
+        <span class="status" style="align-self:center">${
+          count(state.models.length, 'model')} found</span>
+      </div>
       ${seats}
+      <div class="field" style="margin-top:1.4rem">
+        <label for="default-expert">Default expert</label>
+        <select id="default-expert" data-path="routing.default_expert" data-kind="string">
+          <option value=""${!c.routing?.default_expert ? ' selected' : ''}>(none)</option>
+          ${roster.map((e) => `<option value="${escape(e.id)}"${
+            c.routing?.default_expert === e.id ? ' selected' : ''}>${escape(e.name)}</option>`).join('')}
+        </select>
+        <div class="hint">Catches what does not fit: a prompt the delegator could not
+          place confidently, or one routed to a seat with no model. With none, an
+          uncertain route is taken at face value rather than sent nowhere.</div>
+      </div>
       <button class="action" id="save-experts">Save</button>
     </div>`;
   }
@@ -1036,14 +1352,32 @@ function settingsPage() {
       const how = r.active ? `<span class="ok">active</span>  ${count(r.devices, 'device')}`
                 : r.installed ? '<span class="meh">installed, no devices</span>'
                               : '<span class="meh">not installed</span>';
+      // Installed ones open: what a runtime was built from is what makes
+      // "built against another llama.cpp" actionable rather than just
+      // alarming, and it is too much to show on every card at once.
+      const open = state.openRuntime === r.id;
       return `<div class="card">
-          <div class="title"><strong>${escape(r.id.toUpperCase())}</strong><span class="tag">${how}</span></div>
+          <div class="title">
+            <strong>${escape(r.id.toUpperCase())}</strong><span class="tag">${how}</span>
+            ${r.installed ? `<button class="link right" data-runtime="${escape(r.id)}">${
+              open ? 'less' : 'more'}</button>` : ''}
+          </div>
           ${r.installed ? `<div class="hint" style="color:var(--faint)">${
             (r.bytes / 1048576).toFixed(1)} MB${r.source ? '  ·  ' + escape(r.source) : ''}${
             r.stale ? '  ·  <span class="bad">built against another llama.cpp</span>' : ''}</div>` : ''}
-          ${!r.installed || r.stale
-            ? `<button class="action" data-build="${escape(r.id)}"${busy ? ' disabled' : ''}>${
-                r.stale ? 'Rebuild' : 'Build it'}</button>` : ''}
+          ${open ? `<div class="runtime-detail">
+            <div><span>Built from</span>${escape(r.llama_tag || 'not recorded')}</div>
+            <div><span>Built</span>${escape(r.built_at || 'not recorded')}</div>
+            <div><span>This build needs</span>${escape(r.needs_tag || '')}</div>
+            <div><span>Devices</span>${r.active ? count(r.devices, 'device') : 'none'}</div>
+          </div>` : ''}
+          ${(!r.installed || r.stale || open) ? `<div class="row" style="margin-top:.7rem">
+            ${!r.installed || r.stale
+              ? `<button class="action" data-build="${escape(r.id)}"${busy ? ' disabled' : ''}>${
+                  r.stale ? 'Rebuild' : 'Build it'}</button>` : ''}
+            ${open ? `<button class="action" data-remove="${escape(r.id)}"${
+              busy ? ' disabled' : ''}>Delete</button>` : ''}
+          </div>` : ''}
         </div>`;
     }).join('') || '<p class="lede">Nothing scanned yet.</p>';
     return `<div class="settings-page">
@@ -1059,17 +1393,42 @@ function settingsPage() {
     return `<div class="settings-page">
       <h1>Generation</h1>
       <p class="lede">How every expert samples, unless one overrides it.</p>
-      ${field('defaults.temperature', 'Temperature', 'num',
-              'Higher wanders further from the likeliest next word.')}
-      ${field('defaults.top_p', 'Top P', 'num')}
-      ${field('defaults.top_k', 'Top K', 'int')}
-      ${field('defaults.min_p', 'Min P', 'num')}
-      ${field('defaults.repeat_penalty', 'Repeat penalty', 'num')}
-      ${field('defaults.repeat_last_n', 'Repeat window', 'int')}
+      ${field('defaults.temperature', 'Temperature', 'slider',
+              'Higher wanders further from the likeliest next word.',
+              { min: 0, max: 2, step: 0.01 })}
+      ${field('defaults.top_p', 'Top P', 'slider',
+              'Keep the likeliest words whose probabilities add up to this.',
+              { min: 0, max: 1, step: 0.01 })}
+      ${field('defaults.top_k', 'Top K', 'slider',
+              'Never consider more than this many candidates. 0 is no limit.',
+              { min: 0, max: 200, step: 1 })}
+      ${field('defaults.min_p', 'Min P', 'slider',
+              'Drop anything this much less likely than the best candidate.',
+              { min: 0, max: 1, step: 0.01 })}
+      ${field('defaults.repeat_penalty', 'Repeat penalty', 'slider',
+              '1 is off. Higher discourages saying the same thing twice.',
+              { min: 1, max: 2, step: 0.01 })}
+      ${field('defaults.repeat_last_n', 'Repeat window', 'int',
+              'How many recent tokens the penalty looks back over.')}
       ${field('defaults.max_tokens', 'Longest reply', 'int', 'Tokens. -1 runs until the model stops.')}
       ${field('defaults.n_ctx', 'Context', 'int')}
       ${field('defaults.n_batch', 'Batch', 'int')}
       ${field('defaults.n_threads', 'Threads', 'int', '0 uses every core.')}
+
+      <h2 style="margin-top:1.8rem">WHEN THE CONVERSATION OUTGROWS THE CONTEXT</h2>
+      <div class="field">
+        <label for="f-overflow">Context truncation</label>
+        <select id="f-overflow" data-path="tools.overflow" data-kind="string">
+          ${[['rolling', 'Rolling window -- drop the oldest exchanges'],
+             ['middle',  'Truncate middle -- keep the beginning and the end'],
+             ['stop',    'Stop at the limit -- refuse rather than forget']].map(([v, label]) =>
+            `<option value="${v}"${c.tools?.overflow === v ? ' selected' : ''}>${label}</option>`).join('')}
+        </select>
+        <div class="hint">Every long conversation reaches this. Rolling is right for a
+          conversation; truncate middle is for one that opened with something that has
+          to survive; stop is for when losing any of it would be worse than stopping.
+          Whichever it is, the transcript says when it drops anything.</div>
+      </div>
       ${field('defaults.flash_attn', 'Flash attention', 'bool')}
       ${field('ui.show_reasoning', 'Show a reasoning model\'s working', 'bool')}
       <button class="action" id="save-fields">Save</button>
@@ -1088,28 +1447,69 @@ function settingsPage() {
       <h1>Hardware</h1><p class="lede">What the models run on.</p>
       ${devices}
       <div style="margin-top:1.4rem"></div>
-      ${field('gpu.mode', 'How to spread a model', 'choice', '', ['auto', 'even', 'priority', 'single'])}
+      ${field('gpu.mode', 'How to spread a model', 'choice',
+              'Priority fills the cards in the order below. Single puts everything on one.',
+              ['auto', 'even', 'priority', 'single'])}
+      ${c.gpu?.mode === 'priority' ? `
+        <div class="field">
+          <label>The order they are filled</label>
+          <div class="order">${gpuOrder().map((index, at) => {
+            const device = (state.devices || [])[index];
+            return `<div class="order-row">
+                <span class="order-n">${at + 1}</span>
+                <span class="order-name">${escape(device ? device.name : 'card ' + index)}</span>
+                <button class="action" type="button" data-gpu-up="${at}" ${
+                  at === 0 ? 'disabled' : ''} aria-label="Move up">&uarr;</button>
+                <button class="action" type="button" data-gpu-down="${at}" ${
+                  at === gpuOrder().length - 1 ? 'disabled' : ''} aria-label="Move down">&darr;</button>
+              </div>`;
+          }).join('')}</div>
+          <div class="hint">Best first. A model is laid onto them in this order until
+            it runs out of layers.</div>
+        </div>` : ''}
       ${field('gpu.main_gpu', 'Main card', 'int', 'Index, for single and priority.')}
       ${field('gpu.gpu_only', 'Keep every layer on the card', 'bool')}
       ${field('gpu.vram_only', 'Refuse a model that will not fit in video memory', 'bool',
               'Rather than spilling into system memory, which is far slower.')}
-      ${field('keep_delegator_loaded', 'Keep the delegator in memory', 'bool',
-              'Faster routing; costs its weights the whole time.')}
       <button class="action" id="save-fields">Save</button>
     </div>`;
   }
 
   if (state.settingsPage === 'tools') {
+    // The search settings are only drawn when search is on. They are six
+    // controls that mean nothing while it is off, and a provider and an API
+    // key sitting there greyed out is a page that looks broken.
+    const searching = !!c.tools?.web_search;
+    const provider = c.tools?.search_provider || 'wikipedia';
     return `<div class="settings-page">
       <h1>Tools</h1><p class="lede">What experts can reach beyond the machine.</p>
-      ${field('tools.web_search', 'Let experts search the web', 'bool',
-              'Off by default. It is one of two things that reach the network.')}
-      ${field('tools.search_provider', 'Provider', 'choice', '', ['wikipedia', 'searxng', 'brave'])}
-      ${field('tools.search_results', 'Results to hand over', 'int')}
-      ${field('tools.search_timeout', 'Give up after', 'int', 'Seconds.')}
+
+      ${field('tools.workshop_timeout', 'Kill a command after', 'slider',
+              `Seconds. A build is slower than a grep, and a command that has hung
+               is not going to finish.`, { min: 5, max: 900, step: 5 })}
       ${field('tools.auto_edits', 'Apply edits without asking', 'bool',
-              'Off shows you each change before it lands, old beside new.')}
-      ${field('tools.workshop_timeout', 'Kill a command after', 'int', 'Seconds.')}
+              `Off shows you each change before it lands, old beside new. A cook
+               ignores this and always applies.`)}
+
+      <h2 style="margin-top:1.8rem">THE WEB</h2>
+      ${field('tools.web_search', 'Let experts search the web', 'bool',
+              'Off by default. It is one of two things here that reach the network.')}
+      ${searching ? `
+        ${field('tools.search_provider', 'Provider', 'choice',
+                'Wikipedia needs nothing. searxng is your own instance. Brave needs a key.',
+                ['wikipedia', 'searxng', 'brave'])}
+        ${provider === 'searxng' ? field('tools.search_endpoint', 'Endpoint', 'string',
+                'The address of your searxng instance, such as http://localhost:8888.') : ''}
+        ${provider === 'brave' ? field('tools.search_api_key', 'API key', 'string',
+                'Written to the config file in plain text, which is worth knowing.') : ''}
+        ${field('tools.search_results', 'Results to hand over', 'slider', '',
+                { min: 1, max: 20, step: 1 })}
+        ${field('tools.search_timeout', 'Give up after', 'slider', 'Seconds.',
+                { min: 1, max: 60, step: 1 })}
+        ${field('tools.search_rounds', 'Searches per prompt', 'slider',
+                'How many times one prompt may search before it has to answer.',
+                { min: 1, max: 10, step: 1 })}
+      ` : ''}
       <button class="action" id="save-fields">Save</button>
     </div>`;
   }
@@ -1141,8 +1541,9 @@ function settingsPage() {
         <div class="hint" style="color:var(--faint)">A few gigabytes, once. Pick what this
           machine can actually train on.</div>
         <div class="row" style="margin-top:.8rem">${(state.flavors || []).map((f) => `
-          <button class="action" data-flavor="${escape(f.id)}">${escape(f.id.toUpperCase())}${
-            f.suggested ? ' ·' : ''}</button>`).join('')}</div>
+          <button class="action${f.suggested ? ' toggle' : ''}" data-flavor="${escape(f.id)}"
+                  ${f.suggested ? 'aria-pressed="true" title="What this machine is"' : ''}>${
+            escape(f.id.toUpperCase())}</button>`).join('')}</div>
         ${(state.flavors || []).map((f) => `<div class="hint" style="color:var(--faint)">
           <strong>${escape(f.id)}</strong> — ${escape(f.note)} · ${
             (f.download / 1073741824).toFixed(1)} GB down, ${
@@ -1161,6 +1562,19 @@ function settingsPage() {
       <div class="hint" style="color:var(--faint)">Everything happens on this machine.</div>
     </div>
   </div>`;
+}
+
+/// The priority list, filled out to cover every card there is.
+///
+/// A saved order from a machine that has since gained a card would otherwise
+/// leave the new one out of the list entirely, with no way to put it in.
+function gpuOrder() {
+  const count = (state.devices || []).length;
+  const saved = (state.config?.gpu?.priority || []).filter((i) => i >= 0 && i < count);
+  const order = [];
+  for (const index of saved) if (!order.includes(index)) order.push(index);
+  for (let i = 0; i < count; i += 1) if (!order.includes(i)) order.push(i);
+  return order;
 }
 
 function seatModel(id) {
@@ -1203,6 +1617,39 @@ function render() {
 /// Re-attached after each render, because the markup is replaced wholesale.
 /// A page this size does not need the machinery that would avoid that.
 function wire() {
+  // --- the side menu ------------------------------------------------------
+  el('manage-experts')?.addEventListener('click', () => guard(async () => {
+    state.settingsPage = 'experts';
+    enter('settings');
+  }));
+  el('eject')?.addEventListener('click', () => guard(() => call('release', { all: true })));
+
+  const splitter = el('splitter');
+  if (splitter) {
+    splitter.addEventListener('pointerdown', (down) => {
+      down.preventDefault();
+      splitter.setPointerCapture(down.pointerId);
+      splitter.classList.add('dragging');
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const startX = down.clientX;
+      const startW = sidebarWidth();
+      // Rendered on each move, which rebuilds the element being dragged --
+      // hence the pointer capture: the events keep arriving at the splitter
+      // that started the drag even though the one on screen is a new one.
+      const move = (at) => { setSidebar(startW + (at.clientX - startX) / rem); };
+      const up = () => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        // A deliberate overshoot closes it, so trimming the width cannot slam
+        // it shut on one pixel of movement.
+        if (state.sidebar < SIDEBAR_SHUT) setSidebar(0);
+        else if (state.sidebar < SIDEBAR_MIN) setSidebar(SIDEBAR_MIN);
+      };
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    });
+  }
+
   const composer = el('composer');
   if (composer) {
     const prompt = el('prompt');
@@ -1217,6 +1664,27 @@ function wire() {
     });
     if (state.view === 'chat') prompt.focus();
   }
+
+  // Copy, on every code block. The text is read back out of the DOM rather
+  // than kept beside it: what is on screen is what gets copied, including
+  // the block in a pending edit.
+  document.querySelectorAll('[data-copy]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const text = b.closest('.code')?.querySelector('.code-text')?.innerText ?? '';
+      navigator.clipboard?.writeText(text).then(() => {
+        b.classList.add('done');
+        setTimeout(() => b.classList.remove('done'), 900);
+      }).catch(() => {});
+    }));
+
+  document.querySelectorAll('[data-stop]').forEach((b) =>
+    b.addEventListener('click', () => guard(() => call('cancel'))));
+  document.querySelectorAll('[data-retry]').forEach((b) =>
+    b.addEventListener('click', () =>
+      guard(() => call('turn.retry', { index: Number(b.dataset.retry) }))));
+  document.querySelectorAll('[data-drop]').forEach((b) =>
+    b.addEventListener('click', () =>
+      guard(() => call('turn.delete', { index: Number(b.dataset.drop) }))));
 
   el('auto-edits')?.addEventListener('click', () => guard(async () => {
     const now = !state.config?.tools?.auto_edits;
@@ -1242,14 +1710,12 @@ function wire() {
       const goal = el('cook-goal').value.trim();
       if (!goal) return;
       state.cookGoal = goal;
-      state.cookMinutes = el('cook-minutes').value;
-      const minutes = parseInt(state.cookMinutes, 10);
-      guard(() => call('cook.start', {
-        goal, seconds: Number.isFinite(minutes) ? minutes * 60 : 0,
-      }));
+      guard(() => call('cook.start', { goal }));
     });
   }
+  // Stop and finish makes the wrap-up pass; Stop now is the cancel.
   el('cook-stop')?.addEventListener('click', () => guard(() => call('cook.stop')));
+  el('cook-kill')?.addEventListener('click', () => guard(() => call('cancel')));
 
   // history
   el('history-back')?.addEventListener('click', () => { state.cookDetail = null; render(); });
@@ -1347,6 +1813,19 @@ function wire() {
       await Promise.all([call('runtime.progress'), call('runtimes')]);
   }));
 
+  document.querySelectorAll('[data-runtime]').forEach((b) =>
+    b.addEventListener('click', () => {
+      state.openRuntime = state.openRuntime === b.dataset.runtime ? null : b.dataset.runtime;
+      render();
+    }));
+  document.querySelectorAll('[data-remove]').forEach((b) =>
+    b.addEventListener('click', () => guard(async () => {
+      await call('runtime.remove', { backend: b.dataset.remove });
+      state.openRuntime = null;
+      state.runtimes = await call('runtimes');
+      render();
+    })));
+
   document.querySelectorAll('[data-flavor]').forEach((b) =>
     b.addEventListener('click', () => guard(async () => {
       await call('trainer.install', { flavor: b.dataset.flavor });
@@ -1369,23 +1848,82 @@ function wire() {
     }));
 
   el('hub-go')?.addEventListener('click', () => guard(async () => {
-    state.hub.query = el('hub-query').value.trim();
-    if (!state.hub.query) return;
-    await call('hub.search', { query: state.hub.query, kind: state.hub.kind });
-    state.hub.searching = true;
-    pollHub();
+    const query = el('hub-query').value.trim();
+    if (query) await startHubSearch('hub', query);
   }));
   for (const card of document.querySelectorAll('[data-hub]')) {
+    card.addEventListener('click', () => { el('r-base').value = card.dataset.hub; });
+  }
+
+  el('data-go')?.addEventListener('click', () => guard(async () => {
+    const query = el('data-query').value.trim();
+    if (query) await startHubSearch('dataHub', query);
+  }));
+  for (const card of document.querySelectorAll('[data-dataset]')) {
     card.addEventListener('click', () => {
-      el('r-base').value = card.dataset.hub;
+      // Added to what is there rather than replacing it: the box is a list.
+      const box = el('r-data');
+      const have = box.value.split(',').map((x) => x.trim()).filter(Boolean);
+      if (!have.includes(card.dataset.dataset)) have.push(card.dataset.dataset);
+      box.value = have.join(', ');
     });
   }
+
+  // Reordering writes straight to state.config, like the two controls below:
+  // the list is drawn from it, so it has to change for the move to show, and
+  // Save is still what writes it to disk.
+  const moveGpu = (from, to) => {
+    const order = gpuOrder();
+    if (to < 0 || to >= order.length) return;
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    state.config = mergeDeep({ ...state.config, ...patchFromFields() },
+                             { gpu: { priority: order } });
+    render();
+  };
+  document.querySelectorAll('[data-gpu-up]').forEach((b) =>
+    b.addEventListener('click', () => moveGpu(Number(b.dataset.gpuUp), Number(b.dataset.gpuUp) - 1)));
+  document.querySelectorAll('[data-gpu-down]').forEach((b) =>
+    b.addEventListener('click', () => moveGpu(Number(b.dataset.gpuDown), Number(b.dataset.gpuDown) + 1)));
+
+  // Two controls decide what else is on the page: whether search is on, and
+  // which provider it uses. They redraw it as they are changed rather than at
+  // Save, so the settings they reveal are there to be filled in -- and the
+  // change is kept in state.config, unsaved, so Save is still what writes.
+  for (const path of ['tools.web_search', 'tools.search_provider', 'gpu.mode']) {
+    const node = el('f-' + path.replace(/\./g, '-'));
+    node?.addEventListener('change', () => {
+      const [group, key] = path.split('.');
+      const edited = { ...state.config, [group]: { ...state.config[group] } };
+      edited[group][key] = node.type === 'checkbox' ? node.checked : node.value;
+      // Everything else being typed on the page goes in too, or redrawing
+      // would throw it away.
+      state.config = mergeDeep(edited, patchFromFields());
+      render();
+    });
+  }
+
+  // Each half writes to the other. The box is what patchFromFields reads, so
+  // the slider's job is to keep it current.
+  document.querySelectorAll('[data-slider]').forEach((range) => {
+    const box = document.querySelector(`[data-slider-box="${range.dataset.slider}"]`);
+    if (!box) return;
+    range.addEventListener('input', () => { box.value = range.value; });
+    box.addEventListener('input', () => {
+      if (box.value !== '' && Number.isFinite(Number(box.value))) range.value = box.value;
+    });
+  });
 
   for (const button of document.querySelectorAll('.settings-nav button')) {
     button.addEventListener('click', () => { state.settingsPage = button.dataset.page; render(); });
   }
   el('save-fields')?.addEventListener('click', () => guard(async () => {
-    const result = await call('config.set', patchFromFields());
+    const patch = patchFromFields();
+    // The card order is a list rather than a control, so it is not something
+    // patchFromFields can see. It is carried from where the buttons put it.
+    if (state.settingsPage === 'hardware') {
+      patch.gpu = { ...patch.gpu, priority: gpuOrder() };
+    }
+    const result = await call('config.set', patch);
     if (result.warnings && result.warnings.length) {
       state.error = result.warnings.join('; ');
     }
@@ -1393,19 +1931,42 @@ function wire() {
   }));
   el('save-general')?.addEventListener('click', () => guard(async () => {
     await call('config.set', {
+      ...patchFromFields(),
       models_dir: el('models-dir').value,
       router_model: el('router-model').value,
       reasoning_effort: el('reasoning').value,
     });
     await loadSettings();
   }));
+
+  // The folder picker, pointed at the models directory rather than at the
+  // project. Same dialog, because it is the same question.
+  el('browse-models')?.addEventListener('click', () => guard(async () => {
+    pickerFor = 'models';
+    await browse(el('models-dir').value || '');
+    el('picker').showModal();
+  }));
   el('save-experts')?.addEventListener('click', () => guard(async () => {
     const experts = {};
     for (const select of document.querySelectorAll('[data-seat]')) {
       experts[select.dataset.seat] = select.value;
     }
-    await call('config.set', { experts });
+    await call('config.set', { ...patchFromFields(), experts });
     await loadSettings();
+  }));
+
+  // A new expert is a fine-tune, so this is the Create wizard rather than a
+  // row added here: a seat with no model is not an expert.
+  el('new-expert')?.addEventListener('click', () => guard(async () => {
+    state.openRecipe = null;
+    state.editing = { method: 'qlora', quantization: 'Q4_K_M', epochs: 2, context: 512 };
+    enter('create');
+  }));
+
+  // `models` reads the directory on every call, so this is a refetch.
+  el('rescan-models')?.addEventListener('click', () => guard(async () => {
+    state.models = await call('models');
+    render();
   }));
 }
 
@@ -1425,44 +1986,84 @@ async function loadSettings() {
                        call('runtime.progress')]);
 }
 
-/// What a view needs before it can draw. Fetched on the way in rather than
-/// kept up to date in the background: none of it changes without this page
-/// having asked for the change.
-async function enter(view) {
+/// Switch to a view, then fill it in.
+///
+/// The draw comes first and the fetches follow. They used to be awaited
+/// before the view was drawn, on the thread that draws, so opening Settings
+/// froze the window for as long as the slowest of seven calls -- and three of
+/// them touch the machine: `devices` and `runtimes` scan it and `trainer`
+/// shells out to Python. The views already handle not having their data yet;
+/// they say "Reading...".
+///
+/// Each answer re-renders on arrival rather than waiting for the rest, and a
+/// view that has been left in the meantime does not redraw.
+function enter(view) {
   state.view = view;
   state.error = '';
-  // state.config arrives at startup, so the test is on a page that needs the
-  // rest -- models, runtimes, devices -- rather than on the config alone.
-  if (view === 'settings' && !state.runtimes.length) await loadSettings();
+  render();
+
+  const fill = (work) => work().then(render).catch((error) => {
+    // A view left while its data was in flight is not an error worth showing.
+    if (state.view === view) { state.error = error.message; render(); }
+  });
+
+  if (view === 'settings' && !state.runtimes.length) {
+    // Separately rather than in one Promise.all: the config and the models
+    // are what the first page needs, and they should not wait behind a
+    // Python interpreter starting up to report the trainer's version.
+    fill(async () => { state.config  = await call('config'); });
+    fill(async () => { state.models  = await call('models'); });
+    fill(async () => { state.runtimes = await call('runtimes'); });
+    fill(async () => { state.devices  = await call('devices'); });
+    fill(async () => { state.trainer  = await call('trainer'); });
+    fill(async () => { state.flavors  = await call('trainer.flavors'); });
+    fill(async () => { state.build    = await call('runtime.progress'); });
+  }
   if (view === 'history') {
     state.cookDetail = null;
-    state.history = state.project.open ? await call('history') : null;
+    state.history = null;
+    if (state.project.open) fill(async () => { state.history = await call('history'); });
   }
   if (view === 'create') {
-    state.recipes = await call('lab.recipes');
-    state.trainer = await call('trainer');
-    state.run     = await call('lab.run');
+    fill(async () => { state.recipes = await call('lab.recipes'); });
+    fill(async () => { state.trainer = await call('trainer'); });
+    fill(async () => { state.run     = await call('lab.run'); });
   }
 }
 
 for (const button of document.querySelectorAll('nav button')) {
-  button.addEventListener('click', () => guard(() => enter(button.dataset.view)));
+  button.addEventListener('click', () => enter(button.dataset.view));
 }
 
 /// The hub answers in a second or two on its own thread, so the page asks
 /// again until it has. Stops asking the moment it does -- a timer left running
 /// would redraw the form under whatever is being typed into it.
-async function pollHub() {
+///
+/// `slot` is which search is being filled, models or datasets. There is one
+/// search in flight at a time because the surface holds one, which is right:
+/// they are two boxes on a form and nobody fills both at once.
+async function pollHub(slot) {
   const result = await call('hub.results');
-  state.hub.searching = result.searching;
+  state[slot].searching = result.searching;
   if (!result.searching) {
-    state.hub.items = result.items || [];
+    state[slot].items = result.items || [];
     if (result.error) state.error = result.error;
     render();
     return;
   }
   render();
-  setTimeout(() => pollHub().catch(() => {}), 400);
+  setTimeout(() => pollHub(slot).catch(() => {}), 400);
+}
+
+/// Start one. Clears the other, so results from a model search are not left
+/// sitting under the dataset box looking like dataset results.
+async function startHubSearch(slot, query) {
+  const other = slot === 'hub' ? 'dataHub' : 'hub';
+  state[other].items = [];
+  state[slot].query = query;
+  await call('hub.search', { query, kind: state[slot].kind });
+  state[slot].searching = true;
+  pollHub(slot);
 }
 
 /// A training run reports through a child process rather than the engine, so
@@ -1562,6 +2163,11 @@ async function closeTest() {
 
 let browsing = '';
 
+/// Which question the folder picker is answering: the project, or the models
+/// directory. One dialog rather than two, because it is the same question
+/// with a different destination.
+let pickerFor = 'project';
+
 async function browse(path) {
   const listing = await call('browse', path ? { path } : {});
   browsing = listing.path;
@@ -1619,7 +2225,14 @@ el('test-edit').addEventListener('click', () => guard(async () => {
   render();
 }));
 
+el('fold').addEventListener('click', () => {
+  // Remembers how wide it was, so folding and unfolding is not also a reset.
+  if (sidebarOpen()) { state.lastSidebar = state.sidebar; setSidebar(0); }
+  else { setSidebar(state.lastSidebar || 15); }
+});
+
 el('project').addEventListener('click', () => guard(async () => {
+  pickerFor = 'project';
   await browse(state.project.open ? state.project.root : '');
   el('picker').showModal();
 }));
@@ -1627,10 +2240,23 @@ el('pick-up').addEventListener('click', () => guard(async () => {
   const listing = await call('browse', { path: browsing });
   if (listing.parent) await browse(listing.parent);
 }));
-el('pick-cancel').addEventListener('click', () => el('picker').close());
-el('pick').addEventListener('click', () => guard(async () => {
-  await call('project.open', { path: browsing });
+el('pick-cancel').addEventListener('click', () => {
+  pickerFor = 'project';
   el('picker').close();
+});
+el('pick').addEventListener('click', () => guard(async () => {
+  el('picker').close();
+  // The same dialog answers two questions, so it says which one it was asked.
+  if (pickerFor === 'models') {
+    pickerFor = 'project';
+    // Into state, not into the input. guard() renders when this returns and
+    // the page is drawn from state.config, so a value written straight to
+    // the box was wiped by the redraw that followed -- which looked exactly
+    // like the Browse button doing nothing.
+    state.config = mergeDeep(state.config || {}, { models_dir: browsing });
+    return;
+  }
+  await call('project.open', { path: browsing });
   await refreshProject();
 }));
 

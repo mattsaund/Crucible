@@ -6,6 +6,61 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## Unreleased
+
+**The interface reaches parity with the window it replaced.** The webview
+shipped in 0.7.0 with four things missing and two glitches; this is them.
+
+- **The side menu folds and resizes.** A button in the top bar, and the edge
+  is a handle. Closed is a width rather than a mode, so the button and the
+  drag do the same thing, and below a threshold it becomes a rail of dots
+  rather than nothing. **Eject** and **Manage experts** are back on it.
+- **A turn can be stopped, asked again, or deleted**, from controls that
+  appear when you hover it. While something is running the only offer is
+  Stop, and only on the turn that is running.
+- **The token tally is always on screen** and belongs to the composer rather
+  than sitting below it. It used to appear only after the first reply, and
+  the gap it appeared in showed the page's background through it.
+- **A cook runs until it is done or until you stop it.** The minutes box is
+  gone -- it asked you to commit to a number before you knew what the work
+  was. **Stop and finish** makes the wrap-up pass that leaves the project
+  working; **Stop now** does not.
+- **The Create wizard asks in the order you answer in:** search Huggingface,
+  then "or from this machine", for the base model and the data both. The data
+  box has its own search now.
+- **Settings** is a gear again, and has the controls it was missing: Browse
+  for the models directory, keep-the-delegator-loaded, a confidence floor;
+  New expert, Rescan models and a default expert; sliders beside the number
+  boxes for temperature, top P, top K, min P and repeat penalty, and the
+  context-truncation choice; the order the GPUs are filled in; runtimes that
+  open to show what they were built from, and can be deleted; a command
+  timeout slider, and a web-search section that reveals its settings when it
+  is switched on.
+
+**The chat reads like a transcript again.** What you asked sits in a card
+with the flame down its edge rather than as a line of body text under the
+word "you". Above each answer is who gave it and how the delegator got there
+-- `Mathematics · 67% · router model · swapped in 100.4s` -- and under it what
+it cost. A fenced block has a header saying the language and how many lines,
+a copy button, and a numbered gutter beside the code. Inline code is a name
+rather than more prose. Turns are separated by a rule.
+
+**A file an expert wants to write is shown as the file.** The same block the
+reply's code is drawn in, tinted green for a new file, with **Allow** and
+**Deny** under it. A change to an existing file shows the lines that move
+rather than the whole thing, because the rest of the file is not what is
+being decided.
+
+**Fixed:** opening **Create** or **Settings** froze the window. Both awaited
+everything the view needed before drawing it, on the thread that draws, and
+three of those calls touch the machine. The view is drawn first now and each
+answer arrives into it. **Browse** on the models directory appeared to do
+nothing: it wrote the chosen path to the input, and the redraw that followed
+rebuilt the page from the configuration and wiped it. Deleting a turn changed
+the transcript without waking the page, so it stayed on screen. "Keep the delegator in memory" on the Hardware page was
+reading a setting that does not exist at that path and never did anything; it
+is on General now, where the setting actually lives.
+
 ## 0.7.0 — 2026-10-04
 
 **The window is the platform's own webview.** Dear ImGui, GLFW and OpenGL are

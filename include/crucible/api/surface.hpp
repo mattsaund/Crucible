@@ -92,6 +92,16 @@ struct Deps {
     /// session's job rather than this one's.
     std::function<std::string(std::string)> open_session;
 
+    /// Ask a turn again, or take it off the transcript.
+    ///
+    /// Both rewrite what the expert can see as well as what is on screen --
+    /// an expert left with a transcript it has no memory of answers the next
+    /// question as though the conversation had not happened -- and that is
+    /// the session's job rather than this one's. Both refuse while the engine
+    /// is busy.
+    std::function<void(std::size_t)> retry_turn;
+    std::function<void(std::size_t)> delete_turn;
+
     /// Trying a fine-tune before keeping it.
     ///
     /// `test_begin` seats the trained file so it can be asked something and

@@ -63,6 +63,17 @@ json usage_json(const TokenUsage& usage) {
     };
 }
 
+/// Where a routing decision came from, as the transcript says it.
+std::string_view route_source_word(RouteSource source) {
+    switch (source) {
+        case RouteSource::Model:    return "router model";
+        case RouteSource::Keyword:  return "keywords";
+        case RouteSource::Fallback: return "fallback";
+        case RouteSource::Forced:   return "pinned";
+    }
+    return "fallback";
+}
+
 json turn_json(const Turn& turn) {
     json out{
         {"prompt",            turn.prompt},
@@ -71,6 +82,9 @@ json turn_json(const Turn& turn) {
         {"canceled",          turn.canceled},
         {"failed",            turn.failed},
         {"tokens_per_second", turn.tokens_per_second},
+        {"prompt_tokens",     turn.prompt_tokens},
+        {"output_tokens",     turn.output_tokens},
+        {"load_ms",           turn.load_ms},
     };
     // Reasoning is sent but kept apart from the reply, for the same reason the
     // window draws it apart: it is not the answer, and an interface that
@@ -79,9 +93,13 @@ json turn_json(const Turn& turn) {
         out["reasoning"] = turn.reasoning;
     }
     if (turn.route) {
+        // How the decision was reached, not just what it was. "the delegator
+        // chose this, 100%" and "nothing chose it, this is the fallback" are
+        // different claims and the screen should not make them look alike.
         out["route"] = json{
             {"expert",     turn.route->expert},
             {"confidence", turn.route->confidence},
+            {"source",     route_source_word(turn.route->source)},
         };
     }
     if (!turn.actions.empty()) {
@@ -388,10 +406,12 @@ std::vector<std::string> Surface::methods() {
         "ping", "methods", "snapshot",
         "submit", "cancel", "release",
         "cook.start", "cook.stop", "cook.answer",
+        "turn.retry", "turn.delete",
         "edit.approve",
         "config", "config.set",
         "models", "runtimes", "devices",
         "runtime.build", "runtime.cancel", "runtime.dismiss", "runtime.progress",
+        "runtime.remove",
         "project", "project.open", "projects", "browse", "trust.answer",
         "history", "history.open",
         "lab.recipes", "lab.save", "lab.delete", "lab.train", "lab.attach", "lab.run",
@@ -460,6 +480,22 @@ std::string Surface::handle(std::string_view request) {
             return fail(id, "a runtime is already being built").dump();
         }
         return ok(id, json{{"started", true}}).dump();
+    }
+
+    // Deleting one. The modules are files in a directory Crucible owns, and
+    // a runtime that is wrong -- built against another llama.cpp, or for a
+    // card that has since gone -- is otherwise only removable by hand.
+    if (method == "runtime.remove") {
+        const std::optional<BackendKind> kind =
+            backend_from_id(params.value("backend", std::string{}));
+        if (!kind) {
+            return fail(id, "no such backend").dump();
+        }
+        std::string error;
+        if (!RuntimeRegistry::remove(*kind, error)) {
+            return fail(id, error.empty() ? "could not remove it" : error).dump();
+        }
+        return ok(id, json{{"removed", true}}).dump();
     }
 
     if (method == "runtime.cancel") {
@@ -693,6 +729,9 @@ std::string Surface::handle(std::string_view request) {
                 {"bytes",     status.bytes},
                 {"stale",     status.stale},
                 {"source",    status.source},
+                {"llama_tag", status.llama_tag},
+                {"built_at",  status.built_at},
+                {"needs_tag", std::string(RuntimeStatus::required_llama_tag())},
             });
         }
         return ok(id, out).dump();
@@ -1019,6 +1058,34 @@ std::string Surface::handle(std::string_view request) {
         }
         return ok(id, json{{"searching", false}, {"error", search_->error},
                            {"items", std::move(items)}}).dump();
+    }
+
+    // --- a turn on the transcript ------------------------------------------
+    //
+    // Ask it again, or take it away. Both are refused while something is
+    // running, by the session rather than here: the buttons are not offered
+    // then either, and this is the belt to that brace.
+    if (method == "turn.retry" || method == "turn.delete") {
+        if (!params.contains("index") || !params["index"].is_number_unsigned()) {
+            return fail(id, "which turn?").dump();
+        }
+        const auto index = params["index"].get<std::size_t>();
+        if (index >= deps_.state->snapshot().turns.size()) {
+            return fail(id, "there is no turn there").dump();
+        }
+        const auto& act = method == "turn.retry" ? deps_.retry_turn : deps_.delete_turn;
+        if (!act) {
+            return fail(id, "this build cannot change the transcript").dump();
+        }
+        act(index);
+        // Deleting changes the transcript and nothing else: no token arrives
+        // to wake the screen afterwards, so the turn would stay visible until
+        // something unrelated happened. Retrying wakes on its own, and waking
+        // twice costs one redraw.
+        if (deps_.wake) {
+            deps_.wake();
+        }
+        return ok(id, json{{"index", index}}).dump();
     }
 
     if (method == "edit.approve") {

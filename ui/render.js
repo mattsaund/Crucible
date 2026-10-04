@@ -84,8 +84,7 @@ function markdown(src) {
       i += 1;
       while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
       i += 1;
-      const lang = fence[1] ? `<span class="lang">${escape(fence[1])}</span>` : '';
-      out.push(`<pre>${lang}<code>${highlight(body.join('\n'), fence[1])}</code></pre>`);
+      out.push(codeBlock(body.join('\n'), fence[1]));
       continue;
     }
 
@@ -154,6 +153,49 @@ function markdown(src) {
     if (body.length) { out.push(`<p>${inline(body.join('\n'))}</p>`); }
   }
   return out.join('');
+}
+
+/// A fenced block, drawn the way code is read: a header saying what language
+/// and how long, and a numbered gutter beside the lines.
+///
+/// The line numbers are the point. A model that says "line 12 is the problem"
+/// is talking about something you can find, and a block without them is a
+/// wall you have to count down by hand.
+/// What to call a language on a block's header.
+///
+/// A fence says ```py and a file name says .py; both mean Python, and the
+/// header is a label for a person rather than the key the lexer looks up.
+const LANG_NAMES = {
+  py: 'python', py3: 'python', python3: 'python',
+  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+  rs: 'rust', kt: 'kotlin', rb: 'ruby', sh: 'shell', bash: 'shell', zsh: 'shell',
+  yml: 'yaml', md: 'markdown', h: 'c', hpp: 'c++', cc: 'c++', cxx: 'c++',
+  cpp: 'c++', cs: 'c#', golang: 'go', psql: 'sql', mysql: 'sql', sqlite: 'sql',
+};
+
+function codeBlock(code, lang, extra) {
+  const lines = code.split('\n');
+  // A trailing newline is a fence artifact, not an empty last line.
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  const gutter = lines.map((_, i) => i + 1).join('\n');
+  return `<div class="code${extra ? ' ' + extra : ''}">
+      <div class="code-head">
+        <span class="lang">${escape(
+          LANG_NAMES[String(lang || '').toLowerCase()] || lang || 'text')}</span>
+        <span class="code-count">${lines.length} line${lines.length === 1 ? '' : 's'}</span>
+        <button class="copy" data-copy aria-label="Copy">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none"
+               stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+            <rect x="5.5" y="5.5" width="8" height="8" rx="1.3"/>
+            <path d="M10.5 5.5v-2a1.3 1.3 0 0 0-1.3-1.3H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h2"/>
+          </svg>
+        </button>
+      </div>
+      <div class="code-body">
+        <pre class="code-gutter" aria-hidden="true">${gutter}</pre>
+        <pre class="code-text"><code>${highlight(lines.join('\n'), lang)}</code></pre>
+      </div>
+    </div>`;
 }
 
 // --- coloring the code a model wrote ---------------------------------------
@@ -392,4 +434,51 @@ function diffLines(before, after) {
   while (i < n) { out.push({ kind: 'del', text: a[i] }); i += 1; }
   while (j < m) { out.push({ kind: 'add', text: b[j] }); j += 1; }
   return out;
+}
+
+/// A file an expert wants to write, before it is written.
+///
+/// Shown as the file would be: the same block the reply's code is drawn in,
+/// tinted by what is happening to it, and two buttons with no third option.
+/// A new file is shown whole; a change to one is shown as the lines that
+/// move, because the rest of the file is not what is being decided.
+function pendingEdit(edit) {
+  const isNew = !edit.before;
+  const lang = (edit.path.match(/\.([A-Za-z0-9+#]+)$/) || [, ''])[1];
+
+  let block;
+  if (!(edit.after || '').trim()) {
+    // An expert that asks to write nothing has got something wrong, and an
+    // empty code block saying "1 line" reads as the interface being broken
+    // rather than the request being odd.
+    block = `<div class="status" style="padding:.5rem 0">${
+      isNew ? 'an empty file' : 'this would empty the file'}</div>`;
+  } else if (isNew) {
+    block = codeBlock(edit.after || '', lang, 'code-add');
+  } else {
+    const rows = diffLines(edit.before || '', edit.after || '');
+    const note = rows.length === 1 && rows[0].kind === 'note';
+    block = note
+      ? `<div class="status" style="padding:.6rem 1rem">${escape(rows[0].text)}</div>`
+      : `<div class="code"><div class="code-head">
+          <span class="lang">${escape(lang || 'diff')}</span>
+          <span class="code-count">+${rows.filter((r) => r.kind === 'add').length}  −${
+            rows.filter((r) => r.kind === 'del').length}</span>
+        </div>
+        <div class="diff">${rows.map((row) => {
+          const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' ';
+          return `<div class="dl dl-${row.kind}"><span class="sign">${sign}</span>${
+            row.kind === 'same' ? escape(row.text) : highlight(row.text, lang) || '&nbsp;'}</div>`;
+        }).join('')}</div></div>`;
+  }
+
+  return `<div class="edit">
+      <div class="edit-head"><span class="${isNew ? 'new' : 'changed'}">${
+        isNew ? 'New file' : 'Edit'}</span> ${escape(edit.path)}</div>
+      ${block}
+      <div class="row edit-feet">
+        <button class="action yes" id="edit-yes">Allow</button>
+        <button class="action no" id="edit-no">Deny</button>
+      </div>
+    </div>`;
 }
