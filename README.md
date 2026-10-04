@@ -77,7 +77,7 @@ history stay where they are — an update replaces the program and nothing else.
 The check is one request for a public version number, it says nothing about the
 machine, and the checkbox beside it turns it off.
 
-Versions are `MAJOR.MINOR.PATCH`, tagged `v0.7.0` on GitHub, and the release a
+Versions are `MAJOR.MINOR.PATCH`, tagged `v0.7.1` on GitHub, and the release a
 tag builds carries the installers for all three platforms. What changed in each
 is in [CHANGELOG.md](CHANGELOG.md).
 

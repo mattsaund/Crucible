@@ -6,7 +6,7 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
-## Unreleased
+## 0.7.1 — 2026-10-04
 
 **The interface reaches parity with the window it replaced.** The webview
 shipped in 0.7.0 with four things missing and two glitches; this is them.

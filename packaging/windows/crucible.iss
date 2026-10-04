@@ -17,7 +17,7 @@
   #define StageDir "stage"
 #endif
 #ifndef Version
-  #define Version "0.7.0"
+  #define Version "0.7.1"
 #endif
 
 [Setup]
