@@ -29,11 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # GLFW and OpenGL: Crucible is a window, so these are not optional any
+      # WebKitGTK: Crucible is a window and draws it in the platform's own
       # more. macOS and Windows already have what it needs; Linux packages it.
       - name: Window headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libglfw3-dev libgl-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
 
       # No generator named, on purpose: that is Makefiles on Linux and macOS
       # and Visual Studio on Windows -- the same ones install.sh and the

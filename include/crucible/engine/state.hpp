@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // The one piece of memory the engine thread and the UI thread share.
 //
-// The engine never touches ImGui and the UI never touches llama.cpp. They meet
-// only here: the engine mutates this state under a lock and pokes the screen,
-// and the renderer takes a Snapshot under the same lock. Nothing else crosses.
+// The engine never touches the interface and the interface never touches
+// llama.cpp. They meet only here: the engine mutates this state under a lock
+// and pokes whatever is drawing, which takes a Snapshot under the same lock.
+// Nothing else crosses -- and because nothing does, the thing drawing can be
+// a webview on one machine and a Python process on another.
 #pragma once
 
 #include <memory>

@@ -72,5 +72,5 @@ int main(int argc, char** argv) {
 
     crucible::gui::App app(std::move(config), std::move(warnings),
                            options.skip_trust);
-    return options.web_ui ? app.run_web() : app.run();
+    return app.run_web();
 }

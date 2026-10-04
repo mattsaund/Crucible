@@ -3,11 +3,10 @@
 // The one door into Crucible.
 //
 // Everything an interface can ask the program to do goes through here, as JSON
-// in and JSON out. The window drives it, and so will the TypeScript interface
-// through the webview bridge, and so will the Python orchestrator through a
-// pipe. One surface rather than three, because three would drift: the day the
-// window can do something the others cannot is the day "Crucible" stops
-// meaning one thing.
+// in and JSON out. The page in the window drives it through the webview
+// bridge, and the Python orchestrator will drive it through a pipe. One
+// surface rather than two, because two would drift: the day the window can do
+// something the other cannot is the day "Crucible" stops meaning one thing.
 //
 // Strings rather than typed methods, and that is deliberate. A typed C++ API
 // would need an adapter per caller -- one marshalling to the webview, one to a
@@ -25,6 +24,9 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
+#include <mutex>
+#include <vector>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -32,6 +34,10 @@
 #include "crucible/config/config.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
+#include "crucible/lab/hub.hpp"
+#include "crucible/lab/pyenv.hpp"
+#include "crucible/lab/trainer.hpp"
+#include "crucible/runtime/builder.hpp"
 
 namespace crucible::api {
 
@@ -78,6 +84,46 @@ struct Deps {
     /// Answer it. True trusts the folder and opens it; false leaves both
     /// alone. Trust is granted once per directory and remembered.
     std::function<void(bool)> answer_trust;
+
+    /// Load a stored conversation back into the transcript. Returns a reason
+    /// it could not, or empty. The engine has to be told as well as the
+    /// screen -- an expert that cannot see what is already on it would answer
+    /// the next question with no idea what came before -- and that is the
+    /// session's job rather than this one's.
+    std::function<std::string(std::string)> open_session;
+
+    /// Trying a fine-tune before keeping it.
+    ///
+    /// `test_begin` seats the trained file so it can be asked something and
+    /// returns a reason it could not, or empty; `test_end` takes the seat
+    /// away; `keep` finishes the recipe and puts the model on the roster.
+    /// They are the session's because seating a model means reconfiguring
+    /// the engine, and what a configuration means is the session's to say.
+    std::function<std::string(std::string)> test_begin;
+    std::function<void()>                   test_end;
+    std::function<std::string(std::string)> keep;
+
+    /// Poke whatever is drawing, from any thread.
+    ///
+    /// The two installers below run on threads of their own and report
+    /// progress as they go. Without this the page would show the first line
+    /// of a ten-minute compile until something else happened to redraw it.
+    std::function<void()> wake;
+
+    /// The fine-tune in flight, for the Create view. A pointer like the
+    /// engine, because it is one long-lived thing the session owns and the
+    /// surface only reads.
+    lab::Trainer* trainer = nullptr;
+
+    /// The two long installs an interface can start and watch: compiling a
+    /// GPU runtime, and building the Python environment the lab trains in.
+    ///
+    /// Pointers for the same reason the trainer is one. Each is one
+    /// machine-wide thing -- two CUDA builds at once would write the same
+    /// files -- so each refuses to start a second while one is running, and
+    /// that refusal is theirs to make rather than the caller's to remember.
+    RuntimeBuilder*        runtime_builder = nullptr;
+    lab::pyenv::Installer* pyenv_installer = nullptr;
 };
 
 /// Turn one JSON request into one JSON reply. Never throws.
@@ -102,6 +148,19 @@ public:
 
 private:
     Deps deps_;
+
+    /// A hub search in flight.
+    ///
+    /// Huggingface takes a second or two to answer and the interface calls
+    /// this on the thread that draws, so the search runs on its own and the
+    /// page asks again. The same shape the window uses, for the same reason.
+    struct Search {
+        std::mutex                  mutex;
+        std::vector<lab::hub::Item> items;
+        std::string                 error;
+        bool                        done = false;
+    };
+    std::shared_ptr<Search> search_;
 };
 
 /// The state an interface draws, as JSON.

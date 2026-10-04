@@ -52,8 +52,6 @@ usage: crucible [options]
       --no-trust   skip the folder trust prompt for this run
   -y, --yes        with --uninstall, answer yes to everything
 
-      --ui window|web     which interface to open (default: window)
-
       --install-runtimes  install the compute backends this machine can use
       --runtime-status    say which backends are installed and active, and exit
       --install-trainer   install the Python environment fine-tuning needs
@@ -114,17 +112,6 @@ Options parse_arguments(int argc, char** argv) {
             std::cout << paths::config_file().string() << "\n";
             options.should_exit = true;
             return options;
-        }
-        if (argument == "--ui") {
-            const std::string which = i + 1 < argc ? argv[++i] : "";
-            if (which != "window" && which != "web") {
-                std::cerr << "crucible: --ui takes 'window' or 'web'\n";
-                options.should_exit = true;
-                options.exit_code   = 2;
-                return options;
-            }
-            options.web_ui = which == "web";
-            continue;
         }
         if (argument == "--install-runtimes") { options.install_runtimes = true; continue; }
         if (argument == "--runtime-status")   { options.runtime_status   = true; continue; }

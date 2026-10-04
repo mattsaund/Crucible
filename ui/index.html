@@ -49,10 +49,12 @@
 
   /* --- the bar across the top ------------------------------------------ */
   header {
-    display: flex; align-items: center; gap: 1rem;
+    display: flex; align-items: center; gap: .7rem;
     padding: 0 1rem; height: 46px;
     background: var(--panel); border-bottom: 1px solid var(--panel-edge);
   }
+  .flame { width: 20px; height: 20px; flex: none; }
+  .flame[src=""] { display: none; }
   .mark { color: var(--flame); letter-spacing: .22em; font-size: 12px; }
   .project {
     background: var(--raised); border: 1px solid var(--panel-edge);
@@ -144,8 +146,117 @@
     border-radius: 7px; padding: .9rem 1.1rem; margin-bottom: .7rem; max-width: 46rem;
   }
   .card .title { display: flex; align-items: baseline; gap: .6rem; }
+  /* A button that belongs to the card rather than to the row of text in it. */
+  .card .title .right { margin-left: auto; }
   .card .tag { color: var(--faint); font-size: 11px; }
+  /* A button that is on or off rather than one that does something. */
+  .action.toggle[aria-pressed="true"] {
+    background: var(--flame); border-color: var(--flame); color: var(--ink);
+  }
+  .action.toggle[aria-pressed="true"]:hover { background: var(--flame-lit); }
+
   .ok { color: var(--flame); } .bad { color: var(--error); } .meh { color: var(--faint); }
+
+  /* --- what a turn cost, and what it did on the way ---------------------- */
+  .meta { color: var(--faint); font-size: .85em; margin-top: .6rem; }
+  .tally {
+    color: var(--faint); font-size: .85em;
+    padding: .5rem 2.5rem 1rem; text-align: right;
+  }
+  details.work { margin: .5rem 0 .9rem; }
+  details.work > summary {
+    color: var(--faint); cursor: pointer; list-style: none;
+    font-size: .9em; padding: .15rem 0;
+  }
+  details.work > summary::before { content: '> '; }
+  details.work[open] > summary::before { content: 'v '; }
+  details.work > summary:hover { color: var(--dim); }
+  details.work[open] > summary { margin-bottom: .5rem; }
+  .act { color: var(--dim); font-size: .9em; margin: .3rem 0; }
+  .act pre { margin: .3rem 0 .6rem; }
+
+  /* --- a long install ----------------------------------------------------
+     Compiling a runtime or fetching a few gigabytes of PyTorch. Both say the
+     same things in the same place. */
+  .install {
+    border: 1px solid var(--panel-edge); border-radius: 7px;
+    background: var(--panel); padding: .9rem 1rem; margin: 0 0 1.2rem;
+    /* The same width as the cards it sits above, so the Stop button lands
+       over their right edge rather than somewhere off near the window's. */
+    max-width: 46rem;
+  }
+  .install .row { justify-content: space-between; align-items: center; }
+  .bar {
+    height: 4px; border-radius: 2px; background: var(--raised);
+    margin: .7rem 0 .4rem; overflow: hidden;
+  }
+  .bar-fill { height: 100%; background: var(--flame); transition: width .3s ease; }
+  .install-log {
+    max-height: 12rem; overflow: auto; margin: .7rem 0 0;
+    font-size: .85em; color: var(--dim); white-space: pre-wrap;
+  }
+
+  /* --- colored code ------------------------------------------------------
+     Low saturation on purpose: the point is to find the shape of a function
+     at a glance, and six bright colors fighting the flame in the top bar is
+     a worse read than no colors at all. */
+  .tok-com { color: #6E6E76; font-style: italic; }
+  .tok-str { color: #C9A227; }
+  .tok-key { color: #FF8700; }
+  .tok-typ { color: #7FA7C4; }
+  .tok-num { color: #B07FC4; }
+  .tok-var { color: #7EC699; }
+  .tok-add { color: #7EC699; }
+  .tok-del { color: #E5847B; }
+
+  /* --- a file an expert wants to change --------------------------------- */
+  .edit {
+    border: 1px solid var(--panel-edge); border-radius: 7px;
+    background: var(--panel); margin: 0 0 2rem; overflow: hidden;
+  }
+  .edit-head {
+    padding: .7rem 1rem; border-bottom: 1px solid var(--panel-edge);
+    color: var(--flame-lit);
+  }
+  .diff { max-height: 26rem; overflow: auto; padding: .5rem 0; }
+  .dl { white-space: pre; padding: 0 1rem; }
+  .sign { display: inline-block; width: 1.2rem; color: var(--faint); }
+  /* The same wash the window used: enough to find the changed lines at a
+     glance, not so much that the code underneath stops being readable. */
+  .dl-add { background: rgba(46, 107, 71, .23); }
+  .dl-del { background: rgba(122, 51, 44, .23); }
+  .dl-add .sign { color: #7EC699; }
+  .dl-del .sign { color: #E5847B; }
+
+  /* --- cook ------------------------------------------------------------- */
+  .goal { color: var(--text); font-size: 1.1em; }
+  .asking {
+    background: var(--raised); border-left: 2px solid var(--flame);
+    padding: .8rem 1rem; margin-bottom: 1.4rem; border-radius: 0 6px 6px 0;
+  }
+  .step { margin-bottom: 1rem; }
+  .step-head { display: flex; gap: .7rem; align-items: baseline; }
+  .kind {
+    flex: none; min-width: 4.5rem; color: var(--faint); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  /* The same colors the window gives a step: red for a failure, orange for a
+     write, flame for anything that ran, faint for the rest. */
+  .kind-write, .kind-edit   { color: var(--flame-lit); }
+  .kind-run                 { color: var(--flame); }
+  .kind-error, .kind-failed { color: var(--error); }
+  .step-detail {
+    margin: .4rem 0 0 5.2rem; padding: .6rem .8rem; overflow-x: auto;
+    background: var(--raised); border: 1px solid var(--panel-edge);
+    border-radius: 6px; color: #D4D7DD; max-height: 18rem;
+  }
+  .bar {
+    display: block; height: 6px; margin: .6rem 0;
+    background: var(--panel-edge); border-radius: 3px; overflow: hidden;
+  }
+  .bar span { display: block; height: 100%; background: var(--flame); }
+  .card.pick { cursor: pointer; }
+  .card.pick:hover { border-color: var(--faint); background: var(--hover); }
 
   /* --- the folder picker ------------------------------------------------ */
   dialog {
@@ -168,10 +279,26 @@
   }
   .listing button:hover { background: var(--hover); }
   dialog .feet { display: flex; gap: .6rem; padding: 0 1.2rem 1.2rem; }
+  /* The test window. Wider than the folder picker because the thing being
+     looked at is a conversation, and a candidate's answer wrapped into a
+     narrow column reads worse than the same answer in Chat. */
+  #tester { width: min(62rem, 92vw); }
+  #tester #test-talk { height: min(26rem, 50vh); overflow-y: auto; padding: .8rem 1rem; }
+  #tester #test-talk .turn { margin: 0 0 1.4rem; }
+  #tester #test-talk .turn:last-child { margin-bottom: 0; }
+  #tester .feet { align-items: center; }
+  #tester .feet .status { margin-left: auto; text-align: right; }
 
-  /* Markdown. The set matches util/markdown.hpp exactly -- the window and
-     this page are one program, and a reply that renders as a table in one and
-     as pipes in the other is two products. */
+  input.crumbs {
+    display: block; width: 100%; box-sizing: border-box;
+    background: transparent; border: 1px solid transparent; border-radius: 5px;
+    color: var(--dim); font: inherit; padding: .3rem .4rem; margin-bottom: .6rem;
+  }
+  input.crumbs:hover { border-color: var(--panel-edge); }
+  input.crumbs:focus { border-color: var(--flame); color: var(--text); outline: none; }
+
+  /* Markdown. The blocks render.js produces, styled: there is one parser
+     now and this is the only thing that draws what it returns. */
   .md { white-space: normal; }
   .md > :first-child { margin-top: 0; }
   .md > :last-child  { margin-bottom: 0; }
@@ -203,11 +330,15 @@
 </head>
 <body>
   <header>
+    <img class="flame" src="CRUCIBLE_MARK_SRC" alt="">
     <span class="mark">CRUCIBLE</span>
     <button class="project none" id="project">No Project</button>
     <span class="status" id="status"></span>
     <nav>
       <button data-view="chat" aria-current="true">Chat</button>
+      <button data-view="cook">Cook</button>
+      <button data-view="create">Create</button>
+      <button data-view="history">History</button>
       <button data-view="settings">Settings</button>
     </nav>
   </header>
@@ -226,11 +357,34 @@
     </div>
   </dialog>
 
+  <dialog id="tester">
+    <div class="head"><strong id="test-title">Test</strong>
+      <div class="status" id="test-file"></div></div>
+    <div class="body-pad">
+      <div class="status">The same engine as Chat, with this file seated for as
+        long as this window is open.</div>
+      <div class="listing" id="test-talk"></div>
+      <form class="row" id="test-form" style="margin-top:.8rem">
+        <input id="test-prompt" placeholder="Ask it something it should be good at"
+               autocomplete="off" style="flex:1">
+        <button class="action" id="test-send">Send</button>
+      </form>
+    </div>
+    <div class="feet">
+      <button class="action" id="test-keep">Finish</button>
+      <button class="action" id="test-edit">Edit</button>
+      <button class="action" id="test-close">Close</button>
+      <div class="status" style="align-self:center">Finishing puts it on the
+        roster. Closing changes nothing.</div>
+    </div>
+  </dialog>
+
   <dialog id="picker">
     <div class="head"><strong>Choose a folder</strong>
       <div class="status">Where experts read, write and keep history.</div></div>
     <div class="body-pad">
-      <div class="crumbs" id="crumbs"></div>
+      <input class="crumbs" id="crumbs" spellcheck="false"
+             aria-label="Folder path. Type or paste one and press Enter.">
       <div class="listing" id="listing"></div>
     </div>
     <div class="feet">
@@ -240,6 +394,29 @@
     </div>
   </dialog>
 
+<script>
+// A page in a webview has no console anybody is going to open, so an error
+// that stops the script would otherwise be a blank window and no clue. This
+// is its own script tag on purpose: a syntax error in the one below never
+// runs a handler declared inside it.
+// Rejections as well as errors: render() is called from an async function, so
+// a mistake in a view surfaces as a rejected promise and never reaches the
+// error handler. That is exactly how the first blank page here happened.
+window.addEventListener('unhandledrejection', (event) => {
+  document.body.innerHTML =
+    '<pre style="margin:2rem;color:#FF5F00;white-space:pre-wrap">'
+    + 'The interface failed.\n\n' + String(event.reason && event.reason.stack
+        ? event.reason.stack : event.reason) + '</pre>';
+});
+window.addEventListener('error', (event) => {
+  document.body.innerHTML =
+    '<pre style="margin:2rem;color:#FF5F00;white-space:pre-wrap">'
+    + 'The interface failed to start.\n\n'
+    + String(event.message) + '\n'
+    + String(event.filename || '') + ':' + String(event.lineno || '')
+    + '</pre>';
+});
+</script>
 <script>
 // --- the one door ---------------------------------------------------------
 //
@@ -253,9 +430,10 @@ async function call(method, params) {
 }
 
 const el = (id) => document.getElementById(id);
-const escape = (text) =>
-  String(text ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
+/// "1 turn", "2 turns". Said once because it is the same decision every
+/// time, and the places that inlined it did not all get it right.
+const count = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
 // Everything the page knows. The snapshot is pushed by the engine; the rest
 // is fetched when a view that needs it opens, because none of it changes
 // without this page having asked for the change.
@@ -264,120 +442,35 @@ const state = {
   snapshot: { experts: [], turns: [] },
   project: { open: false }, config: null, models: [], runtimes: [],
   draft: '', error: '',
+  cookGoal: '', cookMinutes: '30',
+  history: null, cookDetail: null,
+  recipes: null, openRecipe: null, editing: null, trainer: null, run: null,
+  hub: { items: [], searching: false, query: '', kind: 'model' },
+  build: null, flavors: null,
+  // The fine-tune being tried, and where its conversation starts in the
+  // transcript: everything before that belongs to the project.
+  testing: null, testFrom: 0,
 };
 
-// --- markdown -------------------------------------------------------------
-//
-// The block set is util/markdown.hpp's, deliberately: headings, bullets,
-// numbered items, quotes, fences with a language, rules, tables, and bold /
-// italic / code inline. Two parsers for one format is a thing that drifts, so
-// the rule for changing either is to change both.
-//
-// Everything is escaped before a single tag is inserted, and no tag ever
-// comes from the model: a reply is text that chose some emphasis, not a
-// document that gets to bring its own HTML.
-
-function inline(text) {
-  // Code spans first and separately, so backticked content is never looked at
-  // again -- `a ** b` is code containing asterisks, not emphasis.
-  return text.split(/(`[^`]+`)/).map((part) => {
-    if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
-      return `<code>${escape(part.slice(1, -1))}</code>`;
-    }
-    return escape(part)
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=$|[\s).,!?;:])/g, '$1<em>$2</em>');
+// escape(), markdown(), highlight() and diffLines() come from render.js,
+// which is injected above this script. They are the pure text-to-markup
+// half of the interface and are tested on their own; see tests/test_ui_js.cpp.
+function pendingEdit(edit) {
+  const rows = diffLines(edit.before || '', edit.after || '').map((line) => {
+    if (line.kind === 'note') return `<div class="status">${escape(line.text)}</div>`;
+    const sign = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' ';
+    return `<div class="dl dl-${line.kind}"><span class="sign">${sign}</span>${
+      escape(line.text) || '&nbsp;'}</div>`;
   }).join('');
-}
-
-function cells(line) {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-}
-
-function markdown(src) {
-  const lines = String(src ?? '').split('\n');
-  const out = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // A fence runs to its closing fence, or to the end -- a reply still
-    // streaming has an opening fence and no closing one for a while, and it
-    // should read as code the whole time rather than flickering.
-    const fence = line.match(/^\s*```(\w*)\s*$/);
-    if (fence) {
-      const body = [];
-      i += 1;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
-      i += 1;
-      const lang = fence[1] ? `<span class="lang">${escape(fence[1])}</span>` : '';
-      out.push(`<pre>${lang}<code>${escape(body.join('\n'))}</code></pre>`);
-      continue;
-    }
-
-    if (!line.trim()) { i += 1; continue; }
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
-
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) {
-      const level = heading[1].length;
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-      i += 1;
-      continue;
-    }
-
-    // A table is a row whose next line is the |---|---| delimiter. Without
-    // that line it is a paragraph with pipes in it, which is usually what a
-    // model meant.
-    if (line.includes('|') && i + 1 < lines.length &&
-        /^\s*\|?[\s:-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes('-')) {
-      const head = cells(line);
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
-        rows.push(cells(lines[i])); i += 1;
-      }
-      out.push(`<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead>`
-             + `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
-      continue;
-    }
-
-    if (/^\s*>\s?/.test(line)) {
-      const body = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-        body.push(lines[i].replace(/^\s*>\s?/, '')); i += 1;
-      }
-      out.push(`<blockquote>${markdown(body.join('\n'))}</blockquote>`);
-      continue;
-    }
-
-    // Consecutive items become one list, so three bullets are one block with
-    // one margin rather than three lists stacked.
-    const bullet = /^\s*[-*+]\s+(.*)$/;
-    const numbered = /^\s*\d+[.)]\s+(.*)$/;
-    if (bullet.test(line) || numbered.test(line)) {
-      const ordered = !bullet.test(line);
-      const pattern = ordered ? numbered : bullet;
-      const items = [];
-      while (i < lines.length && pattern.test(lines[i])) {
-        items.push(lines[i].match(pattern)[1]); i += 1;
-      }
-      const tag = ordered ? 'ol' : 'ul';
-      out.push(`<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
-      continue;
-    }
-
-    const body = [];
-    while (i < lines.length && lines[i].trim()
-           && !/^\s*```/.test(lines[i]) && !/^(#{1,6})\s/.test(lines[i])
-           && !/^\s*>/.test(lines[i]) && !bullet.test(lines[i]) && !numbered.test(lines[i])
-           && !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
-      body.push(lines[i]); i += 1;
-    }
-    if (body.length) { out.push(`<p>${inline(body.join('\n'))}</p>`); }
-  }
-  return out.join('');
+  return `<div class="edit">
+      <div class="edit-head">${escape(edit.path)}${
+        edit.before ? '' : '  <span class="status">(new file)</span>'}</div>
+      <div class="diff">${rows}</div>
+      <div class="row" style="padding:.8rem">
+        <button class="action" id="edit-yes">Apply it</button>
+        <button class="action" id="edit-no">Leave it</button>
+      </div>
+    </div>`;
 }
 
 // --- views ----------------------------------------------------------------
@@ -397,36 +490,450 @@ function roster() {
     </aside>`;
 }
 
+/// The name on the roster, not the id the router returns.
+///
+/// They differ by capitalization today and could differ by more tomorrow;
+/// the id is a key and the name is what somebody chose to call the seat.
+function expertName(id) {
+  const seat = (state.snapshot.experts || []).find((e) => e.id === id);
+  return seat ? seat.name : id;
+}
+
+/// What a turn cost, as the window used to say it.
+///
+/// Which expert answered and how sure the router was, then the throughput.
+/// It is a line of small gray text and it is the only place the routing is
+/// visible -- without it a delegating program looks like a chat box.
+function turnMeta(turn) {
+  const bits = [];
+  if (turn.route && turn.route.confidence > 0) {
+    bits.push(`${Math.round(turn.route.confidence * 100)}%`);
+  }
+  if (turn.tokens_per_second > 0) {
+    bits.push(`${turn.tokens_per_second.toFixed(1)} tok/s`);
+  }
+  if (turn.canceled) bits.push('stopped');
+  return bits.length ? `<div class="meta">${bits.map(escape).join('  ·  ')}</div>` : '';
+}
+
+/// What an expert did on the way to answering: the files it read, the
+/// commands it ran. Folded shut, because the answer is the point and the
+/// work behind it is there for when the answer is wrong.
+function turnActions(turn) {
+  if (!turn.actions || !turn.actions.length) return '';
+  const items = turn.actions.map((a) => `<div class="act">${escape(a.summary)}${
+    a.body ? `<pre>${a.language ? highlight(a.body, a.language) : escape(a.body)}</pre>` : ''
+  }</div>`).join('');
+  return `<details class="work"><summary>${count(turn.actions.length, 'step')}</summary>${items}</details>`;
+}
+
 function chatView() {
   const turns = state.snapshot.turns || [];
   const body = turns.length ? turns.map((turn) => {
-    const who = turn.route ? turn.route.expert : 'crucible';
+    const who = turn.route ? expertName(turn.route.expert) : 'crucible';
     let reply;
     if (turn.failed)                        reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
     else if (!turn.reply && turn.streaming) reply = '<div class="body thinking">thinking...</div>';
     else                                    reply = `<div class="body md">${markdown(turn.reply)}</div>`;
+    // Reasoning is kept apart from the answer rather than above it: it is not
+    // the answer, and running the two together makes a reasoning model look
+    // like it has started rambling.
+    const thought = turn.reasoning
+      ? `<details class="work"><summary>thought first</summary><div class="md">${
+          markdown(turn.reasoning)}</div></details>`
+      : '';
     return `<div class="turn">
         <div class="you">you</div><div class="body">${escape(turn.prompt)}</div>
-        <div class="who">${escape(who)}</div>${reply}
+        <div class="who">${escape(who)}</div>${thought}${turnActions(turn)}${reply}${turnMeta(turn)}
       </div>`;
   }).join('') : '<div class="empty">Ask it something.</div>';
 
+  const edit = state.snapshot.pending_edit;
+  const s = state.snapshot;
+  // Auto sits beside the box rather than in Settings because whether you are
+  // watching an expert edit your files is a decision that changes between one
+  // prompt and the next, and a switch you have to go and find is a switch
+  // that stays wherever it was last left.
+  const auto_ = state.config?.tools?.auto_edits;
+  // What the conversation has cost and how much room is left in it. The
+  // second number is the one that matters: a context that is nearly full is
+  // about to start forgetting the beginning, and nothing else says so.
+  const used = s.context_size > 0 ? Math.round((s.context_used / s.context_size) * 100) : 0;
+  const tally = (s.session_usage && s.session_usage.turns)
+    ? `<div class="tally">${s.session_usage.input_tokens} in  ·  ${
+        s.session_usage.output_tokens} out  ·  ${used}% context used</div>`
+    : '';
   return roster() + `<div class="pane">
-      <div id="transcript">${body}</div>
+      <div id="transcript">${body}${edit ? pendingEdit(edit) : ''}</div>
       <form class="composer" id="composer">
         <input id="prompt" placeholder="Ask it something" autocomplete="off"
                value="${escape(state.draft)}">
-        <button class="action" id="send" ${state.snapshot.busy ? 'disabled' : ''}>Send</button>
+        <button type="button" class="action toggle" id="auto-edits"
+                aria-pressed="${!!auto_}"
+                title="${auto_ ? 'Edits apply as they are made'
+                               : 'Every edit is shown before it lands'}">Auto</button>
+        <button class="action" id="send" ${s.busy ? 'disabled' : ''}>Send</button>
+      </form>
+      ${tally}
+    </div>`;
+}
+
+// --- cook -----------------------------------------------------------------
+//
+// A prompt is one question and one answer; a cook is a goal and however long
+// you give it. The view is the journal as it happens, because a cook that
+// only reported at the end would be an hour of wondering.
+
+function cookSteps(steps, total, from) {
+  if (!steps || !steps.length) return '<div class="empty">Nothing yet.</div>';
+  const skipped = from > 0
+    ? `<div class="status" style="margin-bottom:1rem">${from} earlier steps are in the journal</div>` : '';
+  return skipped + steps.map((step) => `
+    <div class="step">
+      <div class="step-head">
+        <span class="kind kind-${escape(step.kind)}">${escape(step.kind)}</span>
+        <span>${escape(step.summary)}</span>
+        <span class="tag">${escape(step.expert)}</span>
+      </div>
+      ${step.detail ? `<pre class="step-detail">${escape(step.detail)}</pre>` : ''}
+    </div>`).join('');
+}
+
+function cookView() {
+  const cook = state.snapshot.cook;
+  if (!state.project.open) {
+    return roster() + `<div class="pane"><div class="empty">
+      A cook works on a project. Open a folder first.</div></div>`;
+  }
+
+  if (!cook) {
+    return roster() + `<div class="pane">
+      <div id="transcript"><div class="empty">
+        Give it a goal and however long you want to give it.</div></div>
+      <form class="composer" id="cook-form">
+        <input id="cook-goal" placeholder="make the tests pass" autocomplete="off"
+               value="${escape(state.cookGoal)}">
+        <input id="cook-minutes" style="flex:0 0 7rem" placeholder="minutes"
+               value="${escape(state.cookMinutes)}">
+        <button class="action">Start</button>
+      </form>
+    </div>`;
+  }
+
+  const asking = cook.state === 'asking';
+  return roster() + `<div class="pane">
+      <div id="transcript">
+        <div class="goal">${escape(cook.goal)}</div>
+        <div class="status" style="margin-bottom:1.4rem">${escape(cook.state)}  ·  ${count(cook.total, 'step')}</div>
+        ${asking ? `<div class="asking"><strong>It is asking:</strong><br>${escape(cook.question)}</div>` : ''}
+        ${cook.outcome ? `<div class="md" style="margin-bottom:1.4rem">${markdown(cook.outcome)}</div>` : ''}
+        ${cookSteps(cook.steps, cook.total, cook.shown_from)}
+      </div>
+      <form class="composer" id="cook-form">
+        ${asking
+          ? `<input id="cook-answer" placeholder="answer it" autocomplete="off">
+             <button class="action">Answer</button>`
+          : `<button class="action" id="cook-stop" type="button">Stop and wrap up</button>
+             <span class="status" style="align-self:center">Stopping lets it leave the project working.</span>`}
       </form>
     </div>`;
 }
 
-const PAGES = [
-  ['general',  'General'],
-  ['experts',  'Experts'],
-  ['runtimes', 'Runtimes'],
-  ['about',    'About'],
+// --- history ---------------------------------------------------------------
+
+function historyView() {
+  if (!state.project.open) {
+    return roster() + `<div class="pane"><div class="empty">
+      History is per project. Open a folder first.</div></div>`;
+  }
+  if (state.cookDetail) {
+    const d = state.cookDetail;
+    return roster() + `<div class="pane"><div id="transcript">
+        <button class="action" id="history-back" style="margin-bottom:1.2rem">All history</button>
+        <div class="goal">${escape(d.goal)}</div>
+        <div class="status" style="margin-bottom:1.4rem">${escape(d.state)}</div>
+        ${d.outcome ? `<div class="md" style="margin-bottom:1.4rem">${markdown(d.outcome)}</div>` : ''}
+        ${cookSteps(d.steps, d.steps.length, 0)}
+      </div></div>`;
+  }
+  const h = state.history;
+  if (!h) return roster() + '<div class="pane"><div class="empty">Reading...</div></div>';
+
+  const cooks = h.cooks.length ? h.cooks.map((c) => `
+    <div class="card pick" data-cook="${escape(c.id)}">
+      <div class="title"><strong>${escape(c.goal)}</strong></div>
+      <div class="hint" style="color:var(--faint)">${escape(c.state)}  ·  ${
+        Math.round(c.seconds / 60)} min</div>
+    </div>`).join('') : '<p class="lede">No cooks yet.</p>';
+
+  const sessions = h.sessions.length ? h.sessions.map((c) => `
+    <div class="card pick" data-session="${escape(c.id)}">
+      <div class="title"><strong>${escape(c.title || '(no title)')}</strong></div>
+      <div class="hint" style="color:var(--faint)">${escape(c.when)}  ·  ${count(c.turns, 'turn')}</div>
+    </div>`).join('') : '<p class="lede">No conversations yet.</p>';
+
+  return roster() + `<div class="pane"><div class="settings-page" style="overflow-y:auto">
+      <h1>History</h1><p class="lede">Every cook and conversation this project has had.</p>
+      <h2 style="margin-top:1.4rem">COOKS</h2>${cooks}
+      <h2 style="margin-top:1.8rem">CONVERSATIONS</h2>${sessions}
+    </div></div>`;
+}
+
+// --- create ----------------------------------------------------------------
+//
+// The tab is a list of experts before it is a form: what has been made, what
+// each one is, and where it got to. The window groups them by stage and so
+// does this.
+
+const STAGE_ORDER = [
+  ['finished', 'FINISHED',      'Tested and kept. These are offered to every seat.'],
+  ['testing',  'READY TO TEST', 'Trained. Talk to one before you keep it.'],
+  ['training', 'TRAINING',      'Started. Open one for its progress.'],
+  ['draft',    'DRAFTS',        'Not started.'],
 ];
+
+function specLine(r) {
+  const parts = [];
+  if (r.base && r.base.id) parts.push(r.base.label || r.base.id);
+  if (r.parameters_b > 0)  parts.push(r.parameters_b.toFixed(1) + 'B');
+  parts.push(r.method === 'lora' ? 'LoRA' : 'QLoRA');
+  parts.push(r.quantization);
+  if (r.data && r.data.length) {
+    parts.push(count(r.data.length, 'data set'));
+  }
+  return parts.length ? parts.join('  \u00b7  ') : 'nothing chosen yet';
+}
+
+function createList() {
+  const recipes = state.recipes || [];
+  const groups = STAGE_ORDER.map(([stage, title, note]) => {
+    const rows = recipes.filter((r) => r.stage === stage);
+    if (!rows.length) return '';
+    return `<h2 style="margin-top:1.6rem">${title}</h2>
+      <p class="lede" style="margin-bottom:.8rem">${note}</p>` + rows.map((r) => `
+      <div class="card pick" data-recipe="${escape(r.id)}">
+        <div class="title"><strong>${escape(r.name || '(unnamed)')}</strong>
+          <span class="tag" style="color:var(--flame)">${escape(r.stage_text)}</span>
+          ${r.stage === 'testing' || r.stage === 'finished'
+            ? `<button class="action right" data-test="${escape(r.id)}">Test</button>` : ''}</div>
+        <div class="hint" style="color:${r.purpose ? 'var(--dim)' : 'var(--faint)'}">${
+          escape(r.purpose || 'no description')}</div>
+        <div class="hint" style="color:var(--faint)">${escape(specLine(r))}</div>
+      </div>`).join('');
+  }).join('');
+
+  return `<div class="settings-page" style="overflow-y:auto">
+      <div class="row" style="justify-content:space-between;align-items:baseline">
+        <h1>Experts</h1>
+        <button class="action" id="recipe-new">New expert</button>
+      </div>
+      <p class="lede">Fine-tunes made here. One subject each, and the delegator
+        picks between them.</p>
+      ${groups || '<p class="lede">Nothing made yet. New expert walks through it.</p>'}
+    </div>`;
+}
+
+/// One recipe: its specs, and whatever can be done about it from here.
+function createDetail(r) {
+  const run = state.run || {};
+  const mine = run.recipe === r.id && run.phase !== 'idle';
+  const spec = (label, value) => value
+    ? `<div class="row" style="margin:.2rem 0"><span class="hint"
+         style="flex:0 0 9rem;color:var(--faint)">${label}</span><span>${escape(value)}</span></div>`
+    : '';
+
+  let actions = '';
+  if (r.stage === 'draft') {
+    const blocked = (r.missing || []).length;
+    actions = `
+      ${blocked ? `<p class="lede bad">still needs ${r.missing.map(escape).join(', ')}</p>` : ''}
+      ${!state.trainer?.ready
+        ? '<p class="lede bad">The fine-tuner is not set up. Settings, Training.</p>' : ''}
+      <div class="row">
+        <button class="action" id="recipe-edit">Edit</button>
+        <button class="action" id="recipe-train" ${blocked || !state.trainer?.ready ? 'disabled' : ''}>Start training</button>
+      </div>`;
+  } else if (r.stage === 'training') {
+    actions = mine ? `
+      <div class="card">
+        <div class="title"><strong>${escape(run.label || 'running')}</strong></div>
+        ${run.total > 0 ? `<div class="bar"><span style="width:${
+          Math.round(run.percent * 100)}%"></span></div>` : ''}
+        ${run.device ? `<div class="hint" style="color:var(--faint)">on ${escape(run.device)}${
+          run.seconds_left > 0 ? '  ·  about ' + Math.round(run.seconds_left / 60) + ' min left' : ''
+        }</div>` : ''}
+        ${(run.notes || []).map((n) => `<div class="hint">${escape(n)}</div>`).join('')}
+        ${run.error ? `<div class="hint bad">${escape(run.error)}</div>` : ''}
+      </div>
+      <button class="action" id="recipe-stop">Stop the run</button>`
+      : `<p class="lede">Nothing is running. A run belongs to the window that
+           started it, so closing Crucible stops one.</p>
+         <div class="row">
+           <button class="action" id="recipe-train">Start again</button>
+           <button class="action" id="recipe-draft">Back to a draft</button>
+         </div>
+         <h2 style="margin-top:1.6rem">A FILE TRAINED SOMEWHERE ELSE</h2>
+         <p class="lede">Trained this recipe with unsloth, axolotl or mlx_lm?
+           Point at what came out.</p>
+         <div class="row"><input id="attach-path" placeholder="/path/to/expert.gguf">
+           <button class="action" id="recipe-attach">Attach</button></div>`;
+  } else {
+    actions = `<div class="row">
+        <button class="action" id="recipe-edit">Edit</button>
+        <button class="action" id="recipe-delete">Delete</button>
+      </div>`;
+  }
+
+  return `<div class="settings-page" style="overflow-y:auto">
+      <button class="action" id="recipe-back" style="margin-bottom:1.2rem">All experts</button>
+      <h1>${escape(r.name || '(unnamed)')}
+        <span class="tag" style="color:var(--flame)">${escape(r.stage_text)}</span></h1>
+      <p class="lede">${escape(r.purpose || 'no description')}</p>
+      <h2>SPECS</h2>
+      ${spec('Base model', r.base && r.base.id)}
+      ${spec('Size', r.parameters_b > 0 ? r.parameters_b.toFixed(1) + ' billion parameters' : '')}
+      ${spec('Method', r.method === 'lora' ? 'LoRA' : 'QLoRA')}
+      ${spec('Data', (r.data || []).map((d) => d.id).join(', '))}
+      ${spec('Run', `${count(r.epochs, 'pass', 'passes')}  ·  ${r.context} tokens of context`)}
+      ${spec('Export', `${r.format.toUpperCase()} at ${r.quantization}`)}
+      ${spec('File', r.trained_path)}
+      <div style="margin-top:1.4rem">${actions}</div>
+    </div>`;
+}
+
+/// The form. One page with sections rather than the window's six-step wizard:
+/// the same fields in the same order, and editing an existing recipe does not
+/// make you walk through all of it to change one number.
+function createForm(r) {
+  const hub = state.hub;
+  const results = hub.items.map((item) => `
+    <div class="card pick" data-hub="${escape(item.id)}">
+      <div class="title"><strong>${escape(item.id)}</strong>
+        <span class="tag">${Math.round(item.downloads / 1000)}k downloads${
+          item.parameters_b > 0 ? '  ·  ' + item.parameters_b.toFixed(1) + 'B' : ''}${
+          item.gated ? '  ·  gated' : ''}</span></div>
+    </div>`).join('');
+
+  return `<div class="settings-page" style="overflow-y:auto">
+      <button class="action" id="recipe-back" style="margin-bottom:1.2rem">Cancel</button>
+      <h1>${r.id ? 'Edit ' + escape(r.name) : 'New expert'}</h1>
+
+      <h2>NAME</h2>
+      <div class="field"><input id="r-name" value="${escape(r.name || '')}"
+        placeholder="Kitchen Physicist"></div>
+      <div class="field"><label>What it is for</label>
+        <input id="r-purpose" value="${escape(r.purpose || '')}"
+          placeholder="answers questions about induction hobs">
+        <div class="hint">What the delegator routes on. Name the things it should take.</div>
+      </div>
+
+      <h2>BASE MODEL</h2>
+      <div class="field"><input id="r-base" value="${escape((r.base && r.base.id) || '')}"
+        placeholder="unsloth/Llama-3.2-1B, or a path on this machine">
+        <div class="hint">A Huggingface repository, or a folder of safetensors.
+          A GGUF cannot be fine-tuned.</div></div>
+      <div class="row">
+        <input id="hub-query" value="${escape(hub.query)}" placeholder="search Huggingface">
+        <button class="action" id="hub-go">${hub.searching ? 'searching...' : 'Search'}</button>
+      </div>
+      ${results}
+
+      <h2 style="margin-top:1.6rem">DATA</h2>
+      <div class="field"><input id="r-data"
+        value="${escape((r.data || []).map((d) => d.id).join(', '))}"
+        placeholder="a Huggingface dataset, or a folder of text">
+        <div class="hint">Comma separated.</div></div>
+
+      <h2>TARGET</h2>
+      <div class="field"><label>Method</label>
+        <select id="r-method">
+          <option value="qlora"${r.method !== 'lora' ? ' selected' : ''}>QLoRA</option>
+          <option value="lora"${r.method === 'lora' ? ' selected' : ''}>LoRA</option>
+        </select></div>
+      <div class="field"><label>Export size</label>
+        <select id="r-quant">${['Q4_K_M', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16'].map((q) =>
+          `<option value="${q}"${q === r.quantization ? ' selected' : ''}>${q}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>Passes over the data</label>
+        <input id="r-epochs" value="${r.epochs ?? 2}"></div>
+      <div class="field"><label>Context</label>
+        <input id="r-context" value="${r.context ?? 512}"></div>
+
+      <button class="action" id="recipe-save">Save</button>
+    </div>`;
+}
+
+function createView() {
+  if (state.recipes === null) {
+    return roster() + '<div class="pane"><div class="empty">Reading...</div></div>';
+  }
+  if (state.editing) return roster() + `<div class="pane">${createForm(state.editing)}</div>`;
+  if (state.openRecipe) {
+    const r = (state.recipes || []).find((x) => x.id === state.openRecipe);
+    if (r) return roster() + `<div class="pane">${createDetail(r)}</div>`;
+  }
+  return roster() + `<div class="pane">${createList()}</div>`;
+}
+
+const PAGES = [
+  ['general',    'General'],
+  ['experts',    'Experts'],
+  ['generation', 'Generation'],
+  ['hardware',   'Hardware'],
+  ['runtimes',   'Runtimes'],
+  ['training',   'Training'],
+  ['tools',      'Tools'],
+  ['about',      'About'],
+];
+
+/// One labelled control bound to a dotted path in the configuration.
+///
+/// The patch `config.set` takes is shaped like the file, so a field knows its
+/// own address and the save is assembled from whatever is on screen. Adding a
+/// setting is one line here rather than a line here and a line in C++.
+function field(path, label, kind, hint, extra) {
+  const value = at(state.config, path);
+  const id = 'f-' + path.replace(/\./g, '-');
+  let control;
+  if (kind === 'bool') {
+    control = `<input type="checkbox" id="${id}" data-path="${path}" data-kind="bool"
+                 ${value ? 'checked' : ''} style="flex:0 0 auto;width:auto">`;
+    return `<div class="field"><label class="row" style="cursor:pointer">
+        ${control}<span>${label}</span></label>
+      ${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+  }
+  if (kind === 'choice') {
+    control = `<select id="${id}" data-path="${path}" data-kind="string">${
+      extra.map((v) => `<option value="${v}"${v === value ? ' selected' : ''}>${v}</option>`).join('')
+    }</select>`;
+  } else {
+    control = `<input id="${id}" data-path="${path}" data-kind="${kind}"
+                 value="${escape(value ?? '')}">`;
+  }
+  return `<div class="field"><label for="${id}">${label}</label>${control}
+    ${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+}
+
+/// Read a dotted path out of an object: at(config, "gpu.mode").
+function at(root, path) {
+  return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), root);
+}
+
+/// Build the patch from every bound control currently on screen.
+function patchFromFields() {
+  const patch = {};
+  for (const node of document.querySelectorAll('[data-path]')) {
+    const parts = node.dataset.path.split('.');
+    let into = patch;
+    while (parts.length > 1) { into = (into[parts[0]] ||= {}); parts.shift(); }
+    const kind = node.dataset.kind;
+    into[parts[0]] = kind === 'bool' ? node.checked
+                   : kind === 'int'  ? parseInt(node.value, 10)
+                   : kind === 'num'  ? parseFloat(node.value)
+                   : node.value;
+  }
+  return patch;
+}
 
 function modelLabel(reference) {
   if (!reference) return '';
@@ -444,6 +951,35 @@ function modelOptions(selected) {
       model.made_here ? '  (made here)' : ''}</option>`);
   }
   return options.join('');
+}
+
+/// A long install, mid-flight or just finished.
+///
+/// Compiling a runtime and building the trainer's Python are different jobs
+/// that report the same five things, so they are drawn by one function and
+/// the screen reads the same for both.
+function installProgress(p, prefix) {
+  if (!p || (!p.running && !p.finished)) return '';
+  const bar = p.running && p.percent > 0
+    ? `<div class="bar"><div class="bar-fill" style="width:${Math.round(p.percent * 100)}%"></div></div>`
+    : '';
+  const log = (p.log || []).length && (p.phase === 'failed')
+    ? `<pre class="install-log">${escape(p.log.join('\n'))}</pre>` : '';
+  const note = p.phase === 'failed' ? `<span class="bad">${escape(p.error || 'failed')}</span>`
+             : p.phase === 'done' ? '<span class="ok">done</span>'
+             : p.phase === 'canceled' ? '<span class="meh">canceled</span>'
+             : escape(p.label || p.phase);
+  const button = p.running
+    ? `<button class="action" id="${prefix}-cancel">Stop</button>`
+    : `<button class="action" id="${prefix}-dismiss">Dismiss</button>`;
+  return `<div class="install">
+      <div class="row"><span>${note}</span>${button}</div>
+      ${bar}
+      ${p.running && p.step ? `<div class="hint" style="color:var(--faint)">${escape(p.step)}</div>` : ''}
+      ${log}
+      ${p.phase === 'failed' && p.log_file
+        ? `<div class="hint" style="color:var(--faint)">full log: ${escape(p.log_file)}</div>` : ''}
+    </div>`;
 }
 
 function settingsPage() {
@@ -491,8 +1027,13 @@ function settingsPage() {
   }
 
   if (state.settingsPage === 'runtimes') {
+    // One build at a time, machine-wide: two would write the same files. The
+    // other buttons go flat rather than vanish, so the page does not reflow
+    // under the pointer when one starts.
+    const build = state.build;
+    const busy = !!(build && build.running);
     const rows = state.runtimes.map((r) => {
-      const how = r.active ? `<span class="ok">active</span>  ${r.devices} device${r.devices === 1 ? '' : 's'}`
+      const how = r.active ? `<span class="ok">active</span>  ${count(r.devices, 'device')}`
                 : r.installed ? '<span class="meh">installed, no devices</span>'
                               : '<span class="meh">not installed</span>';
       return `<div class="card">
@@ -500,12 +1041,115 @@ function settingsPage() {
           ${r.installed ? `<div class="hint" style="color:var(--faint)">${
             (r.bytes / 1048576).toFixed(1)} MB${r.source ? '  ·  ' + escape(r.source) : ''}${
             r.stale ? '  ·  <span class="bad">built against another llama.cpp</span>' : ''}</div>` : ''}
+          ${!r.installed || r.stale
+            ? `<button class="action" data-build="${escape(r.id)}"${busy ? ' disabled' : ''}>${
+                r.stale ? 'Rebuild' : 'Build it'}</button>` : ''}
         </div>`;
     }).join('') || '<p class="lede">Nothing scanned yet.</p>';
     return `<div class="settings-page">
       <h1>Runtimes</h1>
-      <p class="lede">What Crucible can run a model on. The installer puts these in place.</p>
+      <p class="lede">What Crucible can run a model on. The installer puts these in place,
+        and anything missing can be compiled here.</p>
+      ${installProgress(build, 'build')}
       ${rows}
+    </div>`;
+  }
+
+  if (state.settingsPage === 'generation') {
+    return `<div class="settings-page">
+      <h1>Generation</h1>
+      <p class="lede">How every expert samples, unless one overrides it.</p>
+      ${field('defaults.temperature', 'Temperature', 'num',
+              'Higher wanders further from the likeliest next word.')}
+      ${field('defaults.top_p', 'Top P', 'num')}
+      ${field('defaults.top_k', 'Top K', 'int')}
+      ${field('defaults.min_p', 'Min P', 'num')}
+      ${field('defaults.repeat_penalty', 'Repeat penalty', 'num')}
+      ${field('defaults.repeat_last_n', 'Repeat window', 'int')}
+      ${field('defaults.max_tokens', 'Longest reply', 'int', 'Tokens. -1 runs until the model stops.')}
+      ${field('defaults.n_ctx', 'Context', 'int')}
+      ${field('defaults.n_batch', 'Batch', 'int')}
+      ${field('defaults.n_threads', 'Threads', 'int', '0 uses every core.')}
+      ${field('defaults.flash_attn', 'Flash attention', 'bool')}
+      ${field('ui.show_reasoning', 'Show a reasoning model\'s working', 'bool')}
+      <button class="action" id="save-fields">Save</button>
+    </div>`;
+  }
+
+  if (state.settingsPage === 'hardware') {
+    const devices = (state.devices || []).map((d) => `
+      <div class="card"><div class="title"><strong>${escape(d.name)}</strong>
+        <span class="tag">${escape(d.backend)}</span></div>
+        <div class="hint" style="color:var(--faint)">${
+          (d.memory_total / 1073741824).toFixed(1)} GB, ${
+          (d.memory_free / 1073741824).toFixed(1)} GB free</div></div>`).join('')
+      || '<p class="lede">No GPU found. Install a runtime, or it runs on the processor.</p>';
+    return `<div class="settings-page">
+      <h1>Hardware</h1><p class="lede">What the models run on.</p>
+      ${devices}
+      <div style="margin-top:1.4rem"></div>
+      ${field('gpu.mode', 'How to spread a model', 'choice', '', ['auto', 'even', 'priority', 'single'])}
+      ${field('gpu.main_gpu', 'Main card', 'int', 'Index, for single and priority.')}
+      ${field('gpu.gpu_only', 'Keep every layer on the card', 'bool')}
+      ${field('gpu.vram_only', 'Refuse a model that will not fit in video memory', 'bool',
+              'Rather than spilling into system memory, which is far slower.')}
+      ${field('keep_delegator_loaded', 'Keep the delegator in memory', 'bool',
+              'Faster routing; costs its weights the whole time.')}
+      <button class="action" id="save-fields">Save</button>
+    </div>`;
+  }
+
+  if (state.settingsPage === 'tools') {
+    return `<div class="settings-page">
+      <h1>Tools</h1><p class="lede">What experts can reach beyond the machine.</p>
+      ${field('tools.web_search', 'Let experts search the web', 'bool',
+              'Off by default. It is one of two things that reach the network.')}
+      ${field('tools.search_provider', 'Provider', 'choice', '', ['wikipedia', 'searxng', 'brave'])}
+      ${field('tools.search_results', 'Results to hand over', 'int')}
+      ${field('tools.search_timeout', 'Give up after', 'int', 'Seconds.')}
+      ${field('tools.auto_edits', 'Apply edits without asking', 'bool',
+              'Off shows you each change before it lands, old beside new.')}
+      ${field('tools.workshop_timeout', 'Kill a command after', 'int', 'Seconds.')}
+      <button class="action" id="save-fields">Save</button>
+    </div>`;
+  }
+
+  if (state.settingsPage === 'training') {
+    const t = state.trainer;
+    if (!t) return '<div class="settings-page"><p class="lede">Reading...</p></div>';
+    const cards = [
+      ...(t.usable_gpus || []).map((g) => `<div class="hint">trains on ${escape(g)}</div>`),
+      ...(t.unusable_gpus || []).map((g) =>
+        `<div class="hint bad">cannot use ${escape(g)} — this PyTorch has no kernels for it</div>`),
+    ].join('');
+    return `<div class="settings-page">
+      <h1>Training</h1>
+      <p class="lede">What fine-tuning runs in. Crucible's own Python, in its own folder.</p>
+      <div class="card">
+        <div class="title"><strong>${t.ready ? '<span class="ok">ready</span>'
+          : t.present ? `<span class="bad">${escape(t.note)}</span>`
+                      : '<span class="meh">not installed</span>'}</strong>
+          ${t.present ? `<span class="tag">${escape(t.flavor || '')}</span>` : ''}</div>
+        ${t.present ? `<div class="hint" style="color:var(--faint)">Python ${escape(t.python)}${
+          t.torch ? '  ·  torch ' + escape(t.torch) : ''}${
+          t.bytes ? '  ·  ' + (t.bytes / 1073741824).toFixed(1) + ' GB' : ''}</div>` : ''}
+        ${cards}
+      </div>
+      ${installProgress(t.install, 'pyenv')}
+      ${t.install && t.install.running ? '' : `<div class="card">
+        <div class="title"><strong>${t.present ? 'Repair or change it' : 'Install it'}</strong></div>
+        <div class="hint" style="color:var(--faint)">A few gigabytes, once. Pick what this
+          machine can actually train on.</div>
+        <div class="row" style="margin-top:.8rem">${(state.flavors || []).map((f) => `
+          <button class="action" data-flavor="${escape(f.id)}">${escape(f.id.toUpperCase())}${
+            f.suggested ? ' ·' : ''}</button>`).join('')}</div>
+        ${(state.flavors || []).map((f) => `<div class="hint" style="color:var(--faint)">
+          <strong>${escape(f.id)}</strong> — ${escape(f.note)} · ${
+            (f.download / 1073741824).toFixed(1)} GB down, ${
+            (f.installed / 1073741824).toFixed(1)} GB on disk</div>`).join('')}
+      </div>`}
+      <p class="lede" style="margin-top:1.2rem">The same thing from a terminal:
+        <code>crucible --install-trainer</code></p>
     </div>`;
   }
 
@@ -547,7 +1191,9 @@ function render() {
     button.setAttribute('aria-current', String(button.dataset.view === state.view));
   }
 
-  el('main').innerHTML = state.view === 'settings' ? settingsView() : chatView();
+  el('main').innerHTML = ({
+    settings: settingsView, cook: cookView, create: createView, history: historyView,
+  }[state.view] || chatView)();
   wire();
 
   const after = el('transcript');
@@ -572,9 +1218,179 @@ function wire() {
     if (state.view === 'chat') prompt.focus();
   }
 
+  el('auto-edits')?.addEventListener('click', () => guard(async () => {
+    const now = !state.config?.tools?.auto_edits;
+    await call('config.set', { tools: { auto_edits: now } });
+    state.config = await call('config');
+    render();
+  }));
+
+  el('edit-yes')?.addEventListener('click', () => guard(() => call('edit.approve', { approved: true })));
+  el('edit-no')?.addEventListener('click', () => guard(() => call('edit.approve', { approved: false })));
+
+  // cook
+  const cookForm = el('cook-form');
+  if (cookForm) {
+    cookForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const answer = el('cook-answer');
+      if (answer) {
+        const text = answer.value.trim();
+        if (text) guard(() => call('cook.answer', { answer: text }));
+        return;
+      }
+      const goal = el('cook-goal').value.trim();
+      if (!goal) return;
+      state.cookGoal = goal;
+      state.cookMinutes = el('cook-minutes').value;
+      const minutes = parseInt(state.cookMinutes, 10);
+      guard(() => call('cook.start', {
+        goal, seconds: Number.isFinite(minutes) ? minutes * 60 : 0,
+      }));
+    });
+  }
+  el('cook-stop')?.addEventListener('click', () => guard(() => call('cook.stop')));
+
+  // history
+  el('history-back')?.addEventListener('click', () => { state.cookDetail = null; render(); });
+  for (const card of document.querySelectorAll('[data-cook]')) {
+    card.addEventListener('click', () => guard(async () => {
+      state.cookDetail = await call('history.open', { kind: 'cook', id: card.dataset.cook });
+    }));
+  }
+  for (const card of document.querySelectorAll('[data-session]')) {
+    card.addEventListener('click', () => guard(async () => {
+      await call('history.open', { kind: 'session', id: card.dataset.session });
+      state.view = 'chat';
+      state.snapshot = await call('snapshot');
+    }));
+  }
+
+  // create
+  for (const card of document.querySelectorAll('[data-recipe]')) {
+    card.addEventListener('click', () => {
+      state.openRecipe = card.dataset.recipe; render();
+    });
+  }
+  el('recipe-back')?.addEventListener('click', () => {
+    if (state.editing) { state.editing = null; } else { state.openRecipe = null; }
+    render();
+  });
+  el('recipe-new')?.addEventListener('click', () => {
+    state.editing = { method: 'qlora', quantization: 'Q4_K_M', epochs: 2, context: 512 };
+    state.hub = { items: [], searching: false, query: '', kind: 'model' };
+    render();
+  });
+  el('recipe-edit')?.addEventListener('click', () => {
+    state.editing = (state.recipes || []).find((x) => x.id === state.openRecipe);
+    state.hub = { items: [], searching: false, query: '', kind: 'model' };
+    render();
+  });
+  el('recipe-save')?.addEventListener('click', () => guard(async () => {
+    const base = el('r-base').value.trim();
+    const recipe = {
+      ...(state.editing || {}),
+      name: el('r-name').value.trim(),
+      purpose: el('r-purpose').value.trim(),
+      base: base ? { source: base.startsWith('/') ? 'local' : 'hub', id: base,
+                     path: base.startsWith('/') ? base : '' } : { source: 'hub', id: '' },
+      data: el('r-data').value.split(',').map((t) => t.trim()).filter(Boolean)
+              .map((t) => ({ source: t.startsWith('/') ? 'local' : 'hub', id: t,
+                             path: t.startsWith('/') ? t : '' })),
+      method: el('r-method').value,
+      quantization: el('r-quant').value,
+      epochs: parseInt(el('r-epochs').value, 10) || 2,
+      context: parseInt(el('r-context').value, 10) || 512,
+    };
+    const saved = await call('lab.save', recipe);
+    state.editing = null;
+    state.openRecipe = saved.id;
+    state.recipes = await call('lab.recipes');
+  }));
+  el('recipe-train')?.addEventListener('click', () => guard(async () => {
+    await call('lab.train', { id: state.openRecipe });
+    state.recipes = await call('lab.recipes');
+    state.run = await call('lab.run');
+  }));
+  el('recipe-stop')?.addEventListener('click', () => guard(async () => {
+    state.run = await call('lab.run', { cancel: true });
+  }));
+  el('recipe-draft')?.addEventListener('click', () => guard(async () => {
+    const r = (state.recipes || []).find((x) => x.id === state.openRecipe);
+    await call('lab.save', { ...r, stage: 'draft', started_at: 0 });
+    state.recipes = await call('lab.recipes');
+  }));
+  el('recipe-attach')?.addEventListener('click', () => guard(async () => {
+    await call('lab.attach', { id: state.openRecipe, path: el('attach-path').value.trim() });
+    state.recipes = await call('lab.recipes');
+  }));
+  el('recipe-delete')?.addEventListener('click', () => guard(async () => {
+    await call('lab.delete', { id: state.openRecipe });
+    state.openRecipe = null;
+    state.recipes = await call('lab.recipes');
+  }));
+  // Compiling a runtime, and the Python the lab trains in. Both are long,
+  // both run on a thread of their own, and both are polled below rather than
+  // waited on -- the call returns as soon as the worker has started.
+  document.querySelectorAll('[data-build]').forEach((b) =>
+    b.addEventListener('click', () => guard(async () => {
+      await call('runtime.build', { backend: b.dataset.build });
+      state.build = await call('runtime.progress');
+    })));
+  el('build-cancel')?.addEventListener('click', () => guard(async () => {
+    await call('runtime.cancel');
+    state.build = await call('runtime.progress');
+  }));
+  el('build-dismiss')?.addEventListener('click', () => guard(async () => {
+    await call('runtime.dismiss');
+    [state.build, state.runtimes] =
+      await Promise.all([call('runtime.progress'), call('runtimes')]);
+  }));
+
+  document.querySelectorAll('[data-flavor]').forEach((b) =>
+    b.addEventListener('click', () => guard(async () => {
+      await call('trainer.install', { flavor: b.dataset.flavor });
+      state.trainer = await call('trainer');
+    })));
+  el('pyenv-cancel')?.addEventListener('click', () => guard(async () => {
+    await call('trainer.cancel');
+    state.trainer = await call('trainer');
+  }));
+  el('pyenv-dismiss')?.addEventListener('click', () => guard(async () => {
+    await call('trainer.dismiss');
+    state.trainer = await call('trainer');
+  }));
+
+  document.querySelectorAll('[data-test]').forEach((b) =>
+    b.addEventListener('click', (event) => {
+      // The cards are clickable themselves, and this button sits on one.
+      event.stopPropagation();
+      guard(() => openTest(b.dataset.test));
+    }));
+
+  el('hub-go')?.addEventListener('click', () => guard(async () => {
+    state.hub.query = el('hub-query').value.trim();
+    if (!state.hub.query) return;
+    await call('hub.search', { query: state.hub.query, kind: state.hub.kind });
+    state.hub.searching = true;
+    pollHub();
+  }));
+  for (const card of document.querySelectorAll('[data-hub]')) {
+    card.addEventListener('click', () => {
+      el('r-base').value = card.dataset.hub;
+    });
+  }
+
   for (const button of document.querySelectorAll('.settings-nav button')) {
     button.addEventListener('click', () => { state.settingsPage = button.dataset.page; render(); });
   }
+  el('save-fields')?.addEventListener('click', () => guard(async () => {
+    const result = await call('config.set', patchFromFields());
+    if (result.warnings && result.warnings.length) {
+      state.error = result.warnings.join('; ');
+    }
+    await loadSettings();
+  }));
   el('save-general')?.addEventListener('click', () => guard(async () => {
     await call('config.set', {
       models_dir: el('models-dir').value,
@@ -602,15 +1418,144 @@ async function guard(work) {
 // --- settings and project data -------------------------------------------
 
 async function loadSettings() {
-  [state.config, state.models, state.runtimes] =
-    await Promise.all([call('config'), call('models'), call('runtimes')]);
+  [state.config, state.models, state.runtimes, state.devices, state.trainer,
+   state.flavors, state.build] =
+    await Promise.all([call('config'), call('models'), call('runtimes'),
+                       call('devices'), call('trainer'), call('trainer.flavors'),
+                       call('runtime.progress')]);
+}
+
+/// What a view needs before it can draw. Fetched on the way in rather than
+/// kept up to date in the background: none of it changes without this page
+/// having asked for the change.
+async function enter(view) {
+  state.view = view;
+  state.error = '';
+  // state.config arrives at startup, so the test is on a page that needs the
+  // rest -- models, runtimes, devices -- rather than on the config alone.
+  if (view === 'settings' && !state.runtimes.length) await loadSettings();
+  if (view === 'history') {
+    state.cookDetail = null;
+    state.history = state.project.open ? await call('history') : null;
+  }
+  if (view === 'create') {
+    state.recipes = await call('lab.recipes');
+    state.trainer = await call('trainer');
+    state.run     = await call('lab.run');
+  }
 }
 
 for (const button of document.querySelectorAll('nav button')) {
-  button.addEventListener('click', () => guard(async () => {
-    state.view = button.dataset.view;
-    if (state.view === 'settings' && !state.config) await loadSettings();
-  }));
+  button.addEventListener('click', () => guard(() => enter(button.dataset.view)));
+}
+
+/// The hub answers in a second or two on its own thread, so the page asks
+/// again until it has. Stops asking the moment it does -- a timer left running
+/// would redraw the form under whatever is being typed into it.
+async function pollHub() {
+  const result = await call('hub.results');
+  state.hub.searching = result.searching;
+  if (!result.searching) {
+    state.hub.items = result.items || [];
+    if (result.error) state.error = result.error;
+    render();
+    return;
+  }
+  render();
+  setTimeout(() => pollHub().catch(() => {}), 400);
+}
+
+/// A training run reports through a child process rather than the engine, so
+/// nothing wakes this page when it moves. One poll a second while a run is on
+/// screen, and none at any other time.
+setInterval(() => {
+  if (state.view !== 'create' || !state.openRecipe) return;
+  call('lab.run').then(async (run) => {
+    const was = state.run && state.run.phase;
+    state.run = run;
+    // A run that just finished has rewritten its recipe's stage.
+    if (was === 'running' && run.phase === 'finished') {
+      state.recipes = await call('lab.recipes');
+    }
+    render();
+  }).catch(() => {});
+}, 1000);
+
+/// The two long installs. They do wake the page as they go, but a compile
+/// reports once per file and the wake carries the engine's snapshot rather
+/// than theirs, so the progress is read here while it is on screen.
+setInterval(() => {
+  if (state.view !== 'settings') return;
+  if (state.settingsPage === 'runtimes') {
+    call('runtime.progress').then(async (build) => {
+      const was = state.build && state.build.phase;
+      state.build = build;
+      // A build that just finished has put a module where there was none.
+      if (was && was !== build.phase && build.finished) {
+        state.runtimes = await call('runtimes');
+      }
+      if (was !== build.phase || build.running) render();
+    }).catch(() => {});
+  }
+  if (state.settingsPage === 'training' && state.trainer) {
+    const running = state.trainer.install && state.trainer.install.running;
+    if (!running) return;
+    call('trainer').then((t) => { state.trainer = t; render(); }).catch(() => {});
+  }
+}, 1000);
+
+// --- trying a fine-tune before keeping it ---------------------------------
+//
+// A trained model is a file until somebody has asked it something. This puts
+// it on a seat that lasts as long as the window, runs the conversation
+// through the same engine Chat uses, and then offers the only two decisions
+// that matter: keep it, or go back and change how it was trained.
+
+/// The part of the transcript that belongs to this test.
+function drawTest() {
+  if (!state.testing) return;
+  const turns = (state.snapshot.turns || []).slice(state.testFrom);
+  el('test-talk').innerHTML = turns.length
+    ? turns.map((turn) => {
+        const body = turn.failed
+          ? `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`
+          : (!turn.reply && turn.streaming)
+            ? '<div class="body thinking">thinking...</div>'
+            // Through the same renderer the transcript uses: how a candidate
+            // formats an answer is part of what is being decided here.
+            : `<div class="body md">${markdown(turn.reply)}</div>`;
+        return `<div class="turn">
+            <div class="you">you</div><div class="body">${escape(turn.prompt)}</div>
+            <div class="who">${escape(state.testing.name)}</div>${body}
+          </div>`;
+      }).join('')
+    : '<div class="status" style="padding:.6rem">Ask it something it should be good at.</div>';
+  el('test-talk').scrollTop = el('test-talk').scrollHeight;
+  el('test-send').disabled = !!state.snapshot.busy;
+}
+
+async function openTest(id) {
+  const recipe = (state.recipes || []).find((r) => r.id === id);
+  if (!recipe) return;
+  const seated = await call('lab.test', { id });
+  state.testing  = recipe;
+  state.testFrom = seated.from;
+  el('test-title').textContent = 'Test ' + (recipe.name || 'it');
+  el('test-file').textContent  = recipe.trained_path || '';
+  el('test-prompt').value = '';
+  drawTest();
+  el('tester').showModal();
+  el('test-prompt').focus();
+}
+
+/// Put the seat back however the window closes. Every exit runs through
+/// here, because a seat left behind is a model held in memory and an expert
+/// called "(testing)" on the roster.
+async function closeTest() {
+  if (!state.testing) return;
+  state.testing = null;
+  el('tester').close();
+  await call('lab.test.stop');
 }
 
 // --- the folder picker ----------------------------------------------------
@@ -620,7 +1565,7 @@ let browsing = '';
 async function browse(path) {
   const listing = await call('browse', path ? { path } : {});
   browsing = listing.path;
-  el('crumbs').textContent = listing.path;
+  el('crumbs').value = listing.path;
   el('listing').innerHTML = listing.entries.length
     ? listing.entries.map((name) => `<button data-dir="${escape(name)}">${escape(name)}/</button>`).join('')
     : '<div class="status" style="padding:.4rem .6rem">no folders here</div>';
@@ -629,6 +1574,50 @@ async function browse(path) {
       guard(() => browse(browsing.replace(/\/$/, '') + '/' + button.dataset.dir)));
   }
 }
+
+// A path can be typed or pasted. Clicking down from the home folder is fine
+// for a folder you are looking for and tedious for one you already know, and
+// the path is on screen either way -- so it may as well be the input.
+el('crumbs').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  const wanted = el('crumbs').value.trim();
+  // A path that is not there puts the message up and leaves the listing
+  // alone, rather than emptying it and looking like the folder is empty.
+  guard(() => browse(wanted)).catch(() => { el('crumbs').value = browsing; });
+});
+
+el('test-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = el('test-prompt').value.trim();
+  if (!text || state.snapshot.busy) return;
+  el('test-prompt').value = '';
+  guard(() => call('submit', { prompt: text, expert: 'lab-test' }));
+});
+
+el('test-close').addEventListener('click', () => guard(closeTest));
+el('tester').addEventListener('cancel', (event) => { event.preventDefault(); guard(closeTest); });
+
+el('test-keep').addEventListener('click', () => guard(async () => {
+  const id = state.testing && state.testing.id;
+  if (!id) return;
+  state.testing = null;
+  el('tester').close();
+  await call('lab.keep', { id });
+  state.recipes   = await call('lab.recipes');
+  state.openRecipe = id;
+  state.config    = await call('config');
+  render();
+}));
+
+el('test-edit').addEventListener('click', () => guard(async () => {
+  const recipe = state.testing;
+  await closeTest();
+  if (!recipe) return;
+  state.openRecipe = recipe.id;
+  state.editing    = { ...recipe };
+  render();
+}));
 
 el('project').addEventListener('click', () => guard(async () => {
   await browse(state.project.open ? state.project.root : '');
@@ -671,12 +1660,24 @@ el('trust-no').addEventListener('click', () => guard(async () => {
 // The engine pushes rather than the page polling: it already wakes the loop
 // when something changed, and a timer would either lag behind that or burn a
 // redraw a second doing nothing.
-window.crucibleSnapshot = (snapshot) => { state.snapshot = snapshot; render(); };
+window.crucibleSnapshot = (snapshot) => {
+  state.snapshot = snapshot;
+  render();
+  // The test window is a dialog over the view, so a render() does not touch
+  // it. It has its own slice of the same transcript and is redrawn here.
+  drawTest();
+};
 
 guard(async () => {
-  const [snapshot, ping] = await Promise.all([call('snapshot'), call('ping')]);
+  // The config comes down with the rest, not when the settings screen is
+  // first opened: the sidebar names the delegator on every view, and reading
+  // it lazily left that line saying "(none)" until you happened to go and
+  // look at Settings.
+  const [snapshot, ping, config] =
+    await Promise.all([call('snapshot'), call('ping'), call('config')]);
   state.snapshot = snapshot;
   state.version  = ping.version;
+  state.config   = config;
   await refreshProject();
 });
 </script>

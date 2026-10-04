@@ -30,9 +30,6 @@ struct Options {
     /// --trainer-flavor cuda|cpu|mlx. Empty means whatever the hardware says.
     std::string trainer_flavor;
 
-    /// --ui window|web. The ImGui window is the default while the webview
-    /// interface is being built out and is not yet at parity.
-    bool web_ui = false;
 
     /// Set when the program should stop after parsing -- --help, --version and
     /// --config all print something and exit, as does a bad option.

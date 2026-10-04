@@ -33,11 +33,17 @@ mkdir -p "$APPDIR/usr" "$APPDIR/usr/share/applications" \
 cp -a "$PREFIX/bin" "$APPDIR/usr/bin"
 cp -a "$PREFIX/lib" "$APPDIR/usr/lib"
 
-# GLFW is the one library that may be the system's rather than Crucible's, and
-# an AppImage that needs a -dev package installed is not an AppImage. Copy it in
-# beside llama.cpp's, which is on the binary's RPATH.
-if glfw="$(ldd "$PREFIX/bin/crucible" | awk '/libglfw/ {print $3}')" && [ -n "$glfw" ]; then
-    cp -L "$glfw" "$APPDIR/usr/lib/crucible/"
+# WebKitGTK is the window, and it is deliberately not bundled.
+#
+# It is not one library: it is libwebkit2gtk, JavaScriptCore, the GTK stack
+# under it, a GStreamer pipeline, and two helper binaries it execs by absolute
+# path at startup. Copying the .so in without those gives an AppImage that
+# starts and then shows nothing, which is a worse failure than not starting.
+# Every desktop Linux that ships GNOME already has the runtime package, so the
+# dependency is declared and checked rather than carried.
+if ! ldd "$PREFIX/bin/crucible" | grep -q libwebkit2gtk; then
+    echo "error: the binary is not linked against WebKitGTK -- build it with the window" >&2
+    exit 1
 fi
 
 # Exec is a bare name here, unlike the installed entry: AppRun puts the right
@@ -56,6 +62,18 @@ cp "$ROOT/packaging/icons/crucible.png" "$APPDIR/usr/share/icons/hicolor/256x256
 cat > "$APPDIR/AppRun" <<'RUN'
 #!/bin/sh
 APPDIR="$(dirname "$(readlink -f "$0")")"
+
+# The one dependency this file does not carry. Said plainly here, because the
+# alternative is the dynamic loader's "cannot open shared object file" on a
+# line nobody reads, for a package with a different name on every distribution.
+if ! ldd "$APPDIR/usr/bin/crucible" 2>/dev/null | grep -q 'libwebkit2gtk.*=> /'; then
+    printf 'Crucible needs WebKitGTK, which this system does not have.\n\n' >&2
+    printf '  Debian, Ubuntu:  sudo apt-get install libwebkit2gtk-4.1-0\n' >&2
+    printf '  Fedora:          sudo dnf install webkit2gtk4.1\n' >&2
+    printf '  Arch:            sudo pacman -S webkit2gtk-4.1\n' >&2
+    exit 1
+fi
+
 exec "$APPDIR/usr/bin/crucible" "$@"
 RUN
 chmod +x "$APPDIR/AppRun"

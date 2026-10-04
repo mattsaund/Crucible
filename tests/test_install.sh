@@ -84,8 +84,8 @@ done
 PKG=apt resolve_packages
 check     "apt base includes a compiler" \
           grep -q "build-essential" <<< "${PKGS_BASE[*]}"
-check     "apt names the desktop app's headers" \
-          grep -q "libgl1-mesa-dev" <<< "${PKGS_GUI[*]}"
+check     "apt names the interface's headers" \
+          grep -q "libwebkit2gtk-4.1-dev" <<< "${PKGS_GUI[*]}"
 
 # resolve_packages ends in a `case`, and a stray non-zero exit there would
 # abort the caller under `set -e`. This is the bug that once silently killed
@@ -120,7 +120,7 @@ check     "the entry names the icon" \
 check     "StartupWMClass matches the window class the app sets" \
           grep -q '^StartupWMClass=crucible$' "$HERE/../packaging/linux/crucible.desktop.in"
 check     "and the app really sets that class" \
-          grep -q 'GLFW_X11_CLASS_NAME, "crucible"' "$HERE/../src/gui/app.cpp"
+          grep -q 'crucible' "$HERE/../src/gui/webui.cpp"
 # Uninstall has to take them, or the menu keeps offering a Crucible that is gone.
 check     "the uninstaller removes the desktop entry" \
           grep -q 'crucible.desktop' "$HERE/../src/app/uninstall.cpp"
@@ -168,29 +168,48 @@ fi
 # --------------------------------------------------------------------------
 # verify_gui_prerequisites
 #
-# The desktop app is decided by looking for the headers the build actually
-# needs, not by trusting a package manager's exit code.
+# Crucible is one program now and its window is the platform's webview, so
+# this no longer chooses between a window and a terminal -- it either finds
+# WebKitGTK's development files or stops with the command to install them.
+# The old version stepped down to a terminal build on a machine with no
+# OpenGL headers, which is how a GUI-less install used to happen silently.
 # --------------------------------------------------------------------------
 echo
 echo "  verify_gui_prerequisites"
 
-WITH_GUI=0
-verify_gui_prerequisites
-check_eq  "--no-gui is never overridden into a GUI build" "$WITH_GUI" "0"
+if [ "$(uname -s)" = "Darwin" ]; then
+    # WKWebView is part of the system, so there is nothing to look for.
+    check "macOS needs no webview package" verify_gui_prerequisites
+else
+    # `die` exits, so each case runs in a subshell and is judged by its status.
+    #
+    # The positional parameters are cleared before sourcing: install.sh parses
+    # its own arguments even in library mode, and a shell's `$1` left in place
+    # is read as a flag it does not have.
+    in_subshell() {
+        bash -c 'CRUCIBLE_INSTALL_LIB=1; export CRUCIBLE_INSTALL_LIB
+                 script=$1; shift; fn=$1; set --
+                 . "$script" >/dev/null 2>&1
+                 "$fn"' _ "$HERE/../install.sh" "$@" >/dev/null 2>&1
+    }
 
-if [ "$(uname -s)" != "Darwin" ]; then
-    if have_header GL/gl.h && { have_header GLFW/glfw3.h || have_header X11/Xlib.h; }; then
-        WITH_GUI=1
-        verify_gui_prerequisites
-        check_eq  "a machine with the headers keeps the desktop app" "$WITH_GUI" "1"
+    if command -v pkg-config >/dev/null 2>&1 &&
+       { pkg-config --exists webkit2gtk-4.1 || pkg-config --exists webkit2gtk-4.0; }; then
+        check "a machine with WebKitGTK's headers passes the check" \
+              in_subshell verify_gui_prerequisites
     else
-        WITH_GUI=1
-        verify_gui_prerequisites
-        check_eq  "a machine without the headers steps down to the terminal app" \
-                  "$WITH_GUI" "0"
+        check_not "a machine without WebKitGTK's headers is stopped, not stepped down" \
+                  in_subshell verify_gui_prerequisites
     fi
+
+    # Without pkg-config there is nothing to ask, and refusing to install
+    # because the lookup tool is missing would be the wrong answer.
+    check "a missing pkg-config warns and carries on" \
+          bash -c 'CRUCIBLE_INSTALL_LIB=1; export CRUCIBLE_INSTALL_LIB
+                   script=$1; set --
+                   . "$script" >/dev/null 2>&1
+                   PATH=/nonexistent; verify_gui_prerequisites' _ "$HERE/../install.sh"
 fi
-WITH_GUI=1
 
 # --------------------------------------------------------------------------
 # Build directory
@@ -560,12 +579,13 @@ check_not "and never quietly builds something else instead" \
 # from the headers instead.
 check     "one unavailable package no longer cancels the desktop app" \
           grep -q 'gui_have+=(' "$HERE/../install.sh"
-check     "the decision is made by looking for the headers" \
-          grep -q 'have_header GL/gl.h' "$HERE/../install.sh"
-# find_package(OpenGL REQUIRED) and a GLFW that is compiled from source when the
-# system has none: those are the two things the build genuinely needs.
-check     "GLFW's own headers count, so a system GLFW is enough" \
-          grep -q 'have_header GLFW/glfw3.h' "$HERE/../install.sh"
+# Asked of pkg-config, because that is how CMake looks for WebKitGTK and the
+# two have to agree -- a check that passed where the build then failed would
+# be worse than no check at all.
+check     "the decision is made by asking pkg-config, as CMake does" \
+          grep -q 'pkg-config --exists webkit2gtk-4.1' "$HERE/../install.sh"
+check     "and the older 4.0 series counts too" \
+          grep -q 'pkg-config --exists webkit2gtk-4.0' "$HERE/../install.sh"
 check     "the header check runs even under --no-deps" \
           grep -q '^    verify_gui_prerequisites$' "$HERE/../install.sh"
 # The summary reports what is on the disk rather than what was asked for.
@@ -1020,14 +1040,15 @@ for _icon in crucible.png crucible.ico crucible.svg crucible-mark.rgba; do
 done
 check     "the menu icon says it is generated, so nobody hand-edits it" \
           grep -q "make_icons.py" "$ROOT/packaging/icons/crucible.svg"
-# Raw pixels rather than a PNG: nothing in Crucible can decode one.
+# The SVG, because a webview can draw one of those. It used to be raw pixels
+# because nothing in the old ImGui window could decode anything else.
 check     "the window's mark is compiled in" \
-          grep -q "crucible-mark.rgba" "$ROOT/cmake/CrucibleDependencies.cmake"
-check     "and the window draws it rather than the old vector flame" \
-          grep -q "theme::draw_mark" "$ROOT/src/gui/panels/topbar.cpp"
+          grep -q "crucible.svg" "$ROOT/cmake/CrucibleDependencies.cmake"
+check     "and the page is given it as a data URI" \
+          grep -q "mark_data_uri" "$ROOT/src/gui/webui.cpp"
 # A build without the artwork has to keep working.
 check     "with a fallback when there is no artwork compiled in" \
-          grep -q "draw_flame(draw, center, size \* 0.5F)" "$ROOT/src/gui/theme.cpp"
+          grep -q "CRUCIBLE_HAS_EMBEDDED_MARK" "$ROOT/src/gui/webui.cpp"
 
 echo "  and there is a download that needs no compiler at all"
 # The other kind of installer: a file you double-click. The one-line install
@@ -1081,10 +1102,14 @@ check     "Linux builds an AppImage" \
           test -x "$ROOT/packaging/linux/appimage.sh"
 check     "the AppDir keeps the install layout, so the RPATH still resolves" \
           grep -q 'cp -a "$PREFIX/lib" "$APPDIR/usr/lib"' "$ROOT/packaging/linux/appimage.sh"
-# A system GLFW is linked by name, and an AppImage that needs a -dev package
-# installed is not an AppImage.
-check     "and carries GLFW when the build linked the system's" \
-          grep -q 'libglfw' "$ROOT/packaging/linux/appimage.sh"
+# WebKitGTK is the window and is deliberately not carried: it is a stack, not
+# a library, and half of it copied in is an AppImage that starts and shows
+# nothing. So the build refuses to package a binary without it, and the
+# launcher says which package is missing rather than letting the loader do it.
+check     "the AppImage refuses to package a binary with no window in it" \
+          grep -q 'is not linked against WebKitGTK' "$ROOT/packaging/linux/appimage.sh"
+check     "and the launcher names the package instead of failing in the loader" \
+          grep -q 'libwebkit2gtk-4.1-0' "$ROOT/packaging/linux/appimage.sh"
 check     "appimagetool is run in the way that works without FUSE" \
           grep -q 'appimage-extract-and-run' "$ROOT/packaging/linux/appimage.sh"
 check     "the Exec in the AppDir is a bare name, not an install path" \
@@ -1183,8 +1208,14 @@ check     "and the runtime builder writes the same one" \
 
 check     "a download is tried before the toolchain is" \
           grep -q 'prebuilt::try_install' "$ROOT/src/runtime/builder.cpp"
-check_not "and a missing compiler no longer disables the button" \
-          grep -q 'BeginDisabled(!runtime.buildable)' "$ROOT/src/gui/panels/runtimes.cpp"
+# The button lives in the page now, and what it needed guarding against is
+# unchanged: a machine with no compiler can still ask for a runtime, because
+# the answer may be a download. A check against a file that no longer exists
+# passes because grep cannot open it, which is not the same as passing.
+check     "the page offers to build what is not installed" \
+          grep -q 'data-build=' "$ROOT/ui/index.html"
+check_not "and nothing disables that button for want of a compiler" \
+          grep -qE 'data-build=[^>]*buildable' "$ROOT/ui/index.html"
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

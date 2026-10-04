@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MIT
 //
-// The desktop face of Crucible.
+// The session.
 //
-// The same program as `crucible` in a terminal, and the word "same" is meant
-// literally: this owns a Config, an AppState, an Engine, a SessionStore and a
-// CookLog, exactly as the TUI does, and does not know anything about routing,
-// cooking or models that the terminal does not. Everything below this file is
-// shared. If the two ever disagree about what an expert is or how a cook
-// finishes, that is a bug in one of the faces and not a difference of opinion.
+// Everything Crucible is, apart from what draws it: a Config, an AppState, an
+// Engine, a SessionStore, a TrustStore and the lab's trainer. It owns them and
+// decides what may happen to them -- which project is open, what a change to
+// the configuration means, whether a folder has been trusted.
 //
-// It follows that a feature added to the engine appears in both, and a feature
-// added here is a drawing decision only.
+// What draws it is webui.cpp, and it reaches none of this directly. It builds
+// an api::Surface over these members and goes through that, exactly as the
+// Python orchestrator will. That is the whole reason the split is here: an
+// interface that could reach in would become the only interface that could.
 //
-// The one thing this has that the terminal program does not is a project
-// picker. `crucible` is told where it is by being run there -- you cd, then you
-// type it -- and a window has no cd, so it has to offer the list instead.
+// This was an ImGui window and a dozen panel files. They are gone -- the
+// history has them -- and what they used to call back into is what is left.
 #pragma once
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -24,468 +24,117 @@
 #include <string>
 #include <vector>
 
-#include <imgui.h>
-
+#include "crucible/app/update.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/config/trust.hpp"
-#include "crucible/cook/journal.hpp"
-#include "crucible/app/update.hpp"
-#include "crucible/lab/hub.hpp"
-#include "crucible/lab/pyenv.hpp"
-#include "crucible/lab/recipe.hpp"
-#include "crucible/lab/trainer.hpp"
-#include "crucible/util/display_scale.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
+#include "crucible/lab/recipe.hpp"
+#include "crucible/lab/pyenv.hpp"
+#include "crucible/lab/trainer.hpp"
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/runtime/builder.hpp"
-#include "crucible/runtime/registry.hpp"
 #include "crucible/session/store.hpp"
-
-struct GLFWwindow;
 
 namespace crucible::gui {
 
 class App {
 public:
-    /// `start` is the project to open, and `ask_trust` says the window has to
-    /// put the folder-trust question up itself because there was no terminal to
-    /// ask it on.
+    /// `skip_trust` says not to ask about a folder before working in it, which
+    /// is for a scripted run where there is nobody to answer.
     App(Config config, std::vector<std::string> warnings, bool skip_trust);
     ~App();
     App(const App&)            = delete;
     App& operator=(const App&) = delete;
 
-    /// Open the webview interface instead of the ImGui window. Same engine,
-    /// same configuration, same session -- a different thing drawing it. See
-    /// The window is the one people use; the web interface is in progress.
+    /// Open the window and run until it is closed. Returns a process exit code.
+    ///
+    /// The window is the platform's own webview on an embedded page, and it
+    /// is the only one: see webui.cpp.
     int run_web();
 
-    /// Open the window and run until it is closed. Returns a process exit code.
-    int run();
-
 private:
-    /// Which pane the main area is showing.
-    ///
-    /// No Experts pane: the sidebar section is called that, and managing them
-    /// is a settings page like the rest of the configuration. Two things called
-    /// Experts in one sidebar is a question the user should not have to answer.
-    enum class View { Chat, Cook, Create, History, Settings };
+    // --- the project ------------------------------------------------------
 
-    /// Which page of the settings. One list down the left and one page on the
-    /// right, which is the shape every desktop application settles on because
-    /// a single scrolling wall of switches cannot be navigated.
-    enum class SettingsPage {
-        General, Experts, Generation, Hardware, Runtimes, Training, Tools, About
-    };
-
-    // --- frame ------------------------------------------------------------
-    void draw();
-
-    /// The bar across the top: the fold toggle, the mark, which project is
-    /// open, the three views, and the way through to Settings.
-    ///
-    /// Takes no snapshot: everything on it is true of the window rather than of
-    /// what the engine is doing this second. What the engine is doing moved to
-    /// the side menu, over the models it is about.
-    void draw_topbar();
-    float topbar_height() const;
-
-    /// Open or close the side menu from the button in the top bar, remembering
-    /// the width it had so bringing it back does not reset it.
-    void toggle_sidebar();
-
-    void draw_sidebar(const Snapshot& snapshot);
-    void draw_splitter();
-
-    /// The delegator and the experts under it, and the line joining the two
-    /// while a turn is flowing. Drawn together because the connector needs both
-    /// ends before it can be drawn at all.
-    void draw_model_tree(const Snapshot& snapshot);
-
-    /// Go to a settings page, remembering where to come back to.
-    void show_settings(SettingsPage page);
-
-    /// The file an expert wants to change, as it is beside as it would be.
-    ///
-    /// Drawn under the transcript while the engine is parked waiting for an
-    /// answer. Two panels, two buttons, and no third option: the file stays as
-    /// it is, or it becomes the other one.
-    void draw_pending_edit(const PendingEdit& edit);
-
-    /// The one line a working view shows when there is nothing in it yet.
-    ///
-    /// Three states, one line each, no paragraph under any of them. Two are a
-    /// thing to go and fix -- there is no backend to run a model on, or no
-    /// model behind any expert -- and the third is the invitation. Which one
-    /// you are in is a fact about the machine, and the two that are fixable are
-    /// the button that takes you to where they are fixed.
-    void draw_readiness();
-
-    /// True when at least one backend module is installed, so a model can be
-    /// loaded at all. Cached: it is a look at the filesystem, and the answer
-    /// only changes when a runtime is built or removed from the settings page.
-    bool any_runtime_ = false;
-
-    /// The horizontal grab bar between the transcript and the composer, so the
-    /// box you type in can be sized like the sidebar rather than only ever
-    /// being as tall as what is already in it.
-    void draw_composer_splitter();
-
-    /// The sidebar's widths. Collapsed is a width below `sidebar_collapse_at`,
-    /// not a separate mode; between there and `sidebar_min_width` it is drawn
-    /// at the minimum, which is the gap that stops it flickering shut.
-    bool  sidebar_collapsed() const;
-    float sidebar_drawn_width() const;
-    float sidebar_min_width() const;
-
-    /// The width of the closed sidebar: two characters of dots, so what the
-    /// program is doing stays on the screen at every width.
-    float sidebar_rail_width() const;
-
-    /// The closed sidebar. See the comment on the definition.
-    void draw_sidebar_rail(const Snapshot& snapshot);
-    float sidebar_collapse_at() const;
-    void draw_chat(const Snapshot& snapshot);
-    void draw_cook(const Snapshot& snapshot);
-    void draw_expert_list();
-
-    /// The models a seat can be pointed at: the ones Crucible fine-tuned in the
-    /// Create tab first, then the ones in the models directory. Returns what was
-    /// picked this frame -- an empty string for "(none)" -- and nothing on every
-    /// other frame.
-    std::optional<std::string> draw_model_picker(const char* id, const std::string& current,
-                                                 float width);
-    void draw_history();
-
-    /// The Create tab: assembling a model rather than running one.
-    /// The Create tab, which is three screens rather than one.
-    ///
-    /// The list is what it opens on: the experts that have been made, with
-    /// what each is and where it got to. A recipe clicked from there opens its
-    /// own page, and `New` opens the wizard over the top of either. The test
-    /// window is a modal on its own, because talking to a candidate is a thing
-    /// you do to decide something, not a place you browse to.
-    void draw_create(const Snapshot& snapshot);
-    void draw_create_list();
-    void draw_create_detail(lab::Recipe recipe);
-    void draw_create_wizard();
-    void draw_create_test(const Snapshot& snapshot);
-
-    /// Put `recipe` in the wizard at `step` and ask for it to open next frame.
-    /// The one way in, so that every caller clears the search boxes the same
-    /// way -- results left over from the last visit are litter, not answers.
-    void draw_create_wizard_open(lab::Recipe recipe, int step);
-
-    /// One step of the wizard, drawn into whatever is current. Split out
-    /// because the wizard draws one of six and the chrome around them is the
-    /// same for all six.
-    void draw_create_step(lab::Recipe& recipe, int step);
-
-    /// Write a recipe to disk and refresh the list from it, so the list and
-    /// the page looking at it can never disagree about what was saved.
-    void lab_store(const lab::Recipe& recipe);
-
-    /// Put `recipe`'s file on the roster as a temporary seat, and take it off
-    /// again.
-    ///
-    /// There is one model host in the process -- llama.cpp's backend is
-    /// global -- so testing a candidate cannot mean standing up a second
-    /// engine beside the first. It means handing the engine a roster with one
-    /// more seat on it and pinning prompts there. The copy never reaches the
-    /// config file, so closing the window is the whole of the undo.
-    void lab_seat_test(const lab::Recipe& recipe);
-    void lab_unseat_test();
-
-    /// The hub search box and its results, for whichever step is asking.
-    /// Returns what was picked this frame, and nothing on every other frame.
-    std::optional<lab::Asset> draw_hub_picker(lab::hub::Kind kind, const char* placeholder);
-    void draw_settings();
-
-    /// The settings pages that are large enough to be worth their own file.
-    /// Generation is every knob llama.cpp takes; Hardware is what to run on;
-    /// Runtimes builds the backends that make hardware available at all.
-    void draw_settings_generation();
-    void draw_settings_hardware();
-    void draw_settings_runtimes();
-
-    /// The Python environment fine-tuning runs in: what is installed, and
-    /// the one button that installs or repairs it. A page of its own beside
-    /// Runtimes because it is the same kind of thing -- something large that
-    /// Crucible puts on the machine for a feature, which somebody will
-    /// eventually want to look at, fix or reclaim the disk from.
-    void draw_settings_training();
-
-    /// Notice a runtime that has just finished building, once.
-    ///
-    /// The builder registers what it made with ggml before it reports Done, so
-    /// the backend is live -- but every model already loaded picked its devices
-    /// when it loaded and is still on them. Reloading is what makes a GPU
-    /// installed from this screen take effect without restarting the window.
-    ///
-    /// Polled from the frame loop rather than from the Runtimes page, because a
-    /// build takes minutes and the user is expected to go and watch something
-    /// else while it runs.
-    void take_runtime_activation();
-
-    /// The bar under each of the two working views. Chat has a prompt box and
-    /// nothing else; Cook has the goal, the budget and the buttons that start
-    /// and stop it. They are separate because the two are separate actions and
-    /// one bar could only ever do one of them.
-    void draw_chat_composer(const Snapshot& snapshot);
-    void draw_cook_composer(const Snapshot& snapshot);
-
-    /// Tokens in and out this session, and how full the expert's context was on
-    /// the last turn. Under the box on both the chat and the cook screen.
-    void draw_usage_readout(const Snapshot& snapshot, float room, float column);
-
-    /// How much room the composer needs this frame, so the pane above it can be
-    /// given the rest. Computed rather than fixed: the boxes grow with what is
-    /// typed into them.
-    float composer_wanted_height(const Snapshot& snapshot);
-    float composer_height(const Snapshot& snapshot);
-
-    /// The height to give the text box inside the composer, or 0 to let it size
-    /// itself to what is typed. Non-zero exactly when the user has dragged the
-    /// composer to a height of their own, which the box then has to fill --
-    /// otherwise dragging it taller would just add empty space under a box that
-    /// stayed one line high.
-    float composer_input_height() const;
-
-    /// Measure the display the window is on and, when it differs from what the
-    /// fonts and style were built for, rebuild both. `rebuild_texture` once the
-    /// renderer exists and holds a font texture of its own.
-    void apply_display_scale(bool rebuild_texture);
-
-    /// Set while the composer splitter is being dragged, so the height it is
-    /// being dragged to survives the frame that computes it.
-    float composer_input_height_ = 0.0F;
-
-    /// What the composer was actually drawn at last frame, which is where a
-    /// drag starts from.
-    float composer_drawn_height_ = 0.0F;
-
-    void draw_new_expert_modal();
-    void draw_browse_modal();
-    void draw_trust_modal();
-
-    /// What the folder browser is being opened to choose. The same browser
-    /// serves both: picking a project and picking the models directory are the
-    /// same question, and two copies of a directory list would drift apart.
-    enum class BrowseFor { Project, ModelsDir };
-
-    /// Open the folder browser at `start`, or at the obvious place for `what`
-    /// when `start` is empty.
-    void open_browse(BrowseFor what, const std::filesystem::path& start = {});
-
-    /// One cook step: its verb, its summary, and the diff or output it expands
-    /// into.
-    void draw_cook_step(const CookStep& step, std::size_t index);
-
-    // --- actions ----------------------------------------------------------
-    void submit_prompt();
-    void begin_cook();
-
-    /// Stop whatever is running: a reply mid-flight, a cook, or a model that is
-    /// still coming off the disk.
-    ///
-    /// The last of those is the one that was missing. A thirty-gigabyte expert
-    /// is most of a minute of loading, and until the loader learned to be
-    /// interrupted there was no way to end that minute -- which is a program
-    /// that has frozen, from the only point of view that counts.
-    void stop_work();
-
-    /// Ask a turn's question again.
-    ///
-    /// The turn and everything after it goes, and the prompt is submitted
-    /// fresh. Truncating rather than appending is what makes this a re-ask
-    /// rather than a second ask: the replies that followed were answers in a
-    /// conversation that is now going to be a different one, and the expert
-    /// has to see the same context it saw the first time.
-    void retry_turn(std::size_t index);
-
-    /// Throw one turn away, question and answer together.
-    void delete_turn(std::size_t index);
-
-    /// Put the engine's conversation history back in step with the transcript.
-    ///
-    /// Called after anything that removes a turn. Without it the expert still
-    /// remembers an exchange the user has deleted from the screen, which is the
-    /// difference between deleting something and hiding it.
-    void rebuild_history();
-    void update_config(const std::function<void(Config&)>& change);
-    void persist_session();
-    void refresh_models();
-
-    /// Take any routing examples the delegator wrote for itself and put them in
-    /// the config, so a seat that has learned what it is for keeps that across
-    /// restarts. An expert added with `/newexpert` starts with the blurb the
-    /// user typed and earns its examples by being routed to.
-    void absorb_written_examples();
-
-    /// Post a line to the status strip. The last few only: this is a status
-    /// channel, not a log.
-    void say(std::string message);
-
-    /// Point Crucible at another directory: new history, new cook journal, new
-    /// workshop root. Refused while a cook is running, because the cook is
-    /// about the directory it started in.
-    ///
-    /// Goes through the same folder-trust store the terminal program uses. A
-    /// directory trusted in one face is trusted in the other.
-    void open_project(const std::filesystem::path& root);
-
-    /// Whether a project is open at all.
-    ///
-    /// Crucible starts with none: the window opens on no directory, the top bar
-    /// says so, and the one button there is Open Project. Everything a project
-    /// scopes -- the transcript, the cook, the history, the folder an expert may
-    /// touch -- is unavailable until one is chosen, which is the honest state
-    /// rather than quietly adopting whatever directory the launcher was in.
-    bool project_open() const { return store_ != nullptr; }
-
-    /// The open project's root, or nothing when none is open. Every caller that
-    /// used to read store_->project().root goes through this, because the store
-    /// is null half the time now.
+    /// The trusted directory being worked in, and the history folder beside
+    /// it. Both empty until a project is opened, which is a real state: the
+    /// program opens on nothing rather than guessing a folder.
     std::filesystem::path project_root() const;
     std::filesystem::path project_dir() const;
+    bool project_open() const { return store_ != nullptr; }
 
-    /// What to poke when the engine has news.
-    ///
-    /// The engine runs on its own thread and whatever is drawing may be
-    /// parked waiting for input; without a nudge the screen would not change
-    /// until the mouse moved, which during a model load is most of a minute.
-    /// Which nudge depends on who is drawing -- GLFW for the window, the
-    /// webview's dispatch queue for the web interface -- so the engine is
-    /// given this rather than either of them.
-    std::function<void()> wake_;
+    /// Open `root`, or -- when it has not been trusted yet -- put the question
+    /// up by setting `pending_trust_` and open nothing.
+    void open_project(const std::filesystem::path& root);
 
-    Config                  config_;
-    AppState                state_;
+    /// Reopen a stored conversation: back onto the screen and back into the
+    /// expert's context, appending to it rather than forking a new session.
+    /// Returns a reason it could not, or an empty string.
+    std::string resume_session(const std::string& id);
 
-    /// Null until a project is opened. See project_open().
-    std::unique_ptr<SessionStore> store_;
-    std::unique_ptr<Engine> engine_;
-    TrustStore              trust_;
-    GLFWwindow*             window_ = nullptr;
+    // --- state the session owns -------------------------------------------
 
-    View         view_          = View::Chat;
-    SettingsPage settings_page_ = SettingsPage::General;
+    /// Change the configuration: apply it, save it, and hand it to the engine.
+    /// The one path, so a change made anywhere means the same thing.
+    void update_config(const std::function<void(Config&)>& change);
 
-    /// Where the gear came from, so pressing it again goes back there. Settings
-    /// is a place you visit and leave, not a fourth tab you land in.
-    View         before_settings_ = View::Chat;
+    /// A line for the interface to show. A status channel, not a log.
+    void say(std::string message);
 
-    std::string prompt_;
-    std::string cook_goal_;
+    /// Rescan the models directory and what the lab has finished. Both answer
+    /// the same question -- what can a seat be pointed at -- so they are asked
+    /// together.
+    void refresh_models();
 
-    /// Width of the left column in pixels, dragged by the splitter. Per-session:
-    /// it is how the window is arranged right now, not a preference worth
-    /// writing to the config file. Below `sidebar_collapse_at()` the sidebar is
-    /// closed, which is why there is no separate "is it open" flag.
-    float sidebar_width_ = -1.0F;  ///< negative until the first frame sizes it
+    /// Write the conversation to the project's history, if anything changed.
+    void persist_session();
 
-    /// The display scale the fonts and style were last built for.
-    util::DisplayScale display_scale_{};
+    /// Fold in the worked examples the delegator wrote for new seats.
+    void absorb_written_examples();
 
-    // --- the lab ------------------------------------------------------------
+    /// Rebuild what the expert can see from what is on screen. Called after
+    /// anything that changes the transcript out from under it.
+    void rebuild_history();
+
+    void retry_turn(std::size_t index);
+    void delete_turn(std::size_t index);
+
+    // --- trying a fine-tune before keeping it -----------------------------
     //
-    // What the Create tab is assembling. Saved as it is filled in: gathering a
-    // few gigabytes of training data is not something anyone finishes in one
-    // sitting, and a recipe that only existed in memory would not survive it.
-    lab::Recipe lab_recipe_;
-    int         lab_step_ = 0;
+    // A model that has finished training is a file, not yet an expert. You
+    // talk to it first, on a seat that exists only while you are talking to
+    // it, and then decide. Keeping it is what puts it on the roster.
 
-    /// Which recipe the tab has open, by slug; empty is the list.
+    /// Seat `recipe_id`'s trained file so it can be asked something. Returns
+    /// a reason it could not, or an empty string.
     ///
-    /// The tab opens on the list because most visits are to look at what has
-    /// been made rather than to make something: a roster of experts is the
-    /// point of the thing, and a form was the first screen for as long as
-    /// there was nothing to list.
-    std::string lab_open_;
+    /// The seat is handed to the engine and never written to the config: a
+    /// seat called "(testing)" surviving a crash is exactly the litter this
+    /// avoids.
+    std::string begin_test(const std::string& recipe_id);
 
-    /// The wizard: whether to open it this frame, and whether it is up.
-    /// `lab_recipe_` is what it is filling in and `lab_step_` is where it has
-    /// got to.
-    bool lab_wizard_want_ = false;
-    bool lab_wizard_up_   = false;
+    /// Take that seat away again. Safe to call when there is none.
+    void end_test();
 
-    /// The test window: which recipe is in it, and where its conversation
-    /// starts in the engine's transcript. Everything before `lab_test_from_`
-    /// belongs to the project and is not drawn in the window.
-    std::string lab_test_;
-    bool        lab_test_want_ = false;
-    bool        lab_test_up_   = false;
-    std::size_t lab_test_from_ = 0;
-    std::string lab_test_prompt_;
+    /// Keep it: the recipe becomes finished and the model becomes an expert
+    /// the delegator can route to. Returns a reason it could not, or empty.
+    std::string keep_tested(const std::string& recipe_id);
 
-    /// The box on the training page for a file trained somewhere else. Still
-    /// here now that Crucible can train: a model fine-tuned with unsloth or
-    /// axolotl is a real model, and there is no reason the rest of the flow
-    /// should refuse to take it.
-    std::string lab_attach_;
+    /// The seat a candidate is tried on. One id for every test rather than
+    /// one per recipe, because only one can be open at a time.
+    static constexpr const char* kTestSeat = "lab-test";
 
-    /// The fine-tune in flight, and what installs what it needs.
-    ///
-    /// One of each: llama.cpp holds the card while a model is loaded and a
-    /// training run wants all of it, so two at once is a way to fail twice.
-    lab::Trainer            trainer_;
-    lab::pyenv::Installer   pyenv_installer_;
+    /// Which recipe is seated, so the interface can be told and so closing
+    /// the window knows there is something to undo.
+    std::string testing_;
 
-    /// The training environment as last measured. Reading it starts a Python
-    /// and imports torch, which is a second, so it is asked for when a page
-    /// that shows it opens rather than every frame.
-    lab::pyenv::Status pyenv_status_;
-    bool               pyenv_checked_ = false;
+    // --- is there a newer Crucible ----------------------------------------
+    //
+    // Read from the cache at startup, which costs a file read and no network,
+    // and refreshed at most once a day on a thread of its own.
+    void begin_update_check();
+    void collect_update_check();
 
-    /// The run whose result has already been written back to its recipe.
-    ///
-    /// A latch, because the trainer publishes Done for as long as nobody
-    /// dismisses it and the write must happen once: without this, every
-    /// frame after a run finishes would rewrite the recipe and re-scan the
-    /// models directory.
-    std::string lab_run_applied_;
-
-    /// Re-measure the environment on the next frame that needs it.
-    void refresh_pyenv(bool force = false);
-
-    /// Start `recipe` training, reporting why not if it cannot.
-    void start_training(const lab::Recipe& recipe);
-
-    /// llama.cpp's exporter and quantizer, for turning a trained model into a
-    /// GGUF. Either may be empty, and the run then stops at a model directory.
-    std::filesystem::path convert_script() const;
-    std::filesystem::path quantize_bin() const;
-
-    /// Every recipe on disk, so several models are in progress at once. The
-    /// point of the tab is a roster of subject experts -- math, physics,
-    /// programming -- and one at a time is not a roster.
-    std::vector<lab::Recipe> lab_saved_;
-    bool                     lab_saved_read_ = false;
-
-    /// The hub search box, its answer, and what went wrong with it.
-    std::string                 lab_query_;
-    std::vector<lab::hub::Item> lab_results_;
-    std::string                 lab_error_;
-    std::string                 lab_local_path_;
-
-    /// A search in flight. Hugging Face takes a second or two to answer and the
-    /// window must not stop drawing while it does, so the worker fills this in
-    /// and the next frame picks it up.
-    struct LabSearch {
-        std::mutex                  mutex;
-        std::vector<lab::hub::Item> items;
-        std::string                 error;
-        bool                        done = false;
-    };
-    std::shared_ptr<LabSearch> lab_searching_;
-
-    /// Whether there is a newer Crucible than this one.
-    ///
-    /// Read from the cache at startup, which costs a file read and no network,
-    /// and refreshed at most once a day on a thread of its own -- a version
-    /// check is never worth making the window wait. The answer shows as a mark
-    /// on the gear and in full under Settings -> About. See app/update.hpp.
     struct UpdateCheck {
         std::mutex    mutex;
         update::State state;
@@ -494,90 +143,41 @@ private:
     std::shared_ptr<UpdateCheck> update_checking_;
     update::State                update_;
 
-    /// True when the cached answer names a version newer than this build.
     bool update_available() const { return update::newer_than_this(update_); }
 
-    /// Ctrl+1..4 for the views and Ctrl+, for Settings, read once a frame.
-    void take_shortcuts();
+    // --- what it all is ----------------------------------------------------
 
-    /// Put the open project's name in the window title.
-    void name_the_window();
+    Config   config_;
+    AppState state_;
 
-    /// Start the daily check, if the config allows one. Cheap and safe to call
-    /// when it is off: it reads the cache and returns.
-    void begin_update_check();
+    std::unique_ptr<SessionStore> store_;   ///< null until a project is opened
+    std::unique_ptr<Engine>       engine_;
+    TrustStore                    trust_;
 
-    /// Take the answer from a finished check. Called once a frame.
-    void collect_update_check();
-
-    /// The width to reopen at. Set when the fold button closes the side menu,
-    /// because closing it leaves `sidebar_width_` at zero and reopening to a
-    /// hardcoded default would throw away a width the user chose.
-    float sidebar_restore_ = 0.0F;
-
-    /// Height the user has dragged the composer to, or 0 for "as tall as what
-    /// is typed in it". Same idea as the sidebar width and kept for the same
-    /// reason: an arrangement of this window, not a setting.
-    float composer_height_ = 0.0F;
-
-    /// Set when the transcript should jump to the bottom on the next frame.
+    /// What to poke when something changed and the screen should be redrawn.
     ///
-    /// A flag rather than an unconditional scroll: a user reading back through
-    /// an hour-old cook while a new one streams must not be yanked to the end
-    /// every time a token arrives.
-    bool follow_ = true;
+    /// The engine and the update check both run on their own threads and
+    /// whatever is drawing may be parked waiting for input. Which nudge that
+    /// is depends on who is drawing, so they are given this rather than the
+    /// webview's dispatch queue directly.
+    std::function<void()> wake_;
 
-    /// Which cook steps are expanded to show their diff or output. By index
-    /// into the journal, which is stable for the life of a cook.
-    std::vector<bool> expanded_;
-
-    /// The new-expert dialog's two boxes, and what to say when it is refused.
-    bool        expert_modal_open_ = false;
-    std::string new_expert_name_;
-    std::string new_expert_model_;   ///< what the new seat will run, or empty
-    std::string new_expert_blurb_;
-    std::string expert_error_;
-
-    /// The folder browser: where it is looking, what it is choosing, and the
-    /// name of a folder to create.
-    bool                  browse_modal_open_ = false;
-    BrowseFor             browse_for_        = BrowseFor::Project;
-    std::filesystem::path browse_;
-    std::string           browse_text_;
-    std::string           project_error_;
-
-    /// A directory waiting on the trust question, and the answer to it.
+    /// The folder waiting to be trusted, and whether to ask at all.
     std::optional<std::filesystem::path> pending_trust_;
+    bool                                 skip_trust_ = false;
+    std::string                          project_error_;
 
-    /// Set by the Jump to latest button; acted on at the top of the next frame,
-    /// where the pane's scroll range is known.
-    bool jump_to_end_ = false;
-
-    /// `--no-trust`: open whatever is asked for without the folder question.
-    /// For scripted runs and for driving the window in tests, where there is
-    /// nobody to answer a modal.
-    bool skip_trust_ = false;
-
-    /// The runtime manager's state. Scanned on first sight of the page rather
-    /// than at startup: it touches the filesystem, and most sessions never open
-    /// it. The builder outlives a page switch on purpose -- a CUDA build takes
-    /// minutes, and clicking away from the page must not abandon it.
-    RuntimeBuilder             runtime_builder_;
-    std::vector<RuntimeStatus> runtimes_;
-    std::string                runtime_error_;
-    bool                       runtimes_scanned_ = false;
-
-    /// One-shot latch for the above: Done stays Done until it is dismissed, and
-    /// reloading every model on each of those frames would be a loop.
-    bool                       runtime_activated_ = false;
+    /// Long-running installs the interface can start and watch. One of each,
+    /// because each is one machine-wide thing: two CUDA builds at once would
+    /// write the same files.
+    RuntimeBuilder        runtime_builder_;
+    lab::pyenv::Installer pyenv_installer_;
+    lab::Trainer          trainer_;
 
     std::vector<ModelFile>   models_;   ///< the models directory, rescanned on demand
-
-    /// What the lab has finished, offered beside them. Rescanned with the
-    /// models directory, since both answer the same question.
-    std::vector<lab::Made>   lab_made_;
+    std::vector<lab::Made>   lab_made_; ///< what the lab has finished
     std::vector<std::string> notices_;
-    std::size_t persisted_turns_ = 0;
+    std::size_t              persisted_turns_ = 0;
 };
 
 }  // namespace crucible::gui

@@ -6,6 +6,59 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.7.0 — 2026-10-04
+
+**The window is the platform's own webview.** Dear ImGui, GLFW and OpenGL are
+gone. Crucible draws itself in WebView2 on Windows, WKWebView on macOS and
+WebKitGTK on Linux, on a page compiled into the binary -- no server, no port,
+no browser tab, and nothing fetched at runtime. There is no `--ui` flag,
+because there is nothing left to choose between. On Linux this adds one
+dependency, `libwebkit2gtk-4.1`, which the installer checks for and names.
+
+Everything the window did, the page does: chat, cook, create, history, and all
+eight settings pages. Replies stretch the full width of the transcript with a
+margin rather than sitting in a narrow column, and code blocks are colored.
+
+**Four things that quietly stopped happening.** The old interface did them
+once a frame and a page has no frames: conversations were not written to
+history, the delegator's routing examples were not folded back into the
+config, the daily update check never ran, and a compute runtime could not be
+built from the settings screen. All four are back, on the one thread that
+corresponds to a frame.
+
+**Trying a fine-tune before keeping it.** A trained model opens a window that
+really runs it, on a seat that exists only while the window is open and is
+never written to the config. **Finish** keeps it and gives it a seat the
+delegator can route to; **Edit** goes back to the fine-tune parameters.
+
+**A folder path can be typed or pasted.** The picker's path line is an input
+now. Clicking down from the home folder is fine for a folder you are looking
+for and tedious for one you already know.
+
+**Fixed:** text interpolated into an HTML attribute escaped only `<` and `>`,
+so a quote in a model name or a Huggingface search result could break out of
+the attribute it was in. CMake keywords were never highlighted, because the
+case-folding uppercased a word and compared it against a lowercase list.
+Counts read "1 turns".
+
+**Internal:** `util/markdown`, `util/syntax`, `util/code_lines` and
+`util/display_scale` are deleted -- about 2,300 lines that existed to serve
+the ImGui renderer. The first three are JavaScript in `ui/render.js`, which is
+a separate file from the page so that a test can run it without a document;
+`tests/test_ui_js.cpp` evaluates it in JavaScriptCore, the engine WebKitGTK
+gives the webview, so their cases carried across rather than being dropped.
+
+**Known issues.** The interface is new and this release does not pretend
+otherwise:
+
+- The sidebar does not collapse yet.
+- A prompt or a reply cannot be canceled, asked again or deleted from the
+  transcript. The engine can do all three; the page has no buttons for them.
+- Opening **Create** or **Settings** stalls for about a second the first time.
+  Each fetches what it needs on the way in, on the thread that draws.
+- The composer can shift upward, and because it is drawn in the background
+  color the move reads as the window jumping rather than as a control moving.
+
 ## 0.6.5 — 2026-09-28
 
 

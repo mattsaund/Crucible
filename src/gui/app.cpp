@@ -1,31 +1,28 @@
 // SPDX-License-Identifier: MIT
 //
-// The window and the frame: opening it, one pass of drawing, and the actions
-// the panels call back into.
+// The session: everything Crucible is, apart from what draws it.
 //
-// The panels themselves are in gui/panels/, one file each, and the helpers
-// they are written with are in gui/widgets.hpp. What stays here is everything
-// that owns state rather than draws it -- which is why an action like
-// open_project or update_config lives in this file and nothing in panels/
-// touches config_ directly.
+// Config, engine, trust, the session store, which project is open and what is
+// allowed to happen to it. The interface lives in webui.cpp and reaches all of
+// it through api::Surface rather than through these members, which is what
+// lets a second interface -- the Python orchestrator, a test harness -- exist
+// without this file knowing.
+//
+// It was an ImGui window and a dozen panel files until the web interface
+// reached parity. The panels are gone; what they called back into is this.
 #include "app.hpp"
 
 #include <algorithm>
 #include <cstdio>
+#include <optional>
 #include <system_error>
 #include <thread>
 #include <utility>
 
-#include <GLFW/glfw3.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_opengl3.h>
-#include <imgui_stdlib.h>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/util/format.hpp"
-#include "theme.hpp"
-#include "widgets.hpp"
 
 namespace crucible::gui {
 
@@ -43,9 +40,8 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
 
     state_.configure_seats(config_);
 
-    // The ImGui window is the default, so that is what wake_ starts as. The
-    // web interface replaces it for the life of its own loop.
-    wake_   = [] { glfwPostEmptyEvent(); };
+    // Set by whatever is drawing. Nothing is, until run_web puts the
+    // webview's dispatch queue here.
     engine_ = std::make_unique<Engine>(config_, state_, [this] {
         if (wake_) {
             wake_();
@@ -56,26 +52,9 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     // state is refused, which is the right answer to "before you opened one".
     engine_->set_project({}, {});
 
-    // The browser has to start somewhere, and the most recent project is the
-    // best guess at where this person keeps their work -- offered as a starting
-    // directory, not opened.
-    const std::vector<Project> recent = recent_projects(1);
-    browse_      = recent.empty() ? paths::expand_user("~") : recent.front().root;
-    browse_text_ = browse_.string();
     refresh_models();
 }
 
-void App::name_the_window() {
-    // "thing — Crucible", like every editor: the window list and the dock read
-    // the title, and four windows all called Crucible are four windows nobody
-    // can tell apart.
-    if (window_ == nullptr) {
-        return;
-    }
-    const std::string name = store_ ? store_->project().name : std::string();
-    const std::string title = name.empty() ? "Crucible" : name + " \xE2\x80\x94 Crucible";
-    glfwSetWindowTitle(window_, title.c_str());
-}
 
 std::filesystem::path App::project_root() const {
     return store_ ? store_->project().root : std::filesystem::path{};
@@ -103,10 +82,6 @@ void App::say(std::string message) {
 void App::refresh_models() {
     models_      = scan_models(config_.resolved_models_dir());
     lab_made_    = lab::finished_models();
-    // Asked here rather than every frame: both are the same question -- what is
-    // on this machine that a prompt could actually be run on -- and both change
-    // only when the user goes and changes them.
-    any_runtime_ = RuntimeRegistry::any_installed();
 }
 
 void App::update_config(const std::function<void(Config&)>& change) {
@@ -194,14 +169,9 @@ void App::open_project(const std::filesystem::path& root) {
     state_.set_cook(nullptr);
     state_.set_project_usage(store_->project_usage());
     persisted_turns_ = 0;
-    expanded_.clear();
     notices_.clear();
-    follow_      = true;
-    browse_      = project.root;
-    browse_text_ = browse_.string();
 
     remember_project(project.root);
-    name_the_window();
     project_error_.clear();
     // The name, not the path. The path is in the top bar's tooltip and in
     // Settings; a notice is a line in the transcript and a three-line path
@@ -212,30 +182,6 @@ void App::open_project(const std::filesystem::path& root) {
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
-
-void App::submit_prompt() {
-    const std::string text = format::trim(prompt_);
-    if (text.empty()) {
-        return;
-    }
-    prompt_.clear();
-    follow_ = true;
-
-    // A cook waiting on a question takes the next thing typed as its answer.
-    // The screen is showing a question; nothing else would be a reasonable
-    // reading of a line typed under it.
-    if (const std::shared_ptr<const Cook> cook = state_.cook();
-        cook && cook->state == CookState::Asking) {
-        engine_->answer_cook(text);
-        return;
-    }
-    engine_->submit(text);
-}
-
-void App::stop_work() {
-    engine_->cancel();
-    say("stopping");
-}
 
 void App::retry_turn(std::size_t index) {
     if (engine_->is_busy()) {
@@ -248,8 +194,6 @@ void App::retry_turn(std::size_t index) {
     const std::string prompt = snapshot.turns[index].prompt;
     state_.truncate_turns(index);
     rebuild_history();
-    expanded_.clear();
-    follow_ = true;
     engine_->submit(prompt);
 }
 
@@ -283,185 +227,145 @@ void App::rebuild_history() {
     persisted_turns_ = 0;
 }
 
-void App::begin_cook() {
-    // A cook is an hour of work on a directory, and its journal is keyed to
-    // one. Without a project there is nothing for it to be about.
-    if (!project_open()) {
-        say("open a project first -- a cook works on a folder");
-        return;
+std::string App::resume_session(const std::string& id) {
+    if (!store_) {
+        return "no project is open, and conversations are kept per project";
     }
-    const std::string goal = format::trim(cook_goal_);
-    if (goal.empty()) {
-        say("a cook needs a goal");
-        return;
+    if (engine_->is_busy() || engine_->cooking()) {
+        return "finish what is running before opening another conversation";
     }
-    cook_goal_.clear();
-    follow_ = true;
-    view_   = View::Cook;
-    expanded_.clear();
-    // No budget. A cook runs until it finishes or until one of the two Stop
-    // buttons is pressed; the minutes slider that used to set this is gone.
-    engine_->start_cook(goal, 0, project_root());
+
+    std::vector<Turn> turns;
+    TokenUsage        usage;
+    std::string       error;
+    if (!store_->load(id, turns, usage, error)) {
+        return error.empty() ? "could not read that conversation" : error;
+    }
+
+    // What is on screen and what the expert can see are set together. Putting
+    // the turns back without the history would give an expert a transcript it
+    // has no memory of, and it would answer the next question as though the
+    // conversation had not happened.
+    persist_session();
+    state_.clear_turns();
+    for (Turn& turn : turns) {
+        state_.restore_turn(std::move(turn));
+    }
+    store_->adopt(id);
+    rebuild_history();
+    persisted_turns_ = state_.snapshot().turns.size();
+    return {};
 }
 
 // ---------------------------------------------------------------------------
-// One frame
+// Trying a fine-tune before keeping it
 // ---------------------------------------------------------------------------
 
-float App::composer_wanted_height(const Snapshot& snapshot) {
-    if (view_ != View::Chat && view_ != View::Cook) {
-        return 0.0F;
-    }
-    const ImGuiStyle& style = ImGui::GetStyle();
-    // The child's own padding, plus the border it draws inside it. Leaving the
-    // border out is two pixels of overflow, which the child answers with a
-    // scrollbar down the side of the box you type in.
-    const float pad   = style.WindowPadding.y * 2.0F + style.ChildBorderSize * 2.0F;
-    const float frame = ImGui::GetFrameHeight();
+namespace {
 
-    // The width the box will actually be given, so the wrapping measured here
-    // is the wrapping that gets drawn. The reading column, not the window: the
-    // composer is capped with the transcript above it.
-    const float column = reading_column(ImGui::GetContentRegionAvail().x);
-    const float inner  = std::max(column - style.WindowPadding.x * 2.0F, em(8.0F));
-    const float beside = std::max(inner - em(5.0F) - style.ItemSpacing.x, em(6.0F));
-
-    const std::shared_ptr<const Cook> cook = snapshot.cook;
-    const bool asking = cook && cook->state == CookState::Asking;
-
-    // Both composers carry a line under the box -- tokens in and out, and how
-    // full the context is -- and each box only gets the height asked for here.
-    // Leave that line out and it is drawn past the bottom edge of the child and
-    // clipped away, which looks exactly like a readout that was never written.
-    const float readout = ImGui::GetTextLineHeightWithSpacing();
-
-    if (view_ == View::Chat || asking) {
-        return pad + grow_input_height(prompt_, beside, kComposerLines) + readout;
-    }
-    if (engine_->cooking()) {
-        return pad + frame + readout;   // the two stop buttons, and the count
-    }
-    // The goal box with the Cook button beside it -- one row, the same shape as
-    // the chat bar. It used to be two, with a minutes slider and a checkbox on
-    // the second; reserving room for that row after it was removed left an
-    // empty strip under the box.
-    return pad + grow_input_height(cook_goal_, beside, kComposerLines) + readout;
-}
-
-/// The composer's height, kept to something the window can actually spare.
-///
-/// Two sources, in order. A height the user has dragged the splitter to wins,
-/// because they said so. Otherwise it is measured from what has been typed, as
-/// it always was.
-///
-/// Either way it is capped: a box grown to its full height in a short window
-/// would leave the pane above it nothing, so the transcript you are typing into
-/// would disappear as you typed. A measured box may take half the window; one
-/// dragged by hand may take four fifths, since at that point it is a deliberate
-/// choice rather than a side effect of a long paste.
-float App::composer_height(const Snapshot& snapshot) {
-    const float wanted = composer_wanted_height(snapshot);
-    if (wanted <= 0.0F) {
-        return 0.0F;   // this view has no composer
-    }
-    const float room = ImGui::GetContentRegionAvail().y;
-    if (room <= 0.0F) {
-        return wanted;
-    }
-    if (composer_height_ > 0.0F) {
-        const float floor_at = ImGui::GetFrameHeight()
-                             + ImGui::GetStyle().WindowPadding.y * 2.0F
-                             + ImGui::GetStyle().ChildBorderSize * 2.0F;
-        return std::clamp(composer_height_, floor_at, room * 0.8F);
-    }
-    return std::min(wanted, room * 0.5F);
-}
-
-float App::composer_input_height() const {
-    return composer_input_height_;
-}
-
-/// The grab bar between the transcript and the composer.
-///
-/// The sidebar's splitter turned sideways, and deliberately the same thing to
-/// use: hover it, hold it, move the mouse. Dragging up makes the box taller,
-/// which is the direction that matches the edge being moved.
-void App::draw_composer_splitter() {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::to_vec(theme::kFlame));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::to_vec(theme::kFlameBright));
-    ImGui::Button("##composer-splitter", ImVec2(-FLT_MIN, em(0.35F)));
-    ImGui::PopStyleColor(3);
-
-    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-    }
-    ImGui::SetItemTooltip("Drag to resize the box you type in");
-
-    if (ImGui::IsItemActive()) {
-        // Seeded from whatever the box is right now, so the first pixel of drag
-        // moves the edge that is on screen rather than jumping to some
-        // remembered height from earlier in the session.
-        if (composer_height_ <= 0.0F) {
-            composer_height_ = composer_drawn_height_;
+/// The recipe with that id, from what is on disk.
+std::optional<lab::Recipe> recipe_by_id(const std::string& id) {
+    for (const lab::Recipe& saved : lab::saved_recipes()) {
+        if (saved.id == id) {
+            return saved;
         }
-        composer_height_ -= ImGui::GetIO().MouseDelta.y;
-        // Kept explicit and at least one row tall. Letting it fall through zero
-        // would hand the composer back to its measured height mid-drag, which
-        // reads as the box snapping away from the mouse.
-        composer_height_ = std::max(composer_height_,
-                                    ImGui::GetFrameHeight()
-                                        + ImGui::GetStyle().WindowPadding.y * 2.0F);
     }
+    return std::nullopt;
 }
 
-void App::open_browse(BrowseFor what, const std::filesystem::path& start) {
-    browse_for_ = what;
-    browse_     = start;
-    if (browse_.empty()) {
-        browse_ = what == BrowseFor::ModelsDir ? config_.resolved_models_dir()
-                                               : project_root();
+}  // namespace
+
+std::string App::begin_test(const std::string& recipe_id) {
+    const std::optional<lab::Recipe> recipe = recipe_by_id(recipe_id);
+    if (!recipe) {
+        return "no such expert";
     }
-    // A path that has gone missing would leave the list empty with nothing to
-    // click, so the browser falls back to somewhere that certainly exists.
+    if (recipe->trained_path.empty()) {
+        return "that one has not produced a file yet";
+    }
     std::error_code ec;
-    if (!std::filesystem::is_directory(browse_, ec)) {
-        browse_ = paths::expand_user("~");
+    if (!std::filesystem::exists(recipe->trained_path, ec)) {
+        return "the trained file is not where the recipe says it is:\n"
+               + recipe->trained_path;
     }
-    browse_text_       = browse_.string();
-    project_error_.clear();
-    browse_modal_open_ = true;
+    if (engine_->is_busy() || engine_->cooking()) {
+        return "finish what is running first";
+    }
+
+    Config edited = config_;
+    Expert expert;
+    expert.id    = kTestSeat;
+    expert.name  = recipe->name + " (testing)";
+    expert.blurb = recipe->purpose.empty()
+                       ? std::string("A fine-tune being tried before it is kept.")
+                       : recipe->purpose;
+
+    std::string error;
+    if (!edited.roster.add(std::move(expert), error)) {
+        return error;
+    }
+    ModelParams params;
+    params.model                = recipe->trained_path;
+    edited.experts[ExpertId(kTestSeat)] = params;
+
+    // To the engine and nowhere else. update_config would write this to the
+    // config file, and the seat is meant to last exactly as long as the
+    // window that asked for it.
+    engine_->apply_config(edited);
+    testing_ = recipe_id;
+    return {};
 }
 
-void App::take_shortcuts() {
-    // Ctrl and a digit for the views, Ctrl+comma for settings -- the two
-    // conventions every desktop application already taught the user. A chord
-    // rather than a bare key because the thing the keyboard is usually doing
-    // here is typing a prompt, and a bare 1 belongs to the box.
-    //
-    // IsKeyChordPressed asks ImGui rather than GLFW, so a chord pressed while a
-    // text box has focus still arrives, and one pressed while a modal is up
-    // does not: switching tabs out from under the folder-trust question would
-    // leave it unanswered and the project unopened.
-    struct Jump { ImGuiKeyChord chord; View view; };
-    static const std::array<Jump, 4> kJumps{{
-        {ImGuiMod_Ctrl | ImGuiKey_1, View::Chat},
-        {ImGuiMod_Ctrl | ImGuiKey_2, View::Cook},
-        {ImGuiMod_Ctrl | ImGuiKey_3, View::Create},
-        {ImGuiMod_Ctrl | ImGuiKey_4, View::History},
-    }};
-    for (const Jump& jump : kJumps) {
-        if (ImGui::IsKeyChordPressed(jump.chord)) {
-            view_ = jump.view;
-        }
+void App::end_test() {
+    if (testing_.empty()) {
+        return;
     }
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) {
-        if (view_ == View::Settings) {
-            view_ = before_settings_;
-        } else {
-            show_settings(settings_page_);
-        }
+    testing_.clear();
+    // The real configuration back, which is the one that was never changed.
+    engine_->apply_config(config_);
+}
+
+std::string App::keep_tested(const std::string& recipe_id) {
+    std::optional<lab::Recipe> recipe = recipe_by_id(recipe_id);
+    if (!recipe) {
+        return "no such expert";
     }
+    end_test();
+
+    recipe->stage       = lab::Stage::Finished;
+    recipe->finished_at = lab::now_seconds();
+    std::string error;
+    if (!lab::save(*recipe, error)) {
+        return error;
+    }
+
+    // And a seat, which is what keeping it is for. Skipped where the roster
+    // already has one by that name: keeping the same expert twice should not
+    // produce two of it.
+    if (config_.roster.find(recipe->name)) {
+        say(recipe->name + " is finished");
+        refresh_models();
+        return {};
+    }
+
+    Config edited = config_;
+    Expert expert;
+    expert.name  = recipe->name;
+    expert.blurb = recipe->purpose;
+    if (!edited.roster.add(expert, error)) {
+        return error;
+    }
+    const ExpertId id = make_expert_id(recipe->name);
+    ModelParams    params;
+    params.model       = recipe->trained_path;
+    edited.experts[id] = params;
+    update_config([&edited](Config& config) { config = edited; });
+
+    // So the delegator has something to route on besides the name.
+    engine_->write_examples(id);
+    say(recipe->name + " is finished and has joined the experts");
+    refresh_models();
+    return {};
 }
 
 void App::begin_update_check() {
@@ -477,14 +381,16 @@ void App::begin_update_check() {
     // be a worse bug than the one it is trying to tell you about.
     auto check = std::make_shared<UpdateCheck>();
     update_checking_ = check;
-    std::thread([check]() {
+    std::thread([this, check]() {
         update::State state = update::refresh(/*allowed_to_ask=*/true);
         {
             const std::lock_guard<std::mutex> lock(check->mutex);
             check->state = std::move(state);
             check->done  = true;
         }
-        glfwPostEmptyEvent();
+        if (wake_) {
+            wake_();
+        }
     }).detach();
 }
 
@@ -498,376 +404,14 @@ void App::collect_update_check() {
     }
     update_ = update_checking_->state;
     update_checking_.reset();
-}
 
-void App::draw() {
-    const Snapshot snapshot = state_.snapshot();
-
-    collect_update_check();
-    take_shortcuts();
-
-    // Negative means "never sized", not "closed". Zero is a width the user can
-    // now reach by dragging the splitter to the edge, and testing for <= 0 here
-    // would spring the sidebar back open on the very next frame.
-    if (sidebar_width_ < 0.0F) {
-        sidebar_width_ = em(17.0F);
+    // Said once, when the answer comes back. The interface has no other way
+    // to learn this -- it is not part of the engine's state -- and a version
+    // check nobody is told about is a version check not worth making.
+    if (update_available()) {
+        say("Crucible " + update_.latest + " is out  ·  "
+            + (update_.page.empty() ? update::releases_url() : update_.page));
     }
-
-    // One window filling the viewport. Crucible is an application, not a
-    // collection of floating panels, and a desktop app that opens with its own
-    // windows scattered over the screen looks like a debug build.
-    //
-    // No padding on it: the top bar has to run edge to edge, and a window that
-    // insets its children by sixteen pixels cannot have a bar at the top -- it
-    // has a bar with a gutter around it, which reads as a floating strip rather
-    // than as the top of the window.
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("crucible", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
-    ImGui::PopStyleVar();
-
-    draw_topbar();
-
-    // Everything below the bar. A child of its own so the sidebar and the main
-    // pane both measure their height against what is left rather than against
-    // the window, which is what stops the composer being pushed off the bottom
-    // by exactly the height of the bar.
-    //
-    // It carries the margin the root window used to. The root cannot: a bar
-    // that runs edge to edge needs a window with no padding, and the panels
-    // under it still need to be held off the glass.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em(0.75F), em(0.6F)));
-    ImGui::BeginChild("body", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::PopStyleVar();
-    draw_sidebar(snapshot);
-    draw_splitter();
-
-    ImGui::BeginChild("main", ImVec2(0, 0));
-    {
-        const float composer = composer_height(snapshot);
-        const bool  has_composer = composer > 0.0F;
-        // The splitter sits between the two, so the pane has to give up its
-        // height as well as the composer's.
-        const float bar = has_composer ? em(0.35F) + ImGui::GetStyle().ItemSpacing.y
-                                       : 0.0F;
-        composer_drawn_height_ = composer;
-
-        ImGui::BeginChild("pane", ImVec2(0, -(composer + bar)),
-                          ImGuiChildFlags_Borders);
-
-        // A reading column inside the panel, rather than a narrow panel.
-        //
-        // The two are not the same picture. Narrowing the panel leaves a strip
-        // of bare window on either side of a floating box; narrowing the text
-        // inside a panel that still reaches both edges is a page with margins,
-        // which is what every book and every document view is. The panel frames
-        // the working area either way -- only the measure changes.
-        //
-        // AutoResizeY because the column has to be as tall as what is in it and
-        // the panel behind it is what scrolls.
-        //
-        // Settings is the exception and stays full width: it is a form, not
-        // prose. Its rows are a control and a label side by side, and squeezing
-        // those into a measure meant for sentences puts a file path in a box
-        // too narrow to read one in.
-        if (view_ == View::Settings) {
-            draw_settings();
-        } else if (view_ == View::Create) {
-            // Full width, for the same reason Settings is: a rail of steps with
-            // a form beside it is not prose, and a reading measure squeezes
-            // both into the middle of the window.
-            draw_create(snapshot);
-        } else {
-            const float room = ImGui::GetContentRegionAvail().x;
-            const float col  = reading_column(room);
-            if (col < room) {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (room - col) * 0.5F);
-            }
-            ImGui::BeginChild("column", ImVec2(col, 0), ImGuiChildFlags_AutoResizeY);
-            switch (view_) {
-                case View::Chat:     draw_chat(snapshot); break;
-                case View::Cook:     draw_cook(snapshot); break;
-                case View::Create:   break;               // handled above
-                case View::History:  draw_history();      break;
-                case View::Settings: break;               // handled above
-            }
-            ImGui::EndChild();
-        }
-        // Following the bottom, but only while the user is already there.
-        // Yanking someone reading back through an hour-old cook to the end
-        // every time a token arrives is the single most irritating thing a
-        // streaming view can do.
-        //
-        // "There" is a slack of a few lines rather than four pixels: a reader
-        // who nudged the wheel once is still at the bottom and still wants to
-        // be carried, and four pixels said they were not.
-        const bool streams_here = view_ == View::Chat || view_ == View::Cook;
-        const float slack   = em(4.0F);
-        const bool  at_end  = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - slack;
-        const bool  can_jump = streams_here && ImGui::GetScrollMaxY() > slack && !at_end;
-        if (jump_to_end_) {
-            jump_to_end_ = false;
-            ImGui::SetScrollY(ImGui::GetScrollMaxY());
-        } else if (follow_ && streams_here && at_end) {
-            ImGui::SetScrollHereY(1.0F);
-        }
-        // Measured here, inside the pane, and used after it closes: a button
-        // drawn in the pane would scroll away with the conversation, which is
-        // the one place a "jump to the end" control must not be.
-        const ImVec2 pane_at   = ImGui::GetWindowPos();
-        const ImVec2 pane_size = ImGui::GetWindowSize();
-        ImGui::EndChild();
-
-        // Scrolled away from a conversation that is still moving. Everything
-        // else on this screen is flat, so this is the one floating thing in the
-        // window -- which is the point: it is the only control that is about
-        // where you are rather than about what is being said.
-        if (can_jump) {
-            const ImGuiStyle& style = ImGui::GetStyle();
-            const ImVec2 here = ImGui::GetCursorScreenPos();
-            const char*  label = "Jump to latest";
-            const float  width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 3.0F;
-            const float  tall  = ImGui::GetFrameHeight();
-            ImGui::SetCursorScreenPos(ImVec2(pane_at.x + (pane_size.x - width) * 0.5F,
-                                             pane_at.y + pane_size.y - tall - em(0.8F)));
-            ImGui::PushStyleColor(ImGuiCol_Button, theme::to_vec(theme::kRaised));
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::to_vec(theme::kText));
-            if (ImGui::Button(label, ImVec2(width, tall))) {
-                jump_to_end_ = true;
-                follow_      = true;
-            }
-            ImGui::PopStyleColor(2);
-            ImGui::SetCursorScreenPos(here);
-        }
-
-        if (has_composer) {
-            draw_composer_splitter();
-        }
-
-        // The box fills a height the user chose, and sizes itself to the text
-        // otherwise. Worked out here, where the composer's final height is
-        // known, rather than inside each composer where it is not.
-        composer_input_height_ = 0.0F;
-        if (has_composer && composer_height_ > 0.0F) {
-            const ImGuiStyle& style = ImGui::GetStyle();
-            composer_input_height_ =
-                std::max(composer - style.WindowPadding.y * 2.0F
-                             - style.ChildBorderSize * 2.0F, 0.0F);
-        }
-
-        if (view_ == View::Chat) {
-            draw_chat_composer(snapshot);
-        } else if (view_ == View::Cook) {
-            draw_cook_composer(snapshot);
-        }
-    }
-    ImGui::EndChild();
-    ImGui::EndChild();
-
-    draw_new_expert_modal();
-    draw_browse_modal();
-    draw_trust_modal();
-    ImGui::End();
-}
-
-// ---------------------------------------------------------------------------
-// The window
-// ---------------------------------------------------------------------------
-
-namespace {
-
-/// Set by GLFW when the window lands on a display with another scale, and acted
-/// on at the top of the next frame, where rebuilding the fonts is safe.
-bool g_display_changed = false;
-
-}  // namespace
-
-void App::apply_display_scale(bool rebuild_texture) {
-    float content_x = 1.0F;
-    float content_y = 1.0F;
-    glfwGetWindowContentScale(window_, &content_x, &content_y);
-    int window_w = 0;
-    int window_h = 0;
-    int fb_w     = 0;
-    int fb_h     = 0;
-    glfwGetWindowSize(window_, &window_w, &window_h);
-    glfwGetFramebufferSize(window_, &fb_w, &fb_h);
-    const util::DisplayScale scale = util::display_scale(content_x, window_w, fb_w);
-
-    // A move between two displays of the same scale changes nothing, and the
-    // rebuild is not free: every face is rasterized again.
-    if (rebuild_texture && scale.layout == display_scale_.layout
-        && scale.density == display_scale_.density) {
-        return;
-    }
-    display_scale_ = scale;
-
-    if (rebuild_texture) {
-        ImGui_ImplOpenGL3_DestroyFontsTexture();
-    }
-    theme::load_fonts(scale.layout, scale.density);
-    if (rebuild_texture) {
-        ImGui_ImplOpenGL3_CreateFontsTexture();
-    }
-
-    // The style from its defaults every time: ScaleAllSizes multiplies, so
-    // scaling an already-scaled style would compound with every move.
-    ImGui::GetStyle() = ImGuiStyle();
-    theme::apply();
-    ImGui::GetStyle().ScaleAllSizes(scale.layout);
-}
-
-int App::run() {
-    glfwSetErrorCallback([](int code, const char* description) {
-        std::fprintf(stderr, "crucible: glfw error %d: %s\n", code, description);
-    });
-    if (glfwInit() == GLFW_FALSE) {
-        std::fprintf(stderr, "crucible: could not open a window. On Linux this "
-                             "usually means there is no display, or no OpenGL driver.\n");
-        return 1;
-    }
-
-    // GL 3.2 core: the oldest thing ImGui's backend is happy with, and old
-    // enough that a decade-old integrated chip and a virtual machine both have
-    // it. There is nothing here that wants a newer one.
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-
-    // The name the desktop identifies this window by, and it has to match
-    // StartupWMClass in packaging/linux/crucible.desktop.in. Without it the running
-    // window is a different application from the icon that launched it: the
-    // dock shows two entries, one of them generic, and the launcher never
-    // stops looking like it is still starting up.
-    //
-    // Guarded because the hints arrived in different GLFW releases and the
-    // system's GLFW is preferred over the vendored one where there is one.
-#ifdef GLFW_X11_CLASS_NAME
-    glfwWindowHintString(GLFW_X11_CLASS_NAME, "crucible");
-    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "crucible");
-#endif
-#ifdef GLFW_WAYLAND_APP_ID
-    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "crucible");
-#endif
-
-    // Opened hidden and sized once it exists, because the size depends on the
-    // display scale and only a real window can say what that is: whether its
-    // units are pixels (Windows, X11) or points over a denser framebuffer (a
-    // Mac, Wayland) is not something the monitor alone reports.
-    //
-    // SCALE_TO_MONITOR has Windows keep the window the same size in points when
-    // it is dragged to a display with another scale, where it would otherwise
-    // keep its pixels and grow or shrink.
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-#ifdef GLFW_SCALE_TO_MONITOR
-    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
-#endif
-    window_ = glfwCreateWindow(1280, 820, "Crucible", nullptr, nullptr);
-    if (window_ == nullptr) {
-        std::fprintf(stderr, "crucible: could not create the window\n");
-        glfwTerminate();
-        return 1;
-    }
-    glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1);
-
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;  // no imgui.ini litter beside the project
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    // Fonts and style at the scale of the display the window is on: the same
-    // physical size on a Retina Mac, a 150% Windows laptop and a 1080p monitor.
-    // The window's own scale, not the primary monitor's, which is a different
-    // screen as often as not on a laptop with a monitor plugged in.
-    apply_display_scale(/*rebuild_texture=*/false);
-
-    // The window's mark, uploaded once the context exists. Nothing waits on it:
-    // without a texture the corner draws the flame from its control points.
-    theme::load_mark();
-    theme::set_window_icon(window_);
-
-    // Then the size: decided in points, set in this display's window units.
-    {
-        int work_x = 0;
-        int work_y = 0;
-        int work_w = 0;
-        int work_h = 0;
-        if (GLFWmonitor* monitor = glfwGetPrimaryMonitor(); monitor != nullptr) {
-            glfwGetMonitorWorkarea(monitor, &work_x, &work_y, &work_w, &work_h);
-        }
-        const util::WindowSize size =
-            util::default_window_size(work_w, work_h, display_scale_.layout);
-        glfwSetWindowSize(window_, size.width, size.height);
-    }
-    glfwShowWindow(window_);
-
-    // Moved to a display with another scale: rebuilt at the top of the next
-    // frame rather than here, in the middle of event handling.
-    glfwSetWindowContentScaleCallback(window_, [](GLFWwindow*, float, float) {
-        g_display_changed = true;
-    });
-
-    ImGui_ImplGlfw_InitForOpenGL(window_, true);
-    ImGui_ImplOpenGL3_Init("#version 150");
-
-    engine_->start();
-
-    // Ask, once, whether this is still the newest Crucible. The answer is a
-    // mark on the gear and a line under Settings -> About; nothing waits on it.
-    begin_update_check();
-
-    while (glfwWindowShouldClose(window_) == GLFW_FALSE) {
-        // Waiting rather than spinning. An idle Crucible should cost nothing,
-        // and the engine posts an empty event whenever it has something new --
-        // the timeout is only there so the cook clock keeps moving.
-        glfwWaitEventsTimeout(state_.busy() ? 0.05 : 0.5);
-
-        if (g_display_changed) {
-            g_display_changed = false;
-            apply_display_scale(/*rebuild_texture=*/true);
-        }
-
-        persist_session();
-        absorb_written_examples();
-        take_runtime_activation();
-
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        draw();
-        ImGui::Render();
-
-        int fb_width  = 0;
-        int fb_height = 0;
-        glfwGetFramebufferSize(window_, &fb_width, &fb_height);
-        glViewport(0, 0, fb_width, fb_height);
-        const ImVec4 ground = theme::to_vec(theme::kInk);
-        glClearColor(ground.x, ground.y, ground.z, 1.0F);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        glfwSwapBuffers(window_);
-    }
-
-    // The engine has a thread that calls back into this object, so it has to be
-    // stopped before anything it might touch is torn down.
-    engine_->stop();
-    persist_session();
-
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-    glfwDestroyWindow(window_);
-    glfwTerminate();
-    return 0;
 }
 
 }  // namespace crucible::gui

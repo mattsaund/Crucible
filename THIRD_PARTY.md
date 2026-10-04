@@ -18,18 +18,33 @@ JetBrains Mono's license requires, since the font is inside the binary.
 |---|---|---|---|
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b10678` | MIT | loads GGUF models and runs inference |
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file, and is the API's encoder |
-| [Dear ImGui](https://github.com/ocornut/imgui) | `v1.91.9b` | MIT | draws the window |
-| [GLFW](https://github.com/glfw/glfw) | `3.4` | zlib/libpng | creates the window and reads the mouse and keyboard. Preferred from the system; built from source only where there is no package |
 | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | `2.304` | SIL OFL 1.1 | the interface typeface, compiled in rather than looked for |
-| [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the web interface in the platform's own webview. Optional: only with `-DCRUCIBLE_BUILD_WEBUI=ON` |
+| [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the interface in the platform's own webview |
 
-Two of these are not MIT, which is worth stating plainly rather than leaving
-to a reader to notice. GLFW is under the zlib/libpng license, which asks that
-altered versions be marked as altered and that its notice is not removed —
-Crucible alters nothing and keeps the notice. JetBrains Mono is under the SIL
-Open Font License, which requires its copyright notice and license to
-accompany the font wherever the font goes. The font goes inside the binary, so
-the notice does too.
+One of these is not MIT, which is worth stating plainly rather than leaving a
+reader to notice. JetBrains Mono is under the SIL Open Font License, which
+requires its copyright notice and license to accompany the font wherever the
+font goes. The font goes inside the binary — it is handed to the interface as
+a data URI — so the notice does too.
+
+Dear ImGui and GLFW were here until the interface moved to the platform's own
+webview. Neither is linked any more and both are gone from the build.
+
+## The window itself
+
+The table above is what Crucible *carries*. The window it opens is the
+operating system's, and that is not distributed here either:
+
+| platform | what draws the window | license |
+|---|---|---|
+| Linux | WebKitGTK (`libwebkit2gtk-4.1`), installed by your package manager | LGPL-2.1 and BSD-2-Clause |
+| macOS | WKWebView, part of the system | Apple's |
+| Windows | WebView2, from the Edge runtime Windows ships | Microsoft's |
+
+Crucible links these dynamically and ships none of them, so no copy of theirs
+travels with the program. On Linux this is a real dependency rather than a
+detail: the installer checks for it and says which package provides it, and
+the AppImage refuses to build without it.
 
 ## The training environment
 

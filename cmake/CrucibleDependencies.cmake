@@ -37,8 +37,6 @@ find_package(Threads REQUIRED)
 
 set(CRUCIBLE_LLAMA_TAG b10678     CACHE STRING "llama.cpp git tag to build against")
 set(CRUCIBLE_JSON_TAG  v3.12.0    CACHE STRING "nlohmann/json git tag to build against")
-set(CRUCIBLE_IMGUI_TAG v1.91.9b   CACHE STRING "Dear ImGui git tag to build against")
-set(CRUCIBLE_GLFW_TAG  3.4        CACHE STRING "GLFW git tag, used only when the system has none")
 set(CRUCIBLE_WEBVIEW_TAG 0.12.0   CACHE STRING "webview git tag for the web interface")
 set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compile into the binary")
 
@@ -53,8 +51,8 @@ set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compil
 include(${CMAKE_CURRENT_LIST_DIR}/CrucibleUnversion.cmake)
 
 # ---------------------------------------------------------------------------
-# Dear ImGui, GLFW and nlohmann/json are always static: they are Crucible's own
-# code as far as deployment is concerned, and there is no reason to ship them as
+# webview and nlohmann/json are always static: they are Crucible's own code as
+# far as deployment is concerned, and there is no reason to ship them as
 # separate files. Only llama.cpp is built shared, and only when runtimes are
 # loadable.
 # ---------------------------------------------------------------------------
@@ -71,155 +69,66 @@ FetchContent_Declare(nlohmann_json
 FetchContent_MakeAvailable(nlohmann_json)
 
 # ---------------------------------------------------------------------------
-# The desktop window: GLFW and Dear ImGui. Not optional -- the window is the
-# program.
-#
-# Only fetched when the GUI is being built, because they are the one dependency
-# that needs anything from the system -- OpenGL and, on Linux, the X11 or
-# Wayland development headers. Someone who only wants `crucible` in a terminal
-# should not have to install those to get it.
-#
-# ImGui rather than Qt or a web stack, and the reason is the core library.
-# Crucible's engine is C++ and the whole point of the desktop app is that it is
-# the same program with a different face -- same Engine, same roster, same cook
-# loop, no protocol in between. ImGui links straight against it and produces one
-# self-contained binary. Qt would mean a system dependency an order of magnitude
-# larger; Electron or Tauri would mean a second language and an IPC layer whose
-# only job is to undo the fact that the engine is already right there.
+# The window
 # ---------------------------------------------------------------------------
-find_package(OpenGL REQUIRED)
-
-# The system's GLFW when there is one -- it is a small, stable library and
-# distributions package it well. Building our own is the fallback, and needs
-# the X11 development headers that install.sh asks for.
-find_package(glfw3 3.3 QUIET)
-if(NOT glfw3_FOUND)
-    set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
-    set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
-    set(GLFW_BUILD_DOCS     OFF CACHE INTERNAL "")
-    set(GLFW_INSTALL        OFF CACHE INTERNAL "")
-
-    # GLFW 3.4 builds both display backends on Linux by default, and the
-    # Wayland one is generated code: without wayland-scanner and the protocol
-    # XML its configure step stops with "Failed to find wayland-scanner" -- on a
-    # machine that has every X11 header asked for and would have built fine.
-    #
-    # So the backend follows the tooling that is actually installed rather than
-    # being demanded: both when it is there, X11 alone when it is not. An X11
-    # build still runs on a Wayland desktop through XWayland, which is the trade
-    # being made when this says "X11 only".
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        find_program(CRUCIBLE_WAYLAND_SCANNER wayland-scanner)
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            # Everything GLFW's Wayland backend compiles against, not just the
-            # generator: the protocol XML, the client library and the keyboard
-            # handling. Any one of them missing is the same failed configure.
-            pkg_check_modules(CRUCIBLE_WAYLAND QUIET
-                              wayland-protocols>=1.15 wayland-client xkbcommon)
-        endif()
-        if(CRUCIBLE_WAYLAND_SCANNER AND CRUCIBLE_WAYLAND_FOUND)
-            set(GLFW_BUILD_WAYLAND ON  CACHE INTERNAL "")
-            message(STATUS "GLFW: building X11 and Wayland backends")
-        else()
-            set(GLFW_BUILD_WAYLAND OFF CACHE INTERNAL "")
-            message(STATUS "GLFW: building the X11 backend only "
-                           "(no wayland-scanner or wayland-protocols)")
-        endif()
-        set(GLFW_BUILD_X11 ON CACHE INTERNAL "")
-    endif()
-    FetchContent_Declare(glfw
-        GIT_REPOSITORY https://github.com/glfw/glfw.git
-        GIT_TAG        ${CRUCIBLE_GLFW_TAG}
-        GIT_SHALLOW    TRUE
-        GIT_PROGRESS   TRUE)
-    FetchContent_MakeAvailable(glfw)
-    message(STATUS "GLFW: building from source (no system package found)")
-else()
-    message(STATUS "GLFW: using the system package")
-endif()
-
-# --- the web interface's window ------------------------------------------
 #
+# There is no window toolkit here any more. Crucible drew its own interface in
+# Dear ImGui over GLFW for most of its life; it draws it in the platform's own
+# webview now, which is the block below, and the two dependencies that went
+# with the old one are gone rather than kept around unused.
+#
+# The history has them if the trade ever needs re-reading: immediate mode cost
+# about eight thousand lines for an interface that had to grow graphs, loss
+# curves and diff views, and every one of those is a thing the web stack
+# already does.
+
 # webview is one MIT header wrapping the webview each platform already has:
 # WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. Nothing is
 # embedded and no browser is shipped -- it is the same relationship Crucible
-# has with OpenGL, which is also a thing the machine provides.
+# had with OpenGL, which was also a thing the machine provided.
 #
-# Optional on purpose. The interface being built out in TypeScript runs in
-# this; the ImGui window does not need it, and a machine missing the headers
-# should still be able to build the program that exists today. See
-# the ImGui window, which is still the default.
+# Required, because it is the only interface. A machine without the headers
+# cannot build the program at all, so this says so with the command that
+# fixes it rather than producing a binary with no window.
 set(CRUCIBLE_HAS_WEBVIEW OFF)
-if(CRUCIBLE_BUILD_WEBUI)
-    set(_webview_ok TRUE)
-    if(UNIX AND NOT APPLE)
-        # WebKitGTK is the one platform where this is a package rather than
-        # part of the system, so it is the one that can be missing.
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(WEBKIT2 QUIET webkit2gtk-4.1)
-            if(NOT WEBKIT2_FOUND)
-                pkg_check_modules(WEBKIT2 QUIET webkit2gtk-4.0)
-            endif()
-        endif()
+set(_webview_ok TRUE)
+if(UNIX AND NOT APPLE)
+    # WebKitGTK is the one platform where this is a package rather than part
+    # of the system, so it is the one that can be missing.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(WEBKIT2 QUIET webkit2gtk-4.1)
         if(NOT WEBKIT2_FOUND)
-            message(WARNING
-                "webkit2gtk development files not found; the web interface will "
-                "not be built. On Debian and Ubuntu: "
-                "sudo apt-get install libwebkit2gtk-4.1-dev")
-            set(_webview_ok FALSE)
+            pkg_check_modules(WEBKIT2 QUIET webkit2gtk-4.0)
         endif()
     endif()
-
-    if(_webview_ok)
-        # Static only, and no symlinked sonames. The shared build writes
-        # libwebview.so.0.12 as a symlink to the real file, which an exFAT
-        # build directory cannot hold -- the same wall llama.cpp hit, solved
-        # there by CrucibleUnversionHook.cmake. A static library sidesteps it
-        # and suits the single-binary story better anyway.
-        set(WEBVIEW_BUILD_SHARED_LIBRARY OFF CACHE INTERNAL "")
-        set(WEBVIEW_BUILD_STATIC_LIBRARY ON  CACHE INTERNAL "")
-        set(WEBVIEW_BUILD_TESTS          OFF CACHE INTERNAL "")
-        set(WEBVIEW_BUILD_EXAMPLES       OFF CACHE INTERNAL "")
-        set(WEBVIEW_BUILD_DOCS           OFF CACHE INTERNAL "")
-        set(WEBVIEW_INSTALL_TARGETS      OFF CACHE INTERNAL "")
-
-        FetchContent_Declare(webview
-            GIT_REPOSITORY https://github.com/webview/webview.git
-            GIT_TAG        ${CRUCIBLE_WEBVIEW_TAG}
-            GIT_SHALLOW    TRUE
-            GIT_PROGRESS   TRUE)
-        FetchContent_MakeAvailable(webview)
-        set(CRUCIBLE_HAS_WEBVIEW ON)
-        message(STATUS "web interface: building against the system webview")
+    if(NOT WEBKIT2_FOUND)
+        set(_webview_ok FALSE)
     endif()
 endif()
 
-# ImGui ships no CMakeLists of its own, so the sources are named here. Only
-# the two backends Crucible uses are compiled in.
-FetchContent_Declare(imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        ${CRUCIBLE_IMGUI_TAG}
-    GIT_SHALLOW    TRUE
-    GIT_PROGRESS   TRUE)
-FetchContent_MakeAvailable(imgui)
+if(_webview_ok)
+    # Static only, and no symlinked sonames. The shared build writes
+    # libwebview.so.0.12 as a symlink to the real file, which an exFAT build
+    # directory cannot hold -- the same wall llama.cpp hit, solved there by
+    # CrucibleUnversionHook.cmake. A static library sidesteps it and suits the
+    # single-binary story better anyway.
+    set(WEBVIEW_BUILD_SHARED_LIBRARY OFF CACHE INTERNAL "")
+    set(WEBVIEW_BUILD_STATIC_LIBRARY ON  CACHE INTERNAL "")
+    set(WEBVIEW_BUILD_TESTS          OFF CACHE INTERNAL "")
+    set(WEBVIEW_BUILD_EXAMPLES       OFF CACHE INTERNAL "")
+    set(WEBVIEW_BUILD_DOCS           OFF CACHE INTERNAL "")
+    set(WEBVIEW_INSTALL_TARGETS      OFF CACHE INTERNAL "")
 
-add_library(crucible_imgui STATIC
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-    # std::string overloads for the input widgets. Without these every text
-    # box needs a fixed char buffer and its own resize dance, which is a
-    # great deal of ceremony for a name and a description.
-    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp)
-target_include_directories(crucible_imgui PUBLIC
-    ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
-target_link_libraries(crucible_imgui PUBLIC glfw OpenGL::GL)
-
+    FetchContent_Declare(webview
+        GIT_REPOSITORY https://github.com/webview/webview.git
+        GIT_TAG        ${CRUCIBLE_WEBVIEW_TAG}
+        GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE)
+    FetchContent_MakeAvailable(webview)
+    set(CRUCIBLE_HAS_WEBVIEW ON)
+    message(STATUS "web interface: building against the system webview")
+endif()
 # --- the window's mark ----------------------------------------------------
 #
 # The flame in the corner of the window, and the same artwork the application
@@ -228,22 +137,9 @@ target_link_libraries(crucible_imgui PUBLIC glfw OpenGL::GL)
 # picture.
 #
 # Raw RGBA rather than the PNG, because nothing in Crucible can decode a PNG --
-# ImGui keeps its copy of stb_image to itself, and pulling in a decoder to read
-# one 128-pixel square would be a strange trade. packaging/icons/make_icons.py writes
-# the .rgba beside the .png from the one piece of artwork.
 set(CRUCIBLE_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${CRUCIBLE_GENERATED_DIR})
 
-set(CRUCIBLE_MARK_RGBA ${CMAKE_CURRENT_LIST_DIR}/../packaging/icons/crucible-mark.rgba)
-set(CRUCIBLE_MARK_CPP  ${CRUCIBLE_GENERATED_DIR}/icon_mark.cpp)
-if(EXISTS ${CRUCIBLE_MARK_RGBA})
-    if(NOT EXISTS ${CRUCIBLE_MARK_CPP} OR ${CRUCIBLE_MARK_RGBA} IS_NEWER_THAN ${CRUCIBLE_MARK_CPP})
-        execute_process(COMMAND ${CMAKE_COMMAND}
-            -DIN=${CRUCIBLE_MARK_RGBA} -DOUT=${CRUCIBLE_MARK_CPP}
-            -DSYMBOL=kMark -DNAMESPACE=crucible::gui::art
-            -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake)
-    endif()
-endif()
 
 # --- the trainer script -------------------------------------------------
 #
@@ -280,11 +176,38 @@ endif()
 # page that is always exactly the one this build expects beats one that could
 # be looked for and found stale. When this becomes a Vite build the output
 # bundle is embedded the same way.
-set(CRUCIBLE_WEBUI_HTML ${CMAKE_CURRENT_LIST_DIR}/../ui/index.html)
+set(CRUCIBLE_WEBUI_HTML   ${CMAKE_CURRENT_LIST_DIR}/../ui/index.html)
+set(CRUCIBLE_RENDER_JS    ${CMAKE_CURRENT_LIST_DIR}/../ui/render.js)
 set(CRUCIBLE_WEBUI_CPP  "")
+set(CRUCIBLE_RENDER_CPP "")
 if(EXISTS ${CRUCIBLE_WEBUI_HTML})
     crucible_embed(CRUCIBLE_WEBUI_CPP ${CRUCIBLE_WEBUI_HTML}
                    kIndexHtml crucible::gui::web web_index)
+endif()
+# The text-to-markup half, kept separate so a test can run it without a
+# document around it. It is injected ahead of the page's own script.
+if(EXISTS ${CRUCIBLE_RENDER_JS})
+    crucible_embed(CRUCIBLE_RENDER_CPP ${CRUCIBLE_RENDER_JS}
+                   kRenderJs crucible::gui::web web_render)
+endif()
+
+# Those same functions, run by the tests in the engine that will run them for
+# real. JavaScriptCore ships with WebKitGTK, so on a machine that can build
+# the interface it is already here; where it is not -- Windows and macOS,
+# whose webviews are not WebKit-on-GTK -- the suite skips that one file and
+# every other test still runs.
+set(CRUCIBLE_JSC_FOUND OFF)
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(JSC QUIET javascriptcoregtk-4.1)
+        if(NOT JSC_FOUND)
+            pkg_check_modules(JSC QUIET javascriptcoregtk-4.0)
+        endif()
+        if(JSC_FOUND)
+            set(CRUCIBLE_JSC_FOUND ON)
+        endif()
+    endif()
 endif()
 
 # --- the interface font -------------------------------------------------
@@ -338,16 +261,16 @@ endforeach()
 if(CRUCIBLE_FONTS_EMBEDDED)
     add_library(crucible_fonts STATIC ${CRUCIBLE_FONT_SOURCES})
     target_compile_definitions(crucible_fonts PUBLIC CRUCIBLE_HAS_EMBEDDED_FONT)
-    target_link_libraries(crucible_imgui PUBLIC crucible_fonts)
 endif()
 
-# The mark rides along with the fonts: same kind of asset, same reason for
-# being compiled in, and one fewer target. Without it the window falls back to
-# drawing the flame from its own control points.
-if(EXISTS ${CRUCIBLE_MARK_CPP})
-    add_library(crucible_mark STATIC ${CRUCIBLE_MARK_CPP})
-    target_compile_definitions(crucible_mark PUBLIC CRUCIBLE_HAS_EMBEDDED_MARK)
-    target_link_libraries(crucible_imgui PUBLIC crucible_mark)
+# The flame in the corner of the window. The SVG rather than the raw RGBA the
+# old window used: a webview can draw one of those and not the other, and it
+# is the same artwork either way.
+set(CRUCIBLE_MARK_SVG ${CMAKE_CURRENT_LIST_DIR}/../packaging/icons/crucible.svg)
+set(CRUCIBLE_MARK_CPP "")
+if(EXISTS ${CRUCIBLE_MARK_SVG})
+    crucible_embed(CRUCIBLE_MARK_CPP ${CRUCIBLE_MARK_SVG}
+                   kMarkSvg crucible::gui::art icon_mark)
 endif()
 
 # --- llama.cpp -------------------------------------------------------------
@@ -436,7 +359,7 @@ crucible_unversion_directory("${llama_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
 # Treat every dependency's headers as system headers, so Crucible can keep a
-# strict warning set without drowning in diagnostics from llama.cpp and ImGui.
+# strict warning set without drowning in diagnostics from llama.cpp.
 # ---------------------------------------------------------------------------
 foreach(_dep llama ggml ggml-base ggml-cpu nlohmann_json)
     if(TARGET ${_dep})

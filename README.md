@@ -70,14 +70,14 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
   `crucible --install-trainer` adds or repairs it later.
 
 **Updating:** the same command that installed it. Crucible checks GitHub once a
-day for a newer release; when there is one, the gear in the corner gets a dot
-and **Settings → About** names the version and the line to run. Downloads are
+day for a newer release; when there is one it says so in the transcript and
+**Settings → About** names the version and the line to run. Downloads are
 replaced by the newer download from the releases page. Your config, models and
 history stay where they are — an update replaces the program and nothing else.
 The check is one request for a public version number, it says nothing about the
 machine, and the checkbox beside it turns it off.
 
-Versions are `MAJOR.MINOR.PATCH`, tagged `v0.6.5` on GitHub, and the release a
+Versions are `MAJOR.MINOR.PATCH`, tagged `v0.7.0` on GitHub, and the release a
 tag builds carries the installers for all three platforms. What changed in each
 is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -149,7 +149,7 @@ ___
 
 ![Talking to a fine-tune before deciding whether to keep it](docs/images/create-test.png)
 
-![What the installer set up for training, and which cards it can use](docs/images/training.png)
+![The training environment: what each build can do, and what it costs to install](docs/images/training.png)
 
 ### Act on a project
 
@@ -199,9 +199,10 @@ each seat, sampling, hardware, runtimes. The file behind it is
 ___
 ## Build from source
 
-A C++20 compiler, CMake ≥ 3.24, git, and on Linux the OpenGL and X11
-development headers. llama.cpp, Dear ImGui, GLFW and nlohmann/json are fetched
-and pinned automatically. Python 3.10 or newer is needed only for fine-tuning,
+A C++20 compiler, CMake ≥ 3.24, git, and on Linux WebKitGTK's development
+files — `libwebkit2gtk-4.1-dev` on Debian and Ubuntu, `webkit2gtk4.1-devel` on
+Fedora. macOS and Windows provide their own webview. llama.cpp, webview and
+nlohmann/json are fetched and pinned automatically. Python 3.10 or newer is needed only for fine-tuning,
 and only to build the environment from — nothing links against it.
 
 ```sh
@@ -232,9 +233,8 @@ ___
 MIT — see [LICENSE](LICENSE). What is compiled into the binary is listed in
 [THIRD_PARTY.md](THIRD_PARTY.md) with pinned versions, and `crucible
 --licenses` prints the notices from the program itself. Most of it is MIT;
-GLFW is zlib/libpng and the JetBrains Mono typeface is under the SIL Open Font
-License, which is why the notices travel inside the binary rather than beside
-it.
+the JetBrains Mono typeface is under the SIL Open Font License, which is why
+the notices travel inside the binary rather than beside it.
 
 The fine-tuner is separate and is not shipped with Crucible: pip fetches it
 onto your machine when you ask for it. It is mostly Apache-2.0, BSD and MIT,

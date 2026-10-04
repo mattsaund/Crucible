@@ -211,3 +211,93 @@ TEST(a_pending_edit_carries_both_sides_at_once) {
     CHECK(out["before"] == "old");
     CHECK(out["after"] == "new");
 }
+
+// ---------------------------------------------------------------------------
+// The two long installs
+//
+// Compiling a runtime and building the trainer's Python are the two things an
+// interface can start that take minutes. Both are optional -- a Surface built
+// without them is what a test harness or a headless caller has -- so the
+// method has to say so rather than crash, and it has to say so differently
+// from "no such method".
+// ---------------------------------------------------------------------------
+
+TEST(the_installs_are_methods_whether_or_not_this_build_can_run_them) {
+    api::Surface surface = bare();
+    const json   listed  = ask(surface, R"({"method":"methods"})")["result"];
+
+    for (const char* name : {"runtime.build", "runtime.cancel", "runtime.dismiss",
+                             "runtime.progress", "trainer.install", "trainer.cancel",
+                             "trainer.dismiss", "trainer.flavors"}) {
+        bool found = false;
+        for (const auto& entry : listed) {
+            found = found || entry == name;
+        }
+        CHECK(found);
+        if (!found) {
+            std::printf("      %s is not in methods()\n", name);
+        }
+    }
+}
+
+TEST(a_surface_with_no_installer_says_so_rather_than_crashing) {
+    api::Surface surface = bare();
+
+    // The distinction that matters: "this build cannot" is a fact about the
+    // caller's Surface, and "no such method" would send them looking for a
+    // typo that is not there.
+    for (const char* request : {R"({"method":"runtime.build","params":{"backend":"cuda"}})",
+                                R"({"method":"runtime.cancel"})",
+                                R"({"method":"runtime.dismiss"})",
+                                R"({"method":"trainer.install"})",
+                                R"({"method":"trainer.cancel"})",
+                                R"({"method":"trainer.dismiss"})"}) {
+        const json reply = ask(surface, request);
+        CHECK(reply["ok"] == false);
+        CHECK(reply["error"].get<std::string>().find("cannot") != std::string::npos);
+    }
+}
+
+TEST(progress_is_readable_before_anything_has_started) {
+    // The page asks for this on the way into the settings screen, before any
+    // build exists. An error there would be an error on a screen that is
+    // merely being opened.
+    api::Surface surface = bare();
+    const json   reply   = ask(surface, R"({"method":"runtime.progress"})");
+    CHECK(reply["ok"] == true);
+    CHECK(reply["result"]["running"] == false);
+    CHECK(reply["result"]["phase"] == "idle");
+}
+
+TEST(the_flavors_say_what_installing_would_cost) {
+    // Somebody on a metered connection is entitled to know before it starts
+    // rather than after, so the sizes are part of the offer and not a
+    // footnote on the progress bar.
+    api::Surface surface = bare();
+    const json   out     = ask(surface, R"({"method":"trainer.flavors"})")["result"];
+
+    CHECK(out.size() == 3);
+    int suggested = 0;
+    for (const auto& flavor : out) {
+        CHECK(!flavor["id"].get<std::string>().empty());
+        CHECK(!flavor["note"].get<std::string>().empty());
+        CHECK(flavor["download"].get<std::uint64_t>() > 0);
+        CHECK(flavor["installed"].get<std::uint64_t>() > 0);
+        // What it unpacks to is larger than what comes down the wire. A
+        // figure the other way round would be a wrong promise about disk.
+        CHECK(flavor["installed"].get<std::uint64_t>()
+              >= flavor["download"].get<std::uint64_t>());
+        suggested += flavor["suggested"].get<bool>() ? 1 : 0;
+    }
+    // Exactly one, so the screen can mark it without choosing between two.
+    CHECK(suggested == 1);
+}
+
+TEST(a_backend_that_does_not_exist_is_refused_by_name) {
+    api::Surface surface = bare();
+    const json   reply   = ask(surface, R"({"method":"runtime.build","params":{"backend":"xyz"}})");
+    CHECK(reply["ok"] == false);
+    // Not "this build cannot compile runtimes": the backend is the problem,
+    // and saying the other thing sends them to check their build options.
+    CHECK(reply["error"].get<std::string>().find("backend") != std::string::npos);
+}

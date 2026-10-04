@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.6.5
+    VERSION     0.7.0
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -68,11 +68,6 @@ option(CRUCIBLE_WARNINGS "Enable a strict warning set for Crucible's own sources
 option(CRUCIBLE_BUILD_TESTS "Build the unit tests" ON)
 option(CRUCIBLE_BUILD_TOOLS "Build the developer tools (routebench)" ON)
 
-# The interface being built out in TypeScript, rendered in the platform's own
-# webview. Off by default while the ImGui window is still the one people use;
-# until it reaches parity. Turning it on needs webkit2gtk's
-# development files on Linux and nothing extra elsewhere.
-option(CRUCIBLE_BUILD_WEBUI "Build the webview interface (in progress)" OFF)
 
 # Needed before the dependencies are configured: ggml decides where to install
 # its backend modules while it is being added, so CRUCIBLE_LIBDIR has to exist by
@@ -114,17 +109,13 @@ add_library(crucible_core STATIC
     src/util/format.cpp
     src/util/diff.cpp
     src/util/platform.cpp
-    src/util/markdown.cpp
     # Reading code before drawing it: the lexer that colors a block, and the
     # reader that works out whether it is a diff and what to number each line.
     # In the core rather than in one of the faces because both draw code, and a
     # terminal that colors it differently from a window is two programs.
-    src/util/syntax.cpp
-    src/util/code_lines.cpp
     # How big the desktop app draws itself. In the core rather than the desktop
     # app because the Mac is the case that went wrong, and from a Linux machine
     # a unit test is the only place it can be checked.
-    src/util/display_scale.cpp
     src/util/resources.cpp
     src/util/subprocess.cpp
 
@@ -235,22 +226,8 @@ target_compile_definitions(crucible_core PUBLIC
 add_executable(crucible
     src/gui/main.cpp
     src/gui/app.cpp
-    src/gui/markdown_view.cpp
-    src/gui/theme.cpp
-    src/gui/widgets.cpp
-    src/gui/panels/topbar.cpp
-    src/gui/panels/sidebar.cpp
-    src/gui/panels/chat.cpp
-    src/gui/panels/cook.cpp
-    src/gui/panels/create.cpp
-    src/gui/panels/training.cpp
-    src/gui/panels/experts.cpp
-    src/gui/panels/settings.cpp
-    src/gui/panels/generation.cpp
-    src/gui/panels/hardware.cpp
-    src/gui/panels/runtimes.cpp
-    src/gui/panels/dialogs.cpp)
-target_link_libraries(crucible PRIVATE crucible::core crucible_imgui)
+    src/gui/webui.cpp)
+target_link_libraries(crucible PRIVATE crucible::core)
 
 # ---------------------------------------------------------------------------
 # Warnings -- applied only to our own targets, never to the vendored deps.
@@ -296,11 +273,8 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_devices.cpp
         tests/test_runtime.cpp
         tests/test_session.cpp
-        tests/test_syntax.cpp
-        tests/test_code_lines.cpp
         tests/test_transcript_edits.cpp
         tests/test_overflow.cpp
-        tests/test_display_scale.cpp
         tests/test_api.cpp
         tests/test_lab.cpp
         tests/test_trainer.cpp
@@ -308,6 +282,17 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_update.cpp
         tests/test_spelling.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
+    # The interface's markdown, syntax coloring and diffs are JavaScript now.
+    # They are tested by running ui/render.js in JavaScriptCore -- the same
+    # engine the webview uses -- rather than left untested for being on the
+    # other side of the language boundary.
+    if(CRUCIBLE_JSC_FOUND AND CRUCIBLE_RENDER_CPP)
+        target_sources(crucible_tests PRIVATE tests/test_ui_js.cpp
+                       ${CRUCIBLE_RENDER_CPP} ${CRUCIBLE_WEBUI_CPP})
+        target_include_directories(crucible_tests PRIVATE ${JSC_INCLUDE_DIRS})
+        target_link_libraries(crucible_tests PRIVATE ${JSC_LIBRARIES})
+        target_link_directories(crucible_tests PRIVATE ${JSC_LIBRARY_DIRS})
+    endif()
     # dbghelp turns a crash address into a function name, for the report
     # tests/test_main.cpp prints on Windows -- where a crash otherwise reaches
     # the log as one line from CTest and nothing else.
@@ -394,17 +379,27 @@ endif()
 
 # The webview interface, when this build has one. Added to the program rather
 # than to the core library: it is a way of drawing Crucible, and crucible_core
-# is what both ways of drawing it share.
-# Always compiled, so --ui web is always a definition and never a link error.
-# What the option decides is whether there is a webview behind it.
-target_sources(crucible PRIVATE src/gui/webui.cpp)
+# is what any other way of driving it would share.
 if(CRUCIBLE_HAS_WEBVIEW AND CRUCIBLE_WEBUI_CPP)
-    target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP})
+    target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP} ${CRUCIBLE_RENDER_CPP})
     target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
     target_link_libraries(crucible PRIVATE webview::core_static)
-    message(STATUS "web interface: compiled in (crucible --ui web)")
+    # The page draws in the same typeface the window did and shows the same
+    # flame, both handed over as data URIs rather than hoped for from the
+    # system or looked for on disk.
+    if(TARGET crucible_fonts)
+        target_link_libraries(crucible PRIVATE crucible_fonts)
+    endif()
+    if(CRUCIBLE_MARK_CPP)
+        target_sources(crucible PRIVATE ${CRUCIBLE_MARK_CPP})
+        target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_EMBEDDED_MARK)
+    endif()
+    message(STATUS "web interface: compiled in")
 else()
-    message(STATUS "web interface: not built (-DCRUCIBLE_BUILD_WEBUI=ON to build it)")
+    message(FATAL_ERROR
+        "The interface could not be built, and it is the program's only one.\n"
+        "On Debian and Ubuntu: sudo apt-get install libwebkit2gtk-4.1-dev\n"
+        "On Fedora: sudo dnf install webkit2gtk4.1-devel")
 endif()
 
 if(CRUCIBLE_BUILD_TOOLS)

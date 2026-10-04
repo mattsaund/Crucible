@@ -3,7 +3,8 @@
 // The handful of things that are genuinely different per operating system.
 //
 // Crucible is otherwise portable C++: the standard library covers filesystem,
-// threads and time, and llama.cpp and GLFW cover the rest. What is left is
+// threads and time, and llama.cpp and the platform's webview cover the rest.
+// What is left is
 // three questions the standard has no answer to -- where am I, what time is it
 // locally, and how do I run a shell command -- and they are gathered here so
 // the rest of the program can be written once.

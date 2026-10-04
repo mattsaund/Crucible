@@ -20,6 +20,11 @@
 #include "crucible/config/paths.hpp"
 
 namespace crucible {
+
+/// Defined below, declared here because both save_config's neighbor and
+/// load_config call it and they sit on either side of it.
+Config config_from_json(const nlohmann::json& doc, std::vector<std::string>& warnings);
+
 namespace {
 
 using json = nlohmann::json;
@@ -267,6 +272,15 @@ std::string config_to_json_text(const Config& config) {
     return config_to_json(config).dump();
 }
 
+Config config_from_json_text(std::string_view text, std::vector<std::string>& warnings) {
+    const json doc = json::parse(text, nullptr, /*allow_exceptions=*/false);
+    if (doc.is_discarded() || !doc.is_object()) {
+        warnings.emplace_back("not a configuration object -- using defaults");
+        return Config{};
+    }
+    return config_from_json(doc, warnings);
+}
+
 bool save_config(const Config& config) {
     return save_config(config, paths::config_file());
 }
@@ -376,6 +390,18 @@ Config load_config(const std::filesystem::path& file, std::vector<std::string>& 
         warnings.emplace_back(file.string() + " is not a JSON object -- using defaults");
         return config;
     }
+    return config_from_json(doc, warnings);
+}
+
+/// Read a configuration out of a document.
+///
+/// Split from load_config so the API can take a document that never came from
+/// a file -- a settings screen sends a patch, it is merged over what the file
+/// would say, and the result comes back through here. One reader beside the
+/// one writer, so a field the file understands is a field the interface can
+/// change without anybody adding it in two places.
+Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
+    Config config;
 
     read_field(doc, "system_prompt", config.system_prompt, "config", warnings);
     read_field(doc, "reasoning_effort", config.reasoning_effort, "config", warnings);

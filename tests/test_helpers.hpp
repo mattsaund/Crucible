@@ -37,7 +37,6 @@
 #include "crucible/cook/journal.hpp"
 #include "crucible/util/diff.hpp"
 #include "crucible/tools/workshop.hpp"
-#include "crucible/util/markdown.hpp"
 #include "crucible/util/resources.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/routing/router.hpp"

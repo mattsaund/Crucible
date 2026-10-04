@@ -25,7 +25,7 @@ BRANCH="main"
 # The desktop application. Built by default: Crucible is two faces over one
 # engine, and someone who runs the one-line install should get both of them.
 #
-# It needs a little from the system beyond a compiler -- OpenGL and, on Linux,
+# It needs a little from the system beyond a compiler -- on Linux,
 # a handful of X11 development headers, a few megabytes in total, which this
 # installs. There is no falling back to a terminal build any more: the window
 # is the program.
@@ -941,29 +941,25 @@ resolve_packages() {
     PKGS_BASE=(); PKGS_GUI=(); PKGS_PY=()
     case "$PKG" in
         apt)    PKGS_BASE=(build-essential cmake git pkg-config curl ca-certificates)
-                # The desktop app. GLFW itself is preferred from the system;
-                # these are what it needs either way, and what building it from
-                # source needs when the distribution has no package.
-                PKGS_GUI=(libgl1-mesa-dev libglfw3-dev libx11-dev libxrandr-dev
-                          libxinerama-dev libxcursor-dev libxi-dev)
+                # The interface. Crucible draws it in the platform's own
+                # webview, which on Linux means WebKitGTK -- the one piece of
+                # it that is a package rather than part of the system.
+                PKGS_GUI=(libwebkit2gtk-4.1-dev libgtk-3-dev)
                 # What the fine-tuner is built on. python3-venv is separate on
                 # Debian and Ubuntu and its absence is the single most common
                 # reason `python3 -m venv` fails on a machine that has Python.
                 PKGS_PY=(python3 python3-venv python3-pip) ;;
         dnf)    PKGS_BASE=(gcc-c++ make cmake git pkgconf-pkg-config curl)
-                PKGS_GUI=(mesa-libGL-devel glfw-devel libX11-devel libXrandr-devel
-                          libXinerama-devel libXcursor-devel libXi-devel)
+                PKGS_GUI=(webkit2gtk4.1-devel gtk3-devel)
                 PKGS_PY=(python3 python3-pip) ;;
         pacman) PKGS_BASE=(base-devel cmake git curl)
-                PKGS_GUI=(mesa glfw libx11 libxrandr libxinerama libxcursor libxi)
+                PKGS_GUI=(webkit2gtk-4.1 gtk3)
                 PKGS_PY=(python python-pip) ;;
         zypper) PKGS_BASE=(gcc-c++ make cmake git-core curl)
-                PKGS_GUI=(Mesa-libGL-devel libglfw-devel libX11-devel libXrandr-devel
-                          libXinerama-devel libXcursor-devel libXi-devel)
+                PKGS_GUI=(webkit2gtk3-soup2-devel gtk3-devel)
                 PKGS_PY=(python3 python3-pip) ;;
-        # macOS: the compiler, git, curl and OpenGL all come with the system
-        # or the command line tools. Only cmake is actually missing, and GLFW
-        # is built from source because Homebrew's is not always there.
+        # macOS: the compiler, git, curl and WKWebView all come with the
+        # system or the command line tools. Only cmake is actually missing.
         brew)   PKGS_BASE=(cmake)
                 PKGS_GUI=()
                 PKGS_PY=(python@3.12) ;;
@@ -993,7 +989,7 @@ install_dependencies() {
     # built is settled afterwards by verify_gui_prerequisites, which looks for
     # the headers themselves.
     #
-    # Skipped entirely on macOS, where PKGS_GUI is empty because OpenGL comes
+    # Skipped entirely on macOS, where PKGS_GUI is empty because WKWebView comes
     # with the system.
     if [ "${#PKGS_GUI[@]}" -gt 0 ]; then
         phase 35 "installing the desktop app's dependencies"
@@ -1058,22 +1054,29 @@ have_header() {
 # a machine that already had the headers is not refused the desktop app because
 # a package name it never needed is missing.
 #
-# What the build genuinely requires is GL/gl.h (find_package(OpenGL REQUIRED)),
-# plus either a system GLFW or the X11 headers, since CrucibleDependencies.cmake
-# compiles GLFW from source when the system has none.
-# A missing header is a stop with an instruction now, not a quieter install:
-# there is no terminal build to fall back to.
+# What the build genuinely requires on Linux is WebKitGTK's development
+# files, which is what the interface is drawn in. Asked of pkg-config rather
+# than of a header path, because that is how CMake looks for it and the two
+# should agree -- a check that passed where the build then failed would be
+# worse than no check.
+#
+# A missing one is a stop with an instruction, not a quieter install: the
+# webview is the only interface, so there is nothing to fall back to.
 verify_gui_prerequisites() {
-    # macOS: OpenGL is part of the system and there is no X11 in it.
+    # macOS and Windows provide WKWebView and WebView2 themselves.
     [ "$(uname -s)" = "Darwin" ] && return 0
 
-    if ! have_header GL/gl.h; then
-        die "the OpenGL headers (GL/gl.h) are needed to build Crucible. Install your distribution's mesa or OpenGL development package and run this again."
+    if ! command -v pkg-config >/dev/null 2>&1; then
+        warn "pkg-config is missing, so the webview headers cannot be checked for"
+        return 0
     fi
-    if ! have_header GLFW/glfw3.h && ! have_header X11/Xlib.h; then
-        die "GLFW or the X11 development headers are needed to build the window. Install libglfw3-dev, or your distribution's equivalent, and run this again."
+    if pkg-config --exists webkit2gtk-4.1 || pkg-config --exists webkit2gtk-4.0; then
+        return 0
     fi
-    return 0
+    die "WebKitGTK's development files are needed to build Crucible's window.
+      On Debian and Ubuntu:  sudo apt-get install libwebkit2gtk-4.1-dev
+      On Fedora:             sudo dnf install webkit2gtk4.1-devel
+      Then run this again."
 }
 
 # --------------------------------------------------------------------------
@@ -1275,7 +1278,7 @@ build_and_install() {
     BUILD_LOG="$(mktemp -t crucible-build-XXXXXX.log)"
 
     # --- configure ---------------------------------------------------------
-    # The first configure clones llama.cpp and ImGui, so it is slow and has no
+    # The first configure clones llama.cpp, so it is slow and has no
     # percentage of its own.
     # No GPU backend is compiled in. Crucible is built with ggml's loadable
     # backends, so a compute backend is a file the settings screen manages

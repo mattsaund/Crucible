@@ -372,6 +372,14 @@ void write_default_config(const std::filesystem::path& file);
 /// header out of this one, which half the program includes.
 std::string config_to_json_text(const Config& config);
 
+/// Read a configuration back out of JSON text, as `config_to_json_text`
+/// writes it. Anything the document leaves out keeps its default, so a patch
+/// merged over the current document is a complete configuration.
+///
+/// `warnings` collects the same complaints loading a file would produce. An
+/// unparseable document yields the built-in defaults rather than throwing.
+Config config_from_json_text(std::string_view text, std::vector<std::string>& warnings);
+
 bool save_config(const Config& config, const std::filesystem::path& file);
 
 /// Convenience overload using `paths::config_file()`.
