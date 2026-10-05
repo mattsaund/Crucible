@@ -2,7 +2,7 @@
 // Who Crucible delegates to.
 //
 // The roster used to be an enum of nine subjects fixed at compile time. It is
-// now a list the user owns: `/newexpert` adds a seat, `/ejectexpert` removes
+// now a list the user owns: New expert adds a seat, Eject removes
 // one, and everything the delegator sees -- its labels, its system prompt, its
 // worked examples -- is generated from whatever is currently in the list. The
 // nine that ship are still there, but as defaults rather than as the shape of
@@ -32,14 +32,14 @@ using ExpertId = std::string;
 struct Expert {
     ExpertId    id;
     std::string name;    ///< human-facing ("Mathematics", "Rust Async")
-    std::string tag;     ///< <= 4 chars, upper case, unique. The chip in the expert panel.
+    std::string tag;     ///< <= 4 chars, upper case, unique. The chip beside its name in Settings.
 
     /// What this expert is trained in, in the user's own words. Fed to the
     /// delegator as the description of the seat, and shown in settings.
     ///
     /// This is the single field that decides whether routing works. A vague
     /// blurb gives the delegator nothing to separate this seat from its
-    /// neighbors, which is why `/newexpert` asks for it in a box of its own
+    /// neighbors, which is why New expert asks for it in a box of its own
     /// rather than inferring it from the name.
     std::string blurb;
 

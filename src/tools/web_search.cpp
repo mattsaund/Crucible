@@ -10,7 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "crucible/util/subprocess.hpp"
+#include "crucible/util/http.hpp"
 
 namespace crucible::tools {
 namespace {
@@ -281,7 +281,7 @@ std::vector<SearchResult> search(const std::string& query, const SearchSettings&
                                  std::string& error) {
     error.clear();
     if (!settings.enabled) {
-        error = "web search is off -- turn it on with /settings, under TOOLS";
+        error = "web search is off -- turn it on in Settings, under Tools";
         return {};
     }
     const std::string url = request_url(query, settings);
@@ -291,50 +291,30 @@ std::vector<SearchResult> search(const std::string& query, const SearchSettings&
                     : "no search provider is configured";
         return {};
     }
-    if (!util::on_path("curl")) {
-        error = "curl is needed for web search and is not installed";
-        return {};
-    }
-
-    std::vector<std::string> argv{
-        "curl", "--silent", "--show-error", "--location",
-        "--max-time", std::to_string(std::clamp(settings.timeout_seconds, 1, 120)),
-        // Anything but a 2xx is a failure, not a body to parse. Without this an
-        // error page is handed to the JSON reader, which reports it as an empty
-        // result -- "nothing found" rather than "the key is wrong".
-        "--fail",
-        "--user-agent", "Crucible/0.1 (+local assistant)",
-    };
+    util::http::Request request;
+    request.url             = url;
+    request.timeout_seconds = std::clamp(settings.timeout_seconds, 1, 120);
     if (settings.provider == "brave") {
         if (settings.api_key.empty()) {
             error = "the brave provider needs an API key in settings";
             return {};
         }
-        argv.emplace_back("--header");
-        argv.emplace_back("X-Subscription-Token: " + settings.api_key);
-        argv.emplace_back("--header");
-        argv.emplace_back("Accept: application/json");
+        // In a header, and the header is in a file only this user can read.
+        // It used to be an argument to curl, which put the key in the process
+        // list for as long as the search took.
+        request.headers = {{"X-Subscription-Token", settings.api_key},
+                           {"Accept", "application/json"}};
     }
-    argv.push_back(url);
 
-    util::Subprocess child;
-    if (!child.start(argv, {}, /*extra_env=*/{}, error)) {
+    const util::http::Response response = util::http::send(request);
+    if (!response.ok()) {
+        // Anything but a 2xx is a failure, not a body to parse. Handed to the
+        // JSON reader, an error page comes back as an empty result -- "nothing
+        // found" rather than "the key is wrong".
+        error = "search failed (" + response.reason() + ")";
         return {};
     }
-    std::string body;
-    std::string line;
-    while (child.read_line(line)) {
-        body += line;
-        body += '\n';
-    }
-    if (const int status = child.wait(); status != 0) {
-        // curl already wrote its reason to the stream that became `body`.
-        error = "search failed (curl exited " + std::to_string(status) + ")";
-        if (!body.empty()) {
-            error += ": " + body.substr(0, body.find('\n'));
-        }
-        return {};
-    }
+    const std::string& body = response.body;
 
     std::vector<SearchResult> results = parse_results(settings.provider, body,
                                                       settings.max_results);

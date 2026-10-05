@@ -39,6 +39,7 @@ Snapshot AppState::snapshot() const {
     copy.resident        = resident_;
     copy.linked          = linked_;
     copy.delegator_ready = delegator_ready_;
+    copy.delegator_progress = delegator_progress_;
     copy.turns    = turns_;
     copy.notices  = notices_;
     copy.busy     = busy_;
@@ -89,6 +90,13 @@ void AppState::configure_seats(const Config& config) {
         const ModelParams& params = config.expert(roster->at(i).id);
         if (params.model.empty()) {
             seats[i].phase = SeatPhase::Unconfigured;
+        } else if (params.remote()) {
+            // Nothing on disk to look for. What can be missing is the provider
+            // the seat names, and that is the same kind of problem as a file
+            // that is not there: assigned, and not going to answer.
+            const Provider* provider = config.provider(params.provider);
+            seats[i].phase    = provider != nullptr ? SeatPhase::Dormant : SeatPhase::Missing;
+            seats[i].provider = provider != nullptr ? provider->label() : params.provider;
         } else if (std::filesystem::exists(params.path)) {
             seats[i].phase = SeatPhase::Dormant;
         } else {
@@ -103,8 +111,8 @@ void AppState::configure_seats(const Config& config) {
     seats_  = std::move(seats);
 
     // A seat that was lit may not exist any more. Dropping the reference is
-    // what stops the expert panel drawing a connector to a row that is no longer
-    // there after an /ejectexpert.
+    // what stops the side menu drawing a connector to a row that is no longer
+    // there after an Eject.
     if (resident_ && !seat_index(*resident_)) {
         resident_.reset();
     }
@@ -136,7 +144,7 @@ void AppState::set_linked(std::optional<ExpertId> id) {
     linked_ = std::move(id);
     // A seat is lit while work is flowing to it and dark the moment it stops.
     // Whether the weights are still in memory afterwards is a separate fact,
-    // and one the status bar already reports.
+    // and one the status line already reports.
     for (SeatState& seat : seats_) {
         if (seat.phase == SeatPhase::Active) {
             seat.phase = SeatPhase::Dormant;
@@ -162,7 +170,13 @@ std::shared_ptr<const Cook> AppState::cook() const {
 
 void AppState::set_delegator_ready(bool ready) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    delegator_ready_ = ready;
+    delegator_ready_    = ready;
+    delegator_progress_ = -1.0F;
+}
+
+void AppState::set_delegator_progress(float progress) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    delegator_progress_ = progress < 0.0F ? 0.0F : (progress > 1.0F ? 1.0F : progress);
 }
 
 std::size_t AppState::begin_turn(std::string prompt) {
@@ -305,10 +319,15 @@ void AppState::cancel_turn(std::size_t turn) {
 
 void AppState::add_notice(std::string notice) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    // Startup can produce one warning per misconfigured expert; keep the list
-    // bounded so a badly broken config cannot push the chat off screen.
-    if (notices_.size() < 32) {
-        notices_.push_back(std::move(notice));
+    // Bounded, so a badly broken config -- one warning per misconfigured
+    // expert -- cannot push the chat off screen. The oldest go first: this is
+    // a status channel, and the newest line is the one somebody is waiting
+    // to see.
+    constexpr std::size_t kKept = 24;
+    notices_.push_back(std::move(notice));
+    if (notices_.size() > kKept) {
+        notices_.erase(notices_.begin(),
+                       notices_.begin() + static_cast<long>(notices_.size() - kKept));
     }
 }
 

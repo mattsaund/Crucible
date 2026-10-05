@@ -29,6 +29,19 @@ struct ModelParams {
     /// written back to the file.
     std::string path;
 
+    /// The provider this model is asked through, by `Provider::id`. Empty means
+    /// it is a file on this machine, which is what every seat is unless
+    /// somebody decided otherwise.
+    ///
+    /// When it is set, `model` is the provider's own name for the model --
+    /// "claude-opus-5-5", "deepseek-chat" -- rather than a file, and everything
+    /// below about cards and layers does not apply: nothing is loaded, because
+    /// there is nothing here to load.
+    std::string provider;
+
+    /// True when this seat is answered somewhere else. See `provider`.
+    bool remote() const { return !provider.empty(); }
+
     // Loading
     int  n_gpu_layers = -1;        ///< -1 offloads every layer it can fit.
     int  main_gpu     = 0;
@@ -66,6 +79,96 @@ struct ModelParams {
     /// The model is never inherited -- an expert without its own file is unfilled.
     void inherit_from(const ModelParams& base);
 };
+
+/// Somewhere a model can be asked that is not this machine.
+///
+/// Crucible is local first and stays that way: nothing here exists until a
+/// provider is added by hand, and a prompt only leaves the machine when it is
+/// routed to a seat that names one. What this is for is the expert you cannot
+/// run -- a frontier model as the specialist of last resort, or as the default
+/// expert that catches what the local ones could not place.
+///
+/// Two wire formats cover everything worth talking to. `anthropic` is Claude's
+/// own Messages API. `openai` is the chat-completions shape that OpenAI
+/// defined and everybody else adopted: OpenAI, Gemini, DeepSeek, Moonshot's
+/// Kimi, Cloudflare Workers AI, OpenRouter, Groq -- and a llama.cpp, Ollama or
+/// LM Studio server on another machine on your own network.
+struct Provider {
+    /// A short name the config refers to it by, unique among providers.
+    std::string id;
+
+    /// What it is called on screen. Falls back to `id`.
+    std::string name;
+
+    /// "anthropic" or "openai". See above.
+    std::string kind = "openai";
+
+    /// Where its API is. Empty means the kind's own default, which only
+    /// `anthropic` and plain OpenAI have: every other service is an `openai`
+    /// provider with its own address.
+    std::string base_url;
+
+    /// The key, as typed -- or "env:NAME" to read it from an environment
+    /// variable instead, which keeps it out of the config file altogether.
+    /// Left empty, the conventional variable for the service is tried
+    /// (ANTHROPIC_API_KEY, OPENAI_API_KEY and so on).
+    ///
+    /// Written to config.json in plain text when it is typed here. Anyone who
+    /// can read the config can read the key, and the settings screen says so.
+    std::string api_key;
+
+    /// The models it is known to offer, as last listed. A convenience for the
+    /// picker, not a restriction: a seat may name a model this does not list.
+    std::vector<std::string> models;
+
+    const std::string& label() const { return name.empty() ? id : name; }
+
+    /// `base_url`, or the kind's default when it is empty. No trailing slash.
+    std::string endpoint() const;
+
+    /// The key to send: `api_key` itself, the variable it points at, or the
+    /// service's conventional variable. Empty when there is none anywhere --
+    /// which is right for a server on your own network that wants no key.
+    std::string resolved_key() const;
+
+    /// The environment variable `resolved_key` falls back to, or empty when
+    /// this service has no convention. Shown on the settings screen so "leave
+    /// it blank" is an instruction somebody can follow.
+    std::string conventional_key_variable() const;
+
+    /// True when the address is this machine or a private network: localhost,
+    /// a 10.x or 192.168.x address, a `.local` name.
+    ///
+    /// Two things turn on it. A prompt sent to one of these has not left your
+    /// network, so the screen does not say that it has; and plain `http://`
+    /// to one of these is ordinary, where to anywhere else it would put the
+    /// key on the wire for anyone in between to read.
+    bool on_your_network() const;
+};
+
+/// The slug for a provider name: lower case, dashes, nothing else.
+std::string provider_id_from_name(std::string_view name);
+
+/// A service worth having a button for.
+///
+/// One table, used three ways: the settings screen offers each as a starting
+/// point, a provider's address is matched against it to find the environment
+/// variable its key conventionally lives in, and the README's list of what
+/// can be reached is this list.
+///
+/// Deliberately no model names. A list of those is out of date the week it
+/// is written; the provider is asked instead, and a model can always be
+/// named by hand.
+struct KnownService {
+    std::string_view name;          ///< "DeepSeek"
+    std::string_view kind;          ///< "anthropic" or "openai"
+    std::string_view base_url;      ///< empty for the kind's default
+    std::string_view host_part;     ///< what its address contains: "deepseek.com"
+    std::string_view key_variable;  ///< "DEEPSEEK_API_KEY", or empty when it wants none
+    std::string_view note;          ///< one line for the settings screen, or empty
+};
+
+const std::vector<KnownService>& known_services();
 
 /// How the delegator's answer is acted on.
 struct RoutingConfig {
@@ -251,17 +354,14 @@ enum class Overflow {
 std::string_view overflow_id(Overflow policy);
 Overflow         overflow_from_id(std::string_view id);
 
-/// Purely cosmetic knobs.
+/// How the window behaves, as opposed to how the models do.
 struct UiConfig {
-    int  animation_ms   = 90;    ///< frame interval while Crucible is busy
-    bool show_experts = true; ///< draw the ring (toggle at runtime with Ctrl-T)
-    bool unicode        = true;  ///< false falls back to plain ASCII
-
-    /// Keep a reasoning model's working on screen after it has answered.
+    /// Whether a reply's "thinking" section starts unfolded.
     ///
-    /// Off, the working is shown while it is happening -- which is the only
-    /// sign of life during the seconds before the answer starts -- and then
-    /// replaced by the answer. On, it stays, dimmed, above every reply.
+    /// Not a switch on the settings screen: it is set by using it. Every turn
+    /// with reasoning has a disclosure triangle, and folding or unfolding one
+    /// is what changes this -- so the next reply opens the way the last one
+    /// was left.
     bool show_reasoning = false;
 
     /// Ask GitHub, once a day, whether there is a newer Crucible.
@@ -285,8 +385,8 @@ struct Config {
     ModelParams router;    ///< the always-resident delegator
     ModelParams defaults;  ///< inherited by every expert
 
-    /// Who the experts are: the nine that ship plus whatever `/newexpert`
-    /// added. Part of the config because a user-made expert has to survive a
+    /// Who the experts are. Crucible ships none: every seat is one somebody
+    /// added, and it is part of the config because it has to survive a
     /// restart -- it is the user's list, not the program's.
     ///
     /// Defaulted rather than left empty so that every path which builds a
@@ -303,6 +403,10 @@ struct Config {
     /// seat is simply an entry nothing reads, which is the right outcome for a
     /// config file someone hand-edited.
     std::map<ExpertId, ModelParams> experts;
+
+    /// Providers that have been added. Empty on every install until somebody
+    /// adds one: see Provider.
+    std::vector<Provider> providers;
 
     RoutingConfig routing;
     GpuConfig     gpu;
@@ -331,8 +435,12 @@ struct Config {
     /// an unfilled entry for a seat with nothing assigned.
     const ModelParams& expert(const ExpertId& id) const;
 
-    /// True when a GGUF is configured for this seat.
+    /// True when this seat has a model behind it: a GGUF, or a provider's.
     bool has_expert(const ExpertId& id) const;
+
+    /// The provider with this id, or null. Null for an empty id, which is the
+    /// answer for every local seat.
+    const Provider* provider(std::string_view id) const;
 
     /// Seats that currently have a model file configured, in roster order.
     std::vector<ExpertId> configured_experts() const;

@@ -242,7 +242,7 @@ void Engine::note_step(CookStep step) {
 // One round with the expert
 // ---------------------------------------------------------------------------
 
-Engine::CookRound Engine::cook_round(LoadedModel& model, const ModelParams& params,
+Engine::CookRound Engine::cook_round(ChatModel& model, const ModelParams& params,
                                      const std::vector<ChatMessage>& messages) {
     CookRound round;
     const auto start = Clock::now();
@@ -255,16 +255,31 @@ Engine::CookRound Engine::cook_round(LoadedModel& model, const ModelParams& para
             || !running_.load(std::memory_order_relaxed);
     };
 
-    model.generate(model.format_chat(messages, true), params,
-                   [&](std::string_view chunk) {
-                       const ResponseFilter::Piece piece = filter.feed(chunk);
-                       round.answer    += piece.answer;
-                       round.reasoning += piece.reasoning;
-                   },
-                   cancel);
+    ChatSink sink;
+    sink.cancel = cancel;
+    if (model.reasons_inline()) {
+        sink.on_text = [&](std::string_view chunk) {
+            const ResponseFilter::Piece piece = filter.feed(chunk);
+            round.answer    += piece.answer;
+            round.reasoning += piece.reasoning;
+        };
+    } else {
+        sink.on_text = [&](std::string_view chunk) { round.answer += chunk; };
+    }
+    sink.on_reasoning = [&](std::string_view chunk) { round.reasoning += chunk; };
+
+    // No effort for a remote expert's sake that a local one would not get: a
+    // cook's system prompt does not carry the "Reasoning:" line either, since
+    // an hour of rounds is not where anybody wants the most thinking per round.
+    const ChatResult outcome = model.chat(ChatRequest{messages, params, {}}, sink);
+
     const ResponseFilter::Piece tail = filter.flush();
     round.answer    += tail.answer;
     round.reasoning += tail.reasoning;
+    round.error = outcome.error;
+    if (outcome.discard_partial) {
+        round.answer.clear();
+    }
     round.ms = ms_between(start);
     return round;
 }
@@ -305,30 +320,18 @@ Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& 
         return seat;
     }
 
-    state_.set_mood(Mood::Loading, "swapping in " + seat.name);
-    state_.set_seat(seat.id, SeatPhase::Loading, 0.0F);
     state_.set_linked(seat.id);
     if (wake_) {
         wake_();
     }
 
-    // acquire_expert frees whoever was resident before loading the next, which
-    // is the whole memory argument for the design: the peak is the larger of
-    // the two experts, never their sum.
+    // The same door a chat turn goes through, so a cook can be handed to an
+    // expert that is somewhere else exactly as a question can.
+    long        load_ms = 0;
     std::string error;
-    seat.model = host_->acquire_expert(
-        seat.id, seat.params,
-        [this, &seat](float progress) { state_.set_seat_progress(seat.id, progress); },
-        [this] { return cancel_.load(std::memory_order_relaxed); },
-        error);
+    seat.model = seat_model(seat.id, seat.params, seat.name, load_ms, error);
     if (seat.model == nullptr) {
         seat.error = error;
-        state_.set_seat(seat.id, SeatPhase::Dormant);
-        return seat;
-    }
-    state_.set_resident(seat.id);
-    if (wake_) {
-        wake_();
     }
     return seat;
 }
@@ -415,6 +418,11 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     int  strikes = 0;
     bool looping = false;
 
+    // Set when the expert could not be asked at all -- a provider that is
+    // down, a key that was revoked. There is no finishing pass after that:
+    // the pass is the expert's, and the expert is what is missing.
+    std::string unreachable;
+
     // Actions since the last time the delegator was asked who should be doing
     // this. See kCheckpointEvery.
     int since_checkpoint = 0;
@@ -451,6 +459,21 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
         }
         const CookRound round = cook_round(*seat.model, seat.params, messages);
         if (cancel_.load(std::memory_order_relaxed)) {
+            break;
+        }
+        if (!round.error.empty()) {
+            // Not retried here. A cook can run for hours unattended, and one
+            // that hammers a provider that is refusing it is spending somebody's
+            // rate limit -- or their money -- to learn nothing new.
+            CookStep step;
+            step.iteration = cook_.iterations;
+            step.expert    = seat.id;
+            step.kind      = "note";
+            step.ok        = false;
+            step.summary   = round.error;
+            step.ms        = round.ms;
+            note_step(std::move(step));
+            unreachable = round.error;
             break;
         }
 
@@ -703,7 +726,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     // back to something that runs, and then says what happened.
     const bool interrupted = cancel_.load(std::memory_order_relaxed)
                           || !running_.load(std::memory_order_relaxed);
-    if (!interrupted) {
+    if (!interrupted && unreachable.empty()) {
         cook_.state = CookState::Finishing;
         publish_cook();
         state_.set_mood(Mood::Thinking, seat.name + " is finishing up");
@@ -733,6 +756,10 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             messages.push_back({"user", instruction});
 
             const CookRound round = cook_round(*seat.model, seat.params, messages);
+            if (!round.error.empty()) {
+                unreachable = round.error;
+                break;
+            }
             const std::optional<tools::ToolCall> call =
                 tools::parse_tool_call(round.answer, round.reasoning);
 
@@ -762,10 +789,16 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
         }
     }
 
-    cook_.state = interrupted || cook_stop_.load(std::memory_order_relaxed)
+    cook_.state = !unreachable.empty() ? CookState::Failed
+                : interrupted || cook_stop_.load(std::memory_order_relaxed)
                       ? CookState::Stopped
                       : looping ? CookState::Failed
                                 : CookState::Done;
+    if (!unreachable.empty()) {
+        // Over whatever the finishing pass had started to say: this is why
+        // the cook ended, and the files it changed are listed beside it.
+        cook_.outcome = "stopped: " + unreachable;
+    }
     if (cook_.outcome.empty()) {
         cook_.outcome = interrupted ? "interrupted"
                       : looping ? "stopped: the expert repeated the same action without "

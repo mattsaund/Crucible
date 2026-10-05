@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "crucible/config/config.hpp"
+#include "crucible/llm/chat_model.hpp"
 
 // llama.cpp's token type, spelled out so this header does not drag llama.h in.
 using llama_token = std::int32_t;
@@ -21,38 +22,6 @@ struct llama_model;
 struct llama_context;
 
 namespace crucible {
-
-/// One turn of a conversation, as handed to the model's chat template.
-struct ChatMessage {
-    std::string role;     ///< "system" | "user" | "assistant"
-    std::string content;
-};
-
-/// Reported after a generation finishes, for the status line.
-struct GenerationStats {
-    int    prompt_tokens = 0;
-    /// How many of `prompt_tokens` the context already held, and so did not
-    /// have to read again. See LoadedModel::cached_.
-    int    prompt_reused = 0;
-    int    output_tokens = 0;
-    double prompt_ms     = 0.0;
-    double output_ms     = 0.0;
-    bool   canceled     = false;
-    /// Stopped at max_tokens rather than at an end-of-turn token.
-    bool   hit_limit     = false;
-
-    double tokens_per_second() const;
-};
-
-/// Called for each chunk of decoded text. Chunks are always complete UTF-8, so
-/// the UI can append them straight to a string without splitting a codepoint.
-using TokenCallback = std::function<void(std::string_view)>;
-
-/// Return true to abort. Polled between tokens and during model loading.
-using CancelCallback = std::function<bool()>;
-
-/// Load progress in [0, 1].
-using ProgressCallback = std::function<void(float)>;
 
 namespace detail {
 
@@ -74,11 +43,27 @@ std::size_t reusable_prefix(const std::vector<llama_token>& cached,
 /// log-probability, so it never wins a comparison by accident.
 inline constexpr float kUnscored = -1e30F;
 
-class LoadedModel {
+class LoadedModel : public ChatModel {
 public:
-    ~LoadedModel();
+    ~LoadedModel() override;
     LoadedModel(const LoadedModel&)            = delete;
     LoadedModel& operator=(const LoadedModel&) = delete;
+
+    // --- ChatModel --------------------------------------------------------
+
+    /// Render the conversation through the model's own template and generate
+    /// from it. The whole of what answering means for a model that is here.
+    ChatResult chat(const ChatRequest& request, const ChatSink& sink) override;
+
+    /// Measured through this model's tokenizer and its chat template, which is
+    /// the only figure that means anything: the template adds role markers and
+    /// turn separators, and on a long conversation those are hundreds of
+    /// tokens.
+    int prompt_tokens(const std::vector<ChatMessage>& messages) const override;
+
+    bool reasons_inline() const override { return true; }
+
+    // --- and what only a local model can do --------------------------------
 
     /// Render `messages` through the model's own chat template, falling back to
     /// ChatML for GGUFs that ship without one.
@@ -125,7 +110,7 @@ public:
     int count_tokens(const std::string& text) const;
 
     /// The context this model was loaded with, in tokens.
-    int context_size() const;
+    int context_size() const override;
 
     const std::string& path() const { return path_; }
     std::uint64_t      params() const;       ///< parameter count, for the UI

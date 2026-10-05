@@ -23,8 +23,8 @@
 namespace crucible::gui::web {
 extern const unsigned char kRenderJs[];
 extern const unsigned int  kRenderJs_size;
-extern const unsigned char kIndexHtml[];
-extern const unsigned int  kIndexHtml_size;
+extern const unsigned char kPageHtml[];
+extern const unsigned int  kPageHtml_size;
 }  // namespace crucible::gui::web
 
 namespace {
@@ -105,20 +105,245 @@ Engine& js() {
     return engine;
 }
 
-/// The page's own script, between its last <script> and </script>.
+/// Every script in the page, in the order it loads them.
 ///
-/// index.html carries two: the error handlers near the top and the interface
-/// below them. The second is the one worth parsing.
-std::string page_script() {
-    const std::string page(reinterpret_cast<const char*>(crucible::gui::web::kIndexHtml),
-                           crucible::gui::web::kIndexHtml_size);
-    const std::size_t open = page.rfind("<script>");
-    if (open == std::string::npos) {
-        return {};
+/// The page is one document by the time it is compiled in -- see
+/// cmake/BundlePage.cmake -- so this is the error handler, then render.js,
+/// then base.js and each view, then the one line that starts it all.
+std::vector<std::string> page_scripts() {
+    const std::string page(reinterpret_cast<const char*>(crucible::gui::web::kPageHtml),
+                           crucible::gui::web::kPageHtml_size);
+    std::vector<std::string> scripts;
+    const std::string open = "<script>";
+    for (std::size_t at = page.find(open); at != std::string::npos; at = page.find(open, at)) {
+        const std::size_t start = at + open.size();
+        const std::size_t close = page.find("</script>", start);
+        if (close == std::string::npos) {
+            break;
+        }
+        scripts.push_back(page.substr(start, close - start));
+        at = close;
     }
-    const std::size_t start = open + std::strlen("<script>");
-    const std::size_t close = page.find("</script>", start);
-    return page.substr(start, close == std::string::npos ? std::string::npos : close - start);
+    return scripts;
+}
+
+/// What stands in for a browser: enough of `window` and `document` for the
+/// page's scripts to load, and nothing that draws.
+///
+/// The views are functions from the state to a string, on purpose, and that
+/// is what makes this possible -- they can be called here, with a state made
+/// up for the occasion, and what comes back can be read.
+const char* const kNoBrowser = R"JS(
+var window = this;
+window.addEventListener = function () {};
+var document = {
+  addEventListener: function () {},
+  getElementById: function () { return null; },
+  querySelector: function () { return null; },
+  activeElement: null,
+  body: { getAttribute: function () { return ''; },
+          classList: { add: function () {}, remove: function () {} } },
+};
+var localStorage = { getItem: function () { return null; }, setItem: function () {} };
+var navigator = {};
+function requestAnimationFrame() {}
+function setTimeout() { return 0; }
+function clearTimeout() {}
+)JS";
+
+/// A state with something of everything in it: a project, seats in every
+/// phase, a turn of every kind, a cook that is running, an edit waiting.
+const char* const kBusyState = R"JS(
+state.config = {
+  models_dir: '/models', system_prompt: 'Be exact.', reasoning_effort: 'medium',
+  router: { model: 'router.gguf' },
+  defaults: { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.05, repeat_penalty: 1.1,
+              repeat_last_n: 64, max_tokens: 2048, n_ctx: 8192, n_batch: 512, n_threads: 0,
+              n_gpu_layers: -1, split_mode: 'layer', flash_attn: true },
+  experts: [{ id: 'physics', model: 'physics.gguf' },
+            { id: 'claude', model: 'claude-opus-5-5', provider: 'anthropic' }],
+  providers: [{ id: 'anthropic', kind: 'anthropic', has_key: true }],
+  gpu: { mode: 'priority', priority: [1, 0], main_gpu: 0, gpu_only: true, vram_only: false },
+  routing: { min_confidence: 0.6, default_expert: 'claude', keep_delegator_loaded: false },
+  tools: { web_search: true, search_provider: 'brave', search_endpoint: '', search_api_key: 'k',
+           search_results: 5, search_timeout: 10, search_rounds: 3, auto_edits: false,
+           overflow: 'rolling', workshop_timeout: 120 },
+  ui: { show_reasoning: true, check_updates: true },
+};
+state.snapshot = {
+  mood: 'loading', status: 'swapping in Physics', busy: true, delegator_ready: false,
+  delegator_progress: 0.42, context_used: 7000, context_size: 8192, tokens_per_second: 31.5,
+  session_usage: { input_tokens: 15300, output_tokens: 920 },
+  project_usage: { input_tokens: 2500000, output_tokens: 81000 },
+  notices: ['opened demo', '<b>not markup</b>'],
+  linked: 'physics', resident: 'physics', version: '0.0.0', show_reasoning: true, auto_edits: false,
+  update: { latest: '9.9.9', page: 'https://example.test', command: 'crucible --update' },
+  project: { open: true, root: '/home/me/work/demo', display: '~/work/demo', name: 'demo' },
+  delegator: { model: 'router.gguf', stays_loaded: false },
+  experts: [
+    { id: 'math', name: 'Mathematics', tag: 'MATH', blurb: 'algebra', phase: 'dormant', progress: 0, model: 'math.gguf' },
+    { id: 'physics', name: 'Physics', tag: 'PHYS', blurb: 'forces & "fields"', phase: 'loading', progress: 0.5, model: 'physics.gguf' },
+    { id: 'claude', name: 'Claude', tag: 'CLD', blurb: 'everything else', phase: 'dormant', progress: 0,
+      model: 'claude-opus-5-5', provider: 'Anthropic', default: true },
+    { id: 'gone', name: 'Gone', tag: 'GONE', blurb: 'its file moved', phase: 'missing', progress: 0, model: 'gone.gguf' },
+    { id: 'empty', name: 'Empty', tag: 'EMPT', blurb: 'no model', phase: 'unconfigured', progress: 0, model: '' },
+  ],
+  turns: [
+    { prompt: 'why is the sky <blue>?', reply: 'Rayleigh **scattering**.\n\n```python\nprint(1)\n```',
+      reasoning: 'short wavelengths scatter more', streaming: false, canceled: false, failed: false,
+      tokens_per_second: 40.1, prompt_tokens: 1200, output_tokens: 56, load_ms: 2300,
+      route: { expert: 'physics', confidence: 0.93, source: 'router model', detail: '' },
+      actions: [{ summary: 'wrote sky.py  +1 -0', body: '+print(1)', language: 'sky.py' },
+                { summary: 'searched "rayleigh" -- 3 results from wikipedia' }] },
+    { prompt: 'and at sunset?', reply: 'Claude declined this request', streaming: false, canceled: false,
+      failed: true, tokens_per_second: 0, prompt_tokens: 0, output_tokens: 0, load_ms: 0,
+      route: { expert: 'claude', confidence: 0.4, source: 'fallback', detail: 'undecided' } },
+    { prompt: 'stopped one', reply: 'half an', streaming: false, canceled: true, failed: false,
+      tokens_per_second: 12, prompt_tokens: 10, output_tokens: 3, load_ms: 0 },
+    { prompt: 'still going', reply: '', streaming: true, canceled: false, failed: false,
+      tokens_per_second: 0, prompt_tokens: 0, output_tokens: 0, load_ms: 0 },
+  ],
+  pending_edit: { path: 'src/calc.py', before: 'a = 1\n', after: 'a = 2\n' },
+  cook: { running: true, id: 'c1', goal: 'make the tests pass', state: 'asking',
+          question: 'Which test runner?', outcome: '', headline: '', iterations: 3, started: 1,
+          ended: 0, seconds: 754, experts: ['physics', 'math'], files: ['src/calc.py'],
+          total: 3, shown_from: 1,
+          steps: [{ iteration: 1, expert: 'physics', kind: 'read', summary: 'read src/calc.py', ok: true, ms: 4 },
+                  { iteration: 2, expert: 'math', kind: 'write', summary: 'wrote src/calc.py', ok: true, ms: 9,
+                    detail: '-a = 1\n+a = 2', changed: ['src/calc.py'] },
+                  { iteration: 3, expert: 'math', kind: 'run', summary: 'pytest failed', ok: false, ms: 900,
+                    detail: 'E assert 1 == 2' }] },
+};
+state.models = { directory: '/models', models: [
+  { name: 'physics.gguf', path: '/models/physics.gguf', bytes: 1200000000, made_here: false },
+  { name: 'Kitchen Physicist', path: '/lab/kitchen.gguf', bytes: 900000000, made_here: true, purpose: 'kitchen physics' }] };
+state.providers = {
+  providers: [{ id: 'anthropic', name: 'Anthropic', kind: 'anthropic', base_url: '', endpoint: 'https://api.anthropic.com',
+                on_your_network: false, key: { source: 'convention', present: true, variable: 'ANTHROPIC_API_KEY' },
+                models: ['claude-opus-5-5'], seats: ['Claude'] },
+              { id: 'box', name: 'The box', kind: 'openai', base_url: 'http://192.168.1.9:8080/v1',
+                endpoint: 'http://192.168.1.9:8080/v1', on_your_network: true,
+                key: { source: 'none', present: false, variable: '' }, models: [], seats: [] }],
+  known: [{ name: 'Anthropic', kind: 'anthropic', base_url: '', key_variable: 'ANTHROPIC_API_KEY', note: 'Claude.' },
+          { name: 'DeepSeek', kind: 'openai', base_url: 'https://api.deepseek.com/v1', key_variable: 'DEEPSEEK_API_KEY', note: '' }] };
+state.devices = { gpus: [{ index: 0, name: 'RTX 4070', backend: 'CUDA', memory_total: 12e9, memory_free: 11e9 },
+                         { index: 1, name: 'RTX 3060', backend: 'CUDA', memory_total: 12e9, memory_free: 6e9 }],
+                  support: { split: '', gpu_only: '', vram_only: 'This backend cannot tell dedicated memory from shared.' } };
+state.runtimes = { loadable: true, directory: '/data/runtimes', bytes: 5e8, runtimes: [
+  { id: 'cuda', name: 'CUDA', blurb: 'NVIDIA cards', installed: true, active: true, devices: 2, bytes: 5e8,
+    stale: true, source: 'downloaded', llama_tag: 'b1', built_at: '2026-10-01', needs_tag: 'b2', needs_tool: 'nvcc',
+    buildable: true, blocker: '', modules: [{ name: 'libggml-cuda.so', preferred: true }] },
+  { id: 'vulkan', name: 'Vulkan', blurb: 'any GPU', installed: false, active: false, devices: 0, bytes: 0,
+    stale: false, source: '', llama_tag: '', built_at: '', needs_tag: 'b2', needs_tool: 'glslc',
+    buildable: false, blocker: 'glslc is not installed', modules: [] }] };
+state.build = { phase: 'compiling', running: true, finished: false, percent: 0.4, step: 'ggml-cuda.cu',
+                label: 'compiling 40%', error: '', log: ['[40%] Building'], log_file: '/data/build.log', backend: 'cuda' };
+state.trainer = { ready: false, present: true, flavor: 'cuda', python: '3.12', torch: '2.6', installed_at: '2026-10-01',
+                  bytes: 6e9, note: 'bitsandbytes will not import', directory: '/data/trainer',
+                  usable_gpus: ['RTX 4070'], unusable_gpus: ['RTX 5060 Ti'] };
+state.flavors = [{ id: 'cuda', note: 'NVIDIA', download: 3e9, installed: 7e9, suggested: true, steps: ['PyTorch (CUDA)'] },
+                 { id: 'cpu', note: 'anything', download: 3e8, installed: 1e9, suggested: false, steps: ['PyTorch'] }];
+state.install = { phase: 'failed', running: false, finished: true, percent: 0, step: '', label: 'failed',
+                  error: 'pip exited 1', log: ['ERROR: no matching distribution'], log_file: '/data/install.log', flavor: 'cuda' };
+state.about = { version: '0.0.0', update: { latest: '9.9.9', available: true, page: 'https://example.test',
+                                            command: 'crucible --update', checked_at: 1, checks: true },
+                files: { config: '/c/config.json', data: '/d', models: '/models', runtimes: '/d/runtimes',
+                         projects: '/d/projects', log: '/d/crucible.log' },
+                trusted: ['/home/me/work/demo'] };
+state.history = { sessions: [{ id: 's1', title: 'why is the sky blue', when: 'today', turns: 2 }],
+                  cooks: [{ id: 'c0', goal: 'tidy up', state: 'done', when: 'yesterday', files: 2, steps: 14, seconds: 3700 }] };
+var aRecipe = function (stage, more) {
+  return Object.assign({ id: 'kitchen-' + stage, name: 'Kitchen ' + stage, purpose: 'kitchen physics',
+    base: { source: 'hub', id: 'unsloth/Llama-3.2-1B', label: 'Llama-3.2-1B' },
+    data: [{ source: 'local', id: '/data/q.jsonl', label: 'q.jsonl', path: '/data/q.jsonl' }], tools: [],
+    method: 'qlora', format: 'gguf', quantization: 'Q4_K_M', parameters_b: 1.2, epochs: 2, context: 512,
+    learning_rate: 1e-5, trained_path: stage === 'draft' ? '' : '/lab/kitchen.gguf', trained_there: stage !== 'testing',
+    trained_bytes: 9e8, stage: stage, stage_text: stage, started_at: 1, finished_at: 0,
+    missing: stage === 'draft' ? ['data'] : [], export_bytes: 8e8,
+    fit: { possible: false, needed: 9e9, have: 6e9, note: '', known: true } }, more || {});
+};
+state.recipes = { memory: 6e9, recipes: [aRecipe('draft'), aRecipe('training'), aRecipe('testing'), aRecipe('finished')] };
+state.run = { phase: 'running', recipe: 'kitchen-training', name: 'Kitchen', label: 'training  step 12 of 40',
+              percent: 0.3, step: 12, total: 40, loss: 1.8, curve: [2.4, 2.1, 1.9, 1.8], device: 'RTX 4070',
+              records: 1200, trainable: 4200000, seconds_left: 600, seconds: 90, error: '', hint: '',
+              notes: ['no converter here'], log: [], log_file: '', produced: '' };
+)JS";
+
+/// The whole page's scripts, loaded with no browser under them.
+class Page {
+public:
+    Page() : ctx_(JSGlobalContextCreate(nullptr)) {
+        run(kNoBrowser);
+        const std::vector<std::string> scripts = page_scripts();
+        // All but the last, which is the one line that starts the page and
+        // so the one that would go looking for a document.
+        for (std::size_t i = 0; i + 1 < scripts.size() && error_.empty(); ++i) {
+            run(scripts[i]);
+        }
+    }
+    ~Page() { JSGlobalContextRelease(ctx_); }
+    Page(const Page&)            = delete;
+    Page& operator=(const Page&) = delete;
+
+    const std::string& load_error() const { return error_; }
+
+    /// Evaluate and return as text; "threw: ..." when it threw.
+    std::string eval(const std::string& expression) {
+        const Str  script(expression);
+        JSValueRef thrown = nullptr;
+        JSValueRef value  = JSEvaluateScript(ctx_, script, nullptr, nullptr, 0, &thrown);
+        return thrown != nullptr ? "threw: " + to_text(thrown) : to_text(value);
+    }
+
+private:
+    void run(const std::string& source) {
+        const std::string result = eval(source);
+        if (result.rfind("threw: ", 0) == 0) {
+            error_ = result;
+        }
+    }
+
+    std::string to_text(JSValueRef value) const {
+        JSValueRef  thrown = nullptr;
+        JSStringRef text   = JSValueToStringCopy(ctx_, value, &thrown);
+        if (text == nullptr) {
+            return "<unconvertible>";
+        }
+        const Str held(text);
+        return held.utf8();
+    }
+
+    JSGlobalContextRef ctx_;
+    std::string        error_;
+};
+
+Page& page() {
+    static Page loaded;
+    return loaded;
+}
+
+/// Draw `expression` and say what is wrong with the markup, or "ok".
+///
+/// Not a validator. It checks the two mistakes a template literal makes
+/// easily and a browser hides completely: an interpolation that came out as
+/// the word "undefined", and a container that was opened and not closed --
+/// which a browser repairs by swallowing whatever came after it.
+std::string drawn(const std::string& expression) {
+    return page().eval(
+        "(function () { var html; try { html = " + expression + "; }"
+        " catch (e) { return 'threw: ' + e + (e.stack ? ' @ ' + e.stack.split('\\n')[0] : ''); }"
+        " if (typeof html !== 'string') return 'not a string: ' + typeof html;"
+        " if (html.indexOf('undefined') >= 0) return 'says undefined near: '"
+        "   + html.substr(Math.max(0, html.indexOf('undefined') - 80), 120);"
+        " if (html.indexOf('NaN') >= 0) return 'says NaN near: '"
+        "   + html.substr(Math.max(0, html.indexOf('NaN') - 80), 120);"
+        " var tags = ['div', 'button', 'span', 'select', 'details', 'form', 'label', 'aside'];"
+        " for (var i = 0; i < tags.length; i++) {"
+        "   var opened = (html.match(new RegExp('<' + tags[i] + '[\\\\s>]', 'g')) || []).length;"
+        "   var closed = (html.match(new RegExp('</' + tags[i] + '>', 'g')) || []).length;"
+        "   if (opened !== closed) return tags[i] + ': ' + opened + ' opened, ' + closed + ' closed';"
+        " }"
+        " return 'ok'; })()");
 }
 
 /// Does `expression` evaluate to something containing `needle`?
@@ -163,17 +388,148 @@ TEST(render_js_loads_in_javascriptcore) {
     CHECK_EQ(js().eval("typeof diffLines"), "function");
 }
 
-TEST(the_pages_own_script_parses) {
-    // Built, not run: it reaches for `document` on the first line and there
-    // is none here. Parsing is the half that can be checked, and it is the
-    // half that fails silently -- a syntax error in index.html reaches the
-    // user as a window with nothing in it and nothing in the log.
-    const std::string script = page_script();
-    CHECK(script.size() > 1000);
-    const std::string expression =
-        "(function(){ try { new Function(" + lit(script) + "); return 'parsed'; }"
-        "catch (e) { return String(e); } })()";
-    CHECK_EQ(js().eval(expression), "parsed");
+TEST(every_script_in_the_page_parses) {
+    // Built, not run. Parsing is the half that fails silently: a syntax
+    // error in one of the page's files reaches the user as a window with
+    // nothing in it and nothing in the log.
+    const std::vector<std::string> scripts = page_scripts();
+    // The error handler, render.js, base.js, the shell, five views, and the
+    // line that starts them.
+    CHECK(scripts.size() >= 10);
+    for (const std::string& script : scripts) {
+        const std::string expression =
+            "(function(){ try { new Function(" + lit(script) + "); return 'parsed'; }"
+            "catch (e) { return String(e); } })()";
+        const std::string result = js().eval(expression);
+        CHECK_EQ(result, "parsed");
+        if (result != "parsed") {
+            std::printf("      in the script that begins: %.70s\n", script.c_str());
+        }
+    }
+}
+
+// --- the views -----------------------------------------------------------
+//
+// Each is a function from the state to a string, so each can be called here
+// with no window. What that catches is the kind of mistake that otherwise
+// waits for somebody to open the one screen it is on.
+
+TEST(the_page_loads_with_no_browser_under_it) {
+    CHECK(page().load_error().empty());
+    if (!page().load_error().empty()) {
+        std::printf("      %s\n", page().load_error().c_str());
+    }
+    for (const char* view : {"chat", "cook", "create", "history", "settings"}) {
+        CHECK_EQ(page().eval(std::string("typeof views.") + view), "function");
+    }
+}
+
+TEST(every_view_draws_before_anything_has_been_fetched) {
+    // The state the page is in for its first frame: no snapshot worth the
+    // name, no config, nothing fetched. Every view has to have something to
+    // say in it, because every view can be the first one drawn.
+    CHECK_EQ(drawn("topView()"), "ok");
+    for (const char* view : {"chat", "cook", "create", "history", "settings"}) {
+        const std::string result = drawn(std::string("views.") + view + "()");
+        CHECK_EQ(result, "ok");
+    }
+    CHECK(page().eval("views.chat()").find("Open Project") != std::string::npos);
+}
+
+TEST(every_view_draws_a_session_with_everything_in_it) {
+    const std::string loaded = page().eval(kBusyState);
+    CHECK(loaded.rfind("threw: ", 0) != 0);
+    if (loaded.rfind("threw: ", 0) == 0) {
+        std::printf("      %s\n", loaded.c_str());
+    }
+    CHECK_EQ(drawn("topView()"), "ok");
+    CHECK_EQ(drawn("sideView()"), "ok");
+    for (const char* view : {"chat", "cook", "create", "history"}) {
+        const std::string result = drawn(std::string("views.") + view + "()");
+        CHECK_EQ(result, "ok");
+    }
+    for (const char* settings_page : {"general", "experts", "providers", "generation", "hardware",
+                                      "runtimes", "training", "tools", "about"}) {
+        const std::string result = drawn(std::string("(state.settingsPage = '") + settings_page
+                                         + "', views.settings())");
+        CHECK_EQ(result, "ok");
+        if (result != "ok") {
+            std::printf("      on the %s page\n", settings_page);
+        }
+    }
+    // One recipe at each stage, opened.
+    for (const char* stage : {"draft", "training", "testing", "finished"}) {
+        const std::string result = drawn(std::string("(state.open.recipe = 'kitchen-") + stage
+                                         + "', views.create())");
+        CHECK_EQ(result, "ok");
+    }
+    CHECK_EQ(drawn("(state.open.cook = state.snapshot.cook, views.history())"), "ok");
+}
+
+TEST(the_top_bar_says_where_the_project_is) {
+    const std::string top = page().eval("topView()");
+    CHECK(top.find("~/work/demo") != std::string::npos);
+    CHECK(top.find(">demo<") != std::string::npos);
+    // And that there is a newer version, on the gear.
+    CHECK(top.find("9.9.9 is available") != std::string::npos);
+}
+
+TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
+    const std::string side = page().eval("sideView()");
+    // The delegator, 42% loaded, and an expert at 50%.
+    CHECK(side.find("class=\"ring\"") != std::string::npos);
+    CHECK(side.find(">42%<") != std::string::npos);
+    CHECK(side.find(">50%<") != std::string::npos);
+    // A seat answered somewhere else is marked as one.
+    CHECK(side.find("Answered by Anthropic") != std::string::npos);
+}
+
+TEST(what_came_from_a_model_is_never_markup) {
+    // A notice, a prompt and a blurb, each with markup in it.
+    const std::string chat = page().eval("views.chat()");
+    CHECK(chat.find("<b>not markup</b>") == std::string::npos);
+    CHECK(chat.find("&lt;b&gt;not markup&lt;/b&gt;") != std::string::npos);
+    CHECK(chat.find("sky &lt;blue&gt;") != std::string::npos);
+    CHECK(page().eval("sideView()").find("&quot;fields&quot;") != std::string::npos);
+}
+
+TEST(every_dialog_draws) {
+    for (const char* modal : {
+             "{ kind: 'trust', path: '/home/me/x' }",
+             "{ kind: 'confirm', title: 'Sure?', body: 'It goes.', yes: 'Yes', no: 'No' }",
+             "{ kind: 'new-expert', name: 'Rust', description: 'async', model: 'physics.gguf', provider: '' }",
+             "{ kind: 'new-expert', name: 'C', description: 'd', model: 'claude-opus-5-5', provider: 'anthropic', error: 'taken' }",
+             "{ kind: 'provider', id: '', name: '', api: 'openai', base_url: '', api_key: '', models: '', preset: 'DeepSeek' }",
+             "{ kind: 'provider', id: 'anthropic', name: 'Anthropic', api: 'anthropic', base_url: '', api_key: '', models: 'a\\nb', preset: '', has_key: true }",
+             "{ kind: 'browser', wanted: { folder: true, title: 'Choose' }, path: '/home', "
+             "  listing: { path: '/home', parent: '/', home: '/home/me', entries: ['me'], files: [{ name: 'a.gguf', bytes: 5 }] } }",
+             "{ kind: 'browser', wanted: { title: 'Choose' }, path: '', listing: null }",
+             "{ kind: 'tester', id: 'kitchen-testing', name: 'Kitchen', file: '/lab/k.gguf', seat: 'lab-test', from: 1 }",
+         }) {
+        const std::string result = drawn(std::string("modalView(") + modal + ")");
+        CHECK_EQ(result, "ok");
+        if (result != "ok") {
+            std::printf("      for %s\n", modal);
+        }
+    }
+    // The wizard, at each of its six steps, on a recipe with something chosen
+    // and on an empty one.
+    for (int step = 0; step < 6; ++step) {
+        for (const char* recipe : {"aRecipe('draft')", "blankRecipe()"}) {
+            const std::string hub = "{ query: 'q', items: [{ id: 'a/b', downloads: 1500, parameters_b: 1.2, gated: true }],"
+                                    " searching: false, asked: true, error: '' }";
+            const std::string result = drawn(
+                "modalView({ kind: 'wizard', step: " + std::to_string(step) + ", recipe: " + recipe
+                + ", hub: " + hub + ", dataHub: " + hub + ", toolHub: " + hub
+                + ", fit: { methods: { qlora: { known: true, possible: true, needed: 4e9, have: 6e9 },"
+                  " lora: { known: true, possible: false, needed: 9e9, have: 6e9 } },"
+                  " sizes: { Q4_K_M: 8e8, Q8_0: 13e8 }, memory: 6e9 } })");
+            CHECK_EQ(result, "ok");
+            if (result != "ok") {
+                std::printf("      at step %d of %s\n", step, recipe);
+            }
+        }
+    }
 }
 
 // --- escaping ---------------------------------------------------------
@@ -258,7 +614,7 @@ TEST(a_code_block_says_what_it_is_and_numbers_its_lines) {
     CHECK(has(call, "code-gutter"));
     // The gutter counts the lines of code, not the fence.
     CHECK_EQ(js().eval(call + ".match(/code-gutter[^>]*>([^<]*)</)[1]"), "1\n2");
-    CHECK(has(call, "data-copy"));
+    CHECK(has(call, "data-act=\"copy\""));
 }
 
 TEST(one_line_of_code_is_one_line) {

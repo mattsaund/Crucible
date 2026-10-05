@@ -203,7 +203,7 @@ TEST(a_seat_whose_file_is_gone_is_not_shown_as_ready) {
 
     CHECK(seat_of(snapshot, "physics").phase
           == SeatPhase::Dormant);
-    // Assigned but absent must read differently from ready, or the expert panel
+    // Assigned but absent must read differently from ready, or the side menu
     // promises an expert that cannot answer.
     CHECK(seat_of(snapshot, "biology").phase
           == SeatPhase::Missing);
@@ -228,9 +228,8 @@ TEST(saving_then_loading_round_trips_every_setting) {
     original.defaults.temperature = 0.33F;
     original.defaults.n_gpu_layers = 42;
     original.defaults.split_mode  = "row";
-    original.ui.animation_ms      = 55;
-    original.ui.show_experts   = false;
-    original.ui.unicode           = false;
+    original.ui.show_reasoning    = true;
+    original.ui.check_updates     = false;
     original.tools.auto_edits     = true;
     original.experts["physics"].model = "phys.gguf";
     original.experts["biology"].model = "bio.gguf";
@@ -249,9 +248,8 @@ TEST(saving_then_loading_round_trips_every_setting) {
     CHECK(reloaded.defaults.temperature == 0.33F);
     CHECK_EQ(reloaded.defaults.n_gpu_layers, 42);
     CHECK_EQ(reloaded.defaults.split_mode, std::string("row"));
-    CHECK_EQ(reloaded.ui.animation_ms, 55);
-    CHECK(!reloaded.ui.show_experts);
-    CHECK(!reloaded.ui.unicode);
+    CHECK(reloaded.ui.show_reasoning);
+    CHECK(!reloaded.ui.check_updates);
     // A safety switch that silently forgets itself is worse than not having
     // one: the user turns auto mode on, restarts, and is asked about every
     // edit again -- or, the other way round, believes it is off when it is not.
@@ -456,7 +454,7 @@ TEST(an_ejected_expert_does_not_come_back_on_the_next_load) {
     const Config reloaded = load_config(file, warnings);
 
     // An ejected seat stays ejected. Nothing is ever put back: quietly
-    // restoring one would make /ejectexpert a no-op across restarts.
+    // restoring one would make Eject a no-op across restarts.
     CHECK(!reloaded.roster.find("chemistry").has_value());
     CHECK_EQ(reloaded.roster.size(), std::size_t{8});
     CHECK(reloaded.roster.find("physics").has_value());

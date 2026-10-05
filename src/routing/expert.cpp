@@ -7,8 +7,9 @@
 // model-free router scores with, and the order experts appear in the panel
 // are all derived from it, so they cannot drift apart -- adding a seat adds it
 // everywhere, whether the seat came from the defaults below or from a user
-// typing `/newexpert` a minute ago.
+// filling in New expert a minute ago.
 #include "crucible/routing/expert.hpp"
+#include "crucible/util/format.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -18,12 +19,7 @@
 namespace crucible {
 namespace {
 
-std::string to_lower(std::string_view text) {
-    std::string out(text);
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-}
+using format::to_lower;
 
 std::string trim(std::string_view text) {
     while (!text.empty() && (std::isspace(static_cast<unsigned char>(text.front())) != 0)) {
@@ -196,7 +192,7 @@ std::vector<std::string> Roster::router_labels() const {
     // "Philosophy" and "Physics" are things the model knows about.
     //
     // The tags stay in the system prompt, where they measurably help (dropping
-    // them costs 6 points), and in the expert panel, where a fixed width is what
+    // them costs 6 points), and beside the name on screen, where a fixed width is what
     // makes the chips line up.
     std::vector<std::string> labels;
     labels.reserve(experts_.size());

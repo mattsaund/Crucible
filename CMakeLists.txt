@@ -30,7 +30,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 if(MSVC)
     # The sources contain UTF-8 -- the crucible sprite's melt, the diamonds the
-    # expert panel draws with. MSVC assumes the system code page without this
+    # interface draws with. MSVC assumes the system code page without this
     # and mangles every one of them.
     add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>")
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>")
@@ -98,7 +98,7 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# crucible_core -- everything that is not the terminal UI.
+# crucible_core -- everything that is not the window.
 # Kept as its own library so the engine can be driven headlessly (tests, a
 # future `crucible --repl`, or a daemon) without dragging a window toolkit
 # along.
@@ -117,6 +117,8 @@ add_library(crucible_core STATIC
     # app because the Mac is the case that went wrong, and from a Linux machine
     # a unit test is the only place it can be checked.
     src/util/resources.cpp
+    src/util/http.cpp
+    src/util/workers.cpp
     src/util/subprocess.cpp
 
     # config: what is on disk -- settings, paths, folder trust
@@ -160,6 +162,7 @@ add_library(crucible_core STATIC
     src/tools/workshop.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
+    src/llm/remote_model.cpp
     src/llm/model_host.cpp
 
     # engine: the delegation loop and the state the UI reads
@@ -172,6 +175,13 @@ add_library(crucible_core STATIC
     # app: process-level actions that are not the window
     # api: the one JSON door every interface comes through
     src/api/surface.cpp
+    src/api/wire.cpp
+    src/api/methods_conversation.cpp
+    src/api/methods_project.cpp
+    src/api/methods_roster.cpp
+    src/api/methods_settings.cpp
+    src/api/methods_install.cpp
+    src/api/methods_lab.cpp
 
     src/app/cli.cpp
     src/app/uninstall.cpp
@@ -226,8 +236,21 @@ target_compile_definitions(crucible_core PUBLIC
 add_executable(crucible
     src/gui/main.cpp
     src/gui/app.cpp
-    src/gui/webui.cpp)
+    src/gui/window.cpp)
 target_link_libraries(crucible PRIVATE crucible::core)
+
+# The platform's own file dialog: one function, and the implementation that
+# belongs to wherever this is being built. See src/gui/dialogs.hpp.
+if(WIN32)
+    target_sources(crucible PRIVATE src/gui/dialogs_win.cpp)
+    # IFileOpenDialog is COM: ole32 makes the object, uuid names its class.
+    target_link_libraries(crucible PRIVATE ole32 uuid shell32)
+elseif(APPLE)
+    target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp)
+    target_link_libraries(crucible PRIVATE "-framework AppKit")
+else()
+    target_sources(crucible PRIVATE src/gui/dialogs_gtk.cpp)
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings -- applied only to our own targets, never to the vendored deps.
@@ -276,6 +299,8 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_transcript_edits.cpp
         tests/test_overflow.cpp
         tests/test_api.cpp
+        tests/test_http.cpp
+        tests/test_remote.cpp
         tests/test_lab.cpp
         tests/test_trainer.cpp
         tests/test_prebuilt.cpp
@@ -381,7 +406,7 @@ endif()
 # than to the core library: it is a way of drawing Crucible, and crucible_core
 # is what any other way of driving it would share.
 if(CRUCIBLE_HAS_WEBVIEW AND CRUCIBLE_WEBUI_CPP)
-    target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP} ${CRUCIBLE_RENDER_CPP})
+    target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP})
     target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
     target_link_libraries(crucible PRIVATE webview::core_static)
     # The page draws in the same typeface the window did and shows the same

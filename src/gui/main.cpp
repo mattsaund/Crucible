@@ -22,10 +22,6 @@
 #include "crucible/util/platform.hpp"
 #include "app.hpp"
 
-namespace {
-
-}  // namespace
-
 int main(int argc, char** argv) {
     // Started from a terminal, `crucible --help` prints the braille mark, and
     // on Windows the console needs telling before it can render it.
@@ -72,5 +68,5 @@ int main(int argc, char** argv) {
 
     crucible::gui::App app(std::move(config), std::move(warnings),
                            options.skip_trust);
-    return app.run_web();
+    return app.run();
 }

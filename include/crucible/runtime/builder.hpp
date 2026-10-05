@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Building a GPU runtime from source, on demand, from inside the TUI.
+// Building a GPU runtime from source, on demand, from inside the program.
 //
 // Installing CUDA support means compiling one ggml backend against the same
 // llama.cpp the binary was built from -- a few minutes of cmake that must not
@@ -8,7 +8,7 @@
 // worker thread and publishes progress the settings screen polls.
 //
 // It deliberately does *not* install system packages. That needs root, and a
-// TUI is the wrong place to ask for it -- so a missing SDK is reported as
+// window is the wrong place to ask for it -- so a missing SDK is reported as
 // advice, with the exact command for the package manager this machine has
 // (see install_hint in runtime/backend.hpp), and the build is refused before
 // it starts rather than failed several minutes in.

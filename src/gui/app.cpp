@@ -3,13 +3,10 @@
 // The session: everything Crucible is, apart from what draws it.
 //
 // Config, engine, trust, the session store, which project is open and what is
-// allowed to happen to it. The interface lives in webui.cpp and reaches all of
-// it through api::Surface rather than through these members, which is what
+// allowed to happen to it. The interface lives in window.cpp and reaches all
+// of it through api::Surface rather than through these members, which is what
 // lets a second interface -- the Python orchestrator, a test harness -- exist
 // without this file knowing.
-//
-// It was an ImGui window and a dozen panel files until the web interface
-// reached parity. The panels are gone; what they called back into is this.
 #include "app.hpp"
 
 #include <algorithm>
@@ -21,8 +18,8 @@
 
 
 #include "crucible/config/paths.hpp"
-#include "crucible/runtime/devices.hpp"
-#include "crucible/util/format.hpp"
+#include "crucible/runtime/backend.hpp"
+#include "crucible/util/http.hpp"
 
 namespace crucible::gui {
 
@@ -34,25 +31,22 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     : config_(std::move(config)),
       trust_(paths::trust_file()),
       skip_trust_(skip_trust) {
+    // What the config file's reader had to say about it: a number clamped, a
+    // seat pointed at a provider that is not there. Shown rather than logged,
+    // because the person who can fix it is the one looking at the window.
     for (std::string& warning : warnings) {
-        notices_.push_back(std::move(warning));
+        state_.add_notice(std::move(warning));
     }
 
     state_.configure_seats(config_);
 
-    // Set by whatever is drawing. Nothing is, until run_web puts the
-    // webview's dispatch queue here.
-    engine_ = std::make_unique<Engine>(config_, state_, [this] {
-        if (wake_) {
-            wake_();
-        }
-    });
+    // Poked whenever the engine's state moves. Nothing is listening until
+    // run() opens a window and says what a poke should do.
+    engine_ = std::make_unique<Engine>(config_, state_, [this] { wake(); });
     // No project, so no root and no history folder. The root is the permission
     // an expert acts under, and there is nothing to act on yet: a WRITE in this
     // state is refused, which is the right answer to "before you opened one".
     engine_->set_project({}, {});
-
-    refresh_models();
 }
 
 
@@ -64,24 +58,102 @@ std::filesystem::path App::project_dir() const {
     return store_ ? store_->project().dir : std::filesystem::path{};
 }
 
+std::filesystem::path App::pending_trust() const {
+    return pending_trust_ ? *pending_trust_ : std::filesystem::path{};
+}
+
 App::~App() {
+    // Whatever is waiting on the network stops waiting. An errand in the pool
+    // may be mid-request, and the pool's destructor joins it: without this,
+    // closing the window could take as long as somebody's server takes to
+    // time out.
+    util::http::shut_down();
     if (engine_) {
         engine_->stop();
     }
 }
 
 void App::say(std::string message) {
-    notices_.push_back(std::move(message));
-    // Only the last few. This is a status channel, not a log; the log is on
-    // disk and the transcript is above it.
-    if (notices_.size() > 6) {
-        notices_.erase(notices_.begin());
+    // Into the engine's state rather than a list of this object's own, so it
+    // reaches the page by the one route everything else does. The list this
+    // replaced was written to faithfully and read by nothing.
+    state_.add_notice(std::move(message));
+    wake();
+}
+
+void App::wake() {
+    const std::lock_guard<std::mutex> lock(wake_mutex_);
+    if (wake_) {
+        wake_();
     }
 }
 
-void App::refresh_models() {
-    models_      = scan_models(config_.resolved_models_dir());
-    lab_made_    = lab::finished_models();
+void App::set_wake(std::function<void()> wake) {
+    const std::lock_guard<std::mutex> lock(wake_mutex_);
+    wake_ = std::move(wake);
+}
+
+std::string App::apply_config(Config edited) {
+    // The same path a change made anywhere else takes, so two callers cannot
+    // apply one differently.
+    update_config([&edited](Config& live) { live = std::move(edited); });
+    return {};
+}
+
+void App::housekeeping() {
+    persist_session();
+    absorb_written_examples();
+    absorb_finished_run();
+    absorb_finished_build();
+    collect_update_check();
+}
+
+void App::absorb_finished_run() {
+    const lab::RunProgress run = trainer_.progress();
+    if (run.phase != lab::RunProgress::Phase::Done || run.recipe_id.empty()) {
+        if (run.running()) {
+            run_absorbed_.clear();   // a new run, so its ending is news again
+        }
+        return;
+    }
+    if (run.recipe_id == run_absorbed_) {
+        return;
+    }
+    run_absorbed_ = run.recipe_id;
+
+    for (lab::Recipe recipe : lab::saved_recipes()) {
+        if (recipe.id != run.recipe_id) {
+            continue;
+        }
+        recipe.trained_path = run.produced.string();
+        recipe.stage        = lab::Stage::Testing;
+        std::string error;
+        if (lab::save(recipe, error)) {
+            say(recipe.name + " finished training -- it is ready to test");
+        } else {
+            say(recipe.name + " finished training, but the recipe could not be "
+                "updated: " + error);
+        }
+    }
+}
+
+void App::absorb_finished_build() {
+    const BuildProgress build = runtime_builder_.progress();
+    if (build.phase != BuildProgress::Phase::Done || !build.error.empty()) {
+        // Reset on anything else, so the next build reports itself too.
+        build_absorbed_ = false;
+        return;
+    }
+    if (build_absorbed_) {
+        return;
+    }
+    build_absorbed_ = true;
+
+    // A model picks its devices when it loads and keeps them. Dropping what
+    // is loaded is what puts the next prompt on the new hardware.
+    engine_->reload_models();
+    say(std::string(backend_info(build.kind).name)
+        + " is ready -- models will use it from the next prompt");
 }
 
 void App::update_config(const std::function<void(Config&)>& change) {
@@ -97,7 +169,7 @@ void App::update_config(const std::function<void(Config&)>& change) {
 void App::persist_session() {
     // Nothing to write a history into. A conversation cannot have happened
     // without a project -- the composer is closed until one is open -- but this
-    // is called from the frame loop and from open_project, so it says so rather
+    // is called from housekeeping and from open_project, so it says so rather
     // than trusting that.
     if (!store_) {
         return;
@@ -137,25 +209,23 @@ void App::absorb_written_examples() {
     }
 }
 
-void App::open_project(const std::filesystem::path& root) {
+std::string App::open_project(const std::filesystem::path& root) {
     std::error_code ec;
     if (!std::filesystem::is_directory(root, ec)) {
-        project_error_ = root.string() + " is not a directory";
-        return;
+        return root.string() + " is not a directory";
     }
-    if (engine_->cooking()) {
+    if (engine_->cooking() || engine_->is_busy()) {
         // A cook is about the directory it started in, and its journal is keyed
         // to it. Moving the ground under it would produce a record of work done
-        // somewhere it was not.
-        say("finish or stop the cook before opening another project");
-        return;
+        // somewhere it was not. The same goes for a turn still being written.
+        return "finish or stop what is running before opening another project";
     }
 
     // Asked once per directory, and remembered. `--no-trust` is the way past
     // it for a scripted run, where there is nobody to answer a modal.
     if (!skip_trust_ && !trust_.is_trusted(root)) {
         pending_trust_ = root;
-        return;
+        return {};
     }
 
     const Project project = Project::at(root);
@@ -169,41 +239,60 @@ void App::open_project(const std::filesystem::path& root) {
     state_.set_cook(nullptr);
     state_.set_project_usage(store_->project_usage());
     persisted_turns_ = 0;
-    notices_.clear();
 
     remember_project(project.root);
-    project_error_.clear();
-    // The name, not the path. The path is in the top bar's tooltip and in
-    // Settings; a notice is a line in the transcript and a three-line path
-    // wrapping across it is the loudest thing on an empty screen.
+    // The name, not the path. The path is in the top bar; a notice is a line
+    // in the transcript and a three-line path wrapping across it is the
+    // loudest thing on an empty screen.
     say("opened " + (project.name.empty() ? project.root.string() : project.name));
+    return {};
+}
+
+void App::answer_trust(bool trusted) {
+    if (!pending_trust_) {
+        return;
+    }
+    const std::filesystem::path root = *pending_trust_;
+    pending_trust_.reset();
+    if (!trusted) {
+        if (!project_open()) {
+            say("not trusted -- choose a folder to work in");
+        }
+        return;
+    }
+    trust_.trust(root);
+    if (const std::string error = open_project(root); !error.empty()) {
+        say(error);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
-void App::retry_turn(std::size_t index) {
+bool App::retry_turn(std::size_t index) {
     if (engine_->is_busy()) {
-        return;   // the buttons are not offered then; this is the belt to that brace
+        return false;   // the buttons are not offered then; this is the belt to that brace
     }
     const Snapshot snapshot = state_.snapshot();
     if (index >= snapshot.turns.size()) {
-        return;
+        return false;
     }
     const std::string prompt = snapshot.turns[index].prompt;
     state_.truncate_turns(index);
     rebuild_history();
     engine_->submit(prompt);
+    return true;
 }
 
-void App::delete_turn(std::size_t index) {
+bool App::delete_turn(std::size_t index) {
     if (engine_->is_busy()) {
-        return;
+        return false;
     }
     state_.remove_turn(index);
     rebuild_history();
     persist_session();
+    return true;
 }
 
 void App::rebuild_history() {
@@ -227,7 +316,7 @@ void App::rebuild_history() {
     persisted_turns_ = 0;
 }
 
-std::string App::resume_session(const std::string& id) {
+std::string App::open_session(const std::string& id) {
     if (!store_) {
         return "no project is open, and conversations are kept per project";
     }
@@ -275,7 +364,7 @@ std::optional<lab::Recipe> recipe_by_id(const std::string& id) {
 
 }  // namespace
 
-std::string App::begin_test(const std::string& recipe_id) {
+std::string App::test_begin(const std::string& recipe_id) {
     const std::optional<lab::Recipe> recipe = recipe_by_id(recipe_id);
     if (!recipe) {
         return "no such expert";
@@ -304,8 +393,8 @@ std::string App::begin_test(const std::string& recipe_id) {
     if (!edited.roster.add(std::move(expert), error)) {
         return error;
     }
-    ModelParams params;
-    params.model                = recipe->trained_path;
+    ModelParams params = edited.defaults;
+    params.model       = recipe->trained_path;
     edited.experts[ExpertId(kTestSeat)] = params;
 
     // To the engine and nowhere else. update_config would write this to the
@@ -316,7 +405,7 @@ std::string App::begin_test(const std::string& recipe_id) {
     return {};
 }
 
-void App::end_test() {
+void App::test_end() {
     if (testing_.empty()) {
         return;
     }
@@ -325,12 +414,12 @@ void App::end_test() {
     engine_->apply_config(config_);
 }
 
-std::string App::keep_tested(const std::string& recipe_id) {
+std::string App::keep(const std::string& recipe_id) {
     std::optional<lab::Recipe> recipe = recipe_by_id(recipe_id);
     if (!recipe) {
         return "no such expert";
     }
-    end_test();
+    test_end();
 
     recipe->stage       = lab::Stage::Finished;
     recipe->finished_at = lab::now_seconds();
@@ -344,7 +433,6 @@ std::string App::keep_tested(const std::string& recipe_id) {
     // produce two of it.
     if (config_.roster.find(recipe->name)) {
         say(recipe->name + " is finished");
-        refresh_models();
         return {};
     }
 
@@ -356,7 +444,9 @@ std::string App::keep_tested(const std::string& recipe_id) {
         return error;
     }
     const ExpertId id = make_expert_id(recipe->name);
-    ModelParams    params;
+    // From the defaults rather than from nothing, so the new seat samples the
+    // way every other seat does until somebody says otherwise.
+    ModelParams    params = edited.defaults;
     params.model       = recipe->trained_path;
     edited.experts[id] = params;
     update_config([&edited](Config& config) { config = edited; });
@@ -364,7 +454,6 @@ std::string App::keep_tested(const std::string& recipe_id) {
     // So the delegator has something to route on besides the name.
     engine_->write_examples(id);
     say(recipe->name + " is finished and has joined the experts");
-    refresh_models();
     return {};
 }
 
@@ -381,17 +470,18 @@ void App::begin_update_check() {
     // be a worse bug than the one it is trying to tell you about.
     auto check = std::make_shared<UpdateCheck>();
     update_checking_ = check;
-    std::thread([this, check]() {
+    // In the pool rather than on a thread of its own left to finish whenever:
+    // the pool is joined before this object goes away, and a detached thread
+    // that woke up afterwards would be calling into one that had.
+    workers_.post([this, check]() {
         update::State state = update::refresh(/*allowed_to_ask=*/true);
         {
             const std::lock_guard<std::mutex> lock(check->mutex);
             check->state = std::move(state);
             check->done  = true;
         }
-        if (wake_) {
-            wake_();
-        }
-    }).detach();
+        wake();
+    });
 }
 
 void App::collect_update_check() {
@@ -405,12 +495,11 @@ void App::collect_update_check() {
     update_ = update_checking_->state;
     update_checking_.reset();
 
-    // Said once, when the answer comes back. The interface has no other way
-    // to learn this -- it is not part of the engine's state -- and a version
-    // check nobody is told about is a version check not worth making.
+    // Said once, when the answer comes back. The gear carries a dot from then
+    // on, and this is the line that says what the dot means.
     if (update_available()) {
-        say("Crucible " + update_.latest + " is out  ·  "
-            + (update_.page.empty() ? update::releases_url() : update_.page));
+        say("Crucible " + update_.latest + " is available  ·  "
+            + std::string(update::update_command()));
     }
 }
 

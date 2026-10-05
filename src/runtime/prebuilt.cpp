@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/runtime/registry.hpp"
+#include "crucible/util/http.hpp"
 #include "crucible/util/subprocess.hpp"
 
 #ifndef CRUCIBLE_LLAMA_TAG
@@ -117,39 +118,28 @@ std::string find_asset(std::string_view releases_json, std::string_view name) {
 }
 
 bool fetch_releases(std::string& body, std::string& error) {
-    if (!util::on_path("curl")) {
-        error = "curl is not installed";
+    util::http::Request request;
+    request.url             = releases_url();
+    request.headers         = {{"Accept", "application/vnd.github+json"}};
+    request.timeout_seconds = 15;
+
+    util::http::Response response = util::http::send(request);
+    if (!response.ok()) {
+        error = "the release list could not be read (" + response.reason() + ")";
         return false;
     }
-    const std::vector<std::string> argv{
-        "curl", "--silent", "--show-error", "--location", "--fail",
-        "--max-time", "15",
-        "--user-agent", std::string("Crucible/") + CRUCIBLE_VERSION,
-        "--header", "Accept: application/vnd.github+json",
-        releases_url(),
-    };
-    util::Subprocess child;
-    if (!child.start(argv, {}, /*extra_env=*/{}, error)) {
-        return false;
-    }
-    std::string line;
-    while (child.read_line(line)) {
-        body += line;
-        body += '\n';
-    }
-    if (const int status = child.wait(); status != 0) {
-        error = "the release list could not be read (curl exited "
-              + std::to_string(status) + ")";
-        return false;
-    }
+    body = std::move(response.body);
     return true;
 }
 
 bool install(BackendKind kind, const std::string& url, const std::filesystem::path& into,
              std::vector<std::filesystem::path>& written, std::string& error,
              const std::function<void(std::string)>& say) {
-    if (!util::on_path("curl") || !util::on_path("tar")) {
-        error = "curl and tar are needed to unpack a prebuilt runtime";
+    if (!util::http::available(error)) {
+        return false;
+    }
+    if (!util::on_path("tar")) {
+        error = "tar is needed to unpack a prebuilt runtime";
         return false;
     }
 
@@ -178,10 +168,8 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
     // ones, and a timeout mid-download reads to the user as "it does not work"
     // rather than "your connection is slow".
     say("downloading");
-    if (run_quiet({"curl", "--location", "--fail", "--silent", "--show-error",
-                   "--retry", "2", "--retry-delay", "2",
-                   "--max-time", "1800", "--output", archive.string(), url}) != 0) {
-        error = "the download failed";
+    if (std::string why; !util::http::download(url, archive, 1800, why)) {
+        error = "the download failed: " + why;
         clean();
         return false;
     }

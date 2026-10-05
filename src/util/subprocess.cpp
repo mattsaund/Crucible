@@ -207,6 +207,12 @@ void Subprocess::terminate() {
     close_pipe();  // unblocks a read_line() waiting on output
 }
 
+void Subprocess::interrupt() {
+    if (pid_ > 0) {
+        ::kill(-pid_, SIGTERM);
+    }
+}
+
 bool Subprocess::running() const {
     return pid_ > 0;
 }
@@ -529,12 +535,16 @@ int Subprocess::wait() {
 }
 
 void Subprocess::terminate() {
+    interrupt();
+    close_pipe();  // unblocks a read_line() waiting on output
+}
+
+void Subprocess::interrupt() {
     if (job_ != nullptr) {
         ::TerminateJobObject(static_cast<HANDLE>(job_), 1);
     } else if (process_ != nullptr) {
         ::TerminateProcess(static_cast<HANDLE>(process_), 1);
     }
-    close_pipe();  // unblocks a read_line() waiting on output
 }
 
 bool on_path(const std::string& program) {

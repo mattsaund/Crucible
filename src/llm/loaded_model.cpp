@@ -92,6 +92,17 @@ int LoadedModel::count_tokens(const std::string& text) const {
     return static_cast<int>(tokenize(vocab, text, false).size());
 }
 
+ChatResult LoadedModel::chat(const ChatRequest& request, const ChatSink& sink) {
+    ChatResult result;
+    result.stats = generate(format_chat(request.messages, /*add_assistant_prefix=*/true),
+                            request.params, sink.on_text, sink.cancel);
+    return result;
+}
+
+int LoadedModel::prompt_tokens(const std::vector<ChatMessage>& messages) const {
+    return count_tokens(format_chat(messages, /*add_assistant_prefix=*/true));
+}
+
 int LoadedModel::context_size() const {
     return static_cast<int>(llama_n_ctx(ctx_));
 }

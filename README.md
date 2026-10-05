@@ -18,11 +18,6 @@ routes each prompt to the right one, and lets you build the missing ones
 yourself. Ten specialists beat one generalist of the same size, and only one is
 in memory at a time.
 
-Everything happens locally. No account, no API key, no telemetry. Two things
-reach the network and both can be turned off: web search, which is off by
-default, and a once-a-day check for a newer version, which sends nothing but the
-request itself.
-
 Website: https://msaunders.dev/crucible/
 
 ![Crucible routing a question to one of its experts](docs/images/chat.png)
@@ -179,6 +174,20 @@ ___
 
 ![Runtimes: what is installed, what it found, and what it would take to add more](docs/images/runtimes.png)
 
+### Reach further, when you choose to
+
+- A seat does not have to be a file. It can be answered by a provider: Claude
+  through Anthropic's API, or anything that speaks the OpenAI one -- OpenAI,
+  Gemini, DeepSeek, Moonshot's Kimi, Cloudflare Workers AI, OpenRouter, Groq --
+  and equally a llama.cpp, Ollama or LM Studio server on your own network.
+- Use one as a specialist, or as the default expert: the large general model
+  that catches what the local ones could not place.
+- Nothing is sent anywhere until you add a provider and point a seat at it,
+  and a seat that leaves the machine is marked as one. A key can be read from
+  an environment variable rather than written to the config file.
+- The delegator stays local. It is asked for a probability per expert, which
+  is not a thing a provider's API will give.
+
 ### Keep the work
 
 - History is per project, and reopening a conversation hands the exchanges back
@@ -192,8 +201,9 @@ ___
 ___
 ## Configuration
 
-Everything is editable from the settings screen: models directory, a model for
-each seat, sampling, hardware, runtimes. The file behind it is
+Everything is editable from the settings screen, and every change applies as
+it is made: models directory, a model for each seat, providers, sampling,
+hardware, runtimes. The file behind it is
 `~/.config/crucible/config.json`, and it can be edited by hand.
 
 ___

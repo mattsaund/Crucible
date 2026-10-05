@@ -10,7 +10,7 @@
 // Reading is split from parsing so the parsing can be tested. The readings
 // themselves come from `/proc` and `/sys`, which are free, and from
 // `nvidia-smi`, which is not -- so it is sampled on a thread of its own rather
-// than in the frame loop.
+// than on the one that draws.
 #pragma once
 
 #include <atomic>

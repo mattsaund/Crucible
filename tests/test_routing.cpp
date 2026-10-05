@@ -178,7 +178,7 @@ TEST(a_built_in_expert_can_be_ejected_like_any_other) {
     CHECK_EQ(roster.size(), std::size_t{8});
 
     // And removing something that is not there is an error, not a silent
-    // success -- a typo in /ejectexpert should say so.
+    // success -- a typo in the id should say so.
     CHECK(!roster.remove("chemistry", error));
     CHECK(!error.empty());
 }
@@ -192,7 +192,7 @@ TEST(a_new_seat_goes_on_the_end_and_the_order_is_the_drawing_order) {
     std::string error;
     CHECK(roster.add(expert, error));
 
-    // The expert panel draws the roster in order, so where a seat lands in the
+    // The side menu draws the roster in order, so where a seat lands in the
     // list is where it lands on screen.
     CHECK_EQ(roster.at(roster.size() - 1).id, std::string("tax-law"));
     CHECK_EQ(roster.size(), std::size_t{10});

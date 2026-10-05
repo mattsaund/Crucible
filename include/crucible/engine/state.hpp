@@ -47,6 +47,14 @@ enum class SeatPhase {
 struct SeatState {
     SeatPhase phase    = SeatPhase::Unconfigured;
     float     progress = 0.0F;  ///< 0..1 while Loading
+
+    /// The provider that answers for this seat, by the name it goes by on
+    /// screen. Empty for a model on this machine, which is nearly all of them.
+    ///
+    /// Carried here so the panel can mark the seat: a prompt routed to it
+    /// leaves the machine, and that should be visible before the prompt is
+    /// sent rather than discoverable afterwards.
+    std::string provider;
 };
 
 /// Something a turn did to the world, and what came back.
@@ -132,7 +140,7 @@ struct Snapshot {
     /// A shared pointer rather than a copy: the roster is a dozen structs of
     /// strings, and copying it into every frame at eleven frames a second to
     /// draw ten labels would be pure waste. It is immutable once published, so
-    /// the renderer can read it without a lock, and `/newexpert` publishes a
+    /// the renderer can read it without a lock, and adding an expert publishes a
     /// new one rather than editing this.
     std::shared_ptr<const Roster>       roster;
 
@@ -141,9 +149,9 @@ struct Snapshot {
     std::optional<ExpertId>             resident;
 
     /// The expert this turn is flowing to, from the moment the delegator names
-    /// it until the answer is finished. What the expert panel draws the line to,
+    /// it until the answer is finished. What the side menu draws the line to,
     /// and what makes a seat's dot light up -- residency is a different
-    /// question, and the status bar is where that is answered.
+    /// question, and the status line is where that is answered.
     std::optional<ExpertId>             linked;
 
     /// Is the delegator in memory and ready to route?
@@ -153,6 +161,11 @@ struct Snapshot {
     /// the delegator does, which is the honest picture of a machine that can
     /// only hold one of them at a time.
     bool delegator_ready = false;
+
+    /// How far along the delegator's load is, 0..1, or negative when it is
+    /// not loading. With the delegator set to load on demand this happens
+    /// before every prompt, which makes it worth drawing.
+    float delegator_progress = -1.0F;
     std::vector<Turn>                   turns;
     std::vector<std::string>            notices;
     bool                                busy = false;
@@ -205,7 +218,7 @@ public:
     /// than per frame.
     ///
     /// This is also the only way the roster the UI draws is replaced, which is
-    /// what makes `/newexpert` a config change like any other.
+    /// what makes adding an expert a config change like any other.
     void configure_seats(const Config& config);
 
     void set_resident(std::optional<ExpertId> id);
@@ -233,8 +246,12 @@ public:
     /// The expert work is flowing to, or nothing between turns.
     void set_linked(std::optional<ExpertId> id);
 
-    /// Whether the delegator is loaded and able to route.
+    /// Whether the delegator is loaded and able to route. Either answer ends
+    /// a load that was being reported.
     void set_delegator_ready(bool ready);
+
+    /// The delegator is loading and is this far along, 0..1.
+    void set_delegator_progress(float progress);
     void finish_turn(std::size_t turn, const GenerationStats& stats, long load_ms);
     void fail_turn(std::size_t turn, std::string_view reason);
 
@@ -306,6 +323,7 @@ private:
     std::optional<ExpertId>              resident_;
     std::optional<ExpertId>              linked_;
     bool                                 delegator_ready_ = false;
+    float                                delegator_progress_ = -1.0F;
     std::vector<Turn>                    turns_;
     std::vector<std::string>             notices_;
     bool                                 busy_ = false;

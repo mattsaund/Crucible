@@ -23,7 +23,13 @@ namespace {
 ///
 /// Most of the contract is testable this way, and the half that is not --
 /// does submit actually reach llama.cpp -- is not a unit test's business.
-api::Surface bare() { return api::Surface(api::Deps{}); }
+/// A surface standing on nothing: a host that owns no engine, no project and
+/// no configuration, which is what every member of api::Host answers by
+/// default.
+api::Surface bare() {
+    static api::Host nobody;
+    return api::Surface(nobody);
+}
 
 json ask(api::Surface& surface, const std::string& request) {
     return json::parse(surface.handle(request), nullptr, false);
@@ -168,7 +174,7 @@ TEST(the_roster_and_its_seats_arrive_zipped) {
 
     Snapshot snapshot;
     snapshot.roster = roster;
-    snapshot.seats  = {SeatState{SeatPhase::Active, 0.5F}};
+    snapshot.seats  = {SeatState{SeatPhase::Active, 0.5F, {}}};
 
     const json out = json::parse(api::snapshot_json(snapshot))["experts"][0];
     CHECK(out["name"] == "Mathematics");

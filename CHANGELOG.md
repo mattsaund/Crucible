@@ -6,6 +6,86 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## Unreleased
+
+**An expert can be a model that is somewhere else.** A seat is a name, a
+description and a model, and the model no longer has to be a file: it can be
+Claude through Anthropic's API, or anything that speaks the OpenAI one --
+OpenAI, Gemini, DeepSeek, Moonshot's Kimi, Cloudflare Workers AI, OpenRouter,
+Groq, or a llama.cpp, Ollama or LM Studio server on your own network.
+
+- **Settings → Providers** adds one: an address, a key, and the models it
+  offers, which it can be asked for. A key typed there is written to the config
+  file, and the screen says so; `env:NAME` reads it from the environment
+  instead.
+- A provider's model is picked for a seat like any other, and can be the
+  **default expert** -- the one that catches what the local ones could not
+  place.
+- **Nothing is sent until you set that up**, and a seat that leaves the machine
+  is marked as one. The delegator stays local: it is asked for a probability
+  per expert, which no provider's API gives.
+- Reasoning arrives in the same "thinking" disclosure, token counts are the
+  provider's own, and Stop interrupts a request rather than waiting for it.
+- When Claude declines a request the turn says so, and what had streamed is
+  not left on screen as an answer. Against Anthropic's own API, a declined
+  request may be answered by another of its models; the transcript says when.
+- `/physics why is the sky blue` sends a prompt straight to that expert.
+
+**An expert no longer has to be trained.** **New expert** -- on Settings →
+Experts -- takes a name, a description and a model you already have. Create is
+still how you fine-tune one; this is how you use one as it is. **Eject** takes
+a seat off the roster.
+
+**The window stops freezing.** Everything the page asks for used to be
+answered on the thread that draws, so opening Settings waited for a disk scan,
+a hardware probe and a Python interpreter. The slow questions are answered on
+threads of their own now, the state is pushed to the page thirty times a
+second rather than once per token, and a finished turn is drawn once rather
+than on every push.
+
+**Browse opens the system's own file dialog** -- its bookmarks, its mounted
+drives, the last place you were -- for a project, the models directory, a model
+for a seat, and every "or from this machine" in Create. Crucible's own picker
+is still there for a desktop with no dialog to give.
+
+**Where things are, at a glance.**
+- The project's path is in the top bar, beside the button that changes it,
+  and the window's title is the project's name.
+- A model that is loading shows a ring that fills, with the percentage in it,
+  on the line of its name -- the delegator's as well as an expert's.
+- The status line is at the top of the side menu, and a line runs from the
+  delegator to whichever seat has the turn.
+
+**The rest of what the old window did.**
+- **Settings has no Save buttons.** Every control applies as it is changed.
+- **Create is a six-step dialog** -- Name, Base model, Data, Tools, Target,
+  Review -- with what a choice would cost beside the choice: the memory a
+  method needs against what the machine has, the size of what comes out. A
+  run shows its loss as a curve. A run that finishes is written back to its
+  recipe whichever view you are on.
+- **Chat** says what is missing before a first answer -- no project, no
+  runtime, no model -- with the button that fixes it, and offers somewhere to
+  start when nothing is. The box is several lines and grows. What an expert
+  did is shown where it did it rather than folded away. Scrolling up stays
+  where you put it, with **Jump to latest** to come back.
+- **Cook** shows the goal, the state, who has had the work, and what changed
+  on disk -- and says so in red when a cook that claims to have finished
+  changed nothing.
+- **Hardware** names its modes and says why a setting cannot work on this
+  machine rather than letting it be set. **Runtimes** lists what each is made
+  of. **Training** can be removed. **About** says what version this is, where
+  everything is kept, and exactly what leaves the machine.
+- Notices -- "opened demo", "Physics has joined the experts" -- reach the
+  transcript; the list they were written to was read by nothing.
+- Ctrl+1 to 4 switch views and Ctrl+, opens Settings. The gear is a toggle.
+
+**Underneath.** The page is a stylesheet and a script per view rather than
+one file, assembled at build time by CMake alone. Each view is a function from
+the state to markup, which is what lets the tests draw every screen and dialog
+with no browser. The surface behind it is a table of methods split by subject,
+and one curl wrapper replaced four -- which also took a search key off a
+command line where any process on the machine could read it.
+
 ## 0.7.1 — 2026-10-04
 
 **The interface reaches parity with the window it replaced.** The webview

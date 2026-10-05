@@ -14,7 +14,7 @@ include(FetchContent)
 # --- embedding a source file into the binary -----------------------------
 #
 # Three things are compiled in from files someone edits: the trainer script,
-# the web interface's page, and the third-party notices. A custom command
+# the interface's page, and the third-party notices. A custom command
 # rather than execute_process, because execute_process runs at configure time
 # -- so editing one of them and rebuilding did nothing until cmake was rerun,
 # which is a very quiet way to spend an hour wondering why an edit had no
@@ -72,15 +72,9 @@ FetchContent_MakeAvailable(nlohmann_json)
 # The window
 # ---------------------------------------------------------------------------
 #
-# There is no window toolkit here any more. Crucible drew its own interface in
-# Dear ImGui over GLFW for most of its life; it draws it in the platform's own
-# webview now, which is the block below, and the two dependencies that went
-# with the old one are gone rather than kept around unused.
-#
-# The history has them if the trade ever needs re-reading: immediate mode cost
-# about eight thousand lines for an interface that had to grow graphs, loss
-# curves and diff views, and every one of those is a thing the web stack
-# already does.
+# There is no window toolkit here. The interface is a page, drawn by the
+# webview the platform already has, so the only dependency is the thin header
+# that opens one.
 
 # webview is one MIT header wrapping the webview each platform already has:
 # WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux. Nothing is
@@ -169,25 +163,50 @@ if(EXISTS ${CRUCIBLE_NOTICES_TXT})
                    kNotices crucible::app::embedded notices)
 endif()
 
-# --- the web interface's page -------------------------------------------
+# --- the interface's page -------------------------------------------------
 #
 # Compiled in for the same reason the trainer script is: an AppImage, a .app
 # bundle and a Windows install put their data in three different places, and a
 # page that is always exactly the one this build expects beats one that could
-# be looked for and found stale. When this becomes a Vite build the output
-# bundle is embedded the same way.
-set(CRUCIBLE_WEBUI_HTML   ${CMAKE_CURRENT_LIST_DIR}/../ui/index.html)
-set(CRUCIBLE_RENDER_JS    ${CMAKE_CURRENT_LIST_DIR}/../ui/render.js)
+# be looked for and found stale.
+#
+# It is several files under ui/ -- a stylesheet, and a script per view -- and
+# one document by the time it is embedded: see cmake/BundlePage.cmake. The
+# list is here rather than globbed so that adding a file is a line somebody
+# wrote, and so that the order the scripts load in is the order index.html
+# names them and nowhere else.
+set(CRUCIBLE_UI_DIR ${CMAKE_CURRENT_LIST_DIR}/../ui)
+set(CRUCIBLE_UI_FILES
+    ${CRUCIBLE_UI_DIR}/index.html
+    ${CRUCIBLE_UI_DIR}/style.css
+    ${CRUCIBLE_UI_DIR}/render.js
+    ${CRUCIBLE_UI_DIR}/base.js
+    ${CRUCIBLE_UI_DIR}/shell.js
+    ${CRUCIBLE_UI_DIR}/chat.js
+    ${CRUCIBLE_UI_DIR}/cook.js
+    ${CRUCIBLE_UI_DIR}/create.js
+    ${CRUCIBLE_UI_DIR}/history.js
+    ${CRUCIBLE_UI_DIR}/settings.js)
 set(CRUCIBLE_WEBUI_CPP  "")
 set(CRUCIBLE_RENDER_CPP "")
-if(EXISTS ${CRUCIBLE_WEBUI_HTML})
-    crucible_embed(CRUCIBLE_WEBUI_CPP ${CRUCIBLE_WEBUI_HTML}
-                   kIndexHtml crucible::gui::web web_index)
+if(EXISTS ${CRUCIBLE_UI_DIR}/index.html)
+    set(CRUCIBLE_PAGE_HTML ${CRUCIBLE_GENERATED_DIR}/page.html)
+    add_custom_command(
+        OUTPUT  ${CRUCIBLE_PAGE_HTML}
+        COMMAND ${CMAKE_COMMAND}
+                -DIN=${CRUCIBLE_UI_DIR}/index.html -DOUT=${CRUCIBLE_PAGE_HTML}
+                -P ${CMAKE_CURRENT_LIST_DIR}/BundlePage.cmake
+        DEPENDS ${CRUCIBLE_UI_FILES} ${CMAKE_CURRENT_LIST_DIR}/BundlePage.cmake
+        COMMENT "Bundling the interface"
+        VERBATIM)
+    crucible_embed(CRUCIBLE_WEBUI_CPP ${CRUCIBLE_PAGE_HTML}
+                   kPageHtml crucible::gui::web web_page)
 endif()
-# The text-to-markup half, kept separate so a test can run it without a
-# document around it. It is injected ahead of the page's own script.
-if(EXISTS ${CRUCIBLE_RENDER_JS})
-    crucible_embed(CRUCIBLE_RENDER_CPP ${CRUCIBLE_RENDER_JS}
+# The text-to-markup half on its own as well, for the tests: it is the part
+# that is a pure function of its input, and tests/test_ui_js.cpp runs exactly
+# these bytes without a document around them.
+if(EXISTS ${CRUCIBLE_UI_DIR}/render.js)
+    crucible_embed(CRUCIBLE_RENDER_CPP ${CRUCIBLE_UI_DIR}/render.js
                    kRenderJs crucible::gui::web web_render)
 endif()
 

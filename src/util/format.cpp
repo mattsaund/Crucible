@@ -16,6 +16,13 @@ std::string trim(std::string text) {
     return text;
 }
 
+std::string to_lower(std::string_view text) {
+    std::string out(text);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
 std::string number(double value, int precision) {
     std::array<char, 64> buffer{};
     std::snprintf(buffer.data(), buffer.size(), "%.*f", precision, value);

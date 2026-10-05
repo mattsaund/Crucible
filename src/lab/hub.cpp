@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "crucible/util/subprocess.hpp"
+#include "crucible/util/http.hpp"
 
 #ifndef CRUCIBLE_VERSION
 #define CRUCIBLE_VERSION "0.0.0"
@@ -58,31 +58,17 @@ std::uint64_t number(const json& node, const char* key) {
 }
 
 bool fetch(const std::string& url, std::string& body, std::string& error) {
-    if (!util::on_path("curl")) {
-        error = "curl is needed to browse Huggingface and is not installed";
+    util::http::Request request;
+    request.url             = url;
+    request.headers         = {{"Accept", "application/json"}};
+    request.timeout_seconds = 20;
+
+    util::http::Response response = util::http::send(request);
+    if (!response.ok()) {
+        error = "Huggingface could not be reached (" + response.reason() + ")";
         return false;
     }
-    const std::vector<std::string> argv{
-        "curl", "--silent", "--show-error", "--location", "--fail",
-        "--max-time", "20",
-        "--user-agent", std::string("Crucible/") + CRUCIBLE_VERSION + " (+local model lab)",
-        "--header", "Accept: application/json",
-        url,
-    };
-    util::Subprocess child;
-    if (!child.start(argv, {}, /*extra_env=*/{}, error)) {
-        return false;
-    }
-    std::string line;
-    while (child.read_line(line)) {
-        body += line;
-        body += '\n';
-    }
-    if (const int status = child.wait(); status != 0) {
-        error = "Huggingface could not be reached (curl exited "
-              + std::to_string(status) + ")";
-        return false;
-    }
+    body = std::move(response.body);
     return true;
 }
 

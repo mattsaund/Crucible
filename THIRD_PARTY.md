@@ -46,6 +46,27 @@ travels with the program. On Linux this is a real dependency rather than a
 detail: the installer checks for it and says which package provides it, and
 the AppImage refuses to build without it.
 
+## What it talks to the network with
+
+Every request Crucible makes -- the version check, a web search, a download
+from Huggingface or of a runtime, a prompt sent to a provider -- is made by
+running `curl`, the one already on the machine. It is not distributed with
+Crucible and nothing of it is linked in. On Windows 10 and later and on macOS
+it ships with the system; on Linux the installer checks for it.
+
+Request headers and bodies are handed to it in a file only this user can read
+rather than on its command line, so a key is never somewhere another process
+on the machine can see it.
+
+## Providers
+
+A provider is somebody else's service, reached over HTTPS when you have added
+one and pointed an expert at it: Anthropic's Messages API, or any service that
+speaks OpenAI's chat-completions one. **Crucible carries none of their code**
+-- there is no SDK in the build, only requests written against the two
+published wire formats -- and using one is between you and that provider,
+under their terms and on your key.
+
 ## The training environment
 
 Fine-tuning runs in a Python environment that Crucible builds on request --

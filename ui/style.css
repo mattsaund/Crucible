@@ -1,0 +1,637 @@
+/* SPDX-License-Identifier: MIT
+
+   How Crucible looks.
+
+   One palette, one typeface, and almost no decoration: near-black panels, a
+   single saturated color, and text in three weights of gray. The flame is the
+   only thing on the screen that is orange, so that whatever is orange is
+   where to look -- the seat that has the turn, the button that commits, the
+   bar that is filling.
+
+   Sizes are in rem so the whole interface follows the system's text size. */
+
+/* The palette is gui/theme.hpp, to the byte. The window and this page have
+   to be the same program, and "close enough" across a port is how two
+   interfaces start looking like two products. */
+:root {
+  --ink:        #08080A;
+  --panel:      #0E0E10;
+  --panel-edge: #202024;
+  --raised:     #16161A;
+  --hover:      #1E1E24;
+  --flame:      #FF8700;
+  --flame-lit:  #FFAF00;
+  --error:      #FF5F00;
+  --text:       #ECECEC;
+  --dim:        #8C8C92;
+  --faint:      #5A5A60;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  /* Without this the platform draws its own form controls in the light
+     theme -- a white dropdown in the middle of a near-black page -- and no
+     amount of styling the closed control fixes the list it opens. */
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: var(--ink); color: var(--text);
+  font: 13px/1.6 var(--mono);
+}
+body { display: grid; grid-template-rows: auto 1fr; }
+button, input, select, textarea { font: inherit; color: var(--text); }
+
+/* --- the bar across the top ------------------------------------------ */
+header {
+  display: flex; align-items: center; gap: .7rem;
+  padding: 0 1rem; height: 46px;
+  background: var(--panel); border-bottom: 1px solid var(--panel-edge);
+}
+.flame { width: 20px; height: 20px; flex: none; }
+.flame[src=""] { display: none; }
+.mark { color: var(--flame); letter-spacing: .22em; font-size: 12px; }
+.project {
+  background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 5px; padding: .3rem .8rem; cursor: pointer; color: var(--dim);
+}
+.project:hover { color: var(--text); border-color: var(--faint); }
+.project.none { color: var(--faint); }
+nav { margin-left: auto; display: flex; gap: .3rem; }
+nav button {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  padding: .5rem .9rem; color: var(--faint); cursor: pointer;
+}
+nav button:hover { color: var(--dim); }
+nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
+
+/* The side menu's width is set on the element, so the grid takes it from
+   there rather than keeping a second copy of the same number. */
+main { display: grid; grid-template-columns: auto auto 1fr; min-height: 0; }
+aside {
+  background: var(--panel); padding: 1.2rem 1rem;
+  display: flex; flex-direction: column; min-height: 0;
+}
+aside .roster-scroll { overflow-y: auto; flex: 1; min-height: 0; }
+/* Pushed down by the scroller above rather than pinned to the window: the
+   roster scrolls when it is long, and a footer fixed to the viewport ends
+   up either over the list or below the visible area. */
+aside .roster-foot { padding-top: .9rem; }
+
+/* Folded: a rail of dots, which is the one thing worth a glance when the
+   names are not there. */
+aside.rail { width: 2.6rem; padding: 1.2rem 0; align-items: center; }
+aside.rail .seat { padding: .35rem 0; }
+aside.rail .rail-gap { height: 1.2rem; }
+
+/* The edge, which is also the handle. An element rather than a CSS resize
+   because the width has to be readable from script to be remembered. */
+.splitter {
+  width: 5px; margin-left: -2px; cursor: col-resize;
+  background: var(--panel-edge); border: 0;
+}
+.splitter:hover, .splitter.dragging { background: var(--flame); }
+
+button.icon {
+  background: none; border: 0; color: var(--faint);
+  cursor: pointer; padding: .3rem; display: flex; align-items: center;
+}
+button.icon:hover { color: var(--text); }
+nav button.icon { padding: .5rem .7rem; }
+nav button.icon[aria-current="true"] { color: var(--text); }
+
+.action.wide { display: block; width: 100%; margin-top: 1.2rem; }
+h2 {
+  font-size: 11px; font-weight: 400; letter-spacing: .08em;
+  color: var(--faint); margin: 0 0 .7rem;
+}
+.seat { display: flex; align-items: center; gap: .6rem; padding: .3rem 0; }
+.dot { width: 7px; height: 7px; border: 1px solid var(--faint); transform: rotate(45deg); flex: none; }
+.seat[data-phase="dormant"] .dot { border-color: var(--dim); }
+.seat[data-phase="active"]  .dot { background: var(--flame); border-color: var(--flame); }
+.seat[data-phase="loading"] .dot { background: var(--flame-lit); border-color: var(--flame-lit); }
+.seat[data-phase="missing"] .dot { border-color: var(--error); }
+.seat[data-phase="unconfigured"] .name { color: var(--faint); }
+
+/* --- the conversation ------------------------------------------------- */
+.pane { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+#transcript { overflow-y: auto; padding: 1.6rem 2.5rem; }
+/* Full width with a gutter, rather than set to a measure. Prose reads
+   better at 90 characters and the window still does that -- this is a
+   deliberate difference, asked for because a reply boxed into the middle of
+   a wide screen wastes the screen. The gutter is what keeps it off the
+   edge. */
+.turn {
+  max-width: none; margin: 0 0 2.2rem; padding-bottom: 2.2rem;
+  border-bottom: 1px solid var(--panel-edge);
+}
+.turn:last-of-type { border-bottom: 0; }
+
+/* What you said, as a thing you said: a card with the flame down its edge.
+   It used to be a line of body text under the word "you", which left the
+   question and the answer looking like the same voice. */
+.said {
+  background: var(--panel); border-left: 2px solid var(--flame);
+  border-radius: 0 6px 6px 0; padding: .8rem 1.1rem;
+  white-space: pre-wrap; margin-bottom: 1.1rem;
+}
+
+/* Who answered, and how the delegator got there. */
+.who { display: flex; align-items: baseline; gap: .55rem; margin: 0 0 1.1rem; }
+.who .seat { color: var(--flame-lit); font-weight: 500; }
+.who span:not(.seat) { color: var(--faint); font-size: .92em; }
+.who .sep { color: var(--panel-edge); }
+
+.body { white-space: pre-wrap; }
+.body.md { white-space: normal; }
+.thinking { color: var(--dim); }
+.failed { color: var(--error); }
+.empty { color: var(--faint); text-align: center; margin-top: 18vh; }
+.status { color: var(--faint); }
+/* What the program did, above the first turn. */
+.notices { color: var(--faint); margin: 0 0 2rem; }
+.notices div { padding: .12rem 0; }
+
+/* --- a fenced block ----------------------------------------------------- */
+.code {
+  border: 1px solid var(--panel-edge); border-radius: 7px;
+  background: var(--panel); margin: 1.2rem 0; overflow: hidden;
+}
+.code-head {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .5rem .9rem; color: var(--faint); font-size: .88em;
+}
+.code-head .lang { color: var(--dim); }
+.code-head .code-count { margin-left: auto; }
+.code-head .copy {
+  background: none; border: 0; color: var(--faint); cursor: pointer;
+  padding: .2rem; display: flex; border-radius: 4px;
+}
+.code-head .copy:hover { color: var(--text); background: var(--hover); }
+.code-head .copy.done { color: var(--flame); }
+
+/* The gutter and the code scroll as one, so a long line does not slide the
+   numbers off with it. */
+.code-body { display: flex; overflow-x: auto; background: var(--ink); }
+/* Both paddings set at the same specificity as the margin reset above
+   them. `.code-body pre` out-specifies a bare `.code-gutter`, so setting
+   the horizontal padding there alone lost to `padding: .7rem 0` and the
+   line numbers ended up flush against the code. */
+.code-body pre { margin: 0; }
+.code-body .code-gutter {
+  flex: none; padding: .7rem .9rem;
+  color: var(--faint); text-align: right; user-select: none;
+  border-right: 1px solid var(--panel-edge);
+}
+.code-body .code-text { flex: 1; padding: .7rem .9rem; }
+.code-text code { white-space: pre; }
+/* A file being created: the whole block is an addition. */
+.code.code-add .code-body { background: rgba(46, 107, 71, .14); }
+
+/* Inline code is a name, not a block: the flame says "this is a thing in
+   the program" the way the reference did. */
+.md :not(pre) > code {
+  color: var(--flame-lit); background: var(--raised);
+  border-radius: 4px; padding: .08em .35em;
+}
+
+.foot { background: var(--panel); border-top: 1px solid var(--panel-edge); }
+form.composer { display: flex; gap: .6rem; padding: 1rem 2.5rem; }
+input, select, button.action {
+  background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 5px; padding: .55rem .8rem;
+}
+select option { background: var(--panel); color: var(--text); }
+::selection { background: var(--flame); color: var(--ink); }
+/* The platform's focus ring is blue, which is the one saturated color this
+   interface does not use. Keyboard focus still has to be visible, so it is
+   drawn in the flame instead of switched off. */
+:focus-visible { outline: 2px solid var(--flame); outline-offset: 1px; }
+input { flex: 1; }
+input:focus, select:focus { outline: none; border-color: var(--flame); }
+button.action { cursor: pointer; }
+button.action:hover:not(:disabled) { background: var(--flame); color: var(--ink); border-color: var(--flame); }
+button.action:disabled { color: var(--faint); cursor: default; }
+
+/* --- settings --------------------------------------------------------- */
+.settings { display: grid; grid-template-columns: 11rem 1fr; min-height: 0; }
+.settings-nav { border-right: 1px solid var(--panel-edge); padding: 1.2rem .6rem; }
+.settings-nav button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  padding: .45rem .7rem; border-radius: 5px; color: var(--dim); cursor: pointer;
+}
+.settings-nav button:hover { background: var(--raised); }
+.settings-nav button[aria-current="true"] { background: var(--raised); color: var(--text); }
+.settings-page { overflow-y: auto; padding: 1.6rem 2.5rem; }
+.settings-page h1 { color: var(--flame); font-size: 1.25em; font-weight: 400; margin: 0 0 .3rem; }
+.lede { color: var(--faint); margin: 0 0 1.6rem; }
+.field { margin: 0 0 1.4rem; max-width: 46rem; }
+.field .row { gap: .6rem; }
+.runtime-detail {
+  margin: .7rem 0 0; padding-top: .7rem;
+  border-top: 1px solid var(--panel-edge); color: var(--dim); font-size: .9em;
+}
+.runtime-detail div { display: flex; gap: .6rem; padding: .15rem 0; }
+.runtime-detail span { flex: 0 0 11rem; color: var(--faint); }
+.card .title .link.right { margin-left: auto; }
+
+.order { display: flex; flex-direction: column; gap: .4rem; }
+.order-row {
+  display: flex; align-items: center; gap: .6rem;
+  background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 5px; padding: .45rem .7rem;
+}
+.order-n { color: var(--faint); flex: 0 0 1.2rem; }
+.order-name { flex: 1; min-width: 0; }
+.order-row .action { padding: .2rem .6rem; }
+
+.slider-row { display: flex; gap: .8rem; align-items: center; }
+.slider-row input[type="range"] { flex: 1; min-width: 0; padding: 0; accent-color: var(--flame); }
+.slider-row input:not([type="range"]) { flex: 0 0 6.5rem; text-align: right; }
+.field .row input { flex: 1; min-width: 0; }
+.card.pick { max-width: 46rem; }
+.field label { display: block; color: var(--dim); margin-bottom: .35rem; }
+.field .hint { color: var(--faint); margin-top: .35rem; }
+.field input, .field select { width: 100%; }
+.row { display: flex; gap: .6rem; align-items: center; }
+.card {
+  background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 7px; padding: .9rem 1.1rem; margin-bottom: .7rem; max-width: 46rem;
+}
+.card .title { display: flex; align-items: baseline; gap: .6rem; }
+/* A button that belongs to the card rather than to the row of text in it. */
+.card .title .right { margin-left: auto; }
+.card .tag { color: var(--faint); font-size: 11px; }
+/* A button that is on or off rather than one that does something. */
+.action.toggle[aria-pressed="true"] {
+  background: var(--flame); border-color: var(--flame); color: var(--ink);
+}
+.action.toggle[aria-pressed="true"]:hover { background: var(--flame-lit); }
+
+.ok { color: var(--flame); } .bad { color: var(--error); } .meh { color: var(--faint); }
+
+/* --- what can be done to a turn ---------------------------------------- */
+.turn { position: relative; }
+.turn-controls {
+  position: absolute; top: 0; right: 0; display: flex; gap: .2rem;
+  opacity: 0; transition: opacity .12s ease;
+}
+.turn:hover .turn-controls, .turn-controls:focus-within { opacity: 1; }
+button.link {
+  background: none; border: 0; color: var(--faint);
+  font: inherit; font-size: .85em; cursor: pointer; padding: .2rem .5rem;
+  border-radius: 4px;
+}
+button.link:hover { color: var(--text); background: var(--hover); }
+
+/* --- what a turn cost, and what it did on the way ---------------------- */
+.meta { color: var(--faint); font-size: .85em; margin-top: .6rem; }
+/* Always drawn, zeros and all. A line that appears after the first reply
+   is a line that moves the composer, and because it is the width of the
+   window that reads as the window jumping rather than as a label arriving. */
+.tally {
+  color: var(--faint); font-size: .85em;
+  padding: 0 2.5rem .8rem; text-align: right;
+}
+details.work { margin: .5rem 0 .9rem; }
+details.work > summary {
+  color: var(--faint); cursor: pointer; list-style: none;
+  font-size: .9em; padding: .15rem 0;
+}
+details.work > summary::before { content: '> '; }
+details.work[open] > summary::before { content: 'v '; }
+details.work > summary:hover { color: var(--dim); }
+details.work[open] > summary { margin-bottom: .5rem; }
+.act { color: var(--dim); font-size: .9em; margin: .3rem 0; }
+.act pre { margin: .3rem 0 .6rem; }
+
+/* --- a long install ----------------------------------------------------
+   Compiling a runtime or fetching a few gigabytes of PyTorch. Both say the
+   same things in the same place. */
+.install {
+  border: 1px solid var(--panel-edge); border-radius: 7px;
+  background: var(--panel); padding: .9rem 1rem; margin: 0 0 1.2rem;
+  /* The same width as the cards it sits above, so the Stop button lands
+     over their right edge rather than somewhere off near the window's. */
+  max-width: 46rem;
+}
+.install .row { justify-content: space-between; align-items: center; }
+.bar {
+  height: 4px; border-radius: 2px; background: var(--raised);
+  margin: .7rem 0 .4rem; overflow: hidden;
+}
+.bar-fill { height: 100%; background: var(--flame); transition: width .3s ease; }
+.install-log {
+  max-height: 12rem; overflow: auto; margin: .7rem 0 0;
+  font-size: .85em; color: var(--dim); white-space: pre-wrap;
+}
+
+/* --- colored code ------------------------------------------------------
+   Low saturation on purpose: the point is to find the shape of a function
+   at a glance, and six bright colors fighting the flame in the top bar is
+   a worse read than no colors at all. */
+.tok-com { color: #6E6E76; font-style: italic; }
+.tok-str { color: #C9A227; }
+.tok-key { color: #FF8700; }
+.tok-typ { color: #7FA7C4; }
+.tok-num { color: #B07FC4; }
+.tok-var { color: #7EC699; }
+.tok-add { color: #7EC699; }
+.tok-del { color: #E5847B; }
+
+/* --- a file an expert wants to change --------------------------------- */
+.edit { margin: 0 0 2rem; }
+.edit-head { margin-bottom: .2rem; overflow-wrap: anywhere; }
+.edit-head .new { color: #7EC699; }
+.edit-head .changed { color: var(--flame-lit); }
+.edit-feet { padding: 0; gap: .6rem; }
+/* Green and red, because this is the one place on the screen where the two
+   answers are not interchangeable. */
+.action.yes { background: rgba(46, 107, 71, .35); border-color: #2E6B47; }
+.action.yes:hover { background: rgba(46, 107, 71, .55); }
+.action.no  { background: rgba(122, 51, 44, .35); border-color: #7A332C; }
+.action.no:hover  { background: rgba(122, 51, 44, .55); }
+
+.diff { max-height: 26rem; overflow: auto; padding: .5rem 0; background: var(--ink); }
+.dl { white-space: pre; padding: 0 1rem; }
+.sign { display: inline-block; width: 1.2rem; color: var(--faint); }
+/* The same wash the window used: enough to find the changed lines at a
+   glance, not so much that the code underneath stops being readable. */
+.dl-add { background: rgba(46, 107, 71, .23); }
+.dl-del { background: rgba(122, 51, 44, .23); }
+.dl-add .sign { color: #7EC699; }
+.dl-del .sign { color: #E5847B; }
+
+/* --- cook ------------------------------------------------------------- */
+.goal { color: var(--text); font-size: 1.1em; }
+.asking {
+  background: var(--raised); border-left: 2px solid var(--flame);
+  padding: .8rem 1rem; margin-bottom: 1.4rem; border-radius: 0 6px 6px 0;
+}
+.step { margin-bottom: 1rem; }
+.step-head { display: flex; gap: .7rem; align-items: baseline; }
+.kind {
+  flex: none; min-width: 4.5rem; color: var(--faint); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+/* The same colors the window gives a step: red for a failure, orange for a
+   write, flame for anything that ran, faint for the rest. */
+.kind-write, .kind-edit   { color: var(--flame-lit); }
+.kind-run                 { color: var(--flame); }
+.kind-error, .kind-failed { color: var(--error); }
+.step-detail {
+  margin: .4rem 0 0 5.2rem; padding: .6rem .8rem; overflow-x: auto;
+  background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 6px; color: #D4D7DD; max-height: 18rem;
+}
+.bar {
+  display: block; height: 6px; margin: .6rem 0;
+  background: var(--panel-edge); border-radius: 3px; overflow: hidden;
+}
+.bar span { display: block; height: 100%; background: var(--flame); }
+.card.pick { cursor: pointer; }
+.card.pick:hover { border-color: var(--faint); background: var(--hover); }
+
+/* --- a modal ------------------------------------------------------------
+   Drawn by the page itself rather than by the platform's modal element: a
+   modal here is markup that a view returns, like everything else, and not a
+   second imperative API with its own idea of what is open. */
+#layer:empty { display: none; }
+.veil {
+  position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--panel-edge); border-radius: 9px;
+  width: min(44rem, 92vw); max-height: 90vh;
+  display: flex; flex-direction: column; box-shadow: 0 18px 60px rgba(0, 0, 0, .6);
+}
+.modal.wide  { width: min(62rem, 94vw); }
+.modal.small { width: min(30rem, 92vw); }
+.modal .head { padding: 1rem 1.2rem; border-bottom: 1px solid var(--panel-edge); }
+.modal .head strong { font-weight: 400; }
+.modal .body-pad { padding: 1.2rem; overflow-y: auto; min-height: 0; }
+.crumbs { color: var(--faint); margin-bottom: .6rem; word-break: break-all; }
+.listing {
+  height: 17rem; overflow-y: auto; background: var(--ink);
+  border: 1px solid var(--panel-edge); border-radius: 6px; padding: .4rem;
+}
+.listing button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  padding: .3rem .6rem; border-radius: 4px; color: var(--text); cursor: pointer;
+}
+.listing button:hover { background: var(--hover); }
+.modal .feet { display: flex; gap: .6rem; padding: 0 1.2rem 1.2rem; align-items: center; }
+.modal .feet .spacer { flex: 1; }
+/* The test window. Wider than the folder picker because the thing being
+   looked at is a conversation, and a candidate's answer wrapped into a
+   narrow column reads worse than the same answer in Chat. */
+#test-talk { height: min(26rem, 50vh); overflow-y: auto; padding: .8rem 1rem; }
+#test-talk .turn { margin: 0 0 1.4rem; }
+#test-talk .turn:last-child { margin-bottom: 0; }
+
+input.crumbs {
+  display: block; width: 100%; box-sizing: border-box;
+  background: transparent; border: 1px solid transparent; border-radius: 5px;
+  color: var(--dim); font: inherit; padding: .3rem .4rem; margin-bottom: .6rem;
+}
+input.crumbs:hover { border-color: var(--panel-edge); }
+input.crumbs:focus { border-color: var(--flame); color: var(--text); outline: none; }
+
+/* Markdown. The blocks render.js produces, styled: there is one parser
+   now and this is the only thing that draws what it returns. */
+.md { white-space: normal; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child  { margin-bottom: 0; }
+.md p { margin: 0 0 .9rem; white-space: pre-wrap; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  margin: 1.4rem 0 .5rem; font-weight: 400; color: var(--flame-lit);
+}
+.md h1 { font-size: 1.3em; } .md h2 { font-size: 1.15em; }
+.md h3, .md h4, .md h5, .md h6 { font-size: 1em; }
+.md ul, .md ol { margin: 0 0 .9rem; padding-left: 1.6rem; }
+.md li { margin: .15rem 0; }
+.md li::marker { color: var(--flame); }
+.md blockquote {
+  margin: 0 0 .9rem; padding-left: .9rem;
+  border-left: 2px solid var(--panel-edge); color: var(--dim);
+}
+.md hr { border: 0; border-top: 1px solid var(--panel-edge); margin: 1.2rem 0; }
+.md code { background: var(--raised); color: #D4D7DD; padding: .1em .35em; border-radius: 3px; }
+.md pre {
+  background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 6px; padding: .8rem 1rem; margin: 0 0 .9rem; overflow-x: auto;
+}
+.md pre code { background: none; padding: 0; }
+.md pre .lang { display: block; color: var(--faint); font-size: 11px; margin-bottom: .5rem; }
+.md table { border-collapse: collapse; margin: 0 0 .9rem; }
+.md th, .md td { border: 1px solid var(--panel-edge); padding: .3rem .7rem; text-align: left; }
+.md th { color: var(--dim); font-weight: 400; }
+
+/* ==========================================================================
+   Everything below was added when the page was split into views. The rules
+   above are the page as it was; these are the parts it gained.
+   ========================================================================== */
+
+[hidden] { display: none !important; }
+body.dragging-x, body.dragging-x * { cursor: col-resize !important; user-select: none; }
+body.dragging-y, body.dragging-y * { cursor: row-resize !important; user-select: none; }
+.hint { color: var(--faint); }
+.lede code, .hint code, .card code {
+  color: var(--flame-lit); background: var(--raised);
+  border-radius: 4px; padding: .08em .35em;
+}
+
+/* --- the top bar: where the project is ----------------------------------- */
+/* Read from the end: two projects differ in their last folder, not their
+   first, so when there is not room for all of it the start is what goes. */
+.project-path {
+  flex: 0 1 auto; min-width: 0; color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; user-select: text;
+}
+nav button.icon { position: relative; }
+.pip {
+  position: absolute; top: .45rem; right: .4rem; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--flame);
+}
+
+/* --- the side menu ---------------------------------------------------------- */
+.side-status {
+  color: var(--faint); height: 1.6em; margin-bottom: .9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.side-status.busy { color: var(--flame); }
+.side-status.bad  { color: var(--error); white-space: normal; height: auto; }
+button.seat {
+  width: 100%; background: none; border: 0; border-radius: 5px;
+  color: inherit; text-align: left; cursor: pointer; position: relative;
+  /* A fixed height, so that a ring appearing beside a name does not push
+     every row under it down by a few pixels and back. */
+  padding: 0 .4rem 0 .9rem; height: 2.5rem;
+}
+button.seat:hover { background: var(--raised); }
+.seat .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seat.linked .name { color: var(--flame); font-weight: 700; }
+.seat[data-phase="missing"] .name { color: var(--error); }
+.seat .cloud { color: var(--faint); display: flex; flex: none; }
+aside.rail button.seat { width: auto; padding: .35rem .4rem; height: auto; }
+aside h2 { position: relative; padding-left: .9rem; }
+aside h2.experts-head { margin: 0; padding-top: 1.6rem; padding-bottom: .7rem; }
+
+/* The load, as a ring with the figure in the middle of it. */
+.ring { flex: none; margin-left: auto; }
+.ring-track { fill: none; stroke: var(--panel-edge); stroke-width: 2.5; }
+.ring-fill {
+  fill: none; stroke: var(--flame); stroke-width: 2.5; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: 15px 15px;
+  transition: stroke-dashoffset .2s linear;
+}
+.ring text {
+  fill: var(--text); font-size: 8.5px; font-weight: 700;
+  text-anchor: middle; dominant-baseline: middle;
+}
+
+/* The line from the delegator to whichever seat has the turn: out of the
+   delegator's row, down a trunk in the gutter, and into the seat. */
+.trunk-start::before, .on-trunk::before, .elbow::before {
+  content: ''; position: absolute; left: .25rem; pointer-events: none;
+  border-left: 1px solid var(--flame);
+}
+.on-trunk::before    { top: 0; bottom: 0; }
+.trunk-start::before { top: 50%; bottom: 0; width: .4rem; border-top: 1px solid var(--flame); }
+.elbow::before       { top: 0; height: 50%; width: .4rem; border-bottom: 1px solid var(--flame); }
+
+/* --- the conversation --------------------------------------------------------- */
+.scroller { position: relative; min-height: 0; display: grid; }
+.scroller #transcript { min-height: 0; }
+.jump {
+  position: absolute; right: 2.5rem; bottom: 1rem;
+  display: flex; align-items: center; gap: .4rem;
+  background: var(--raised); border: 1px solid var(--panel-edge); border-radius: 999px;
+  color: var(--dim); padding: .35rem .9rem; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+}
+.jump:hover { color: var(--text); border-color: var(--flame); }
+.empty-label { font-size: 1.35em; color: var(--dim); margin-bottom: .9rem; }
+.empty-label.quiet { color: var(--faint); }
+.chips { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; }
+.chips.left { justify-content: flex-start; }
+.chip {
+  background: var(--raised); border: 1px solid var(--panel-edge); border-radius: 999px;
+  color: var(--dim); padding: .3rem .9rem; cursor: pointer;
+}
+.chip:hover { color: var(--text); border-color: var(--faint); }
+.chip.on   { color: var(--flame); border-color: var(--flame); }
+.chip.done { color: var(--text); }
+.turn-controls button.icon { border-radius: 4px; }
+.turn-controls button.icon:hover { background: var(--hover); }
+.act-dot { color: var(--faint); }
+.act .code { margin: .5rem 0 .8rem; }
+details.thought > div { color: var(--faint); font-style: italic; }
+.cook-here { border-left: 2px solid var(--panel-edge); padding-left: 1rem; }
+
+/* The box. It grows with what is typed and can be dragged taller. */
+.splitter-y { height: 5px; margin-top: -3px; cursor: row-resize; }
+.splitter-y:hover { background: var(--flame); }
+form.composer { align-items: flex-end; }
+textarea {
+  background: var(--raised); border: 1px solid var(--panel-edge); border-radius: 5px;
+  color: var(--text); font: inherit; padding: .55rem .8rem; resize: vertical; width: 100%;
+}
+textarea:focus { outline: none; border-color: var(--flame); }
+textarea:disabled, input:disabled, select:disabled { color: var(--faint); }
+form.composer textarea { flex: 1; resize: none; min-height: 2.5rem; }
+.composer-note { align-self: center; }
+.tally.warm { color: var(--flame-lit); }
+
+/* --- cook ------------------------------------------------------------------------ */
+.caption { color: var(--faint); font-size: 11px; letter-spacing: .08em; margin-bottom: .3rem; }
+.goal-card {
+  position: relative; background: var(--raised); border-left: 2px solid var(--flame);
+  border-radius: 0 6px 6px 0; padding: .8rem 1.1rem; margin-bottom: 1rem;
+}
+.goal-stop { position: absolute; top: .6rem; right: .6rem; opacity: 0; }
+.goal-card:hover .goal-stop, .goal-stop:focus-visible { opacity: 1; }
+.cook-state { gap: .7rem; margin-bottom: .4rem; }
+.chain { margin-bottom: 1rem; }
+.asking { border: 1px solid var(--flame); border-radius: 6px; }
+details.step > summary { list-style: none; cursor: pointer; }
+details.step > summary::before { content: '>'; color: var(--faint); width: .8rem; flex: none; }
+details.step[open] > summary::before { content: 'v'; }
+div.step > .step-head { padding-left: 1.5rem; }
+details.step .code { margin: .5rem 0 0 1.5rem; }
+hr.rule { border: 0; border-top: 1px solid var(--panel-edge); margin: 1.4rem 0; }
+.outcome { color: var(--dim); }
+.changed { margin-top: 1rem; }
+.ok-file { color: #7EC699; }
+
+/* --- settings and create -------------------------------------------------------------- */
+button.card { display: block; width: 100%; text-align: left; font: inherit; color: inherit; }
+.card .hint { margin-top: .15rem; }
+.tag.ok  { color: var(--flame); }
+.tag.bad { color: var(--error); }
+.tag svg { vertical-align: -2px; }
+label.check { display: flex !important; align-items: center; gap: .6rem; color: var(--text) !important; cursor: pointer; }
+label.check input { width: auto; flex: none; accent-color: var(--flame); }
+.radios { display: flex; flex-direction: column; gap: .5rem; max-width: 46rem; }
+.radios.tight { flex-direction: row; flex-wrap: wrap; }
+.radio {
+  display: flex; gap: .7rem; align-items: flex-start; cursor: pointer;
+  background: var(--raised); border: 1px solid var(--panel-edge); border-radius: 6px;
+  padding: .6rem .9rem;
+}
+.radio.on { border-color: var(--flame); }
+.radio input { width: auto; flex: none; margin-top: .3rem; accent-color: var(--flame); }
+.radio .hint { display: block; }
+.runtime-detail div > span:first-child { flex: 0 0 13rem; color: var(--faint); }
+.runtime-detail div > span + span { flex: 1; color: inherit; }
+.install .row { gap: .8rem; }
+.install .row strong { flex: 1; font-weight: 400; }
+.curve { display: block; width: 100%; height: 62px; margin-top: .8rem; }
+.curve polyline { fill: none; stroke: var(--flame); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.modal .wizard-body { min-height: 26rem; }
+.modal .field, .modal .card, .modal .radios { max-width: none; }
+.settings-page h1 .tag { margin-left: .6rem; font-size: 11px; color: var(--faint); }
+.settings-page .lede, .settings-page > p { max-width: 46rem; }
+.settings-page .order { max-width: 46rem; }

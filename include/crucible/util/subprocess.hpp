@@ -3,7 +3,7 @@
 // Running a child process and reading its output line by line.
 //
 // The runtime manager compiles a GPU backend, which means driving cmake for
-// several minutes while the TUI stays responsive and the user keeps the option
+// several minutes while the window stays responsive and the user keeps the option
 // of giving up. popen() cannot do that -- it hands back no process id, so
 // there is nothing to signal when the user cancels. This is fork/exec with a
 // pipe, which can.
@@ -50,6 +50,16 @@ public:
     /// Ask the child to stop: SIGTERM, then SIGKILL if it is still there.
     /// Returns immediately; call wait() afterwards to reap it.
     void terminate();
+
+    /// Signal the child to stop and touch nothing else.
+    ///
+    /// terminate() also closes the pipe, which is what unblocks a reader --
+    /// and is a second thread changing a descriptor the first is in the middle
+    /// of a read on. This only sends the signal: the child exits, its end of
+    /// the pipe closes, and the reader sees the end of the output the ordinary
+    /// way. The caller still has to keep this from racing wait(), which is the
+    /// one other thing that touches the process handle.
+    void interrupt();
 
     bool running() const;
 

@@ -29,9 +29,11 @@ stage/
 Crucible-Setup.exe
 
 # Crash and profiling leftovers, which appear next to whatever was being
-# debugged and are worthless an hour later.
+# debugged and are worthless an hour later. A core dump is called `core` or
+# `core.<pid>` -- and the pattern says so, because `core.*` also matched a
+# source file called core.js and kept it out of the repository without a word.
 core
-core.*
+core.[0-9]*
 vgcore.*
 perf.data
 perf.data.old

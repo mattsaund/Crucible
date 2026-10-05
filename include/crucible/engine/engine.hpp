@@ -4,7 +4,7 @@
 // Everything llama.cpp touches lives here. The UI hands the engine a prompt and
 // gets told, via AppState plus a wake callback, how the delegation is going.
 // The engine blocks for seconds at a time loading a 30B expert; keeping it off
-// the UI thread is what lets the expert panel keep animating while that happens.
+// the UI thread is what lets the window keep drawing while that happens.
 #pragma once
 
 #include <atomic>
@@ -21,6 +21,7 @@
 #include "crucible/config/config.hpp"
 #include "crucible/cook/journal.hpp"
 #include "crucible/llm/model_host.hpp"
+#include "crucible/llm/remote_model.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/tools/workshop.hpp"
@@ -129,7 +130,7 @@ public:
     ///
     /// Two example questions per expert are worth seven points of routing
     /// accuracy on the benchmark (89% to 96%), and they are the one thing
-    /// `/newexpert` cannot ask a person for: a description is something you can
+    /// New expert cannot ask a person for: a description is something you can
     /// write about your own field, two questions phrased the way a delegator
     /// needs them is not. So the delegator writes its own.
     ///
@@ -219,8 +220,12 @@ private:
         std::string answer;
         std::string reasoning;
         long        ms = 0;
+
+        /// Why there is no answer, when the model could not be asked at all.
+        /// Only a provider produces one: a local model that is loaded answers.
+        std::string error;
     };
-    CookRound cook_round(LoadedModel& model, const ModelParams& params,
+    CookRound cook_round(ChatModel& model, const ModelParams& params,
                          const std::vector<ChatMessage>& messages);
 
     /// Who is in the seat for a cook, and the model behind them.
@@ -234,7 +239,7 @@ private:
         ExpertId     id;
         std::string  name;
         ModelParams  params;
-        LoadedModel* model = nullptr;
+        ChatModel*   model = nullptr;
         std::string  error;   ///< set when the model could not be loaded
     };
 
@@ -253,6 +258,16 @@ private:
     /// this decides what to do when that subject has no model configured.
     RouteDecision resolve(const Request& request);
 
+    /// The model behind `id`, ready to be asked: loaded onto the cards if it
+    /// is a file, looked up if it is a provider's. Null with `error` set when
+    /// it could not be had, and `error` is "stopped" when the user stopped a
+    /// load.
+    ///
+    /// The one place that knows there are two kinds. `load_ms` is how long the
+    /// swap took, and 0 when there was none.
+    ChatModel* seat_model(const ExpertId& id, const ModelParams& params,
+                          const std::string& name, long& load_ms, std::string& error);
+
     Config                 config_;
     mutable std::mutex     config_mutex_;   ///< guards config_ against the UI thread
     AppState&              state_;
@@ -260,6 +275,14 @@ private:
 
     std::unique_ptr<ModelHost> host_;
     std::unique_ptr<Router>    router_;
+
+    /// The experts that are not on this machine. Nothing in it is resident in
+    /// the sense `host_` means -- there are no weights -- so it sits beside
+    /// the host rather than inside it: a seat is answered by one or the other,
+    /// and asking a provider never evicts what is loaded here.
+    ///
+    /// The worker's, except `interrupt`, which is what Stop calls.
+    remote::Hub                hub_;
 
     /// The delegator's measured bias, kept across reloads of the same file so
     /// an on-demand delegator does not re-measure it every prompt. See

@@ -163,16 +163,6 @@ TEST(empty_buffer_is_handled) {
 // Token accounting
 // ---------------------------------------------------------------------------
 
-TEST(token_counts_are_abbreviated_once_they_stop_being_readable) {
-    CHECK_EQ(format_tokens(0), std::string("0"));
-    CHECK_EQ(format_tokens(847), std::string("847"));
-    CHECK_EQ(format_tokens(999), std::string("999"));
-    CHECK_EQ(format_tokens(1000), std::string("1.0k"));
-    CHECK_EQ(format_tokens(1234), std::string("1.2k"));
-    CHECK_EQ(format_tokens(999999), std::string("1000.0k"));
-    CHECK_EQ(format_tokens(3400000), std::string("3.4M"));
-}
-
 TEST(usage_accumulates_across_turns) {
     GenerationStats first;
     first.prompt_tokens = 100;
@@ -203,32 +193,6 @@ TEST(a_rate_is_only_reported_once_there_is_something_to_divide) {
     TokenUsage no_time;
     no_time.output_tokens = 100;
     CHECK(std::abs(no_time.tokens_per_second()) < 0.001);
-}
-
-TEST(the_readout_prefers_the_live_rate_while_a_reply_is_arriving) {
-    TokenUsage usage;
-    usage.input_tokens  = 1200;
-    usage.output_tokens = 800;
-    usage.output_ms     = 8000.0;   // an average of 100 tok/s
-
-    const std::string average = usage_readout(usage, 0.0);
-    CHECK(average.find("1.2k") != std::string::npos);
-    CHECK(average.find("100.0 tok/s") != std::string::npos);
-    // The counts have to say what they are: two bare numbers beside an arrow
-    // tell the reader nothing.
-    CHECK(average.find("tok") != std::string::npos);
-
-    // While streaming, the number being asked about is the one happening now.
-    const std::string live = usage_readout(usage, 42.5);
-    CHECK(live.find("42.5 tok/s") != std::string::npos);
-    CHECK(live.find("100.0 tok/s") == std::string::npos);
-
-    // ui.unicode off means a terminal that cannot draw the arrows, so the
-    // readout has to say the same thing in ASCII rather than emit mojibake.
-    const std::string ascii = usage_readout(usage, 0.0, /*unicode=*/false);
-    CHECK(ascii.find("tok in 1.2k") != std::string::npos);
-    CHECK(ascii.find("out 800") != std::string::npos);
-    CHECK(ascii.find("\u2191") == std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

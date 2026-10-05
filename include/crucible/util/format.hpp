@@ -9,11 +9,19 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace crucible::format {
 
 /// Strip leading and trailing whitespace.
 std::string trim(std::string text);
+
+/// The same text in lower case, ASCII only.
+///
+/// For comparing things a person typed or a file is called -- an extension, a
+/// keyword, a provider's name -- where "GGUF" and "gguf" are the same answer.
+/// Not for prose: it leaves every non-ASCII letter as it found it.
+std::string to_lower(std::string_view text);
 
 /// A double at fixed precision: `number(18.34567, 1)` is `"18.3"`.
 std::string number(double value, int precision);

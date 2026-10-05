@@ -15,6 +15,7 @@
 // "ion" fires inside "function" and sends every programming question to
 // Chemistry.
 #include "crucible/routing/router.hpp"
+#include "crucible/util/format.hpp"
 
 #include <algorithm>
 #include <array>
@@ -26,12 +27,7 @@
 namespace crucible {
 namespace {
 
-std::string to_lower(std::string_view text) {
-    std::string out(text);
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-}
+using format::to_lower;
 
 bool is_word_char(char c) {
     const auto byte = static_cast<unsigned char>(c);

@@ -11,7 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/config/paths.hpp"
-#include "crucible/util/subprocess.hpp"
+#include "crucible/util/http.hpp"
 
 #ifndef CRUCIBLE_VERSION
 #define CRUCIBLE_VERSION "0.0.0"
@@ -177,31 +177,17 @@ std::string_view update_command() {
 }
 
 bool fetch(std::string& body, std::string& error) {
-    if (!util::on_path("curl")) {
-        error = "curl is needed to check for updates and is not installed";
+    util::http::Request request;
+    request.url             = releases_url();
+    request.headers         = {{"Accept", "application/vnd.github+json"}};
+    request.timeout_seconds = 10;
+
+    util::http::Response response = util::http::send(request);
+    if (!response.ok()) {
+        error = "the release list could not be reached (" + response.reason() + ")";
         return false;
     }
-    const std::vector<std::string> argv{
-        "curl", "--silent", "--show-error", "--location", "--fail",
-        "--max-time", "10",
-        "--user-agent", std::string("Crucible/") + CRUCIBLE_VERSION,
-        "--header", "Accept: application/vnd.github+json",
-        releases_url(),
-    };
-    util::Subprocess child;
-    if (!child.start(argv, {}, /*extra_env=*/{}, error)) {
-        return false;
-    }
-    std::string line;
-    while (child.read_line(line)) {
-        body += line;
-        body += '\n';
-    }
-    if (const int status = child.wait(); status != 0) {
-        error = "the release list could not be reached (curl exited "
-              + std::to_string(status) + ")";
-        return false;
-    }
+    body = std::move(response.body);
     return true;
 }
 

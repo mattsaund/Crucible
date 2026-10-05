@@ -183,7 +183,7 @@ function codeBlock(code, lang, extra) {
         <span class="lang">${escape(
           LANG_NAMES[String(lang || '').toLowerCase()] || lang || 'text')}</span>
         <span class="code-count">${lines.length} line${lines.length === 1 ? '' : 's'}</span>
-        <button class="copy" data-copy aria-label="Copy">
+        <button class="copy" data-act="copy" title="Copy" aria-label="Copy">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none"
                stroke="currentColor" stroke-width="1.3" aria-hidden="true">
             <rect x="5.5" y="5.5" width="8" height="8" rx="1.3"/>
@@ -477,8 +477,10 @@ function pendingEdit(edit) {
         isNew ? 'New file' : 'Edit'}</span> ${escape(edit.path)}</div>
       ${block}
       <div class="row edit-feet">
-        <button class="action yes" id="edit-yes">Allow</button>
-        <button class="action no" id="edit-no">Deny</button>
+        <button class="action yes" id="edit-yes" data-act="edit-allow"
+                title="${isNew ? 'Create this file' : 'Make this change'}">Allow</button>
+        <button class="action no" id="edit-no" data-act="edit-deny"
+                title="Leave the project as it is, and tell the expert so">Deny</button>
       </div>
     </div>`;
 }

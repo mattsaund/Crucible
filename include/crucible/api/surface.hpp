@@ -25,53 +25,75 @@
 
 #include <filesystem>
 #include <memory>
-#include <mutex>
-#include <vector>
-#include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "crucible/app/update.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
-#include "crucible/lab/hub.hpp"
 #include "crucible/lab/pyenv.hpp"
 #include "crucible/lab/trainer.hpp"
 #include "crucible/runtime/builder.hpp"
 
 namespace crucible::api {
 
-/// What the surface needs from whoever owns the session.
+/// Whoever owns the session, as the surface sees them.
 ///
-/// Not a constructor full of references, because some of these are facts the
-/// surface has no business owning -- which project is open is a property of
-/// the session, and asking for it is better than keeping a second copy that
-/// can go stale.
-struct Deps {
-    Engine*   engine = nullptr;
-    AppState* state  = nullptr;
+/// The surface is a vocabulary; this is what the words are about. Which
+/// project is open, what the configuration is, what it means to change it --
+/// those are facts and decisions that belong to the session, and the surface
+/// asks rather than keeping a second copy that can go stale.
+///
+/// Every member has an answer that means "there is none here", so that a
+/// surface can stand on nothing at all. That is not only for the tests: the
+/// two installs are worth being able to drive before an engine exists, since
+/// the moment you most need a runtime is the one where nothing can run yet.
+class Host {
+public:
+    virtual ~Host() = default;
 
-    /// The trusted project directory, or an empty path when none is open.
-    /// Cook refuses to start without one, and that refusal belongs here
-    /// rather than in each interface.
-    std::function<std::filesystem::path()> project_root;
+    // --- the long-lived things it owns ------------------------------------
+    //
+    // Pointers, null when there is none. Each is one thing the session owns
+    // for its whole life, and the surface only ever borrows it for a call.
 
-    /// The configuration in force. A copy each time rather than a pointer:
-    /// the session owns it and applies changes on its own thread, and a
-    /// reference handed out here would be read while it was being replaced.
-    std::function<Config()> config;
+    virtual Engine*                engine() { return nullptr; }
+    virtual AppState*              state() { return nullptr; }
+    virtual lab::Trainer*          trainer() { return nullptr; }
+    virtual RuntimeBuilder*        runtime_builder() { return nullptr; }
+    virtual lab::pyenv::Installer* trainer_installer() { return nullptr; }
+
+    // --- the configuration -------------------------------------------------
+
+    /// The configuration in force. A copy each time rather than a reference:
+    /// the session replaces it when it changes, and a reference handed out
+    /// here would be read while that happened.
+    virtual Config config() const { return {}; }
 
     /// Apply a configuration: validate, save and hand it to the engine.
     /// Returns a reason it could not, or an empty string. The surface does
     /// not do this itself because what "apply" means -- re-resolving model
     /// paths, reconfiguring seats, writing the file -- is the session's.
-    std::function<std::string(Config)> apply_config;
+    virtual std::string apply_config(Config) {
+        return "the configuration cannot be changed from here";
+    }
+
+    // --- the project -------------------------------------------------------
+
+    /// The trusted project directory, or an empty path when none is open.
+    /// Cook refuses to start without one, and that refusal belongs here
+    /// rather than in each interface.
+    virtual std::filesystem::path project_root() const { return {}; }
 
     /// Open a project directory. Returns a reason it could not, or empty.
     /// May answer empty while still not having opened it: a directory that
     /// has not been trusted yet puts the question up instead, and the
     /// interface learns the answer from the next snapshot.
-    std::function<std::string(std::filesystem::path)> open_project;
+    virtual std::string open_project(const std::filesystem::path&) {
+        return "no project can be opened from here";
+    }
 
     /// The folder waiting to be trusted, or an empty path.
     ///
@@ -79,64 +101,76 @@ struct Deps {
     /// interface that did not know that would report success and then show
     /// the old project, which is the kind of silence that looks like a bug in
     /// the picker.
-    std::function<std::filesystem::path()> pending_trust;
+    virtual std::filesystem::path pending_trust() const { return {}; }
 
     /// Answer it. True trusts the folder and opens it; false leaves both
     /// alone. Trust is granted once per directory and remembered.
-    std::function<void(bool)> answer_trust;
+    virtual void answer_trust(bool) {}
+
+    // --- the transcript ----------------------------------------------------
 
     /// Load a stored conversation back into the transcript. Returns a reason
     /// it could not, or empty. The engine has to be told as well as the
     /// screen -- an expert that cannot see what is already on it would answer
-    /// the next question with no idea what came before -- and that is the
-    /// session's job rather than this one's.
-    std::function<std::string(std::string)> open_session;
+    /// the next question with no idea what came before.
+    virtual std::string open_session(const std::string&) {
+        return "conversations cannot be reopened from here";
+    }
 
     /// Ask a turn again, or take it off the transcript.
     ///
-    /// Both rewrite what the expert can see as well as what is on screen --
-    /// an expert left with a transcript it has no memory of answers the next
-    /// question as though the conversation had not happened -- and that is
-    /// the session's job rather than this one's. Both refuse while the engine
-    /// is busy.
-    std::function<void(std::size_t)> retry_turn;
-    std::function<void(std::size_t)> delete_turn;
+    /// Both rewrite what the expert can see as well as what is on screen, and
+    /// both refuse while the engine is busy. False when this host cannot.
+    virtual bool retry_turn(std::size_t) { return false; }
+    virtual bool delete_turn(std::size_t) { return false; }
 
-    /// Trying a fine-tune before keeping it.
-    ///
-    /// `test_begin` seats the trained file so it can be asked something and
-    /// returns a reason it could not, or empty; `test_end` takes the seat
-    /// away; `keep` finishes the recipe and puts the model on the roster.
-    /// They are the session's because seating a model means reconfiguring
-    /// the engine, and what a configuration means is the session's to say.
-    std::function<std::string(std::string)> test_begin;
-    std::function<void()>                   test_end;
-    std::function<std::string(std::string)> keep;
+    // --- trying a fine-tune before keeping it ------------------------------
+    //
+    // `test_begin` seats the trained file so it can be asked something and
+    // returns a reason it could not, or empty; `test_end` takes the seat
+    // away; `keep` finishes the recipe and puts the model on the roster.
+    // They are the session's because seating a model means reconfiguring
+    // the engine, and what a configuration means is the session's to say.
+
+    virtual std::string test_begin(const std::string&) {
+        return "this build cannot seat a fine-tune";
+    }
+    virtual void        test_end() {}
+    virtual std::string keep(const std::string&) {
+        return "this build cannot keep a fine-tune";
+    }
+
+    // --- saying things and being told --------------------------------------
+
+    /// A line for the interface to show: "Physics has joined the experts".
+    virtual void say(std::string) {}
+
+    /// What is known about newer versions of Crucible.
+    virtual update::State update() const { return {}; }
 
     /// Poke whatever is drawing, from any thread.
     ///
-    /// The two installers below run on threads of their own and report
-    /// progress as they go. Without this the page would show the first line
-    /// of a ten-minute compile until something else happened to redraw it.
-    std::function<void()> wake;
-
-    /// The fine-tune in flight, for the Create view. A pointer like the
-    /// engine, because it is one long-lived thing the session owns and the
-    /// surface only reads.
-    lab::Trainer* trainer = nullptr;
-
-    /// The two long installs an interface can start and watch: compiling a
-    /// GPU runtime, and building the Python environment the lab trains in.
-    ///
-    /// Pointers for the same reason the trainer is one. Each is one
-    /// machine-wide thing -- two CUDA builds at once would write the same
-    /// files -- so each refuses to start a second while one is running, and
-    /// that refusal is theirs to make rather than the caller's to remember.
-    RuntimeBuilder*        runtime_builder = nullptr;
-    lab::pyenv::Installer* pyenv_installer = nullptr;
+    /// The installers run on threads of their own and report progress as
+    /// they go. Without this the page would show the first line of a
+    /// ten-minute compile until something else happened to redraw it.
+    virtual void wake() {}
 };
 
-/// Turn one JSON request into one JSON reply. Never throws.
+/// A request, opened and looked up but not yet answered.
+///
+/// It exists because of one question the window has to ask before it answers
+/// anything: can this be done somewhere other than the thread that draws? See
+/// Surface::prepare.
+struct Prepared {
+    /// True when the answer may be worked out on any thread.
+    bool background = false;
+
+    /// Everything else, which is nobody's business but the surface's.
+    struct Impl;
+    std::shared_ptr<const Impl> impl;
+};
+
+/// Turns one JSON request into one JSON reply. Never throws.
 ///
 /// Requests are `{"id": 1, "method": "submit", "params": {...}}`. `id` is
 /// echoed back and is the caller's to choose; `params` may be omitted for the
@@ -148,36 +182,46 @@ struct Deps {
 /// parse two formats to find out it made a mistake.
 class Surface {
 public:
-    explicit Surface(Deps deps) : deps_(std::move(deps)) {}
+    explicit Surface(Host& host) : host_(host) {}
 
+    /// Answer `request`. The whole thing, on the calling thread.
     std::string handle(std::string_view request);
+
+    /// The same in two steps, for a caller with a thread it must not block.
+    ///
+    /// A method is one of two kinds. Most *act*: they touch the session, and
+    /// so they run on the session's thread, and they are quick. A few only
+    /// *look something up* -- which models are on disk, what a provider
+    /// offers, whether Python can see the cards -- and those can take seconds
+    /// and touch nothing. `prepare` reads the request on the session's thread
+    /// and takes a copy of what a lookup is allowed to know; `run` then
+    /// answers it, on any thread at all when `background` is set.
+    ///
+    /// The two kinds are different function types underneath, so a lookup
+    /// cannot reach the session by accident: it is never handed one.
+    Prepared    prepare(std::string_view request);
+    std::string run(const Prepared& prepared);
+
+    /// The state an interface draws, as JSON text: the engine's snapshot and
+    /// what the session knows that the engine does not.
+    ///
+    /// Exposed on its own because it is the one thing worth having outside a
+    /// request -- the window pushes it to the page whenever the engine wakes
+    /// it, rather than the page polling.
+    std::string snapshot();
 
     /// Every method this build understands, for `methods` and for the tests
     /// that keep the documentation honest.
     static std::vector<std::string> methods();
 
 private:
-    Deps deps_;
-
-    /// A hub search in flight.
-    ///
-    /// Huggingface takes a second or two to answer and the interface calls
-    /// this on the thread that draws, so the search runs on its own and the
-    /// page asks again. The same shape the window uses, for the same reason.
-    struct Search {
-        std::mutex                  mutex;
-        std::vector<lab::hub::Item> items;
-        std::string                 error;
-        bool                        done = false;
-    };
-    std::shared_ptr<Search> search_;
+    Host& host_;
 };
 
-/// The state an interface draws, as JSON.
+/// The engine's half of the snapshot, as JSON text.
 ///
-/// Exposed on its own because it is the one piece worth having outside a
-/// request: the window pushes it to the webview whenever the engine wakes the
-/// loop, rather than the interface polling for it.
+/// What `Surface::snapshot` starts from, and separately useful because it
+/// needs no session: it is a pure function of the state it is given.
 std::string snapshot_json(const Snapshot& snapshot);
 
 }  // namespace crucible::api

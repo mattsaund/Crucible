@@ -24,7 +24,7 @@ std::filesystem::path trust_file();
 std::filesystem::path models_dir();
 
 /// data_dir()/crucible.log -- where llama.cpp's chatter is redirected so it
-/// cannot scribble over the TUI.
+/// is kept rather than lost with a terminal nobody has open.
 std::filesystem::path log_file();
 
 /// data_dir()/runtimes -- the loadable ggml backends. One directory holding

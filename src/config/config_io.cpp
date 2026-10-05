@@ -51,6 +51,7 @@ void read_field(const json& obj, const char* key, T& dest,
 void read_model_params(const json& obj, ModelParams& params,
                        std::string_view context, std::vector<std::string>& warnings) {
     read_field(obj, "model",          params.model,          context, warnings);
+    read_field(obj, "provider",       params.provider,       context, warnings);
     read_field(obj, "n_gpu_layers",   params.n_gpu_layers,   context, warnings);
     read_field(obj, "main_gpu",       params.main_gpu,       context, warnings);
     read_field(obj, "split_mode",     params.split_mode,     context, warnings);
@@ -161,6 +162,12 @@ json config_to_json(const Config& config) {
 
         const ModelParams& params = config.expert(seat.id);
         entry["model"] = params.model;
+        // Only for a seat that is answered somewhere else. A local seat with a
+        // "provider": "" line would be a line every reader has to learn to
+        // ignore.
+        if (params.remote()) {
+            entry["provider"] = params.provider;
+        }
 
         // Only write fields that differ from `defaults`. Round-tripping every
         // field would turn a ten-line config into a hundred-line one the first
@@ -184,20 +191,36 @@ json config_to_json(const Config& config) {
         experts.push_back(std::move(entry));
     }
 
+    // Written even when empty, so the file shows that the key exists and that
+    // nobody has added one.
+    json providers = json::array();
+    for (const Provider& provider : config.providers) {
+        providers.push_back(json{
+            {"id",       provider.id},
+            {"name",     provider.name},
+            {"kind",     provider.kind},
+            {"base_url", provider.base_url},
+            {"api_key",  provider.api_key},
+            {"models",   provider.models},
+        });
+    }
+
     const json doc{
         {"$schema_note",
          "Crucible config. Models live in \"models_dir\"; each expert names a file "
          "inside it. An absolute or ~-path is also accepted. Anything an expert "
          "leaves out is inherited from \"defaults\". Experts are listed in the order "
-         "they are drawn. Crucible ships none: add one with /newexpert, or write an "
-         "entry with an \"id\", a \"name\" and a \"blurb\". Editable in the app "
-         "with /settings."},
+         "they are drawn. Crucible ships none: add one in Settings, Experts, or write "
+         "an entry with an \"id\", a \"name\" and a \"blurb\". An expert with a "
+         "\"provider\" is answered by that provider rather than by a file here. "
+         "Everything in this file can be changed from the Settings screen."},
         {"models_dir",    config.models_dir},
         {"system_prompt", config.system_prompt},
         {"reasoning_effort", config.reasoning_effort},
         {"router",        model_params_to_json(config.router)},
         {"defaults",      model_params_to_json(config.defaults, /*include_model=*/false)},
         {"experts",       experts},
+        {"providers",     providers},
         {"gpu", json{
             {"mode",      config.gpu.mode},
             {"priority",  config.gpu.priority},
@@ -223,11 +246,8 @@ json config_to_json(const Config& config) {
             {"workshop_timeout", config.tools.workshop_timeout},
         }},
         {"ui", json{
-            {"animation_ms",    config.ui.animation_ms},
-            {"show_experts", config.ui.show_experts},
             {"show_reasoning", config.ui.show_reasoning},
             {"check_updates",  config.ui.check_updates},
-            {"unicode",         config.ui.unicode},
         }},
     };
     return doc;
@@ -312,15 +332,17 @@ void write_default_config(const std::filesystem::path& file) {
          "Crucible config. Drop your GGUF files in \"models_dir\" and name one per "
          "expert below. An absolute or ~-path also works. Anything an expert "
          "leaves out is inherited from \"defaults\". Experts are listed in the order "
-         "they are drawn. Crucible ships none: add one with /newexpert, or write an "
-         "entry with an \"id\", a \"name\" and a \"blurb\". Editable in the app "
-         "with /settings."},
+         "they are drawn. Crucible ships none: add one in Settings, Experts, or write "
+         "an entry with an \"id\", a \"name\" and a \"blurb\". An expert with a "
+         "\"provider\" is answered by that provider rather than by a file here. "
+         "Everything in this file can be changed from the Settings screen."},
         {"models_dir", paths::models_dir().string()},
         {"system_prompt", defaults.system_prompt},
         {"reasoning_effort", defaults.reasoning_effort},
         {"router", model_params_to_json(router_defaults)},
         {"defaults", model_params_to_json(defaults.defaults, /*include_model=*/false)},
         {"experts", experts},
+        {"providers", json::array()},
         {"gpu", json{
             {"mode",      defaults.gpu.mode},
             {"priority",  defaults.gpu.priority},
@@ -346,11 +368,8 @@ void write_default_config(const std::filesystem::path& file) {
             {"workshop_timeout", defaults.tools.workshop_timeout},
         }},
         {"ui", json{
-            {"animation_ms",    defaults.ui.animation_ms},
-            {"show_experts", defaults.ui.show_experts},
             {"show_reasoning", defaults.ui.show_reasoning},
             {"check_updates",  defaults.ui.check_updates},
-            {"unicode",         defaults.ui.unicode},
         }},
     };
 
@@ -464,6 +483,14 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
             params.model.clear();
             read_model_params(*entry, params, id, warnings);
             params.inherit_from(config.defaults);
+            // A seat answered by a provider does not inherit the reply cap.
+            // That default is sized for a graphics card, where a long reply
+            // is minutes of waiting; a provider's model counts its thinking
+            // against the same number and routinely spends it before the
+            // answer starts. One set on the seat itself is respected.
+            if (params.remote() && !entry->contains("max_tokens")) {
+                params.max_tokens = -1;
+            }
             config.experts[id] = std::move(params);
 
             Expert expert;
@@ -515,12 +542,47 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
     }
 
+    // Three keys an older file may still carry -- animation_ms, show_experts,
+    // unicode -- belonged to the terminal interface and are read by nothing.
+    // They are passed over rather than warned about, and the next save drops
+    // them.
     if (const auto ui = doc.find("ui"); ui != doc.end() && ui->is_object()) {
-        read_field(*ui, "animation_ms",    config.ui.animation_ms,    "ui", warnings);
-        read_field(*ui, "show_experts", config.ui.show_experts, "ui", warnings);
         read_field(*ui, "show_reasoning", config.ui.show_reasoning, "ui", warnings);
         read_field(*ui, "check_updates",  config.ui.check_updates,  "ui", warnings);
-        read_field(*ui, "unicode",         config.ui.unicode,         "ui", warnings);
+    }
+
+    if (const auto providers = doc.find("providers");
+        providers != doc.end() && providers->is_array()) {
+        for (const json& entry : *providers) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            Provider provider;
+            read_field(entry, "id",       provider.id,       "providers", warnings);
+            read_field(entry, "name",     provider.name,     "providers", warnings);
+            read_field(entry, "kind",     provider.kind,     "providers", warnings);
+            read_field(entry, "base_url", provider.base_url, "providers", warnings);
+            read_field(entry, "api_key",  provider.api_key,  "providers", warnings);
+            read_field(entry, "models",   provider.models,   "providers", warnings);
+            if (provider.id.empty()) {
+                provider.id = provider_id_from_name(provider.name);
+            }
+            if (provider.id.empty()) {
+                warnings.emplace_back("providers: an entry with no \"id\" was skipped");
+                continue;
+            }
+            if (provider.kind != "anthropic" && provider.kind != "openai") {
+                warnings.emplace_back("providers." + provider.id + ": unknown kind \""
+                                      + provider.kind + "\" -- treating it as openai");
+                provider.kind = "openai";
+            }
+            if (config.provider(provider.id) != nullptr) {
+                warnings.emplace_back("providers: \"" + provider.id
+                                      + "\" is listed twice -- the second was skipped");
+                continue;
+            }
+            config.providers.push_back(std::move(provider));
+        }
     }
 
     // Resolve every reference once, here, so nothing downstream has to think
@@ -530,10 +592,28 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
     // Warn about files that are not there, but keep them configured: the user
     // may be mid-download, or about to point the models directory elsewhere.
     const auto check = [&](const ModelParams& params, std::string_view label) {
-        if (!params.model.empty() && !std::filesystem::exists(params.path)) {
+        if (params.model.empty()) {
+            return;
+        }
+        if (params.remote()) {
+            // Nothing on disk to look for; what can be wrong is the name.
+            if (config.provider(params.provider) == nullptr) {
+                warnings.emplace_back(std::string(label) + ": no provider called \""
+                                      + params.provider + "\"");
+            }
+            return;
+        }
+        if (!std::filesystem::exists(params.path)) {
             warnings.emplace_back(std::string(label) + ": model not found at " + params.path);
         }
     };
+    // The delegator scores every seat against the prompt by reading the
+    // model's own probabilities, which no chat API hands out. It stays local.
+    if (config.router.remote()) {
+        warnings.emplace_back("router: the delegator has to be a model on this machine -- "
+                              "its provider was ignored");
+        config.router.provider.clear();
+    }
     check(config.router, "router");
     for (const Expert& seat : config.roster.experts()) {
         check(config.expert(seat.id), seat.id);

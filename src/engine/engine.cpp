@@ -129,15 +129,6 @@ constexpr std::size_t kHistoryTurns = 12;
 /// than like a context that is full.
 constexpr double kPromptShare = 0.75;
 
-/// How much of the context `messages` would take, in tokens.
-///
-/// Measured through the model's own tokenizer and its own chat template, which
-/// is the only figure that means anything: the template adds role markers and
-/// turn separators, and on a long conversation those are hundreds of tokens.
-int prompt_tokens(const LoadedModel& model, const std::vector<ChatMessage>& messages) {
-    return model.count_tokens(model.format_chat(messages, true));
-}
-
 }  // namespace
 
 Engine::Engine(Config config, AppState& state, std::function<void()> wake)
@@ -159,6 +150,9 @@ void Engine::stop() {
         return;
     }
     cancel_.store(true, std::memory_order_relaxed);
+    // A request to a provider is blocked reading the next line of the answer,
+    // and would keep the worker -- and so the window closing -- waiting on it.
+    hub_.interrupt();
     queued_.notify_all();
     edit_answered_.notify_all();
     cook_answered_.notify_all();
@@ -216,6 +210,10 @@ void Engine::cancel() {
     // A turn parked on an edit is inside await_edit_approval, not looking at
     // the flag. Waking it is what lets Stop end a turn that is waiting on you.
     edit_answered_.notify_all();
+    // And one waiting on a provider is inside a read. A local model looks at
+    // the flag between tokens; a remote one may not send a token for a minute
+    // while it thinks, and Stop should not take a minute.
+    hub_.interrupt();
 }
 
 void Engine::release_all() {
@@ -342,8 +340,8 @@ void Engine::run() {
     if (devices.empty()) {
         state_.add_notice(RuntimeRegistry::any_installed()
                               ? "a runtime is installed but found no hardware it can drive "
-                                "-- type /runtimes"
-                              : "no runtime installed -- type /runtimes and install one "
+                                "-- see Settings, Runtimes"
+                              : "no runtime installed -- install one in Settings, Runtimes, "
                                 "before assigning models");
     }
 
@@ -355,6 +353,7 @@ void Engine::run() {
         // Every load re-plans its own split from live memory, and the host is
         // where that happens. See refresh_gpu_split.
         host_->set_gpu_config(config_.gpu);
+        hub_.adopt(config_);
     }
 
     load_router_if_resident();
@@ -444,7 +443,7 @@ void Engine::run() {
             state_.set_busy(true);
             // Contained like every other request. A cook is an hour of running
             // whatever a model asks for, so an exception escaping here would
-            // take the process down and leave the terminal in raw mode.
+            // take the process, and the window with it, down mid-edit.
             try {
                 do_cook(request.prompt, request.budget_seconds, request.root);
             } catch (const std::exception& e) {
@@ -490,8 +489,8 @@ void Engine::run() {
 
         // llama.cpp reports some failures (a malformed grammar, a corrupt
         // GGUF) by throwing. Letting that escape the worker would terminate
-        // the process and leave the user's terminal in raw mode, so every
-        // request is contained: the turn fails, the session survives.
+        // the process, so every request is contained: the turn fails, the
+        // session survives.
         try {
             handle(request);
         } catch (const std::exception& e) {
@@ -523,7 +522,8 @@ void Engine::load_router() {
         return;
     }
 
-    state_.set_mood(Mood::Loading, "loading router");
+    state_.set_mood(Mood::Loading, "loading the delegator");
+    state_.set_delegator_progress(0.0F);
     if (wake_) {
         wake_();
     }
@@ -532,9 +532,10 @@ void Engine::load_router() {
     LoadedModel* model = host_->acquire_router(
         config_.router,
         [this](float progress) {
-            state_.set_mood(Mood::Loading,
-                            "loading router " + std::to_string(static_cast<int>(progress * 100))
-                                + "%");
+            // A number of its own rather than a percentage written into the
+            // status line: the panel draws it beside the delegator's name,
+            // the same way it draws an expert's.
+            state_.set_delegator_progress(progress);
             if (wake_) {
                 wake_();
             }
@@ -545,7 +546,7 @@ void Engine::load_router() {
     if (model == nullptr) {
         router_ = std::make_unique<KeywordRouter>(
             std::make_shared<const Roster>(config_.roster));
-        state_.add_notice("router: " + error + " -- falling back to keyword routing");
+        state_.add_notice("delegator: " + error + " -- routing on keywords instead");
         state_.set_delegator_ready(true);
         return;
     }
@@ -612,6 +613,7 @@ void Engine::do_apply_config(Config config) {
         }
         config_ = std::move(config);
         host_->set_gpu_config(config_.gpu);
+        hub_.adopt(config_);
     }
 
     const Config current = this->config();
@@ -621,7 +623,7 @@ void Engine::do_apply_config(Config config) {
     if (resident) {
         // An expert whose seat has been ejected outright reads as an empty
         // path here, which takes the same branch as one whose file changed:
-        // drop it. That is what makes /ejectexpert free the weights of the
+        // drop it. That is what makes Eject free the weights of the
         // expert it just removed rather than leaving them resident and
         // unreachable.
         const std::string now = current.expert(*resident).path;
@@ -730,14 +732,63 @@ RouteDecision Engine::resolve(const Request& request) {
     if (router_) {
         decision = router_->route(request.prompt, cancel);
     }
-    if (!config_.routing.keep_delegator_loaded) {
+    // Then decide what to do about it.
+    decision = apply_route_policy(decision, config_);
+
+    if (!config_.routing.keep_delegator_loaded
+        && !config_.expert(decision.expert).remote()) {
         // Its work for this prompt is done, and the expert is about to want
-        // every byte it was holding.
+        // every byte it was holding. Unless the expert is somewhere else: then
+        // nothing is about to be loaded, and freeing the delegator would only
+        // mean loading it again for the next prompt.
         release_router();
     }
+    return decision;
+}
 
-    // Then decide what to do about it.
-    return apply_route_policy(decision, config_);
+ChatModel* Engine::seat_model(const ExpertId& id, const ModelParams& params,
+                              const std::string& name, long& load_ms, std::string& error) {
+    load_ms = 0;
+    if (params.remote()) {
+        // Nothing to swap. Whatever is resident stays resident: it costs
+        // nothing to leave, and the next prompt may well be for it.
+        return hub_.model(params, error);
+    }
+
+    const bool already_resident = host_->loaded_expert() == id;
+    if (!already_resident) {
+        state_.set_resident(std::nullopt);
+        state_.set_seat(id, SeatPhase::Loading, 0.0F);
+        state_.set_mood(Mood::Loading, "swapping in " + name);
+        if (wake_) {
+            wake_();
+        }
+    }
+
+    // acquire_expert frees whoever was resident before loading the next, which
+    // is the whole memory argument for the design: the peak is the larger of
+    // the two experts, never their sum.
+    const auto load_start = Clock::now();
+    LoadedModel* model = host_->acquire_expert(
+        id, params,
+        [this, &id](float progress) {
+            state_.set_seat_progress(id, progress);
+            if (wake_) {
+                wake_();
+            }
+        },
+        [this] { return cancel_.load(std::memory_order_relaxed); },
+        error);
+    if (model == nullptr) {
+        state_.set_seat(id, SeatPhase::Dormant);
+        return nullptr;
+    }
+    load_ms = already_resident ? 0 : ms_since(load_start);
+    state_.set_resident(id);
+    if (wake_) {
+        wake_();
+    }
+    return model;
 }
 
 void Engine::handle(const Request& request) {
@@ -753,7 +804,7 @@ void Engine::handle(const Request& request) {
 
     const RouteDecision decision = resolve(request);
     state_.set_route(turn, decision);
-    // From here the expert panel draws a line from Crucible to this seat.
+    // From here the side menu draws a line from the delegator to this seat.
     state_.set_linked(decision.expert);
     if (wake_) {
         wake_();
@@ -768,8 +819,8 @@ void Engine::handle(const Request& request) {
 
     if (!config_.has_expert(decision.expert)) {
         state_.fail_turn(turn,
-            "No expert model is configured yet. Edit " + paths::config_file().string()
-            + " and point at least one expert at a GGUF file.");
+            "No expert has a model yet. Add one in Settings, Experts -- a GGUF file "
+            "on this machine, or a model at a provider.");
         state_.set_linked(std::nullopt);
         state_.set_mood(Mood::Error, "no experts configured");
         return;
@@ -777,39 +828,17 @@ void Engine::handle(const Request& request) {
 
     // --- JIT swap ----------------------------------------------------------
     const ModelParams& params = config_.expert(decision.expert);
-    const bool already_resident = host_->loaded_expert() == decision.expert;
 
     // The display name, resolved once. Every status line below wants it, and a
     // seat ejected mid-turn would otherwise make each of them fall back to the
     // raw id independently.
     const std::string expert_name = expert_label(config_.roster, decision.expert);
 
-    long load_ms = 0;
-    if (!already_resident) {
-        state_.set_resident(std::nullopt);
-        state_.set_seat(decision.expert, SeatPhase::Loading, 0.0F);
-        state_.set_mood(Mood::Loading, "swapping in " + expert_name);
-        if (wake_) {
-            wake_();
-        }
-    }
-
-    const auto load_start = Clock::now();
+    long        load_ms = 0;
     std::string error;
-    LoadedModel* expert = host_->acquire_expert(
-        decision.expert, params,
-        [this, &decision](float progress) {
-            state_.set_seat_progress(decision.expert, progress);
-            if (wake_) {
-                wake_();
-            }
-        },
-        [this] { return cancel_.load(std::memory_order_relaxed); },
-        error);
-    load_ms = already_resident ? 0 : ms_since(load_start);
+    ChatModel*  expert = seat_model(decision.expert, params, expert_name, load_ms, error);
 
     if (expert == nullptr) {
-        state_.set_seat(decision.expert, SeatPhase::Dormant);
         state_.set_linked(std::nullopt);
         // A load the user stopped is not an error to be explained, and the
         // turn it belonged to should read as canceled rather than failed.
@@ -823,11 +852,6 @@ void Engine::handle(const Request& request) {
         return;
     }
 
-    state_.set_resident(decision.expert);
-    if (wake_) {
-        wake_();
-    }
-
     // --- generate ----------------------------------------------------------
     state_.set_mood(Mood::Thinking, expert_name + " is reading");
     if (wake_) {
@@ -836,8 +860,10 @@ void Engine::handle(const Request& request) {
 
     std::vector<ChatMessage> messages;
     messages.push_back({"system", config_.system_prompt});
-    if (!config_.reasoning_effort.empty()) {
-        // Where a reasoning model looks for it. See Config::reasoning_effort.
+    if (!config_.reasoning_effort.empty() && !params.remote()) {
+        // Where a local reasoning model looks for it. See
+        // Config::reasoning_effort. A provider takes it as a field of the
+        // request instead, which is what ChatRequest::effort is for.
         messages.front().content += "\n\nReasoning: " + config_.reasoning_effort;
     }
     if (config_.tools.web_search) {
@@ -874,7 +900,7 @@ void Engine::handle(const Request& request) {
     // its own tokenizer's. Before this point there is no model to ask.
     {
         const Overflow policy = overflow_from_id(config_.tools.overflow);
-        const int used   = prompt_tokens(*expert, messages);
+        const int used   = expert->prompt_tokens(messages);
         const int budget = static_cast<int>(
             static_cast<double>(expert->context_size()) * kPromptShare);
 
@@ -892,7 +918,7 @@ void Engine::handle(const Request& request) {
             return;
         }
         const TokenCounter counter = [expert](const std::vector<ChatMessage>& what) {
-            return prompt_tokens(*expert, what);
+            return expert->prompt_tokens(what);
         };
         if (const std::size_t dropped = trim_to_budget(policy, messages, counter, budget);
             dropped > 0) {
@@ -902,8 +928,7 @@ void Engine::handle(const Request& request) {
                     + " to stay inside the context",
                 {}, {}});
         }
-        state_.set_context_used(prompt_tokens(*expert, messages),
-                                expert->context_size());
+        state_.set_context_used(expert->prompt_tokens(messages), expert->context_size());
     }
 
     // The live tok/s readout is measured from the first token rather than from
@@ -938,51 +963,63 @@ void Engine::handle(const Request& request) {
         std::string reasoning;
         ResponseFilter filter;
 
-        const GenerationStats pass = expert->generate(
-            expert->format_chat(messages, true), params,
-            [&](std::string_view raw) {
-                if (first_token) {
-                    first_token    = false;
-                    first_token_at = std::chrono::steady_clock::now();
-                    state_.set_mood(Mood::Thinking,
-                                    expert_name + " is thinking");
+        // The two things a piece of output can be, wherever it came from.
+        const auto take = [&](std::string_view thought, std::string_view said) {
+            if (first_token) {
+                first_token    = false;
+                first_token_at = std::chrono::steady_clock::now();
+                state_.set_mood(Mood::Thinking, expert_name + " is thinking");
+            }
+            if (!thought.empty()) {
+                reasoning += thought;
+                state_.append_reasoning(turn, thought);
+            }
+            if (!said.empty()) {
+                if (first_answer) {
+                    first_answer = false;
+                    state_.set_mood(Mood::Talking, expert_name + " is answering");
                 }
-                // A reasoning model writes its working before its answer, and
-                // on some of them the markers between the two are ordinary
-                // visible text. See llm/response_filter.hpp.
+                answer += said;
+                state_.append_reply(turn, said);
+            }
+
+            // Recomputing the rate on every token would be noise on screen
+            // and work in the hot path; a few times a second is what a
+            // person can actually read.
+            if (++streamed_chunks % 8 == 0) {
+                const double elapsed_s =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                  first_token_at).count();
+                if (elapsed_s > 0.05) {
+                    state_.set_live_rate(static_cast<double>(streamed_chunks) / elapsed_s);
+                }
+            }
+
+            if (wake_) {
+                wake_();
+            }
+        };
+
+        ChatSink sink;
+        sink.cancel = cancel;
+        if (expert->reasons_inline()) {
+            // A reasoning model writes its working before its answer, and on
+            // some of them the markers between the two are ordinary visible
+            // text. See llm/response_filter.hpp.
+            sink.on_text = [&](std::string_view raw) {
                 const ResponseFilter::Piece chunk = filter.feed(raw);
-                if (!chunk.reasoning.empty()) {
-                    reasoning += chunk.reasoning;
-                    state_.append_reasoning(turn, chunk.reasoning);
-                }
-                if (!chunk.answer.empty()) {
-                    if (first_answer) {
-                        first_answer = false;
-                        state_.set_mood(Mood::Talking,
-                                        expert_name
-                                            + " is answering");
-                    }
-                    answer += chunk.answer;
-                    state_.append_reply(turn, chunk.answer);
-                }
+                take(chunk.reasoning, chunk.answer);
+            };
+        } else {
+            sink.on_text = [&](std::string_view said) { take({}, said); };
+        }
+        // A channel of its own, which is how a provider sends it. Some send
+        // both ways at once, and both are reasoning.
+        sink.on_reasoning = [&](std::string_view thought) { take(thought, {}); };
 
-                // Recomputing the rate on every token would be noise on screen
-                // and work in the hot path; a few times a second is what a
-                // person can actually read.
-                if (++streamed_chunks % 8 == 0) {
-                    const double elapsed_s =
-                        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                      first_token_at).count();
-                    if (elapsed_s > 0.05) {
-                        state_.set_live_rate(static_cast<double>(streamed_chunks) / elapsed_s);
-                    }
-                }
-
-                if (wake_) {
-                    wake_();
-                }
-            },
-            cancel);
+        const ChatResult outcome =
+            expert->chat(ChatRequest{messages, params, config_.reasoning_effort}, sink);
+        const GenerationStats& pass = outcome.stats;
 
         // Whatever was still held back, waiting to see if it was a marker.
         if (const ResponseFilter::Piece last = filter.flush();
@@ -991,6 +1028,32 @@ void Engine::handle(const Request& request) {
             state_.append_reply(turn, last.answer);
             reasoning += last.reasoning;
             answer    += last.answer;
+        }
+
+        // That a different model answered than the one in the seat, mostly.
+        for (const std::string& note : outcome.notes) {
+            state_.add_action(turn, TurnAction{note, {}, {}});
+        }
+
+        if (!outcome.error.empty()) {
+            // The provider could not be asked, or stopped partway, or the
+            // model declined. Only a remote model gets here: a local one that
+            // is loaded answers.
+            if (outcome.discard_partial) {
+                // What streamed before a refusal is not half an answer.
+                state_.set_reply(turn, {});
+            } else if (!answer.empty()) {
+                // fail_turn keeps a reply that had started, which is right --
+                // but then nothing would say why it stops where it does.
+                state_.add_action(turn, TurnAction{"cut short: " + outcome.error, {}, {}});
+            }
+            state_.fail_turn(turn, outcome.error);
+            state_.set_linked(std::nullopt);
+            state_.set_mood(Mood::Error, outcome.error);
+            if (wake_) {
+                wake_();
+            }
+            return;
         }
 
         stats.prompt_tokens += pass.prompt_tokens;
@@ -1203,7 +1266,7 @@ void Engine::handle(const Request& request) {
                 } else if (stats.hit_limit) {
                     why = "the expert used its whole token budget thinking and never got to "
                           "an answer -- raise \"Max tokens\" in settings, or lower "
-                          "\"Reasoning effort\" with /effort";
+                          "\"Reasoning effort\" in settings";
                 } else {
                     why = "the expert stopped without writing an answer";
                 }
@@ -1224,7 +1287,10 @@ void Engine::handle(const Request& request) {
     // trade this mode is: one model resident at a time, so either of them may
     // be as large as the whole card.
     if (!config_.routing.keep_delegator_loaded) {
-        if (host_->loaded_expert()) {
+        // Only the expert that just answered, and only if it was here to
+        // begin with. After a turn a provider answered there is nothing of
+        // this turn's to free.
+        if (!params.remote() && host_->loaded_expert()) {
             host_->release_expert();
             state_.set_seat(decision.expert, SeatPhase::Dormant);
             state_.set_resident(std::nullopt);

@@ -120,7 +120,7 @@ check     "the entry names the icon" \
 check     "StartupWMClass matches the window class the app sets" \
           grep -q '^StartupWMClass=crucible$' "$HERE/../packaging/linux/crucible.desktop.in"
 check     "and the app really sets that class" \
-          grep -q 'crucible' "$HERE/../src/gui/webui.cpp"
+          grep -q 'crucible' "$HERE/../src/gui/window.cpp"
 # Uninstall has to take them, or the menu keeps offering a Crucible that is gone.
 check     "the uninstaller removes the desktop entry" \
           grep -q 'crucible.desktop' "$HERE/../src/app/uninstall.cpp"
@@ -741,8 +741,12 @@ check     "HANDOFF is in the verb table" \
 check     "the cook loop re-routes on one" \
           grep -q 'take_the_seat' "$HERE/../src/engine/engine_cook.cpp"
 # The whole memory argument for the design: one expert resident at a time.
+# A cook takes a seat through the same door a chat turn does, and that door
+# is where the swap is.
+check     "a cook takes its seat the way a chat turn does" \
+          grep -q 'seat_model' "$HERE/../src/engine/engine_cook.cpp"
 check     "the previous expert is freed before the next is loaded" \
-          grep -q 'acquire_expert' "$HERE/../src/engine/engine_cook.cpp"
+          grep -q 'acquire_expert' "$HERE/../src/engine/engine.cpp"
 
 echo
 echo "  no runtimes are installed (continued)"
@@ -1045,10 +1049,10 @@ check     "the menu icon says it is generated, so nobody hand-edits it" \
 check     "the window's mark is compiled in" \
           grep -q "crucible.svg" "$ROOT/cmake/CrucibleDependencies.cmake"
 check     "and the page is given it as a data URI" \
-          grep -q "mark_data_uri" "$ROOT/src/gui/webui.cpp"
+          grep -q "mark_data_uri" "$ROOT/src/gui/window.cpp"
 # A build without the artwork has to keep working.
 check     "with a fallback when there is no artwork compiled in" \
-          grep -q "CRUCIBLE_HAS_EMBEDDED_MARK" "$ROOT/src/gui/webui.cpp"
+          grep -q "CRUCIBLE_HAS_EMBEDDED_MARK" "$ROOT/src/gui/window.cpp"
 
 echo "  and there is a download that needs no compiler at all"
 # The other kind of installer: a file you double-click. The one-line install
@@ -1213,9 +1217,9 @@ check     "a download is tried before the toolchain is" \
 # the answer may be a download. A check against a file that no longer exists
 # passes because grep cannot open it, which is not the same as passing.
 check     "the page offers to build what is not installed" \
-          grep -q 'data-build=' "$ROOT/ui/index.html"
+          grep -q 'data-act="runtime-build"' "$ROOT/ui/settings.js"
 check_not "and nothing disables that button for want of a compiler" \
-          grep -qE 'data-build=[^>]*buildable' "$ROOT/ui/index.html"
+          grep -qE 'runtime-build[^>]*buildable' "$ROOT/ui/settings.js"
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

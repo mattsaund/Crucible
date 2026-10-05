@@ -30,7 +30,7 @@ namespace crucible {
 class ModelHost {
 public:
     /// `log_path` receives llama.cpp's logging. Redirecting it is not optional:
-    /// left on stderr it would draw straight over the TUI.
+    /// left on stderr it would be lost: a windowed program has no terminal.
     explicit ModelHost(std::filesystem::path log_path);
     ~ModelHost();
     ModelHost(const ModelHost&)            = delete;

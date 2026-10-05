@@ -3,7 +3,7 @@
 // Owning llama.cpp.
 //
 // Two responsibilities that must not be separated: redirecting llama.cpp's
-// logging away from stderr (it would draw straight over the TUI), and enforcing
+// logging away from stderr (nobody is reading it there), and enforcing
 // the rule that makes Crucible's memory budget work -- the small delegator stays
 // resident, and at most one large expert is loaded at any moment.
 //
@@ -40,7 +40,7 @@ namespace {
 
 // --- llama.cpp logging -----------------------------------------------------
 // llama.cpp writes progress and diagnostics to stderr by default. In a
-// fullscreen TUI that lands on top of the interface, so everything is diverted
+// windowed program that goes nowhere anybody will look, so everything is diverted
 // to a file. The callback is global and can fire from llama.cpp's own threads,
 // hence the mutex.
 std::mutex   g_log_mutex;
@@ -311,7 +311,7 @@ ModelHost::ModelHost(std::filesystem::path log_path) {
         g_log_stream.open(log_path, std::ios::out | std::ios::trunc);
     }
     // Install the diversion before backend init so even startup chatter about
-    // devices and backends goes to the file rather than over the TUI.
+    // devices and backends goes to the file rather than to a terminal nobody has open.
     llama_log_set(log_to_file, nullptr);
 
     // And stderr with it, which is not the same diversion and is the one that
@@ -390,7 +390,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // backend found" from somewhere deep in the loader, which is a true
     // statement about ggml and a useless one about what to do next.
     if (ggml_backend_dev_count() == 0) {
-        error = "no runtime installed -- type /runtimes and install one";
+        error = "no runtime installed -- install one in Settings, Runtimes";
         return nullptr;
     }
 
