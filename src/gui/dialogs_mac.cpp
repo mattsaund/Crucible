@@ -12,6 +12,7 @@
 // each is spelled once, below.
 #include "dialogs.hpp"
 
+#include <string>
 #include <utility>
 
 #include <objc/message.h>
@@ -97,6 +98,17 @@ void pick(void* /*window*/, const Request& request, std::function<void(Answer)> 
         }
     }
     done(std::move(answer));
+}
+
+std::string show_folder(const std::string& folder) {
+    // What double-clicking it in Finder does: a Finder window on it.
+    const id workspace = send<id>(class_named("NSWorkspace"), "sharedWorkspace");
+    const id url       = send<id, id>(class_named("NSURL"), "fileURLWithPath:", ns_string(folder));
+    if (workspace == nullptr || url == nullptr) {
+        return "Finder could not be asked to open " + folder;
+    }
+    return send<BOOL, id>(workspace, "openURL:", url) ? std::string()
+                                                       : "Finder would not open " + folder;
 }
 
 }  // namespace crucible::gui::dialogs

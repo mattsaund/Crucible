@@ -110,6 +110,16 @@ int LoadedModel::context_size() const {
 std::uint64_t LoadedModel::params() const { return llama_model_n_params(model_); }
 std::uint64_t LoadedModel::bytes()  const { return llama_model_size(model_); }
 
+bool LoadedModel::takes_effort() const {
+    const char* tmpl = llama_model_chat_template(model_, nullptr);
+    if (tmpl == nullptr) {
+        return false;
+    }
+    const std::string_view text(tmpl);
+    return text.find("reasoning_effort") != std::string_view::npos
+        || text.find("<|channel|>") != std::string_view::npos;
+}
+
 std::string LoadedModel::format_chat(const std::vector<ChatMessage>& messages,
                                      bool add_assistant_prefix) const {
     std::vector<llama_chat_message> native;

@@ -63,6 +63,11 @@ public:
 
     bool reasons_inline() const override { return true; }
 
+    /// gpt-oss's: its chat template is the harmony format, which reads
+    /// `Reasoning: <level>` from the system message. See
+    /// Config::reasoning_effort.
+    bool takes_effort() const override;
+
     // --- and what only a local model can do --------------------------------
 
     /// Render `messages` through the model's own chat template, falling back to

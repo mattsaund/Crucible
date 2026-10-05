@@ -72,6 +72,10 @@ private:
 
     std::filesystem::path project_root() const override;
     std::string           open_project(const std::filesystem::path& root) override;
+    std::string           open_scratchpad() override;
+    std::string           new_session() override;
+    std::string           session_id() const override;
+    std::string           session_name() const override;
     std::filesystem::path pending_trust() const override;
     void                  answer_trust(bool trusted) override;
 
@@ -119,6 +123,18 @@ private:
 
     /// Fold in the worked examples the delegator wrote for new seats.
     void absorb_written_examples();
+
+    /// Ask for the conversation on screen to be named, once it has had an
+    /// exchange and has no name; and file the names that have come back.
+    void name_sessions();
+
+    /// The conversations a name has been asked for, so each is asked once.
+    std::vector<std::string> naming_asked_;
+
+    /// Close the project: no folder, no history, nothing on screen. What a new
+    /// chat starts from -- its first message opens a scratch folder of its
+    /// own.
+    void close_project();
 
     /// A training run that has finished, written back to the recipe it
     /// belongs to -- whichever view is showing, so a run that ends while you

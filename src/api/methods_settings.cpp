@@ -3,7 +3,11 @@
 // The configuration, and the machine it is a configuration of.
 #include "methods.hpp"
 
+#include "crucible/llm/mlx_server.hpp"
+
 #include <algorithm>
+#include <fstream>
+#include <mutex>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/config/trust.hpp"
@@ -121,14 +125,22 @@ Reply config_set(const json& params, Host& host) {
 Reply models(const json&, const Scene& scene) {
     const std::filesystem::path dir = scene.config.resolved_models_dir();
     json files = json::array();
+    bool any_mlx = false;
     for (const ModelFile& file : scan_models(dir)) {
         files.push_back(json{{"name", file.name},
                              {"path", file.path.string()},
-                             {"bytes", file.bytes}});
+                             {"bytes", file.bytes},
+                             {"format", file.format}});
+        any_mlx = any_mlx || file.format == "mlx";
     }
-    return good(json{{"directory", dir.string()},
-                     {"display", format::short_path(dir)},
-                     {"models", std::move(files)}});
+    json out{{"directory", dir.string()},
+             {"display", format::short_path(dir)},
+             {"models", std::move(files)}};
+    // Asked only when there is one to ask about: it starts Python.
+    if (any_mlx) {
+        out["mlx_unavailable"] = mlx::unavailable();
+    }
+    return good(std::move(out));
 }
 
 /// The graphics cards, and which of the settings about them can work.
@@ -201,6 +213,65 @@ Reply update_check(const json&, const Scene&) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// What the window remembers
+// ---------------------------------------------------------------------------
+//
+// The side menu's width, the box's height, where prompts go: the shape the
+// window was left in. Not settings -- nobody looks for them in a config file,
+// and they are about this window rather than about how Crucible works -- but
+// they have to outlive the window, and the webview's own storage does not.
+// So a small file of their own, beside the rest of Crucible's state.
+
+std::filesystem::path window_file() { return paths::data_dir() / "window.json"; }
+
+/// Guards the file: lookups run on whichever worker is free.
+std::mutex& window_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+json read_window_file() {
+    std::ifstream in(window_file());
+    if (!in) {
+        return json::object();
+    }
+    json doc = json::parse(in, nullptr, /*allow_exceptions=*/false);
+    return doc.is_object() ? doc : json::object();
+}
+
+Reply prefs(const json&, const Scene&) {
+    const std::lock_guard<std::mutex> lock(window_mutex());
+    return good(read_window_file());
+}
+
+Reply prefs_set(const json& params, const Scene&) {
+    const auto key = params.value("key", std::string{});
+    if (key.empty() || key.size() > 64) {
+        return bad("prefs.set needs a short key");
+    }
+    if (!params.contains("value")) {
+        return bad("prefs.set needs a value");
+    }
+    const std::lock_guard<std::mutex> lock(window_mutex());
+    json doc = read_window_file();
+    doc[key] = params["value"];
+    // Written whole beside the old one and then moved over it, so a window
+    // closed mid-write leaves the last good copy rather than half of one.
+    std::error_code ec;
+    std::filesystem::create_directories(window_file().parent_path(), ec);
+    const std::filesystem::path next = window_file().string() + ".new";
+    {
+        std::ofstream out(next, std::ios::trunc);
+        if (!out) {
+            return bad("could not write " + next.string());
+        }
+        out << doc.dump(2) << '\n';
+    }
+    std::filesystem::rename(next, window_file(), ec);
+    return ec ? bad("could not save " + window_file().string() + ": " + ec.message()) : good();
+}
+
 void settings_methods(std::vector<Method>& table) {
     table.push_back({"config",       nullptr, config});
     table.push_back({"config.set",   nullptr, config_set});
@@ -208,6 +279,8 @@ void settings_methods(std::vector<Method>& table) {
     table.push_back({"devices",      devices, nullptr});
     table.push_back({"about",        about, nullptr});
     table.push_back({"update.check", update_check, nullptr});
+    table.push_back({"prefs",        prefs, nullptr});
+    table.push_back({"prefs.set",    prefs_set, nullptr});
 }
 
 }  // namespace crucible::api

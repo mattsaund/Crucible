@@ -12,6 +12,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 
 namespace crucible::gui::dialogs {
@@ -137,6 +138,14 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
     }
     dialog->Release();
     done(std::move(answer));
+}
+
+std::string show_folder(const std::string& folder) {
+    // The verb Explorer's own "Open" uses on a folder. Anything above 32 is
+    // success, by a convention as old as Windows 3.
+    const auto result = reinterpret_cast<INT_PTR>(
+        ShellExecuteW(nullptr, L"open", wide(folder).c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    return result > 32 ? std::string() : "Explorer would not open " + folder;
 }
 
 }  // namespace crucible::gui::dialogs

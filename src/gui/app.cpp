@@ -10,6 +10,7 @@
 #include "app.hpp"
 
 #include <algorithm>
+#include <ctime>
 #include <cstdio>
 #include <optional>
 #include <system_error>
@@ -102,6 +103,7 @@ std::string App::apply_config(Config edited) {
 
 void App::housekeeping() {
     persist_session();
+    name_sessions();
     absorb_written_examples();
     absorb_finished_run();
     absorb_finished_build();
@@ -235,16 +237,124 @@ std::string App::open_project(const std::filesystem::path& root) {
     engine_->set_project(project.root, project.dir);
     engine_->reset_history();
     state_.clear_turns();
+    state_.set_session_usage({});
     state_.clear_notices();
     state_.set_cook(nullptr);
     state_.set_project_usage(store_->project_usage());
     persisted_turns_ = 0;
 
-    remember_project(project.root);
-    // The name, not the path. The path is in the top bar; a notice is a line
-    // in the transcript and a three-line path wrapping across it is the
-    // loudest thing on an empty screen.
-    say("opened " + (project.name.empty() ? project.root.string() : project.name));
+    // A scratch folder is a chat's, not a project anybody chose: it is in
+    // the recent chats, and not among the projects.
+    if (!is_scratch(project.root)) {
+        remember_project(project.root);
+    }
+    // Nothing said in the transcript: the top bar shows the folder, and the
+    // right-hand panel which project it is.
+    return {};
+}
+
+std::string App::open_scratchpad() {
+    // A folder of its own for every new chat, named for when it began, so
+    // what one conversation makes is not mixed into the next one's.
+    const std::filesystem::path parent = paths::scratchpad_dir();
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+    std::filesystem::path root = parent / stamp;
+    std::error_code ec;
+    for (int n = 2; std::filesystem::exists(root, ec) && n < 100; ++n) {
+        root = parent / (std::string(stamp) + "-" + std::to_string(n));
+    }
+    std::filesystem::create_directories(root, ec);
+    if (ec) {
+        return "could not make " + root.string() + ": " + ec.message();
+    }
+    // Crucible's own folder: there is nobody else's say to ask for. Trusting
+    // the parent covers every scratch folder under it.
+    if (!trust_.is_trusted(parent)) {
+        trust_.trust(parent);
+    }
+    return open_project(root);
+}
+
+void App::close_project() {
+    persist_session();
+    store_.reset();
+    engine_->set_project({}, {});
+    engine_->reset_history();
+    state_.clear_turns();
+    state_.set_session_usage({});
+    state_.set_pending_edit(nullptr);
+    persisted_turns_ = 0;
+    if (wake_) {
+        wake_();
+    }
+}
+
+void App::name_sessions() {
+    // Names that have come back, filed where their conversation is: on the
+    // one being recorded when it is still that one, in its file otherwise.
+    for (Engine::SessionName& named : engine_->take_session_names()) {
+        if (store_ && store_->session_id() == named.session
+            && Project::at(named.root).root == store_->project().root) {
+            store_->set_name(named.name);
+            std::string error;
+            const Snapshot snapshot = state_.snapshot();
+            store_->save(snapshot.turns, snapshot.session_usage, error);
+        } else {
+            std::string error;
+            SessionStore(Project::at(named.root)).rename(named.session, named.name, error);
+        }
+    }
+
+    // And a name asked for the conversation on screen, once it has an
+    // exchange worth naming and has been written down.
+    if (!store_ || !store_->name().empty() || persisted_turns_ == 0) {
+        return;
+    }
+    const std::string key = store_->project().root.string() + '\n' + store_->session_id();
+    if (std::find(naming_asked_.begin(), naming_asked_.end(), key) != naming_asked_.end()) {
+        return;
+    }
+    const Snapshot snapshot = state_.snapshot();
+    for (const Turn& turn : snapshot.turns) {
+        // An exchange that happened: not one still arriving, stopped, or
+        // whose "reply" is the error that stopped it.
+        if (turn.streaming || turn.failed || turn.canceled || turn.reply.empty()) {
+            continue;
+        }
+        naming_asked_.push_back(key);
+        const auto clip = [](const std::string& text, std::size_t most) {
+            return text.size() > most ? text.substr(0, most) + "..." : text;
+        };
+        engine_->name_session(store_->session_id(), store_->project().root,
+                              "Question: " + clip(turn.prompt, 500) + "\nAnswer: " + clip(turn.reply, 400));
+        return;
+    }
+}
+
+std::string App::session_id() const {
+    return store_ ? store_->session_id() : std::string();
+}
+
+std::string App::session_name() const {
+    return store_ ? store_->name() : std::string();
+}
+
+std::string App::new_session() {
+    if (engine_->is_busy() || engine_->cooking()) {
+        return "finish what is running before starting a new conversation";
+    }
+    // A new chat belongs to no project: the one on screen is put away, and
+    // the first message of the next opens a scratch folder for it. A new
+    // conversation in a project is had by opening the project.
+    close_project();
     return {};
 }
 
@@ -341,6 +451,7 @@ std::string App::open_session(const std::string& id) {
     // conversation had not happened.
     persist_session();
     state_.clear_turns();
+    state_.set_session_usage(usage);
     for (Turn& turn : turns) {
         state_.restore_turn(std::move(turn));
     }

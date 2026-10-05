@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/llm/mlx_server.hpp"
 #include "crucible/util/format.hpp"
 
 namespace crucible {
@@ -61,38 +62,54 @@ std::filesystem::path resolve_model_ref(const std::filesystem::path& models_dir,
     return models_dir / path;
 }
 
-std::vector<ModelFile> scan_models(const std::filesystem::path& dir) {
-    std::vector<ModelFile> found;
+namespace {
 
+void scan_into(const std::filesystem::path& root, const std::filesystem::path& relative, int depth,
+               std::vector<ModelFile>& found) {
     std::error_code ec;
-    if (!std::filesystem::is_directory(dir, ec)) {
-        return found;
-    }
-
-    for (std::filesystem::directory_iterator it(dir, ec), end; it != end; it.increment(ec)) {
-        if (ec) {
-            break;
+    for (std::filesystem::directory_iterator it(root / relative, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        const std::string leaf = it->path().filename().string();
+        if (leaf.empty() || leaf.front() == '.') {
+            continue;
         }
         // Follow symlinks: a models folder full of links to a big external
         // drive is a perfectly reasonable way to organize this.
         std::error_code entry_ec;
-        if (!it->is_regular_file(entry_ec) || entry_ec) {
-            continue;
+        const std::filesystem::path inside = relative / leaf;
+        if (it->is_regular_file(entry_ec) && !entry_ec && has_gguf_extension(it->path())) {
+            ModelFile file;
+            file.name  = inside.generic_string();
+            file.path  = it->path();
+            file.bytes = std::filesystem::file_size(it->path(), entry_ec);
+            if (entry_ec) {
+                file.bytes = 0;
+            }
+            found.push_back(std::move(file));
+        } else if (it->is_directory(entry_ec) && !entry_ec) {
+            if (mlx::is_model_dir(it->path())) {
+                ModelFile model;
+                model.name   = inside.generic_string();
+                model.path   = it->path();
+                model.bytes  = mlx::model_bytes(it->path());
+                model.format = "mlx";
+                found.push_back(std::move(model));
+            } else if (depth < 2) {
+                scan_into(root, inside, depth + 1, found);
+            }
         }
-        if (!has_gguf_extension(it->path())) {
-            continue;
-        }
-
-        ModelFile file;
-        file.name  = it->path().filename().string();
-        file.path  = it->path();
-        file.bytes = std::filesystem::file_size(it->path(), entry_ec);
-        if (entry_ec) {
-            file.bytes = 0;
-        }
-        found.push_back(std::move(file));
     }
+}
 
+}  // namespace
+
+std::vector<ModelFile> scan_models(const std::filesystem::path& dir) {
+    std::vector<ModelFile> found;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) {
+        return found;
+    }
+    scan_into(dir, {}, 0, found);
     std::sort(found.begin(), found.end(),
               [](const ModelFile& a, const ModelFile& b) { return a.name < b.name; });
     return found;

@@ -124,7 +124,7 @@ function pageGeneral(c) {
                value="${escape(models ? models.directory : (c.models_dir || ''))}">
         <button class="action" data-act="models-browse">Browse</button>
       </div>
-      <div class="hint">${here === null ? 'Looking...' : `${count(here, 'GGUF file')} here.`}
+      <div class="hint">${here === null ? 'Looking...' : `${count(here, 'model')} here, GGUF or MLX.`}
         Every model is chosen from this folder -- the delegator's and each expert's -- and a
         fine-tune made in Create is written into it.</div>
       <div class="row" style="margin-top:.6rem">
@@ -405,9 +405,6 @@ function pageGeneration() {
     <h2 style="margin-top:1.8rem">PROMPTING</h2>
     ${setting('system_prompt', 'System prompt', 'text',
       'What every expert is told before the conversation. Tool instructions are added after it.')}
-    ${setting('reasoning_effort', 'Reasoning effort', 'choice',
-      'How hard a reasoning model should think. A model that does not reason ignores it.',
-      [['', 'leave it to the model'], ['low', 'low'], ['medium', 'medium'], ['high', 'high']])}
     ${setting('ui.show_reasoning', 'Show a reasoning model\'s working', 'bool',
       'Whether "thinking" starts open above a reply. Opening or closing one changes this too.')}
 
@@ -748,7 +745,10 @@ views.settings = () => {
 entering.settings = () => {
   need('models', 'models');
   need('providers', 'providers');
-  need('runtimes', 'runtimes');
+  // Asked again every time, not kept from the start: the empty chat asks at
+  // startup, before the engine has loaded any runtime, and that answer --
+  // every runtime idle, driving nothing -- is wrong a second later.
+  need('runtimes', 'runtimes', true);
   need('devices', 'devices');
   need('trainer', 'trainer');
   need('flavors', 'trainer.flavors');

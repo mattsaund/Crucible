@@ -6,10 +6,15 @@ turns it into the three things the program and its installers need, all from
 that one file so they cannot drift apart:
 
   crucible.png        1024 square, rounded, transparent outside -- the master,
-                      and what the .icns and the Linux menu entry are made from
+                      and what the Linux menu entry is made from
   crucible.ico        the same, at the sizes Windows asks for
   crucible-mark.rgba  128 square, raw RGBA, compiled into the binary and drawn
                       in the corner of the window (no PNG decoder in the app)
+
+One icon is not made here: crucible-mac.png, the Mac application's, which is
+drawn to Apple's own grid (the tile inset on its canvas, with a shadow) and
+kept as it was drawn. packaging/macos/dmg.sh and install.sh make the .icns
+from it, and fall back to crucible.png if it is ever missing.
 
 Rounded like every other icon on a modern dock: a superellipse would be closer
 to what macOS does, but a rounded rectangle at 22% is what reads as "an app

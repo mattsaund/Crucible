@@ -27,6 +27,8 @@
 #include <fstream>
 #include <sstream>
 #include "crucible/runtime/registry.hpp"
+#include "crucible/session/store.hpp"
+#include "crucible/util/format.hpp"
 
 namespace crucible {
 namespace {
@@ -249,6 +251,24 @@ std::vector<std::pair<ExpertId, std::vector<std::string>>> Engine::take_written_
     return std::exchange(written_examples_, {});
 }
 
+void Engine::name_session(std::string session, std::filesystem::path root, std::string excerpt) {
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        Request request;
+        request.kind    = RequestKind::NameSession;
+        request.session = std::move(session);
+        request.root    = std::move(root);
+        request.prompt  = std::move(excerpt);
+        pending_.push_back(std::move(request));
+    }
+    queued_.notify_one();
+}
+
+std::vector<Engine::SessionName> Engine::take_session_names() {
+    const std::lock_guard<std::mutex> lock(written_mutex_);
+    return std::exchange(session_names_, {});
+}
+
 void Engine::apply_config(Config config) {
     // Now, not when the queue reaches it: see auto_edits_.
     auto_edits_.store(config.tools.auto_edits);
@@ -398,6 +418,17 @@ bool Engine::ask_about_edit(const tools::ToolCall& call,
     return approved;
 }
 
+void Engine::stop_mlx() {
+    mlx_.stop();
+    if (mlx_seat_) {
+        state_.set_seat(*mlx_seat_, SeatPhase::Dormant);
+        if (state_.snapshot().resident == mlx_seat_) {
+            state_.set_resident(std::nullopt);
+        }
+        mlx_seat_.reset();
+    }
+}
+
 void Engine::restore_history(std::vector<ChatMessage> history) {
     const std::lock_guard<std::mutex> lock(mutex_);
     history_ = std::move(history);
@@ -409,10 +440,10 @@ void Engine::run() {
     // here rather than when the config was parsed.
     host_ = std::make_unique<ModelHost>(paths::log_file());
 
+    // Which cards there are, and how a model would be split across them, is
+    // Settings, Hardware's to say. The transcript is for the conversation; a
+    // list of devices at the top of every one is not part of it.
     const std::vector<std::string> devices = ModelHost::devices();
-    for (const std::string& device : devices) {
-        state_.add_notice("device: " + device);
-    }
     // Said at startup rather than at the first prompt: with no runtime there
     // is no hardware to run a model on, and finding that out only when you
     // have typed a question is the worse way to learn it.
@@ -426,9 +457,7 @@ void Engine::run() {
 
     {
         const std::lock_guard<std::mutex> lock(config_mutex_);
-        if (const std::string split = apply_gpu_policy(config_); !split.empty()) {
-            state_.add_notice("GPU split (" + config_.gpu.mode + "): " + split);
-        }
+        apply_gpu_policy(config_);
         // Every load re-plans its own split from live memory, and the host is
         // where that happens. See refresh_gpu_split.
         host_->set_gpu_config(config_.gpu);
@@ -470,9 +499,7 @@ void Engine::run() {
             // worked out from the old one.
             {
                 const std::lock_guard<std::mutex> lock(config_mutex_);
-                if (const std::string split = apply_gpu_policy(config_); !split.empty()) {
-                    state_.add_notice("GPU split (" + config_.gpu.mode + "): " + split);
-                }
+                apply_gpu_policy(config_);
                 host_->set_gpu_config(config_.gpu);
             }
 
@@ -486,6 +513,7 @@ void Engine::run() {
 
         if (request.kind == RequestKind::ReleaseExpert) {
             host_->release_expert();
+            stop_mlx();
             state_.set_resident(std::nullopt);
             state_.set_mood(Mood::Idle, "expert released");
             if (wake_) {
@@ -501,6 +529,7 @@ void Engine::run() {
             // pointing at nothing.
             release_router();
             host_->release_expert();
+            stop_mlx();
             state_.set_resident(std::nullopt);
             state_.set_linked(std::nullopt);
             state_.set_mood(Mood::Idle, "nothing loaded");
@@ -525,7 +554,8 @@ void Engine::run() {
             // whatever a model asks for, so an exception escaping here would
             // take the process, and the window with it, down mid-edit.
             try {
-                do_cook(request.prompt, request.budget_seconds, request.root, request.attachments);
+                do_cook(request.prompt, request.budget_seconds, request.root, request.attachments,
+                        request.pinned);
             } catch (const std::exception& e) {
                 state_.set_mood(Mood::Error, e.what());
                 state_.add_notice(std::string("cook failed: ") + e.what());
@@ -540,6 +570,19 @@ void Engine::run() {
                 wake_();
             }
             settle();
+            continue;
+        }
+
+        if (request.kind == RequestKind::NameSession) {
+            try {
+                do_name_session(request);
+            } catch (...) {
+                // A conversation without a name is listed by its first prompt,
+                // which is what it was before names existed.
+            }
+            if (wake_) {
+                wake_();
+            }
             continue;
         }
 
@@ -590,9 +633,11 @@ void Engine::run() {
         settle();
     }
 
-    // Free the models before the backend goes away.
+    // Free the models before the backend goes away, and stop MLX's server,
+    // which is a process of its own and would outlive the window.
     router_.reset();
     host_.reset();
+    stop_mlx();
 }
 
 void Engine::load_router() {
@@ -698,6 +743,7 @@ void Engine::settle() {
             state_.set_seat(*resident, SeatPhase::Dormant);
             state_.set_resident(std::nullopt);
         }
+        stop_mlx();
     }
     const Snapshot before = state_.snapshot();
     ready_delegator();
@@ -768,6 +814,34 @@ void Engine::do_apply_config(Config config) {
     state_.configure_seats(current);
     state_.set_resident(host_->loaded_expert());
     state_.set_mood(Mood::Idle, "settings applied");
+}
+
+void Engine::do_name_session(const Request& request) {
+    // The delegator, when there is one: it is small, it is loaded more often
+    // than anything else, and naming a conversation is the kind of short
+    // reading-and-saying it does well. Without it, the opening words of the
+    // first prompt, which is what the list showed before there were names.
+    std::string name;
+    ensure_router();
+    if (LoadedModel* model = host_->router()) {
+        ModelParams params = config_.router;
+        params.temperature = 0.2F;
+        params.max_tokens  = 24;
+        const std::vector<ChatMessage> messages{{"user", session_naming_prompt(request.prompt)}};
+        std::string reply;
+        const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
+        model->generate(model->format_chat(messages, true), params,
+                        [&reply](std::string_view chunk) { reply += chunk; }, cancel);
+        name = session_name_from(reply);
+    }
+    if (name.empty()) {
+        name = fallback_session_name(request.prompt);
+    }
+    if (name.empty()) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(written_mutex_);
+    session_names_.push_back({request.session, request.root, std::move(name)});
 }
 
 void Engine::do_write_examples(const ExpertId& id) {
@@ -889,6 +963,43 @@ ChatModel* Engine::seat_model(const ExpertId& id, const ModelParams& params,
         return hub_.model(params, error);
     }
 
+    // A folder rather than a file: an MLX model, which llama.cpp cannot read
+    // and MLX's own server can. See mlx_server.hpp.
+    if (mlx::is_model_dir(params.path)) {
+        if (!mlx_.serving(params.path)) {
+            // One model in memory: whatever GGUF expert is here goes first.
+            if (host_->loaded_expert()) {
+                host_->release_expert();
+            }
+            stop_mlx();
+            state_.set_resident(std::nullopt);
+            // A spinner rather than a figure: MLX does not say how far along
+            // it is, and a percentage that is not measuring anything is worse
+            // than none.
+            state_.set_seat(id, SeatPhase::Loading, -1.0F);
+            state_.set_mood(Mood::Loading, "starting " + name + " in MLX");
+            if (wake_) {
+                wake_();
+            }
+            const auto started = Clock::now();
+            if (!mlx_.serve(params.path, [this] { return cancel_.load(std::memory_order_relaxed); },
+                            error)) {
+                state_.set_seat(id, SeatPhase::Dormant);
+                return nullptr;
+            }
+            load_ms = ms_since(started);
+        }
+        mlx_seat_ = id;
+        state_.set_resident(id);
+        state_.set_seat(id, SeatPhase::Dormant);
+        if (wake_) {
+            wake_();
+        }
+        return hub_.local_server(mlx_.base_url(), params.n_ctx);
+    }
+    // A GGUF is about to take the memory an MLX model is holding.
+    stop_mlx();
+
     const bool already_resident = host_->loaded_expert() == id;
     if (!already_resident) {
         state_.set_resident(std::nullopt);
@@ -998,7 +1109,7 @@ void Engine::handle(const Request& request) {
 
     std::vector<ChatMessage> messages;
     messages.push_back({"system", config_.system_prompt});
-    if (!config_.reasoning_effort.empty() && !params.remote()) {
+    if (!config_.reasoning_effort.empty() && !params.remote() && expert->takes_effort()) {
         // Where a local reasoning model looks for it. See
         // Config::reasoning_effort. A provider takes it as a field of the
         // request instead, which is what ChatRequest::effort is for.
@@ -1111,6 +1222,7 @@ void Engine::handle(const Request& request) {
         rounds = std::max(rounds, kToolRounds);
     }
     std::vector<std::string> already_searched;
+    std::vector<std::string> already_done;   // project calls made this turn
 
     // What the rounds before this one left on screen. A turn that reads a
     // file, then writes one, then answers says something each time, and each
@@ -1263,6 +1375,25 @@ void Engine::handle(const Request& request) {
             // nothing or was already agreed to by trusting the folder.
             // The turn so far, and this round's prose up to the call.
             const std::string kept = paragraphs(earlier, prose_before_tool_call(answer, call->kind));
+
+            // The same call twice in one turn is a model going round, and the
+            // second answer would be the first one again. Not run, and not
+            // drawn: it is told its result is already above. A write is the
+            // exception -- writing a file again is how a fix to it is made.
+            const std::string asked_for = std::string(tools::tool_kind_name(call->kind)) + '\n'
+                                        + call->argument;
+            if (call->kind != tools::ToolKind::Write
+                && std::find(already_done.begin(), already_done.end(), asked_for)
+                       != already_done.end()) {
+                earlier = kept;
+                state_.set_reply(turn, earlier);
+                messages.push_back({"assistant", answer});
+                messages.push_back({"user", "You already did exactly that this turn, and its "
+                                            "result is above. Use it -- and if it told you what "
+                                            "you needed, answer now."});
+                continue;
+            }
+            already_done.push_back(asked_for);
             if (call->kind == tools::ToolKind::Write && !auto_edits_.load()
                 && !await_edit_approval(turn, kept, *call, workshop)) {
                 state_.add_action(turn, TurnAction{

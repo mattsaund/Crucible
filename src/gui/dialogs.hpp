@@ -13,6 +13,8 @@
 // (which hands off to the desktop's portal where there is one, so a KDE
 // session gets KDE's dialog), IFileOpenDialog on Windows, NSOpenPanel on
 // macOS. Each is in its own file and the build takes the one that applies.
+// Beside it, the other way round: a folder shown in the desktop's own file
+// browser.
 #pragma once
 
 #include <functional>
@@ -58,5 +60,13 @@ struct Answer {
 /// thread exactly once -- before this returns on the platforms whose dialogs
 /// are modal loops, and some time after it on the one whose is not.
 void pick(void* window, const Request& request, std::function<void(Answer)> done);
+
+/// Open `folder` in the platform's file browser -- whichever the desktop has
+/// on Linux, Finder, Explorer. Empty when it was shown, or what went wrong.
+///
+/// A folder, never a file: handed a file, each of these opens it in the
+/// application it belongs to, and for a script that is running it. The
+/// caller makes sure it is a directory. Call on the window's thread.
+std::string show_folder(const std::string& folder);
 
 }  // namespace crucible::gui::dialogs

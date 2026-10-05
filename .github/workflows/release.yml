@@ -57,6 +57,12 @@ jobs:
           test -x /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible
           test -f /tmp/crucible-dmg/Crucible.app/Contents/Info.plist
           ls /tmp/crucible-dmg/Crucible.app/Contents/lib/crucible/
+          # Sealed, every library in it signed: what a bundle has to be for
+          # Gatekeeper to call it unidentified rather than damaged.
+          codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app
+          # And it starts, which a binary with a broken signature does not:
+          # Apple Silicon kills it before main.
+          /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible --version
           hdiutil detach /tmp/crucible-dmg
 
       - uses: actions/upload-artifact@v4

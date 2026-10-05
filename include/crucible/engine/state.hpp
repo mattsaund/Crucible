@@ -309,6 +309,10 @@ public:
     void clear_notices();
     void clear_turns();
 
+    /// What the conversation on screen has cost: zero for a new one, its own
+    /// totals for one reopened from history.
+    void set_session_usage(TokenUsage usage);
+
     void set_busy(bool busy);
     bool busy() const;
 

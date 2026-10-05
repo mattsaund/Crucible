@@ -50,12 +50,6 @@ header {
 .flame { width: 20px; height: 20px; flex: none; }
 .flame[src=""] { display: none; }
 .mark { color: var(--flame); letter-spacing: .22em; font-size: 12px; }
-.project {
-  background: var(--raised); border: 1px solid var(--panel-edge);
-  border-radius: 5px; padding: .3rem .8rem; cursor: pointer; color: var(--dim);
-}
-.project:hover { color: var(--text); border-color: var(--faint); }
-.project.none { color: var(--faint); }
 nav { margin-left: auto; display: flex; gap: .3rem; }
 nav button {
   background: none; border: 0; border-bottom: 2px solid transparent;
@@ -66,7 +60,7 @@ nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(-
 
 /* The side menu's width is set on the element, so the grid takes it from
    there rather than keeping a second copy of the same number. */
-main { display: grid; grid-template-columns: auto auto 1fr; min-height: 0; }
+main { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; min-height: 0; }
 aside {
   background: var(--panel); padding: 1.2rem 1rem;
   display: flex; flex-direction: column; min-height: 0;
@@ -90,6 +84,39 @@ aside.rail .rail-gap { height: 1.2rem; }
   background: var(--panel-edge); border: 0;
 }
 .splitter:hover, .splitter.dragging { background: var(--flame); }
+
+/* The right-hand panel: recent chats and projects. The side menu's look,
+   on the other side. Every row's text starts where its section's title does,
+   and every row spans the panel edge to edge, so the highlight on the open
+   one is a band rather than a box floating inside it. */
+#splitter-r { margin-left: 0; margin-right: -2px; }
+aside.recents { padding: 1.1rem 0; }
+aside.recents .roster-scroll { padding-bottom: 1rem; }
+.r-head {
+  display: flex; align-items: center; justify-content: space-between; gap: .6rem;
+  padding: 0 .9rem; margin-bottom: .45rem; min-height: 1.9rem;
+}
+/* One line each, however narrow the panel is dragged: the title gives way,
+   cut short, and the button keeps its words. */
+aside.recents .r-head h2 {
+  margin: 0; padding-left: 0; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.r-head button { flex: none; white-space: nowrap; }
+.r-head.r-projects { margin-top: 1.5rem; }
+button.action.small { padding: .25rem .65rem; font-size: .88em; }
+button.recent {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  border-left: 2px solid transparent; border-radius: 0;
+  padding: .42rem .9rem .42rem calc(.9rem - 2px); color: var(--text); cursor: pointer;
+}
+button.recent:hover { background: var(--hover); }
+button.recent.here { background: var(--raised); border-left-color: var(--flame); }
+button.recent .r-title, button.recent .r-meta {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.recent .r-meta { color: var(--faint); font-size: .85em; margin-top: .1rem; }
+.r-empty { padding: .2rem .9rem; }
 
 button.icon {
   background: none; border: 0; color: var(--faint);
@@ -483,14 +510,12 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; user-select:
   border-radius: 4px; padding: .08em .35em;
 }
 
-/* --- the top bar: where the project is ----------------------------------- */
-/* Read from the end: two projects differ in their last folder, not their
-   first, so when there is not room for all of it the start is what goes. */
 .project-path {
-  flex: 0 1 auto; min-width: 0; color: var(--faint);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  direction: rtl; user-select: text;
+  flex: 0 1 auto; min-width: 0; margin-left: .6rem; padding: .2rem .35rem;
+  background: none; border: 0; border-radius: 4px; color: var(--faint); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl;
 }
+.project-path:hover { color: var(--text); background: var(--hover); }
 nav button.icon { position: relative; }
 .pip {
   position: absolute; top: .45rem; right: .4rem; width: 7px; height: 7px;
@@ -599,10 +624,13 @@ textarea:disabled, input:disabled, select:disabled { color: var(--faint); }
 .box-bar { display: flex; align-items: center; gap: .5rem; }
 .box-bar .spacer { flex: 1; }
 .box-bar button.action { padding: .35rem .85rem; }
+/* Wide enough for the longer of its two words, so it does not move the arrow
+   beside it every time it is pressed. */
+.box-bar button.toggle[data-act="auto-edits"] { min-width: 7.6rem; text-align: center; }
 
 /* The plus, gray until it is wanted, and the menu it opens -- upwards,
    because the box is at the foot of the window. */
-.attach-wrap { position: relative; }
+.menu-wrap { position: relative; }
 button.plus {
   display: grid; place-items: center; width: 2rem; height: 2rem;
   background: transparent; border: 0; border-radius: 8px; color: var(--dim); cursor: pointer;
@@ -611,19 +639,54 @@ button.plus:hover:not(:disabled), button.plus[aria-expanded="true"] {
   background: var(--hover); color: var(--text);
 }
 button.plus:disabled { color: var(--faint); cursor: default; }
-.attach-menu {
+.popmenu {
   position: absolute; left: 0; bottom: calc(100% + .45rem); z-index: 30; min-width: 18rem;
   background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 10px;
   padding: .35rem; box-shadow: 0 10px 28px rgba(0, 0, 0, .55);
 }
-.attach-menu button {
+.popmenu button {
   display: flex; align-items: center; gap: .75rem; width: 100%;
   background: none; border: 0; border-radius: 6px; padding: .5rem .65rem;
   color: var(--text); cursor: pointer; text-align: left; white-space: nowrap;
 }
-.attach-menu button:hover, .attach-menu button:focus-visible { background: var(--hover); outline: none; }
-.attach-menu svg { color: var(--dim); flex: none; }
-.attach-menu kbd { margin-left: auto; padding-left: 1.5rem; color: var(--faint); font: inherit; font-size: .9em; }
+.popmenu button:hover, .popmenu button:focus-visible { background: var(--hover); outline: none; }
+.popmenu svg { color: var(--dim); flex: none; }
+.popmenu kbd { margin-left: auto; padding-left: 1.5rem; color: var(--faint); font: inherit; font-size: .9em; }
+
+/* The two menus beside the plus: plain words with a chevron, gray until they
+   are wanted, like the plus itself. */
+button.picker {
+  display: inline-flex; align-items: center; gap: .4rem; height: 2rem; max-width: 16rem;
+  padding: 0 .55rem; background: transparent; border: 0; border-radius: 8px;
+  color: var(--dim); cursor: pointer; white-space: nowrap;
+}
+button.picker .label { overflow: hidden; text-overflow: ellipsis; }
+button.picker .chev { opacity: .7; flex: none; }
+button.picker svg { flex: none; }
+button.picker:hover:not(:disabled), button.picker[aria-expanded="true"] {
+  background: var(--hover); color: var(--text);
+}
+button.picker:disabled { color: var(--faint); cursor: default; }
+.popmenu.picks { min-width: 17rem; max-height: 22rem; overflow-y: auto; }
+.popmenu .mi-caption { color: var(--faint); font-size: 11px; letter-spacing: .08em; padding: .45rem .65rem .2rem; }
+.popmenu .mi-label { flex: none; }
+.popmenu .mi-hint { color: var(--faint); font-size: .85em; overflow: hidden; text-overflow: ellipsis; }
+.popmenu .mi-check { margin-left: auto; padding-left: .8rem; color: var(--flame); display: inline-flex; min-width: 1.6rem; }
+.popmenu .mi-check svg { color: var(--flame); }
+.popmenu .mi-seat { color: var(--dim); display: inline-flex; width: 14px; justify-content: center; }
+.popmenu .mi-empty, .popmenu .mi-note { color: var(--faint); font-size: .85em; padding: .4rem .65rem; white-space: normal; }
+.popmenu .mi-note { border-top: 1px solid var(--panel-edge); margin-top: .3rem; padding-top: .55rem; max-width: 17rem; }
+
+/* Send is an arrow in the flame; Stop, while something runs, the same box
+   in gray with a square in it. */
+button.send {
+  display: grid; place-items: center; width: 2.2rem; height: 2.2rem; flex: none;
+  background: var(--flame); color: var(--ink); border: 0; border-radius: 9px; cursor: pointer;
+}
+button.send:hover:not(:disabled) { background: var(--flame-lit); }
+button.send:disabled { background: var(--hover); color: var(--faint); cursor: default; }
+button.send.stop { background: var(--hover); color: var(--text); }
+button.send.stop:hover { background: var(--panel-edge); }
 
 /* What is attached, as tiles across the top of the box. */
 .tiles { display: flex; gap: .6rem; overflow-x: auto; padding: .1rem .1rem .25rem; }

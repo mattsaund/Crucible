@@ -11,19 +11,27 @@
 
 namespace crucible {
 
-/// One GGUF sitting in the models directory.
+/// One model in the models directory: a GGUF file, or a folder holding an
+/// MLX model.
 struct ModelFile {
-    std::string           name;   ///< file name, which is what the config stores
+    /// What the config stores: the path inside the models directory, which is
+    /// the file name for one at the top and "publisher/model" for one a level
+    /// or two down, the way LM Studio lays a folder out.
+    std::string           name;
     std::filesystem::path path;   ///< absolute path on disk
     std::uintmax_t        bytes = 0;
+    std::string           format = "gguf";   ///< "gguf" or "mlx"
 
     /// "4.1 GB", for the picker.
     std::string size_label() const;
 };
 
-/// Every *.gguf directly inside `dir`, sorted by name. A missing or unreadable
-/// directory yields an empty list rather than an error: an empty models folder
-/// is a normal first-run state, not a failure.
+/// Every model in `dir`, sorted by name: each *.gguf, and each folder that is
+/// an MLX model (see mlx_server.hpp) -- in `dir` itself and up to two folders
+/// down, which is where LM Studio and the Huggingface cache put them. Hidden
+/// folders are not looked in. A missing or unreadable directory yields an
+/// empty list rather than an error: an empty models folder is a normal
+/// first-run state, not a failure.
 std::vector<ModelFile> scan_models(const std::filesystem::path& dir);
 
 /// Turn a config reference into an absolute path.

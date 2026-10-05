@@ -264,9 +264,11 @@ std::string openai_body(std::string_view model, const ChatRequest& request,
         body["temperature"] = tidy(request.params.temperature);
         body["top_p"]       = tidy(request.params.top_p);
     }
-    if (request.params.max_tokens > 0) {
-        body[quirks.completion_tokens ? "max_completion_tokens" : "max_tokens"] =
-            request.params.max_tokens;
+    const int limit = request.params.max_tokens > 0 ? request.params.max_tokens
+                    : quirks.always_max_tokens       ? kUnboundedReply
+                                                     : 0;
+    if (limit > 0) {
+        body[quirks.completion_tokens ? "max_completion_tokens" : "max_tokens"] = limit;
     }
     return dump(body);
 }
@@ -596,6 +598,12 @@ public:
     Client(Provider provider, std::string model, Flight& flight)
         : provider_(std::move(provider)), model_(std::move(model)), flight_(flight) {}
 
+    /// One whose facts and quirks are known before it is asked anything: a
+    /// server on this machine, which publishes neither.
+    Client(Provider provider, std::string model, Flight& flight, ModelFacts facts, Quirks quirks)
+        : provider_(std::move(provider)), model_(std::move(model)), flight_(flight),
+          facts_(facts), facts_known_(true), quirks_(quirks) {}
+
     ChatResult chat(const ChatRequest& request, const ChatSink& sink) override {
         ChatResult result;
         if (provider_.kind == "anthropic" && provider_.resolved_key().empty()) {
@@ -637,6 +645,12 @@ public:
     /// picture, which adapt() learns from, and the request goes again with
     /// the pictures left out -- the text still says what they were.
     bool sees_images() const override { return !quirks_.no_images; }
+
+    /// Claude's that say so in the Models API. Nobody else is sent one.
+    bool takes_effort() const override {
+        const_cast<Client*>(this)->learn_facts();
+        return provider_.kind == "anthropic" && facts_.effort && !quirks_.no_effort;
+    }
 
 private:
     bool official_anthropic() const {
@@ -884,6 +898,28 @@ ChatModel* Hub::model(const ModelParams& params, std::string& error) {
         found = impl_->clients
                     .emplace(key, std::make_unique<Client>(*provider, params.model,
                                                            impl_->flight))
+                    .first;
+    }
+    return found->second.get();
+}
+
+ChatModel* Hub::local_server(const std::string& base_url, int context_tokens) {
+    const std::string key = "local\n" + base_url;
+    auto found = impl_->clients.find(key);
+    if (found == impl_->clients.end()) {
+        Provider provider;
+        provider.id       = "mlx";
+        provider.name     = "MLX";
+        provider.kind     = "openai";
+        provider.base_url = base_url;
+        ModelFacts facts;
+        facts.context_tokens = context_tokens;
+        Quirks quirks;
+        quirks.no_images         = true;
+        quirks.always_max_tokens = true;
+        found = impl_->clients
+                    .emplace(key, std::make_unique<Client>(provider, "default_model", impl_->flight,
+                                                           facts, quirks))
                     .first;
     }
     return found->second.get();

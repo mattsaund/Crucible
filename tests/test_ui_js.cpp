@@ -434,7 +434,11 @@ TEST(every_view_draws_before_anything_has_been_fetched) {
         const std::string result = drawn(std::string("views.") + view + "()");
         CHECK_EQ(result, "ok");
     }
-    CHECK(page().eval("views.chat()").find("Open Project") != std::string::npos);
+    // No project is no longer a wall: the box is open, because a conversation
+    // with none open gets a scratch folder of its own -- and opening a project
+    // is the right-hand panel's, not the top bar's.
+    CHECK(page().eval("topView()").find("open-project") == std::string::npos);
+    CHECK(page().eval("views.chat()").find("id=\"prompt\"") != std::string::npos);
 }
 
 TEST(every_view_draws_a_session_with_everything_in_it) {
@@ -467,10 +471,21 @@ TEST(every_view_draws_a_session_with_everything_in_it) {
     CHECK_EQ(drawn("(state.open.cook = state.snapshot.cook, views.history())"), "ok");
 }
 
-TEST(the_top_bar_says_where_the_project_is) {
+TEST(the_top_bar_says_which_folder_the_chat_works_in) {
     const std::string top = page().eval("topView()");
+    // The path, but not a button: opening a project is the right-hand panel's.
+    CHECK(top.find("class=\"project-path\"") != std::string::npos);
     CHECK(top.find("~/work/demo") != std::string::npos);
-    CHECK(top.find(">demo<") != std::string::npos);
+    // And opens it in the desktop's file browser; which folder is the window's to say.
+    CHECK(top.find("data-act=\"show-folder\"") != std::string::npos);
+    CHECK(top.find("open-project") == std::string::npos);
+    CHECK(top.find("data-act=\"fold-right\"") != std::string::npos);
+    // A new chat, before its first message makes its folder: where it will go.
+    const std::string fresh = page().eval(
+        "(() => { const was = state.snapshot.project;"
+        " state.snapshot.project = { open: false, scratch_display: '~/Crucible/Scratchpad' };"
+        " const out = topView(); state.snapshot.project = was; return out; })()");
+    CHECK(fresh.find(">~/Crucible/Scratchpad<") != std::string::npos);
     // And that there is a newer version, on the gear.
     CHECK(top.find("9.9.9 is available") != std::string::npos);
 }
@@ -522,7 +537,7 @@ TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
         "  { path: '/p/src', name: 'src', kind: 'folder', label: 'FOLDER', files: 12 },"
         "  { path: '/p/x.bin', name: 'x.bin', kind: 'file', label: 'BIN', error: 'not text' },"
         "  { path: '/p/late.md', name: 'late.md', kind: 'file', label: 'MD', loading: true }];"
-        " state.attachMenu = 'chat';"
+        " state.menu = 'attach:chat';"
         " var out = views.chat(); state.snapshot.cook = cook; return out; })()";
     CHECK_EQ(drawn(with_tiles), "ok");
     const std::string chat = page().eval(with_tiles);
@@ -553,7 +568,7 @@ TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
     CHECK_EQ(page().eval("(state.attached.chat[5].loading = false,"
                          " JSON.stringify(attachmentsFor('chat').slice(0, 2)))"),
              "[{\"path\":\"/p/Resume.docx\"},{\"path\":\"/p/sky.png\",\"image\":{\"mime\":\"image/png\",\"data\":\"AAAA\"}}]");
-    page().eval("(state.attached.chat = [], state.attachMenu = null)");
+    page().eval("(state.attached.chat = [], state.menu = null)");
 
     // The cook keeps its own: what is in Chat's box is not in Cook's.
     CHECK(page().eval("views.cook()").find("class=\"tiles\"") == std::string::npos);
@@ -592,11 +607,13 @@ TEST(the_drop_overlay_says_where_a_drop_goes_or_why_it_cannot) {
         std::string(without_cook) + "(function () { state.view = 'history'; return dropView(dropTarget()); })");
     CHECK(from_history.find("Drop files or folders here") != std::string::npos);
     CHECK(from_history.find("They go in the box on Chat") != std::string::npos);
+    // With no project open a drop is still taken: what it attaches goes with
+    // a prompt, and the prompt goes in the Scratchpad.
     CHECK_EQ(page().eval(std::string(without_cook)
                          + "(function () { var open = state.snapshot.project.open;"
-                           " state.snapshot.project.open = false; var why = dropTarget().why;"
-                           " state.snapshot.project.open = open; return why; })"),
-             "Open a project first");
+                           " state.snapshot.project.open = false; var mode = dropTarget().mode;"
+                           " state.snapshot.project.open = open; return mode; })"),
+             "chat");
 }
 
 TEST(a_drop_the_window_cannot_place_is_copied_in_pieces_and_attached) {
@@ -704,6 +721,123 @@ TEST(the_line_beside_an_expert_says_how_it_was_routed_only_when_unusual) {
               .find(">pinned<") != std::string::npos);
     CHECK(page().eval("turnWho({ route: { expert: 'physics', confidence: 0.4, source: 'fallback' } })")
               .find(">fallback<") != std::string::npos);
+}
+
+TEST(with_no_project_the_box_is_open_and_nothing_is_said_about_it) {
+    const std::string chat = page().eval(
+        "(function () { var cook = state.snapshot.cook, project = state.snapshot.project,"
+        " runtimes = state.runtimes, turns = state.snapshot.turns;"
+        " state.snapshot.cook = null; state.snapshot.project = { open: false }; state.snapshot.turns = [];"
+        " state.runtimes = { loadable: true, runtimes: [{ installed: true }] };"
+        " var out = views.chat();"
+        " state.snapshot.cook = cook; state.snapshot.project = project; state.runtimes = runtimes;"
+        " state.snapshot.turns = turns; return out; })()");
+    CHECK(chat.find("Ask anything") != std::string::npos);
+    CHECK(chat.find("This chat gets a scratch folder") == std::string::npos);
+    CHECK(chat.find("placeholder=\"Ask it something\"") != std::string::npos);
+    CHECK(chat.find("id=\"prompt\" data-draft data-key=\"composer-key\" data-input=\"composer-grow\"") != std::string::npos);
+    CHECK(chat.find("open a project to start") == std::string::npos);
+}
+
+TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
+    const std::string side = page().eval(
+        "(function () { var w = state.recentsWidth, r = state.recents, session = state.snapshot.session;"
+        " state.recentsWidth = 16; state.snapshot.session = '20261005-101500';"
+        " state.recents = { chats: ["
+        "   { id: '20261005-101500', title: 'why <b>orbits</b> decay', when: '1 hour ago', turns: 3,"
+        "     project: '/home/me/orbit', project_name: 'orbit' },"
+        "   { id: '20261004-090000', title: 'draft a note', when: 'yesterday', turns: 1,"
+        "     project: '/home/me/Crucible/Scratchpad', project_name: 'Scratchpad' }],"
+        "   projects: [{ root: '/home/me/orbit', name: 'orbit', display: '~/orbit', current: true },"
+        "              { root: '/home/me/Crucible/Scratchpad', name: 'Scratchpad', display: '~/Crucible/Scratchpad' }] };"
+        " var out = recentsView();"
+        " state.recentsWidth = w; state.recents = r; state.snapshot.session = session; return out; })()");
+    CHECK(side.find("RECENT CHATS") != std::string::npos);
+    CHECK(side.find("New chat") != std::string::npos);
+    CHECK(side.find("Open project") != std::string::npos);
+    CHECK(side.find("class=\"action small\" data-act=\"new-chat\"") != std::string::npos);
+    CHECK(side.find("why &lt;b&gt;orbits&lt;/b&gt; decay") != std::string::npos);
+    CHECK(side.find("data-act=\"recent-chat\" data-id=\"20261004-090000\" data-project=\"/home/me/Crucible/Scratchpad\"") != std::string::npos);
+    CHECK(side.find("class=\"recent here\"") != std::string::npos);
+    CHECK(side.find("data-act=\"recent-project\" data-path=\"/home/me/orbit\"") != std::string::npos);
+    // Shut, it is not drawn at all; the top bar has the way back.
+    CHECK_EQ(page().eval("(function () { var w = state.recentsWidth; state.recentsWidth = 0;"
+                         " var out = recentsView(); state.recentsWidth = w; return out; })()"), "");
+    CHECK(page().eval("topView()").find("data-act=\"fold-right\"") != std::string::npos);
+}
+
+TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
+    const char* const with_models =
+        "(function (what) { var m = state.models; state.models = { directory: '/m', display: '/m',"
+        "  models: [{ name: 'small.gguf', bytes: 1000, format: 'gguf' },"
+        "           { name: 'mlx-community/Qwen3-4B-4bit', bytes: 2000, format: 'mlx' }] %s };"
+        "  var out = what(); state.models = m; return out; })";
+    const auto with = [&](const std::string& extra, const std::string& expression) {
+        char buffer[512];
+        std::snprintf(buffer, sizeof(buffer), with_models, extra.c_str());
+        return page().eval(std::string(buffer) + "(function () { return " + expression + "; })");
+    };
+    const std::string expert = with("", "modelSelect('', '', {})");
+    CHECK(expert.find("mlx-community/Qwen3-4B-4bit  ·  MLX") != std::string::npos);
+    CHECK(expert.find("cannot run here") == std::string::npos);
+    const std::string delegator = with("", "modelSelect('', '', {}, true)");
+    CHECK(delegator.find("Qwen3-4B-4bit") == std::string::npos);
+    CHECK(delegator.find("small.gguf") != std::string::npos);
+    // Where MLX cannot run, it is listed -- so it is plain it was found --
+    // and not offered, with the reason on it.
+    const std::string here = with(", mlx_unavailable: 'MLX does not run on Windows'", "modelSelect('', '', {})");
+    CHECK(here.find("cannot run here") != std::string::npos);
+    CHECK(here.find(" disabled") != std::string::npos);
+    CHECK(here.find("MLX does not run on Windows") != std::string::npos);
+}
+
+TEST(a_load_that_does_not_say_how_far_along_it_is_turns_rather_than_counts) {
+    const std::string spinning = page().eval("ring(-1)");
+    CHECK(spinning.find("animateTransform") != std::string::npos);
+    CHECK(spinning.find("%") == std::string::npos);
+    CHECK(page().eval("ring(0.5)").find(">50%<") != std::string::npos);
+}
+
+TEST(the_box_has_who_answers_how_hard_it_thinks_auto_and_an_arrow) {
+    const char* const open_box =
+        "(function (menu) { var cook = state.snapshot.cook, busy = state.snapshot.busy, m = state.menu;"
+        " state.snapshot.cook = null; state.snapshot.busy = false; state.menu = menu;"
+        " state.snapshot.reasoning_effort = 'high';"
+        " var out = views.chat(); state.snapshot.cook = cook; state.snapshot.busy = busy; state.menu = m;"
+        " return out; })";
+    const std::string shut = page().eval(std::string(open_box) + "(null)");
+    CHECK(shut.find("data-act=\"route-menu\"") != std::string::npos);
+    CHECK(shut.find(">Delegator<") != std::string::npos);
+    CHECK(shut.find(">High effort<") != std::string::npos);
+    CHECK(shut.find(">Auto off<") != std::string::npos);
+    CHECK(shut.find("class=\"send\"") != std::string::npos);
+    // No hover text on Send, Auto or the effort menu: what each is, is on it.
+    CHECK(shut.find("class=\"send\" aria-label=\"Send\" >") != std::string::npos
+          || shut.find("class=\"send\" aria-label=\"Send\"") != std::string::npos);
+    CHECK(shut.find("(Enter)") == std::string::npos);
+    CHECK(shut.find("Edits apply as they are made") == std::string::npos);
+    CHECK(shut.find("How hard a reasoning model thinks") == std::string::npos);
+    CHECK(shut.find(">Send<") == std::string::npos);
+
+    const std::string route = page().eval(std::string(open_box) + "('route:chat')");
+    CHECK(route.find(">Delegator<") != std::string::npos);
+    CHECK(route.find("mi-hint") == std::string::npos);
+    CHECK(route.find("data-act=\"route-pick\"") != std::string::npos);
+    CHECK(route.find("data-value=\"physics\"") != std::string::npos);
+    const std::string effort = page().eval(std::string(open_box) + "('effort:chat')");
+    CHECK(effort.find("REASONING EFFORT") != std::string::npos);
+    CHECK(effort.find("Only works with models that support this setting") != std::string::npos);
+    CHECK(effort.find("mi-hint") == std::string::npos);
+    CHECK(effort.find("data-act=\"effort-pick\"") != std::string::npos);
+    CHECK(effort.find("data-value=\"low\"") != std::string::npos);
+
+    // A seat chosen in the menu is where a prompt goes; one that has lost its
+    // model sends prompts back to the delegator.
+    CHECK_EQ(page().eval("(state.route = 'physics', routeTarget())"), "physics");
+    CHECK_EQ(page().eval("(state.route = 'nobody', routeTarget())"), "");
+    page().eval("(state.route = '')");
+    CHECK(page().eval("(state.snapshot.auto_edits = true, views.chat())").find(">Auto on<") != std::string::npos);
+    page().eval("(state.snapshot.auto_edits = false)");
 }
 
 TEST(what_came_from_a_model_is_never_markup) {

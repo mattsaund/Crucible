@@ -27,9 +27,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #if defined(CRUCIBLE_HAS_EMBEDDED_MARK)
@@ -49,6 +51,7 @@ extern const unsigned int  kMarkSvg_size;
 #include <webview/webview.h>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"
 #include "dialogs.hpp"
 #include "drops.hpp"
@@ -357,6 +360,27 @@ int App::run() {
                                                       {"path", answer.path},
                                                       {"paths", answer.paths}}.dump());
                                 });
+              },
+              nullptr);
+
+    // --- the folder this chat works in, in the platform's file browser ----------
+    //
+    // Which folder is the window's to say, not the page's: the binding takes
+    // no path, so nothing the page is shown can have it open anything else.
+    // A chat with no folder yet -- nothing sent -- opens the one its folder
+    // will be made in, made now if this is the first chat there has been.
+    view.bind("showFolder",
+              [this, &view](const std::string& id, const std::string&, void*) {
+                  std::filesystem::path folder = project_root();
+                  std::error_code       ec;
+                  if (folder.empty()) {
+                      folder = paths::scratchpad_dir();
+                      std::filesystem::create_directories(folder, ec);
+                  }
+                  const std::string error = std::filesystem::is_directory(folder, ec)
+                                                ? dialogs::show_folder(folder.string())
+                                                : folder.string() + " is not there any more";
+                  view.resolve(id, 0, json{{"error", error}}.dump());
               },
               nullptr);
 

@@ -19,7 +19,7 @@ set -euo pipefail
 
 PREFIX="${1:?usage: dmg.sh <installed-prefix> <output.dmg> [version]}"
 OUTPUT="${2:?usage: dmg.sh <installed-prefix> <output.dmg> [version]}"
-VERSION="${3:-0.8.0}"
+VERSION="${3:-0.8.1}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
@@ -56,22 +56,46 @@ PLIST
 # An .icns with the sizes the Finder actually asks for. iconutil is part of
 # macOS; sips alone produces a single-resolution file that looks soft in the
 # dock, which is the one place this icon is going to be seen.
-if [ -f "$ROOT/packaging/icons/crucible.png" ]; then
+#
+# The Mac has an icon of its own, drawn to Apple's grid -- the tile inset from
+# the edge of the canvas, with its shadow -- because the dock sets icons side
+# by side and one drawn edge to edge looks a size too big among them.
+ICON="$ROOT/packaging/icons/crucible-mac.png"
+[ -f "$ICON" ] || ICON="$ROOT/packaging/icons/crucible.png"
+if [ -f "$ICON" ]; then
     set="$WORK/crucible.iconset"
     mkdir -p "$set"
     for size in 16 32 64 128 256 512; do
-        sips -z "$size" "$size" "$ROOT/packaging/icons/crucible.png" \
+        sips -z "$size" "$size" "$ICON" \
              --out "$set/icon_${size}x${size}.png" >/dev/null
-        sips -z "$((size * 2))" "$((size * 2))" "$ROOT/packaging/icons/crucible.png" \
+        sips -z "$((size * 2))" "$((size * 2))" "$ICON" \
              --out "$set/icon_${size}x${size}@2x.png" >/dev/null
     done
     iconutil -c icns "$set" -o "$APP/Contents/Resources/crucible.icns"
 fi
 
-# Unsigned, and honest about it: without an Apple developer certificate the
-# Gatekeeper quarantine is what a downloader meets, so the image carries the
-# instruction for getting past it rather than leaving somebody with a dialog
-# that says the application is damaged.
+# Signed ad hoc, which needs no Apple certificate and is not the same as
+# unsigned. On Apple Silicon every piece of code has to carry a signature, and
+# an application's bundle has to be sealed by one: the binary and the dylibs
+# arrive here with the linker's own signatures, which say nothing about the
+# bundle around them -- and anything that touched a binary after the link
+# (an install step rewriting a library path) left that signature invalid.
+# Downloaded and quarantined, a bundle like that is "damaged" as far as
+# Gatekeeper is concerned, and "damaged" has no Open Anyway. Sealed, it is an
+# application from an unidentified developer, which Privacy & Security will
+# open once you say so.
+#
+# Inside out: each library first, then the bundle, which seals them.
+find "$APP/Contents/lib" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 |
+    while IFS= read -r -d '' library; do
+        codesign --force --sign - --timestamp=none "$library"
+    done
+codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/Crucible"
+codesign --force --sign - --timestamp=none "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+
+# What a downloader meets is still a refusal the first time, so the image
+# carries the way past it.
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/Read me first.txt" <<'NOTE'
 Crucible
@@ -79,9 +103,15 @@ Crucible
   Drag Crucible into Applications, then open it from there.
 
   The first time, macOS will refuse: Crucible is not signed with an Apple
-  developer certificate, and an unsigned application downloaded from the
-  internet is quarantined. Right-click it in Applications and choose Open,
-  and the dialog gains an Open button. That is a one-time answer.
+  developer certificate, so macOS cannot check it. To open it anyway:
+
+    1. Open Crucible once and dismiss the message.
+    2. Open System Settings, then Privacy & Security.
+    3. Near the bottom, beside "Crucible was blocked", choose Open Anyway,
+       and confirm.
+
+  That is a one-time answer. (On macOS 14 and earlier, right-clicking
+  Crucible in Applications and choosing Open does the same.)
 
   Everything Crucible does happens on this machine. It ships no models and
   downloads none by itself.

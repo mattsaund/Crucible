@@ -13,6 +13,7 @@
 #include "dialogs.hpp"
 
 #include <memory>
+#include <string>
 #include <utility>
 
 #include <gtk/gtk.h>
@@ -118,6 +119,23 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
     g_signal_connect(native, "response", G_CALLBACK(on_response),
                      new Pending{std::move(done)});
     gtk_native_dialog_show(GTK_NATIVE_DIALOG(native));
+}
+
+std::string show_folder(const std::string& folder) {
+    // GIO's own way of opening a thing, which is the one the desktop's
+    // "Open" uses: its default file manager, or the portal's in a sandbox.
+    GError* error = nullptr;
+    char*   uri   = g_filename_to_uri(folder.c_str(), nullptr, &error);
+    if (uri != nullptr) {
+        g_app_info_launch_default_for_uri(uri, nullptr, &error);
+        g_free(uri);
+    }
+    if (error == nullptr) {
+        return {};
+    }
+    std::string why = error->message;
+    g_error_free(error);
+    return why;
 }
 
 }  // namespace crucible::gui::dialogs

@@ -61,6 +61,8 @@ struct Quirks {
     bool completion_tokens = false;  ///< wants max_completion_tokens, not max_tokens
     bool no_stream_usage   = false;  ///< rejects stream_options
     bool no_images         = false;  ///< a text-only model: pictures are refused
+    bool always_max_tokens = false;  ///< says a limit even for "until it stops":
+                                     ///< a server whose own default is short
 
     // The Messages shape, through a gateway that is not Anthropic's own.
     bool no_fallbacks     = false;
@@ -86,6 +88,13 @@ public:
     ///
     /// The pointer is good until the next call to `adopt`.
     ChatModel* model(const ModelParams& params, std::string& error);
+
+    /// A model served on this machine by something that speaks the
+    /// chat-completions API at `base_url` -- MLX's server, see
+    /// mlx_server.hpp. Text only, and with the context `context_tokens` it
+    /// was given rather than the 128k assumed of a provider that will not
+    /// say.
+    ChatModel* local_server(const std::string& base_url, int context_tokens);
 
     /// Take the provider list from `config`. What was learned about their
     /// models is kept unless the providers themselves changed.

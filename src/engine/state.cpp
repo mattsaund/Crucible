@@ -342,6 +342,11 @@ void AppState::clear_turns() {
     turns_.clear();
 }
 
+void AppState::set_session_usage(TokenUsage usage) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    session_usage_ = usage;
+}
+
 void AppState::set_busy(bool busy) {
     const std::lock_guard<std::mutex> lock(mutex_);
     busy_ = busy;

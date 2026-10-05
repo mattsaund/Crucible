@@ -103,6 +103,22 @@ public:
     /// the picker.
     virtual std::filesystem::path pending_trust() const { return {}; }
 
+    /// Open the Scratchpad -- paths::scratchpad_dir(), made if it is not
+    /// there -- as the project, for a prompt sent with none open. It is
+    /// Crucible's own folder, so it is not asked about. Returns a reason it
+    /// could not, or empty.
+    virtual std::string open_scratchpad() { return "this interface has no projects"; }
+
+    /// Put the conversation on screen away and start a new one in the same
+    /// project. The one put away is in History, and in the recent chats.
+    virtual std::string new_session() { return "this interface has no sessions"; }
+
+    /// The id the conversation on screen is kept under, or empty.
+    virtual std::string session_id() const { return {}; }
+
+    /// What the conversation on screen is about, once it has been named.
+    virtual std::string session_name() const { return {}; }
+
     /// Answer it. True trusts the folder and opens it; false leaves both
     /// alone. Trust is granted once per directory and remembered.
     virtual void answer_trust(bool) {}

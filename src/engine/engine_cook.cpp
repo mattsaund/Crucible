@@ -199,7 +199,8 @@ tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) 
 }
 
 void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
-                        std::vector<attach::Attachment> attachments) {
+                        std::vector<attach::Attachment> attachments,
+                        std::optional<ExpertId> pinned) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -208,6 +209,7 @@ void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::p
         request.budget_seconds = budget_seconds;
         request.root           = std::move(root);
         request.attachments    = std::move(attachments);
+        request.pinned         = std::move(pinned);
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
@@ -306,7 +308,8 @@ Engine::CookRound Engine::cook_round(ChatModel& model, const ModelParams& params
 // Who is in the seat
 // ---------------------------------------------------------------------------
 
-Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& current) {
+Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& current,
+                                       std::optional<ExpertId> pinned) {
     // Routed like any other prompt, which is the point: the delegator that
     // picks an expert for a question is the same one that picks an expert for
     // the next piece of work, and it does it from the same roster with the same
@@ -314,6 +317,7 @@ Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& 
     Request routing;
     routing.kind   = RequestKind::Prompt;
     routing.prompt = work;
+    routing.pinned = std::move(pinned);
     const RouteDecision decision = resolve(routing);
 
     CookSeat seat;
@@ -360,7 +364,8 @@ Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& 
 
 void Engine::do_cook(const std::string& goal, int budget_seconds,
                      const std::filesystem::path& root,
-                     std::vector<attach::Attachment> attachments) {
+                     std::vector<attach::Attachment> attachments,
+                     std::optional<ExpertId> pinned) {
     cooking_.store(true, std::memory_order_relaxed);
     cook_stop_.store(false, std::memory_order_relaxed);
     cancel_.store(false, std::memory_order_relaxed);
@@ -392,7 +397,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
 
     // Who is in the seat, which is no longer fixed for the whole cook: see
     // take_the_seat and the HANDOFF verb.
-    CookSeat seat = take_the_seat(goal, CookSeat{});
+    CookSeat seat = take_the_seat(goal, CookSeat{}, std::move(pinned));
     if (seat.model == nullptr) {
         cook_.state      = CookState::Failed;
         cook_.outcome    = seat.error.empty()

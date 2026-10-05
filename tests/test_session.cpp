@@ -396,6 +396,98 @@ TEST(sessions_are_listed_newest_first_with_the_first_prompt_as_the_title) {
     CHECK_EQ(listed[0].turns, 1);
 }
 
+TEST(a_conversation_named_once_keeps_its_name_and_is_listed_by_it) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    SessionStore store(Project::current());
+    std::string error;
+
+    store.adopt("20261005-090000");
+    store.set_name("Math homework");
+    CHECK(store.save({finished_turn("can you check problem 3", "...", 5)}, TokenUsage{}, error));
+    // A later save keeps it, and so does picking the conversation up again.
+    CHECK(store.save({finished_turn("can you check problem 3", "...", 5),
+                      finished_turn("and problem 4", "...", 5)}, TokenUsage{}, error));
+    store.begin_new_session();
+    CHECK(store.name().empty());
+    store.adopt("20261005-090000");
+    CHECK_EQ(store.name(), std::string("Math homework"));
+
+    // One that was put away before its name came back is named in its file.
+    store.adopt("20261005-100000");
+    CHECK(store.save({finished_turn("plan a trip", "...", 5)}, TokenUsage{}, error));
+    CHECK(store.rename("20261005-100000", "Trip to Lisbon", error));
+
+    const std::vector<SessionSummary> listed = store.list();
+    CHECK_EQ(listed.size(), std::size_t{2});
+    CHECK_EQ(listed[0].name, std::string("Trip to Lisbon"));
+    CHECK_EQ(listed[1].name, std::string("Math homework"));
+    CHECK_EQ(listed[1].title, std::string("can you check problem 3"));
+}
+
+TEST(a_name_is_what_a_model_said_with_the_decoration_taken_off) {
+    CHECK_EQ(session_name_from("\"Math homework.\""), std::string("Math homework"));
+    CHECK_EQ(session_name_from("Title: fixing a Python import\n\nBecause..."),
+             std::string("Fixing a Python import"));
+    CHECK_EQ(session_name_from("\n**Trip to Lisbon**\n"), std::string("Trip to Lisbon"));
+    // A sentence is not a title, and nothing is not one either.
+    CHECK(session_name_from("This conversation is about the user asking how to do their math").empty());
+    CHECK(session_name_from("").empty());
+    // With no model to ask: the opening words of the question.
+    CHECK_EQ(fallback_session_name("Question: can you help with my math homework? It is due\nAnswer: Sure"),
+             std::string("Can you help with my"));
+    CHECK_EQ(fallback_session_name("Question: test\nAnswer: ok"), std::string("Test"));
+    CHECK(session_naming_prompt("Question: x").find("Math homework") != std::string::npos);
+}
+
+TEST(recent_chats_come_from_every_project_newest_first) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path() / "data");
+    std::filesystem::create_directories(temp.path() / "alpha");
+    std::filesystem::create_directories(temp.path() / "beta");
+    std::filesystem::create_directories(temp.path() / "gone");
+    std::string error;
+    {
+        SessionStore alpha(Project::at(temp.path() / "alpha"));
+        alpha.adopt("20261001-080000");
+        CHECK(alpha.save({finished_turn("alpha old", "...", 1)}, TokenUsage{}, error));
+        alpha.adopt("20261003-080000");
+        alpha.set_name("Alpha new");
+        CHECK(alpha.save({finished_turn("alpha new", "...", 1)}, TokenUsage{}, error));
+        SessionStore beta(Project::at(temp.path() / "beta"));
+        beta.adopt("20261002-080000");
+        CHECK(beta.save({finished_turn("beta", "...", 1)}, TokenUsage{}, error));
+        SessionStore gone(Project::at(temp.path() / "gone"));
+        gone.adopt("20261004-080000");
+        CHECK(gone.save({finished_turn("gone", "...", 1)}, TokenUsage{}, error));
+    }
+    // A folder that is no longer there could not be opened again.
+    std::filesystem::remove_all(temp.path() / "gone");
+
+    const std::vector<SessionSummary> chats = recent_chats(10);
+    CHECK_EQ(chats.size(), std::size_t{3});
+    if (chats.size() == 3) {
+        CHECK_EQ(chats[0].name, std::string("Alpha new"));
+        CHECK_EQ(chats[1].title, std::string("beta"));
+        CHECK_EQ(chats[2].title, std::string("alpha old"));
+        CHECK(chats[1].project == Project::at(temp.path() / "beta").root);
+    }
+    CHECK_EQ(recent_chats(1).size(), std::size_t{1});
+}
+
+TEST(a_chats_scratch_folder_is_told_apart_from_a_project) {
+    TempDir temp;
+    const char* home = std::getenv("HOME");
+    const std::string previous = home != nullptr ? home : "";
+    set_env("HOME", temp.path().string());
+    CHECK(is_scratch(temp.path() / "Crucible" / "Scratchpad" / "20261005-120000"));
+    CHECK(is_scratch(temp.path() / "Crucible" / "Scratchpad"));
+    CHECK(!is_scratch(temp.path() / "Crucible" / "Scratchpadding"));
+    CHECK(!is_scratch(temp.path() / "code" / "orbit"));
+    CHECK(!is_scratch({}));
+    set_env("HOME", previous);
+}
+
 TEST(a_multi_line_prompt_still_makes_a_one_line_title) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());

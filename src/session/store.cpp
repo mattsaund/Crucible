@@ -4,9 +4,11 @@
 #include "crucible/session/store.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <functional>
 #include <system_error>
 
 #include "crucible/util/platform.hpp"
@@ -256,6 +258,96 @@ std::vector<Project> recent_projects(std::size_t limit) {
     return found;
 }
 
+/// What the delegator is asked to name a conversation by. Examples in the
+/// prompt rather than rules alone: a small model told "a short title" writes
+/// a sentence, and told "two to four words" writes four words of the question.
+std::string session_naming_prompt(const std::string& excerpt) {
+    return "Here is the start of a conversation:\n\n" + excerpt
+         + "\n\nGive it a title of two to four words saying what it is about, like a "
+           "heading -- for example: Math homework, Fixing a Python import, Trip to Lisbon, "
+           "Orbital speed. Reply with the title and nothing else.";
+}
+
+/// A title out of what a model said: the first line, without the quotes,
+/// the "Title:", the bold or the full stop a model adds, and short.
+std::string session_name_from(const std::string& reply) {
+    std::string line;
+    std::istringstream lines(reply);
+    while (std::getline(lines, line)) {
+        line = format::trim(line);
+        if (!line.empty()) {
+            break;
+        }
+    }
+    for (const char* lead : {"Title:", "title:", "TITLE:"}) {
+        if (line.rfind(lead, 0) == 0) {
+            line = format::trim(line.substr(std::char_traits<char>::length(lead)));
+        }
+    }
+    std::string clean;
+    for (const char c : line) {
+        if (c != '"' && c != '*' && c != '#' && c != '`') {
+            clean += c;
+        }
+    }
+    clean = format::trim(clean);
+    while (!clean.empty() && (clean.back() == '.' || clean.back() == '!' || clean.back() == ':')) {
+        clean.pop_back();
+    }
+    if (!clean.empty() && clean.front() == '\'' && clean.back() == '\'') {
+        clean = clean.substr(1, clean.size() - 2);
+    }
+    // Six words at most: a title, not a sentence. A model that wrote one gave
+    // no title, and the fallback is better than its first six words.
+    std::istringstream words(clean);
+    std::string word;
+    int count = 0;
+    while (words >> word) {
+        ++count;
+    }
+    if (count == 0 || count > 6 || clean.size() > 48) {
+        return {};
+    }
+    if (std::islower(static_cast<unsigned char>(clean.front())) != 0) {
+        clean.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(clean.front())));
+    }
+    return clean;
+}
+
+/// The opening words of the first prompt, for when there is no model to
+/// ask: at most five, up to the first full stop or question mark.
+std::string fallback_session_name(const std::string& excerpt) {
+    std::string first = excerpt.substr(0, excerpt.find('\n'));
+    if (first.rfind("Question: ", 0) == 0) {
+        first = first.substr(10);   // how name_sessions hands the prompt over
+    }
+    const std::size_t end = first.find_first_of(".?!");
+    if (end != std::string::npos && end > 0) {
+        first = first.substr(0, end);
+    }
+    std::istringstream words(first);
+    std::string word;
+    std::string out;
+    for (int n = 0; n < 5 && words >> word; ++n) {
+        out += (out.empty() ? "" : " ") + word;
+    }
+    if (!out.empty() && std::islower(static_cast<unsigned char>(out.front())) != 0) {
+        out.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(out.front())));
+    }
+    return out;
+}
+
+bool is_scratch(const std::filesystem::path& root) {
+    if (root.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    const std::filesystem::path scratch = std::filesystem::weakly_canonical(paths::scratchpad_dir(), ec);
+    const std::filesystem::path here    = std::filesystem::weakly_canonical(root, ec);
+    const auto mismatch = std::mismatch(scratch.begin(), scratch.end(), here.begin(), here.end());
+    return mismatch.first == scratch.end();
+}
+
 void remember_project(const std::filesystem::path& root) {
     const Project project = Project::at(root);
 
@@ -311,6 +403,7 @@ SessionStore::SessionStore(Project project) : project_(std::move(project)) {
 void SessionStore::begin_new_session() {
     session_id_ = timestamp_id();
     counted_    = TokenUsage{};
+    name_.clear();
 }
 
 void SessionStore::adopt(std::string id) {
@@ -324,6 +417,13 @@ void SessionStore::adopt(std::string id) {
         counted_ = usage;
     } else {
         counted_ = TokenUsage{};
+    }
+    // And its name, so the next save keeps it.
+    name_.clear();
+    std::ifstream in(session_file(session_id_));
+    const json document = json::parse(in, nullptr, /*allow_exceptions=*/false);
+    if (document.is_object()) {
+        name_ = document.value("name", "");
     }
 }
 
@@ -339,8 +439,9 @@ bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
                         std::string& error) {
     json stored_turns = json::array();
     for (const Turn& turn : turns) {
-        // A reply still arriving is not resumable, and a failed turn is noise.
-        if (turn.streaming || turn.reply.empty()) {
+        // A reply still arriving is not resumable, and a failed turn is noise
+        // -- its "reply" is the error that stopped it.
+        if (turn.streaming || turn.failed || turn.reply.empty()) {
             continue;
         }
         stored_turns.push_back(turn_to_json(turn));
@@ -356,7 +457,7 @@ bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
         return false;
     }
 
-    const json document{
+    json document{
         {"version", 1},
         {"id", session_id_},
         {"project", project_.root.string()},
@@ -364,6 +465,9 @@ bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
         {"usage", usage_to_json(usage)},
         {"turns", stored_turns},
     };
+    if (!name_.empty()) {
+        document["name"] = name_;
+    }
 
     // Write beside the target and rename, so an interrupted save cannot leave
     // a truncated session behind in place of a good one.
@@ -422,6 +526,8 @@ std::vector<SessionSummary> SessionStore::list(std::size_t limit) const {
         summary.started_at = document.value("started_at", display_time(summary.id));
         summary.usage      = usage_from_json(document.value("usage", json::object()));
         summary.file       = entry.path();
+        summary.name       = document.value("name", "");
+        summary.project    = document.value("project", project_.root.string());
 
         if (const auto turns = document.find("turns"); turns != document.end() && turns->is_array()) {
             summary.turns = static_cast<int>(turns->size());
@@ -476,6 +582,99 @@ bool SessionStore::load(const std::string& id, std::vector<Turn>& turns, TokenUs
     }
     usage = usage_from_json(document.value("usage", json::object()));
     return true;
+}
+
+bool SessionStore::rename(const std::string& id, const std::string& name, std::string& error) const {
+    const std::filesystem::path file = session_file(id);
+    json document;
+    {
+        std::ifstream in(file);
+        if (!in) {
+            error = "no session " + id + " for this project";
+            return false;
+        }
+        document = json::parse(in, nullptr, /*allow_exceptions=*/false);
+    }
+    if (!document.is_object()) {
+        error = "session " + id + " is not readable";
+        return false;
+    }
+    document["name"] = name;
+    const std::filesystem::path temp = file.string() + ".tmp";
+    {
+        std::ofstream out(temp, std::ios::trunc);
+        if (!out) {
+            error = "could not write " + temp.string();
+            return false;
+        }
+        out << document.dump(1, '\t') << '\n';
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp, file, ec);
+    if (ec) {
+        error = "could not replace " + file.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+std::vector<SessionSummary> recent_chats(std::size_t limit) {
+    std::vector<SessionSummary> chats;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(paths::projects_dir(), ec), end; !ec && it != end;
+         it.increment(ec)) {
+        const std::filesystem::path sessions = it->path() / "sessions";
+        std::error_code each;
+        if (!std::filesystem::is_directory(sessions, each)) {
+            continue;
+        }
+        // The newest few by name -- ids are timestamps -- and only those read.
+        std::vector<std::filesystem::path> files;
+        for (std::filesystem::directory_iterator f(sessions, each), stop; !each && f != stop;
+             f.increment(each)) {
+            if (f->path().extension() == ".json") {
+                files.push_back(f->path());
+            }
+        }
+        std::sort(files.begin(), files.end(), std::greater<>());
+        if (files.size() > limit) {
+            files.resize(limit);
+        }
+        for (const std::filesystem::path& file : files) {
+            std::ifstream in(file);
+            const json document = json::parse(in, nullptr, /*allow_exceptions=*/false);
+            if (!document.is_object()) {
+                continue;
+            }
+            SessionSummary summary;
+            summary.id      = document.value("id", file.stem().string());
+            summary.name    = document.value("name", "");
+            summary.project = document.value("project", "");
+            summary.file    = file;
+            std::error_code there;
+            if (summary.project.empty() || !std::filesystem::is_directory(summary.project, there)) {
+                continue;
+            }
+            if (const auto turns = document.find("turns"); turns != document.end() && turns->is_array()) {
+                summary.turns = static_cast<int>(turns->size());
+                if (!turns->empty()) {
+                    summary.title = turns->front().value("prompt", "");
+                }
+            }
+            std::replace(summary.title.begin(), summary.title.end(), '\n', ' ');
+            summary.title = format::trim(summary.title);
+            if (summary.title.size() > 72) {
+                summary.title = summary.title.substr(0, 69) + "...";
+            }
+            chats.push_back(std::move(summary));
+        }
+    }
+    std::sort(chats.begin(), chats.end(),
+              [](const SessionSummary& a, const SessionSummary& b) { return a.id > b.id; });
+    if (chats.size() > limit) {
+        chats.resize(limit);
+    }
+    return chats;
 }
 
 bool SessionStore::remove(const std::string& id, std::string& error) const {

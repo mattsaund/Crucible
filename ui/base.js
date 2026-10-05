@@ -39,7 +39,7 @@ const state = {
   error: '',
 
   // Fetched, and null until it has been.
-  config: null, models: null, providers: null, runtimes: null, devices: null,
+  config: null, models: null, providers: null, runtimes: null, devices: null, recents: null,
   trainer: null, flavors: null, about: null, history: null, recipes: null,
 
   // Long jobs, as last reported.
@@ -56,7 +56,15 @@ const state = {
   // belongs in browser storage rather than in the config file -- it is a
   // window shape, not a setting about how Crucible works.
   sidebar: 15,
+
+  // The right-hand panel's width in rem, 0 when it is shut. The same rules
+  // as the side menu's, the other way round.
+  recentsWidth: 16,
   composerRows: 1,
+
+  // Where prompts go: '' for the delegator, or an expert's id. Kept in the
+  // window's own storage, like the side menu's width.
+  route: '',
 };
 
 const SIDEBAR_MIN = 13;     // rem; the narrowest it will rest at
@@ -65,15 +73,29 @@ const SIDEBAR_SHUT = 8;     // rem; drag below this and it closes
 /// Browser storage, for the things that are about this window rather than
 /// about Crucible. It can be missing or refuse -- a private window, blocked
 /// site data -- and the page has to draw correctly without it.
+///
+/// The webview's storage does not outlive the window, so what is set here is
+/// written through to a file of Crucible's own (the `prefs` methods) a moment
+/// after the last change, and read back from it when the window starts.
+/// Browser storage is kept as well, for a page run somewhere without the file.
 const remember = {
+  saved: {},
+  timers: {},
   get(key, fallback) {
+    if (Object.prototype.hasOwnProperty.call(this.saved, key)) return this.saved[key];
     try {
       const raw = localStorage.getItem('crucible.' + key);
       return raw === null ? fallback : JSON.parse(raw);
     } catch (e) { return fallback; }
   },
   set(key, value) {
+    this.saved[key] = value;
     try { localStorage.setItem('crucible.' + key, JSON.stringify(value)); } catch (e) { /* fine */ }
+    // Once dragging stops, not on every pixel of it.
+    clearTimeout(this.timers[key]);
+    this.timers[key] = setTimeout(() => {
+      call('prefs.set', { key, value }).catch(() => { /* kept in this window, at least */ });
+    }, 400);
   },
 };
 

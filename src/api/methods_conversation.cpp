@@ -9,6 +9,8 @@
 #include "crucible/tools/attachments.hpp"
 #include "crucible/util/format.hpp"
 
+#include <algorithm>
+
 namespace crucible::api {
 namespace {
 
@@ -78,6 +80,14 @@ Reply submit(const json& params, Host& host) {
     }
     if (prompt.empty() && attachments.empty()) {
         return bad("submit needs a prompt");
+    }
+    // No project open is no reason not to answer: the conversation goes in
+    // the Scratchpad, which is somewhere for it to be kept and for anything
+    // the expert makes to land.
+    if (host.project_root().empty()) {
+        if (const std::string refused = host.open_scratchpad(); !refused.empty()) {
+            return bad(refused);
+        }
     }
     // An expert named here skips routing, which is what `/physics ...` does.
     // An empty one is not an error: it is the normal case, and it means "let
@@ -215,9 +225,13 @@ Reply cook_start(const json& params, Host& host) {
     if (goal.empty()) {
         return bad("cook.start needs a goal");
     }
-    // A cook reads and writes files, so it needs somewhere it is allowed to.
-    // Refused here rather than in each interface, because "which folder has
-    // been trusted" is the session's answer and not theirs.
+    // A cook reads and writes files, so it needs somewhere it is allowed to:
+    // the project, or the Scratchpad when none is open.
+    if (host.project_root().empty()) {
+        if (const std::string refused = host.open_scratchpad(); !refused.empty()) {
+            return bad(refused);
+        }
+    }
     const std::filesystem::path root = host.project_root();
     if (root.empty()) {
         return bad("no project is open, and a cook works on a project");
@@ -227,7 +241,11 @@ Reply cook_start(const json& params, Host& host) {
     if (!read_attachments(params, attachments, error)) {
         return bad(error);
     }
-    host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments));
+    // An expert named here starts the cook, as on submit; empty lets the
+    // delegator choose.
+    const auto expert = params.value("expert", std::string{});
+    host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments),
+                              expert.empty() ? std::nullopt : std::optional<ExpertId>(expert));
     return good();
 }
 
@@ -261,7 +279,7 @@ Reply history(const json&, const Scene& scene) {
 
     json sessions = json::array();
     for (const SessionSummary& one : SessionStore(project).list()) {
-        sessions.push_back(json{{"id", one.id}, {"title", one.title},
+        sessions.push_back(json{{"id", one.id}, {"title", one.name.empty() ? one.title : one.name},
                                 {"when", one.when()}, {"turns", one.turns}});
     }
     json cooks = json::array();
@@ -304,13 +322,66 @@ Reply history_cook(const json& params, const Scene& scene) {
                      {"steps", std::move(steps)}});
 }
 
+/// Open a stored conversation -- in another project, when `project` names
+/// one: that project is opened first, which is what makes the conversation's
+/// files and history the ones the expert sees.
 Reply history_open(const json& params, Host& host) {
     const auto what = params.value("id", std::string{});
     if (what.empty()) {
         return bad("history.open needs an id");
     }
+    const auto where = params.value("project", std::string{});
+    if (!where.empty() && Project::at(where).root != Project::at(host.project_root()).root) {
+        if (const std::string error = host.open_project(where); !error.empty()) {
+            return bad(error);
+        }
+        if (host.project_root().empty() || Project::at(host.project_root()).root != Project::at(where).root) {
+            // Waiting on the folder question, which is on screen now.
+            return bad("trust " + Project::at(where).name + " first, then open the conversation again");
+        }
+    }
     const std::string error = host.open_session(what);
     return error.empty() ? good() : bad(error);
+}
+
+Reply session_new(const json&, Host& host) {
+    const std::string error = host.new_session();
+    return error.empty() ? good() : bad(error);
+}
+
+/// The right-hand panel: the conversations had lately, across every project
+/// and every chat's scratch folder, and the projects -- the folders somebody
+/// opened, not the scratch ones. Newest first, and a lookup: it reads files.
+Reply recents(const json& params, const Scene& scene) {
+    const std::size_t want = std::clamp<std::size_t>(params.value("chats", std::size_t{24}), 1, 100);
+    const std::filesystem::path current =
+        scene.project.empty() ? std::filesystem::path() : Project::at(scene.project).root;
+
+    json listed = json::array();
+    for (const Project& project : recent_projects(12)) {
+        if (is_scratch(project.root)) {
+            continue;
+        }
+        listed.push_back(json{{"root", project.root.string()},
+                              {"name", project.name},
+                              {"display", format::short_path(project.root)},
+                              {"current", project.root == current}});
+    }
+
+    json chats = json::array();
+    for (const SessionSummary& chat : recent_chats(want)) {
+        const bool scratch = is_scratch(chat.project);
+        chats.push_back(json{{"id", chat.id},
+                             {"title", chat.name.empty() ? chat.title : chat.name},
+                             {"named", !chat.name.empty()},
+                             {"when", chat.when()},
+                             {"turns", chat.turns},
+                             {"project", chat.project.string()},
+                             {"project_name", scratch ? std::string("Scratchpad")
+                                                      : chat.project.filename().string()},
+                             {"scratch", scratch}});
+    }
+    return good(json{{"chats", std::move(chats)}, {"projects", std::move(listed)}});
 }
 
 }  // namespace
@@ -332,6 +403,8 @@ void conversation_methods(std::vector<Method>& table) {
     table.push_back({"history",      history, nullptr});
     table.push_back({"history.cook", history_cook, nullptr});
     table.push_back({"history.open", nullptr, history_open});
+    table.push_back({"session.new",  nullptr, session_new});
+    table.push_back({"recents",      recents, nullptr});
 }
 
 }  // namespace crucible::api

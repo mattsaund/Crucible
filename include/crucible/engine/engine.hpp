@@ -20,6 +20,7 @@
 
 #include "crucible/config/config.hpp"
 #include "crucible/cook/journal.hpp"
+#include "crucible/llm/mlx_server.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/llm/remote_model.hpp"
 #include "crucible/routing/router.hpp"
@@ -108,8 +109,13 @@ public:
     /// Queued like any other request, and once it starts it holds the worker
     /// for its whole duration. Prompts submitted while it runs wait behind it,
     /// which is the truthful behavior: there is one engine and it is busy.
+    ///
+    /// `pinned` starts it with that expert rather than whoever the goal routes
+    /// to. A HANDOFF still goes through the delegator: the pin is where the
+    /// work begins, not who must do all of it.
     void start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
-                    std::vector<attach::Attachment> attachments = {});
+                    std::vector<attach::Attachment> attachments = {},
+                    std::optional<ExpertId> pinned = std::nullopt);
 
     /// Ask the running cook to wrap up.
     ///
@@ -155,6 +161,22 @@ public:
     /// this when it is woken, the same way it drains a finished runtime build.
     std::vector<std::pair<ExpertId, std::vector<std::string>>> take_written_examples();
 
+    /// Name a conversation: what it is about, in two to four words -- "Math
+    /// homework" -- written by the delegator from `excerpt`, its first
+    /// exchange. Queued like write_examples, so it runs between prompts and
+    /// never competes with one; with no delegator, the first words of the
+    /// first prompt stand in. The name comes back through take_session_names.
+    void name_session(std::string session, std::filesystem::path root, std::string excerpt);
+
+    struct SessionName {
+        std::string           session;
+        std::filesystem::path root;   ///< the project it belongs to
+        std::string           name;
+    };
+
+    /// Names written since this was last called, and clears them.
+    std::vector<SessionName> take_session_names();
+
     /// Replace the running configuration, as the settings screen does.
     ///
     /// Applied on the worker thread between requests, never mid-generation.
@@ -172,7 +194,7 @@ private:
     /// expert releases on the same queue as prompts, so they are applied in
     /// order and never race with a generation in flight.
     enum class RequestKind { Prompt, ReleaseExpert, ReleaseAll, ReloadModels,
-                             ApplyConfig, WriteExamples, Cook };
+                             ApplyConfig, WriteExamples, Cook, NameSession };
 
     struct Request {
         RequestKind             kind = RequestKind::Prompt;
@@ -187,6 +209,9 @@ private:
 
         // for Prompt and Cook
         std::vector<attach::Attachment> attachments;
+
+        // for NameSession, with `root` and `prompt` (the excerpt)
+        std::string session;
     };
 
     void run();
@@ -219,11 +244,13 @@ private:
     void release_router();
     void do_apply_config(Config config);
     void do_write_examples(const ExpertId& id);
+    void do_name_session(const Request& request);
 
     // --- the cook loop, in engine_cook.cpp --------------------------------
     void do_cook(const std::string& goal, int budget_seconds,
                  const std::filesystem::path& root,
-                 std::vector<attach::Attachment> attachments);
+                 std::vector<attach::Attachment> attachments,
+                 std::optional<ExpertId> pinned);
 
     /// Attachments as a message's text and pictures, sized to `model`:
     /// `share` of its context, less what `messages` already take.
@@ -280,7 +307,8 @@ private:
     /// Returns the seat that is actually loaded. On failure `model` is null and
     /// `error` says why. A no-op when the delegator picks whoever is already in
     /// the chair, which is the common case and must not cost a reload.
-    CookSeat take_the_seat(const std::string& work, const CookSeat& current);
+    CookSeat take_the_seat(const std::string& work, const CookSeat& current,
+                           std::optional<ExpertId> pinned = std::nullopt);
 
     /// Block until the user answers the question a cook is waiting on, or the
     /// cook is stopped. Returns the answer, or nothing if it was stopped.
@@ -316,6 +344,16 @@ private:
     /// The worker's, except `interrupt`, which is what Stop calls.
     remote::Hub                hub_;
 
+    /// An MLX model's server, when the seat with the turn is one, and which
+    /// seat that is. One model in memory at a time holds for these too: a
+    /// GGUF taking the seat stops it, and it stops whatever GGUF was here.
+    /// See mlx_server.hpp.
+    mlx::Server                mlx_;
+    std::optional<ExpertId>    mlx_seat_;
+
+    /// Stop the MLX server, and put its seat back to dormant.
+    void stop_mlx();
+
     /// The delegator's measured bias, kept across reloads of the same file so
     /// an on-demand delegator does not re-measure it every prompt. See
     /// ModelRouter::bias.
@@ -337,6 +375,7 @@ private:
     /// `mutex_`, which the worker holds while it waits for work.
     std::mutex written_mutex_;
     std::vector<std::pair<ExpertId, std::vector<std::string>>> written_examples_;
+    std::vector<SessionName> session_names_;   ///< under written_mutex_ too
 
     /// The directory this session is about, and the one thing that decides
     /// whether an expert may touch the disk.

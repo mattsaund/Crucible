@@ -744,6 +744,21 @@ std::string workshop_instructions(const WorkshopSettings& settings,
     text +=
         "\nThe colon is required. One call per reply, on its own line, and nothing "
         "after it. Paths are relative to the project root and cannot leave it.\n";
+    // Said when it is so, because a model told it may look at a project looks
+    // -- and a new chat's folder has nothing in it. Listing it is a round
+    // spent learning nothing, and an empty listing drawn in the transcript
+    // reads as the interface showing a blank box.
+    {
+        std::error_code ec;
+        if (std::filesystem::is_directory(settings.root, ec)
+            && std::filesystem::directory_iterator(settings.root, ec)
+                   == std::filesystem::directory_iterator()
+            && !ec) {
+            text += "\nThe project folder is empty: there is nothing in it to list, read or "
+                    "run yet. Answer from what you know, and make a file only when what "
+                    "was asked for is something to be made.\n";
+        }
+    }
     if (audience == ToolAudience::Chat) {
         // Said plainly, because the alternative failure is the visible one: an
         // expert that has finished the work and then writes "DONE: fixed it",

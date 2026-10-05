@@ -145,6 +145,12 @@ public:
     /// projector file Crucible does not load -- and true for a provider's
     /// until it says otherwise.
     virtual bool sees_images() const { return false; }
+
+    /// Whether this model has a reasoning effort to set. Where it does not,
+    /// the setting is left out of the request altogether rather than sent to
+    /// be ignored -- or, for a model on this machine, written into its system
+    /// prompt as a line it would read as an instruction about something else.
+    virtual bool takes_effort() const { return false; }
 };
 
 }  // namespace crucible

@@ -9,6 +9,9 @@ const ICONS = {
   fold: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
     <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
     <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.2"/></svg>`,
+  foldRight: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+    <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" stroke-width="1.2"/></svg>`,
   gear: `<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor"
     stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/>
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
@@ -29,10 +32,23 @@ const ICONS = {
 /// attribute, about the circle's own center. It used to be a CSS rotation, and
 /// WebKit placed that rotation's origin somewhere else: the arc swung off the
 /// circle, most of it was clipped, and what was left poked out over the name.
+///
+/// A load that does not say how far along it is -- MLX starting a model --
+/// comes as a negative figure, and is drawn as a turning arc with no number:
+/// a percentage that is not measuring anything is worse than none. Turned by
+/// SVG's own animation, about the center, for the reason above.
 function ring(progress) {
-  const fraction = Math.max(0, Math.min(1, progress || 0));
   const radius = 13;
   const around = 2 * Math.PI * radius;
+  if (progress < 0) {
+    return `<svg class="ring" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="loading">
+      <circle class="ring-track" cx="16" cy="16" r="${radius}"/>
+      <circle class="ring-fill" cx="16" cy="16" r="${radius}"
+              stroke-dasharray="${(around / 4).toFixed(2)} ${around.toFixed(2)}">
+        <animateTransform attributeName="transform" type="rotate" from="0 16 16" to="360 16 16"
+                          dur="1.1s" repeatCount="indefinite"/></circle></svg>`;
+  }
+  const fraction = Math.max(0, Math.min(1, progress || 0));
   return `<svg class="ring" viewBox="0 0 32 32" width="32" height="32" role="img"
       aria-label="${Math.round(fraction * 100)} percent loaded">
     <circle class="ring-track" cx="16" cy="16" r="${radius}"/>
@@ -73,9 +89,19 @@ function modelSelect(selected, provider, extra, localOnly) {
   const known = new Set(files.flatMap((m) => [m.name, m.path]));
 
   let html = option('', '(none)');
-  if (files.length) {
-    html += `<optgroup label="Models folder">${files.map((m) =>
-      option(m.name, `${m.name}  ·  ${bytes(m.bytes)}`)).join('')}</optgroup>`;
+  // The delegator scores every seat with llama.cpp, so it has to be a GGUF;
+  // an MLX model can answer, not route. One this machine cannot run is
+  // listed, so it is plain that it was found, and not offered.
+  const offered = localOnly ? files.filter((m) => m.format !== 'mlx') : files;
+  const mlxWhy = state.models ? state.models.mlx_unavailable || '' : '';
+  if (offered.length) {
+    html += `<optgroup label="Models folder">${offered.map((m) => {
+      if (m.format !== 'mlx') return option(m.name, `${m.name}  ·  ${bytes(m.bytes)}`);
+      const usable = !mlxWhy || m.name === chosen;
+      return `<option value="${escape(m.name)}"${m.name === chosen ? ' selected' : ''}${usable ? '' : ' disabled'}
+          title="${escape(mlxWhy || 'An MLX model, answered by MLX on this machine')}">${
+          escape(`${m.name}  ·  MLX  ·  ${bytes(m.bytes)}${usable ? '' : '  (cannot run here)'}`)}</option>`;
+    }).join('')}</optgroup>`;
   }
   // `localOnly` is for the delegator, which has to be a file here.
   for (const p of (state.providers && !localOnly ? state.providers.providers : [])) {
@@ -112,30 +138,42 @@ const TABS = [
 
 function topView() {
   const s = state.snapshot;
-  const project = s.project || { open: false };
   const tabs = TABS.map(([view, label, tip]) =>
     `<button data-act="view" data-view="${view}" title="${tip}"
              aria-current="${state.view === view}">${label}</button>`).join('');
   const update = s.update
     ? `<span class="pip" title="Crucible ${escape(s.update.latest)} is available"></span>` : '';
-  // The path sits beside the button that changes it, and it is text: it can
-  // be selected and copied, which a tooltip cannot.
+  // Opening a project, or another chat, is the right-hand panel's; the bar
+  // only says which folder this chat works in -- the project's, or the
+  // scratch folder of a chat with none, or before its first message, where
+  // that folder will go. Cut from the left when it is long, because the end
+  // is the part that differs between two of them.
+  const project = s.project || {};
+  const folder = project.open ? project.display || project.root : project.scratch_display;
   return `
     <button class="icon" data-act="fold" title="Show or hide the side menu"
             aria-label="Show or hide the side menu">${ICONS.fold}</button>
     <img class="flame" src="${escape(state.mark || '')}" alt="">
     <span class="mark">CRUCIBLE</span>
-    <button class="project${project.open ? '' : ' none'}" data-act="open-project"
-            title="${project.open ? 'Open another project' : 'Choose a folder to work in'}">${
-      project.open ? escape(project.name) : 'Open Project'}</button>
-    <span class="project-path" title="${escape(project.root || '')}"><bdi>${
-      escape(project.display || '')}</bdi></span>
+    ${folder ? `<button type="button" class="project-path" data-act="show-folder"
+        title="${escape(project.root || folder)}"><bdi>${escape(folder)}</bdi></button>` : ''}
     <nav>${tabs}
       <button class="icon" data-act="gear" aria-current="${state.view === 'settings'}"
               title="${s.update ? `Settings  ·  Crucible ${escape(s.update.latest)} is available`
                                 : 'Settings'}" aria-label="Settings">${ICONS.gear}${update}</button>
+      <button class="icon" data-act="fold-right" aria-pressed="${recentsOpen()}"
+              title="Show or hide recent chats and projects"
+              aria-label="Show or hide recent chats and projects">${ICONS.foldRight}</button>
     </nav>`;
 }
+
+/// The path in the top bar opens its folder in the desktop's file browser.
+/// The window knows which folder that is; the page only asks.
+actions['show-folder'] = () => guard(async () => {
+  if (!window.showFolder) return;
+  const answer = await window.showFolder();
+  if (answer && answer.error) throw new Error(answer.error);
+});
 
 // --- the side menu ----------------------------------------------------------------
 
@@ -147,6 +185,88 @@ function setSidebar(rem) {
   remember.set('sidebar', state.sidebar);
   render();
 }
+
+// --- the other side: what has been done lately ----------------------------------------
+//
+// Conversations, newest first, across every project Crucible has been opened
+// in -- and those projects. Choosing a conversation opens its project, when it
+// is not the one open, and puts the conversation back with the expert's
+// memory of it, so the next question carries on from where it stopped.
+
+function recentsOpen() { return state.recentsWidth >= SIDEBAR_SHUT; }
+function recentsWidth() { return Math.max(state.recentsWidth, SIDEBAR_MIN); }
+
+function setRecents(rem) {
+  state.recentsWidth = Math.max(0, Math.min(rem, 34));
+  remember.set('recents-width', state.recentsWidth);
+  render();
+}
+
+function recentsView() {
+  if (!recentsOpen()) return '';
+  const r = state.recents;
+  const here = state.snapshot.session || '';
+  const project = state.snapshot.project || {};
+  const chats = !r ? '<div class="status r-empty">Reading...</div>'
+    : r.chats.length ? r.chats.map((c) => `<button class="recent${c.id === here ? ' here' : ''}"
+          data-act="recent-chat" data-id="${escape(c.id)}" data-project="${escape(c.project)}"
+          title="${escape(`${c.title}\n${c.project_name}  ·  ${c.when}  ·  ${count(c.turns, 'turn')}`)}">
+          <span class="r-title">${escape(c.title || '(untitled)')}</span>
+          <span class="r-meta">${escape(c.scratch ? c.when : `${c.project_name}  ·  ${c.when}`)}</span></button>`).join('')
+    : '<div class="status r-empty">No conversations yet.</div>';
+  const projects = !r ? ''
+    : r.projects.length ? r.projects.map((p) => `<button class="recent${p.current ? ' here' : ''}"
+        data-act="recent-project" data-path="${escape(p.root)}" title="${escape(p.root)}">
+        <span class="r-title">${escape(p.name)}</span><span class="r-meta">${escape(p.display)}</span></button>`).join('')
+    : '<div class="status r-empty">No projects opened yet.</div>';
+  const busy = !!state.snapshot.busy;
+  return `<div class="splitter" id="splitter-r" title="Drag to resize. Drag to the edge to close."></div>
+    <aside class="recents" style="width:${recentsWidth()}rem">
+      <div class="roster-scroll">
+        <div class="r-head"><h2>RECENT CHATS</h2>
+          <button class="action small" data-act="new-chat" title="Start a new chat, with a scratch folder of its own"
+                  ${busy ? 'disabled' : ''}>New chat</button></div>
+        ${chats}
+        <div class="r-head r-projects"><h2>PROJECTS</h2>
+          <button class="action small" data-act="open-project" title="Choose a folder to work in"
+                  ${busy ? 'disabled' : ''}>Open project</button></div>
+        ${projects}
+      </div>
+    </aside>`;
+}
+
+actions['fold-right'] = () =>
+  setRecents(recentsOpen() ? 0 : Math.max(remember.get('recents-open', 16), SIDEBAR_MIN));
+
+actions['recent-chat'] = (row) => guard(async () => {
+  await call('history.open', { id: row.dataset.id, project: row.dataset.project });
+  state.follow = true;
+  if (state.view !== 'chat') enter('chat');
+  need('recents', 'recents', true);
+});
+actions['recent-project'] = (row) => guard(async () => {
+  await call('project.open', { path: row.dataset.path });
+  need('recents', 'recents', true);
+});
+actions['new-chat'] = () => guard(async () => {
+  await call('session.new');
+  if (state.view !== 'chat') enter('chat');
+  need('recents', 'recents', true);
+});
+
+/// Kept current without asking: when the project, the conversation or its
+/// length changes, and the engine is not mid-turn, the list is read again.
+let recentsKey = '';
+let recentsTimer = 0;
+afterDraw.push(() => {
+  if (!recentsOpen()) return;
+  const s = state.snapshot;
+  const key = `${(s.project || {}).root}|${s.session}|${s.session_name}|${(s.turns || []).length}|${!!s.busy}`;
+  if (key === recentsKey || s.busy) return;
+  recentsKey = key;
+  clearTimeout(recentsTimer);
+  recentsTimer = setTimeout(() => need('recents', 'recents', true), 300);
+});
 
 /// What a seat row says when the pointer rests on it.
 function seatTip(e) {
@@ -234,10 +354,11 @@ actions.eject = () => guard(() => call('release', { all: true }));
 /// than to the splitter, which is redrawn while it is being dragged.
 function listenForSplitters() {
   document.addEventListener('pointerdown', (down) => {
-    const handle = down.target.closest && down.target.closest('#splitter, #composer-splitter');
+    const handle = down.target.closest && down.target.closest('#splitter, #splitter-r, #composer-splitter');
     if (!handle) return;
     down.preventDefault();
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    if (handle.id === 'splitter-r') return dragRecents(down, rem);
     const sideways = handle.id === 'splitter';
     const from = sideways ? down.clientX : down.clientY;
     const start = sideways ? (sidebarOpen() ? sidebarWidth() : 0) : state.composerRows;
@@ -268,6 +389,26 @@ function listenForSplitters() {
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
   });
+}
+
+/// The right-hand panel's edge, which widens it when dragged left.
+function dragRecents(down, rem) {
+  const from = down.clientX;
+  const start = recentsOpen() ? recentsWidth() : 0;
+  document.body.classList.add('dragging-x');
+  const move = (event) => setRecents(start + (from - event.clientX) / rem);
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.body.classList.remove('dragging-x');
+    if (state.recentsWidth < SIDEBAR_SHUT) setRecents(0);
+    else {
+      if (state.recentsWidth < SIDEBAR_MIN) setRecents(SIDEBAR_MIN);
+      remember.set('recents-open', state.recentsWidth);
+    }
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
 }
 
 // --- moving between views ------------------------------------------------------------
@@ -409,17 +550,28 @@ window.crucibleSnapshot = (snapshot) => {
 /// A long job that pokes the window as it goes is followed from here.
 const onSnapshot = [];
 
-function start() {
+/// The window's remembered shape, from wherever it is remembered.
+function recall() {
   state.sidebar = remember.get('sidebar', 15);
   state.composerRows = remember.get('composer-rows', 1);
+  state.route = remember.get('route', '');
+  state.recentsWidth = remember.get('recents-width', 16);
+}
+
+function start() {
+  recall();
   state.mark = document.body.getAttribute('data-mark') || '';
   listen();
   listenForSplitters();
   guard(async () => {
     // The config comes down with the first snapshot rather than when the
     // settings screen is first opened: the chat view reads it to decide what
-    // to say when there is nothing to chat with.
-    const [snapshot, config] = await Promise.all([call('snapshot'), call('config')]);
+    // to say when there is nothing to chat with. The window's remembered
+    // shape with them, so the first real draw is already the right one.
+    const [snapshot, config, prefs] = await Promise.all([
+      call('snapshot'), call('config'), call('prefs').catch(() => ({}))]);
+    remember.saved = prefs && typeof prefs === 'object' ? prefs : {};
+    recall();
     state.snapshot = snapshot;
     state.config = config;
     trustWatch();

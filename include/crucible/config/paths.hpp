@@ -43,6 +43,12 @@ std::filesystem::path runtime_build_dir();
 /// data_dir()/projects -- per-project session history, keyed by directory.
 std::filesystem::path projects_dir();
 
+/// ~/Crucible/Scratchpad -- the project a conversation goes in when none is
+/// open. Crucible's own folder to work in, but the person's work rather than
+/// the program's state: so beside their home rather than in data_dir(),
+/// where it would be hidden and an uninstall would take it.
+std::filesystem::path scratchpad_dir();
+
 /// data_dir()/dropped -- copies of files dropped on a window whose webview
 /// does not say where a dropped file is. One folder per drop; see
 /// ui/attach.js.

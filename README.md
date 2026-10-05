@@ -34,9 +34,10 @@ ___
 | Windows | `Crucible-Setup.exe` | run it; no administrator prompt |
 | Linux | `Crucible-x86_64.AppImage` | `chmod +x` it and run it |
 
-Nothing is code-signed, so Windows shows a SmartScreen warning (More info → Run
-anyway) and macOS refuses an unsigned download the first time (right-click →
-Open). One-time answers on both.
+Nothing is signed with a paid certificate, so Windows shows a SmartScreen
+warning (More info → Run anyway) and macOS refuses the download the first time:
+open Crucible once, then **System Settings → Privacy & Security → Open Anyway**.
+One-time answers on both.
 
 **Or build from source, in one command:**
 
@@ -50,8 +51,9 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 
 - Builds the program and installs an application entry you can pin to a dock or
   taskbar. Typing `crucible` in a terminal starts the same thing.
-- It opens on no project: the top bar says **No Project** until you pick a
-  folder to work in.
+- It opens on no project: a chat works in a scratch folder of its own under
+  `~/Crucible/Scratchpad`, and the top bar shows the folder's path, until you
+  open a project from the panel on the right.
 - Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `--no-trainer`,
   `-y`, `--uninstall`.
 - Run either installer from inside a clone and it builds that clone.
@@ -72,7 +74,7 @@ history stay where they are — an update replaces the program and nothing else.
 The check is one request for a public version number, it says nothing about the
 machine, and the checkbox beside it turns it off.
 
-Versions are `MAJOR.MINOR.PATCH`, tagged `v0.8.0` on GitHub, and the release a
+Versions are `MAJOR.MINOR.PATCH`, tagged `v0.8.1` on GitHub, and the release a
 tag builds carries the installers for all three platforms. What changed in each
 is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -101,13 +103,18 @@ ___
   not the sum.
 - Naming an expert that does not exist is impossible — the router scores the
   roster rather than generating a name.
+- Or skip it: the menu beside the **+** in the box sends every prompt to one
+  expert until you change it back, and `/name` does it for one prompt. The
+  menu next to it sets how hard a reasoning model thinks; a model with no
+  such setting is never sent it.
 
 ![The roster: five seats, each with a description and a model](docs/images/experts.png)
 
 ### Cook
 
-- Give it a goal and a time limit; it works in passes — read, change, run,
-  judge, go round again — until the goal is met or you stop it.
+- Give it a goal; it works in passes — read, change, run, judge, go round
+  again — improving on the last pass each time, until you stop it. DONE
+  closes one piece of the work, not the cook.
 - Every step is journaled and folds open to the diff or command output it made.
 - It can stop to ask you a question, and hand work to a different expert
   mid-cook.
@@ -187,6 +194,10 @@ ___
   here where it is not. Either way against the same llama.cpp the program was
   built from, because a backend built against another one crashes on the first
   tensor.
+- GGUF models, and on Apple Silicon **MLX** models too: a folder of
+  `.safetensors` is run by MLX's own server, from the Python environment the
+  fine-tuner uses, on this machine only. The models folder is read two levels
+  deep, so LM Studio's `publisher/model/` layout works as it is.
 - A downloaded CUDA backend needs only an NVIDIA driver — no toolkit. The two
   libraries it needs that the driver lacks, NVIDIA's CUDA runtime and cuBLAS,
   are fetched from NVIDIA with it (a few hundred megabytes) unless the machine
@@ -215,6 +226,14 @@ ___
 
 - History is per project, and reopening a conversation hands the exchanges back
   to the expert rather than starting cold.
+- The panel on the right lists recent conversations across every project,
+  named for what they are about, and the projects you have opened; choosing
+  one opens it and carries on from where it stopped.
+- **New chat** needs no project: each one gets a scratch folder of its own
+  under `~/Crucible/Scratchpad` for whatever it makes. To work on a folder of
+  yours, open it as a project from the same panel.
+- The top bar shows the folder the chat works in; click it to open that
+  folder in your file manager.
 - A conversation that outgrows the context window rolls, truncates its middle,
   or stops — your choice — and says so in the transcript when it drops
   anything.

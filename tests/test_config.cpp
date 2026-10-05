@@ -4,6 +4,8 @@
 // screen does, the models directory, folder trust, and where all of it lives.
 #include "test_helpers.hpp"
 
+#include "crucible/llm/mlx_server.hpp"
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -149,6 +151,46 @@ TEST(scanning_finds_only_gguf_files_in_name_order) {
         CHECK_EQ(found[0].bytes, std::uintmax_t{2000});
         CHECK(found[0].path.is_absolute() || found[0].path.string().find(dir.path().string()) == 0);
     }
+}
+
+TEST(scanning_finds_mlx_folders_and_models_a_level_or_two_down) {
+    // The way LM Studio lays a folder out: publisher/model/, holding either a
+    // GGUF or an MLX model -- a config.json and its weights as .safetensors.
+    TempDir dir;
+    const auto write = [](const std::filesystem::path& file, std::size_t bytes) {
+        std::filesystem::create_directories(file.parent_path());
+        std::ofstream out(file, std::ios::binary);
+        out << std::string(bytes, '\0');
+    };
+    write(dir.path() / "top.gguf", 10);
+    write(dir.path() / "lmstudio-community" / "Phi-4-GGUF" / "phi-4-Q4_K_M.gguf", 20);
+    write(dir.path() / "mlx-community" / "Qwen3-4B-4bit" / "config.json", 5);
+    write(dir.path() / "mlx-community" / "Qwen3-4B-4bit" / "model.safetensors", 300);
+    write(dir.path() / "mlx-community" / "Qwen3-4B-4bit" / "tokenizer.json", 7);
+    // A config with no weights is not a model; a hidden folder is not looked
+    // in; three levels down is further than anybody keeps one.
+    write(dir.path() / "half" / "config.json", 5);
+    write(dir.path() / ".cache" / "x.gguf", 10);
+    write(dir.path() / "a" / "b" / "c" / "deep.gguf", 10);
+
+    const std::vector<ModelFile> found = scan_models(dir.path());
+    std::vector<std::string> names;
+    for (const ModelFile& file : found) {
+        names.push_back(file.name + ":" + file.format);
+    }
+    CHECK_EQ(names.size(), std::size_t{3});
+    if (names.size() == 3) {
+        CHECK_EQ(names[0], std::string("lmstudio-community/Phi-4-GGUF/phi-4-Q4_K_M.gguf:gguf"));
+        CHECK_EQ(names[1], std::string("mlx-community/Qwen3-4B-4bit:mlx"));
+        CHECK_EQ(names[2], std::string("top.gguf:gguf"));
+        CHECK_EQ(found[1].bytes, std::uintmax_t{300});   // the weights
+    }
+    // A nested name is a path inside the models directory, and resolves there.
+    CHECK_EQ(resolve_model_ref(dir.path(), "mlx-community/Qwen3-4B-4bit"),
+             dir.path() / "mlx-community" / "Qwen3-4B-4bit");
+    CHECK(mlx::is_model_dir(dir.path() / "mlx-community" / "Qwen3-4B-4bit"));
+    CHECK(!mlx::is_model_dir(dir.path() / "half"));
+    CHECK(!mlx::is_model_dir(dir.path() / "top.gguf"));
 }
 
 TEST(scanning_a_missing_directory_is_not_an_error) {

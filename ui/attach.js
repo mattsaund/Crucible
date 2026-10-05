@@ -34,7 +34,9 @@ const PICTURE_SIDE = 1568;
 const PICTURE_BYTES = 3.5 * 1024 * 1024;
 
 state.attached = { chat: [], cook: [] };
-state.attachMenu = null;
+// The one small menu open over the box, as "<which>:<mode>" -- "attach:chat",
+// "route:cook" -- or null. One at a time, and any click outside it shuts it.
+state.menu = null;
 
 /// Which box the menu and the tiles belong to: the view's.
 function attachMode() {
@@ -87,24 +89,27 @@ function attachedChips(list) {
 /// The plus, and the menu it opens. Up from the box rather than down from
 /// it, because the box is at the bottom of the window.
 function attachButton(mode, disabled) {
-  const open = state.attachMenu === mode && !disabled;
-  const menu = open ? `<div class="attach-menu" role="menu">
+  const open = state.menu === `attach:${mode}` && !disabled;
+  const menu = open ? `<div class="popmenu" role="menu">
       <button type="button" role="menuitem" data-act="attach-files">${CLIP.file}
         <span>Add files or photos</span><kbd>Ctrl+U</kbd></button>
       <button type="button" role="menuitem" data-act="attach-folder">${CLIP.folder}
         <span>Add folder</span></button></div>` : '';
-  return `<div class="attach-wrap">
+  return `<div class="menu-wrap">
       <button type="button" class="plus" data-act="attach-menu" aria-haspopup="menu"
               aria-expanded="${open}" title="Attach files, photos or a folder"
               aria-label="Attach files, photos or a folder" ${disabled ? 'disabled' : ''}>${CLIP.plus}</button>
       ${menu}</div>`;
 }
 
-actions['attach-menu'] = () => {
-  const mode = attachMode();
-  state.attachMenu = state.attachMenu === mode ? null : mode;
+/// Open or shut one of the box's menus: `which` is "attach", "route" or
+/// "effort".
+function toggleMenu(which) {
+  const key = `${which}:${attachMode()}`;
+  state.menu = state.menu === key ? null : key;
   render();
-};
+}
+actions['attach-menu'] = () => toggleMenu('attach');
 actions['attach-files']  = () => attachPick(false);
 actions['attach-folder'] = () => attachPick(true);
 actions['attach-remove'] = (button) => {
@@ -116,7 +121,7 @@ actions['attach-remove'] = (button) => {
 /// Ask the platform's dialog for files, or a folder, and add what it gives.
 async function attachPick(folder) {
   const mode = attachMode();
-  state.attachMenu = null;
+  state.menu = null;
   render();
   const box = document.getElementById('prompt');
   if (!box || box.disabled) return;
@@ -241,16 +246,16 @@ function attachmentsFor(mode) {
   return list.map((item) => (item.image ? { path: item.path, image: item.image } : { path: item.path }));
 }
 
-/// The menu closes on a click anywhere else, and on Escape.
+/// A menu closes on a click anywhere else, and on Escape.
 document.addEventListener('click', (event) => {
-  if (state.attachMenu && !(event.target.closest && event.target.closest('.attach-wrap'))) {
-    state.attachMenu = null;
+  if (state.menu && !(event.target.closest && event.target.closest('.menu-wrap'))) {
+    state.menu = null;
     render();
   }
 }, true);
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.attachMenu) {
-    state.attachMenu = null;
+  if (event.key === 'Escape' && state.menu) {
+    state.menu = null;
     render();
   }
 });
@@ -290,7 +295,6 @@ CLIP.drop = `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" 
 function dropTarget() {
   const s = state.snapshot || {};
   if (state.modal) return { why: 'Close the dialog first' };
-  if (!(s.project || {}).open) return { why: 'Open a project first' };
   const cook = s.cook && s.cook.running ? s.cook : null;
   if (cook) {
     return { why: cook.state === 'asking' ? 'Answer the cook\'s question first'

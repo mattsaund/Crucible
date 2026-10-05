@@ -217,6 +217,23 @@ TEST(a_provider_that_refuses_pictures_is_sent_the_text_and_told_why) {
     CHECK(claude["messages"][2]["content"].is_string());
 }
 
+TEST(a_server_on_this_machine_is_always_told_how_long_a_reply_may_be) {
+    // MLX's server stops at 512 tokens when it is not told otherwise, which
+    // cuts a reply off mid-sentence; "until the model stops" is sent as a
+    // number it will not reach. A provider is left to its own default.
+    ModelParams unbounded;
+    unbounded.max_tokens = -1;
+    Quirks local;
+    local.always_max_tokens = true;
+    local.no_images         = true;
+    const json body = openai(conversation(), unbounded, local);
+    CHECK_EQ(body["max_tokens"].get<int>(), wire::kUnboundedReply);
+    CHECK(!openai(conversation(), unbounded).contains("max_tokens"));
+    ModelParams capped;
+    capped.max_tokens = 300;
+    CHECK_EQ(openai(conversation(), capped, local)["max_tokens"].get<int>(), 300);
+}
+
 TEST(a_picture_counts_toward_the_token_estimate) {
     std::vector<ChatMessage> messages = conversation();
     const int without = wire::estimate_tokens(messages);

@@ -51,7 +51,9 @@ function turnActions(turn) {
 /// What an action left to look at. A write names the file it wrote, and is
 /// drawn as the block that was allowed; anything else is its output.
 function actionBody(action) {
-  if (!action.body) return '';
+  // A command that printed nothing has nothing to show: a box with no lines
+  // in it reads as the interface broken, not as a quiet command.
+  if (!action.body || !action.body.trim()) return '';
   if (action.language && /^@@ line \d+ @@/.test(action.body)) {
     return writtenBlock(action.body, action.language);
   }
@@ -147,7 +149,6 @@ const OPENERS = ['What is in this project?', 'Explain a file to me', 'Find and f
 /// it with. Each names the one button that fixes it.
 function readiness(ready) {
   const s = state.snapshot;
-  const project = s.project || {};
   const seated = (s.experts || []).some((e) => e.phase !== 'unconfigured');
   const anyLocal = (s.experts || []).some((e) => e.phase !== 'unconfigured' && !e.provider);
   const runtimes = state.runtimes;
@@ -156,10 +157,7 @@ function readiness(ready) {
 
   let label = '';
   let fix = '';
-  if (!project.open) {
-    label = 'No project open';
-    fix = '<button class="action" data-act="open-project">Open Project</button>';
-  } else if (noRuntime && (anyLocal || !seated)) {
+  if (noRuntime && (anyLocal || !seated)) {
     // Only when something local wants one. A roster answered entirely by
     // providers needs no runtime, and should not be told to install one.
     label = 'No runtime';
@@ -199,6 +197,104 @@ function tallyView() {
     used}% context used</div>`;
 }
 
+// --- who answers, and how hard it thinks -----------------------------------------------
+//
+// Two menus beside the plus, opening upward like it. The first is where a
+// prompt goes: to the delegator, which picks an expert for each one, or
+// straight to one expert -- what `/physics` does for a single prompt, kept
+// until it is changed back. The second is how hard a reasoning model thinks;
+// a model with no such setting is never sent it.
+
+const PICK = {
+  route: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
+    stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="3.5" cy="8" r="1.6"/>
+    <circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/>
+    <path d="M5 8h2.5c1.4 0 1.6-4.5 3.4-4.5M7.5 8c1.4 0 1.6 4.5 3.4 4.5"/></svg>`,
+  seat: '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 2.5 13.5 8 8 13.5 2.5 8z" fill="currentColor"/></svg>',
+  effort: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
+    stroke-width="1.3" stroke-linecap="round"><path d="M2.8 11.5a5.6 5.6 0 1 1 10.4 0"/><path d="M8 8.6l2.6-2.8"/></svg>`,
+  chevron: `<svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none"
+    stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>`,
+  check: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor"
+    stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"/></svg>`,
+  up: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor"
+    stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.5M3.8 7.5 8 3.3l4.2 4.2"/></svg>`,
+  stop: '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>',
+};
+
+const EFFORTS = [['', 'Default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']];
+
+/// The experts a prompt can be sent to straight: every seat with a model.
+function pickableExperts() {
+  return (state.snapshot.experts || []).filter((e) => e.phase !== 'unconfigured');
+}
+
+/// Where prompts go: an expert's id, or '' for the delegator. An expert that
+/// has since lost its model, or its seat, sends them back to the delegator.
+function routeTarget() {
+  const id = state.route || '';
+  return id && pickableExperts().some((e) => e.id === id) ? id : '';
+}
+
+function pickerButton(which, mode, icon, label, title, disabled) {
+  const open = state.menu === `${which}:${mode}` && !disabled;
+  return `<button type="button" class="picker" data-act="${which}-menu" aria-haspopup="menu"
+      aria-expanded="${open}"${title ? ` title="${escape(title)}"` : ''} ${disabled ? 'disabled' : ''}>${icon}<span class="label">${
+      escape(label)}</span>${PICK.chevron}</button>`;
+}
+
+function menuItem(act, value, label, hint, chosen, extra) {
+  return `<button type="button" role="menuitemradio" aria-checked="${chosen}" data-act="${act}"
+      data-value="${escape(value)}">${extra || ''}<span class="mi-label">${escape(label)}</span>${
+      hint ? `<span class="mi-hint">${escape(hint)}</span>` : ''}<span class="mi-check">${chosen ? PICK.check : ''}</span></button>`;
+}
+
+function routePicker(mode, disabled) {
+  const target = routeTarget();
+  const label = target ? expertName(target) : 'Delegator';
+  const open = state.menu === `route:${mode}` && !disabled;
+  const experts = pickableExperts();
+  const menu = open ? `<div class="popmenu picks" role="menu">
+      ${menuItem('route-pick', '', 'Delegator', '', !target, PICK.route)}
+      <div class="mi-caption">EXPERTS</div>
+      ${experts.length ? experts.map((e) => menuItem('route-pick', e.id, e.name, '', target === e.id,
+          `<span class="mi-seat">${e.provider ? ICONS.cloud : PICK.seat}</span>`)).join('')
+        : '<div class="mi-empty">No expert has a model yet.</div>'}
+    </div>` : '';
+  return `<div class="menu-wrap">${pickerButton('route', mode, target ? PICK.seat : PICK.route, label,
+      target ? `Every prompt goes to ${label}, without the delegator. Change it here.`
+             : 'The delegator picks an expert for each prompt. Choose one to send them all to it.',
+      disabled)}${menu}</div>`;
+}
+
+function effortPicker(mode, disabled) {
+  const current = state.snapshot.reasoning_effort || '';
+  const chosen = EFFORTS.find((e) => e[0] === current) || EFFORTS[0];
+  const open = state.menu === `effort:${mode}` && !disabled;
+  const menu = open ? `<div class="popmenu picks" role="menu">
+      <div class="mi-caption">REASONING EFFORT</div>
+      ${EFFORTS.map(([value, label]) => menuItem('effort-pick', value, label, '', value === current)).join('')}
+      <div class="mi-note">Only works with models that support this setting</div>
+    </div>` : '';
+  return `<div class="menu-wrap">${pickerButton('effort', mode, PICK.effort, `${chosen[1]} effort`,
+      '', disabled)}${menu}</div>`;
+}
+
+actions['route-menu']  = () => toggleMenu('route');
+actions['effort-menu'] = () => toggleMenu('effort');
+actions['route-pick'] = (item) => {
+  state.route = item.dataset.value || '';
+  remember.set('route', state.route);
+  state.menu = null;
+  render();
+};
+actions['effort-pick'] = (item) => {
+  state.menu = null;
+  // Said at once; the setting is written behind it.
+  state.snapshot.reasoning_effort = item.dataset.value || '';
+  configure({ reasoning_effort: item.dataset.value || '' });
+};
+
 /// The box a prompt, a goal or an answer is typed into.
 ///
 /// One function for Chat and Cook, because it is one box: the same place on
@@ -206,15 +302,13 @@ function tallyView() {
 /// is the hint in it and the word on the button.
 function composerView(options) {
   const s = state.snapshot;
-  const project = s.project || {};
   const cook = s.cook && s.cook.running ? s.cook : null;
   const asking = cook && cook.state === 'asking';
   const auto_ = !!s.auto_edits;
 
   let hint = options.hint;
   let disabled = false;
-  if (!project.open) { hint = 'open a project to start'; disabled = true; }
-  else if (asking) hint = 'answer the question above';
+  if (asking) hint = 'answer the question above';
   else if (cook && !options.cook) { hint = 'a cook is running -- it has the experts'; disabled = true; }
 
   // Auto sits beside the box rather than in Settings because whether you are
@@ -223,8 +317,7 @@ function composerView(options) {
   // stays wherever it was last left. A cook asks too, when it is off, and the
   // switch takes effect from its next write -- so it is here while one runs.
   const autoButton = `<button type="button" class="action toggle" data-act="auto-edits"
-      aria-pressed="${auto_}" title="${auto_ ? 'Edits apply as they are made'
-                                             : 'Every edit is shown before it lands'}">Auto</button>`;
+      aria-pressed="${auto_}">${auto_ ? 'Auto on' : 'Auto off'}</button>`;
 
   let buttons;
   if (cook && options.cook && !asking) {
@@ -245,9 +338,9 @@ function composerView(options) {
     const send = asking ? 'Answer' : options.send;
     buttons = `${autoButton}
       ${s.busy && !asking
-        ? `<button type="button" class="action" data-act="stop">${
-             s.status === 'stopping' ? 'Stopping' : 'Stop'}</button>`
-        : `<button class="action" ${disabled ? 'disabled' : ''}>${send}</button>`}`;
+        ? `<button type="button" class="send stop" data-act="stop" aria-label="${
+             s.status === 'stopping' ? 'Stopping' : 'Stop'}">${PICK.stop}</button>`
+        : `<button class="send" aria-label="${escape(send)}" ${disabled ? 'disabled' : ''}>${PICK.up}</button>`}`;
   }
 
   // One rounded box: what is attached, then the text, then a row along the
@@ -264,6 +357,8 @@ function composerView(options) {
                     spellcheck="false" ${disabled ? 'disabled' : ''}></textarea>
           <div class="box-bar">
             ${attachButton(mode, disabled || asking)}
+            ${routePicker(mode, disabled || asking)}
+            ${effortPicker(mode, disabled || asking)}
             <span class="spacer"></span>
             ${buttons}
           </div>
@@ -296,7 +391,7 @@ views.chat = () => {
           s.pending_edit ? pendingEdit(s.pending_edit) : ''}</div>
         <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
       ${composerView({ hint: 'Ask it something', send: 'Send' })}
-    </div>`;
+    </div>` + recentsView();
 };
 
 // --- what a person can do here ------------------------------------------------------------
@@ -330,13 +425,16 @@ actions.send = (form) => {
   growComposer(box);
   if (mode === 'cook') {
     return guard(async () => {
-      await call('cook.start', { goal: text, attachments });
+      await call('cook.start', { goal: text, attachments, expert: routeTarget() });
       state.attached.cook = [];
     });
   }
   state.follow = true;
   return guard(async () => {
-    await call('submit', Object.assign(pinned(text), { attachments }));
+    // A slash and a name for this prompt wins over the menu's choice.
+    const asked = pinned(text);
+    if (!asked.expert && routeTarget()) asked.expert = routeTarget();
+    await call('submit', Object.assign(asked, { attachments }));
     state.attached.chat = [];
   });
 };

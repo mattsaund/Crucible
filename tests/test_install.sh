@@ -614,6 +614,14 @@ check     "the bitmap icons are shipped" \
           test -f "$HERE/../packaging/icons/crucible.png"
 check     "including the Windows one" \
           test -f "$HERE/../packaging/icons/crucible.ico"
+# The Mac's is drawn to Apple's grid rather than generated, and both roads to
+# a Mac application use it.
+check     "and the Mac's own" \
+          test -s "$HERE/../packaging/icons/crucible-mac.png"
+check     "which the disk image's application is given" \
+          grep -q 'crucible-mac.png' "$HERE/../packaging/macos/dmg.sh"
+check     "and so is the one a source install makes" \
+          grep -q 'crucible-mac.png' "$HERE/../install.sh"
 
 # Windows keeps the switches too, and ignores them the same way.
 check     "Windows still takes -NoGui without failing" \
@@ -1083,10 +1091,21 @@ check     "the bundle carries llama.cpp's libraries inside it" \
 # the libraries anywhere else in the bundle and it does not start.
 check     "in the one place the binary's own search path looks" \
           grep -q 'loader_path' "$ROOT/CMakeLists.txt"
-check     "the image says how to get past Gatekeeper, since nothing is signed" \
-          grep -q 'Right-click it in Applications' "$ROOT/packaging/macos/dmg.sh"
+# Ad hoc is not unsigned. A bundle nothing seals is "damaged" to Gatekeeper
+# once it has been downloaded, and damaged has no Open Anyway -- which is what
+# the 0.8.0 image was, and somebody had to build from source to get past it.
+check     "the bundle is signed ad hoc, each library and then the whole" \
+          grep -q 'codesign --force --sign - --timestamp=none "$APP"$' "$ROOT/packaging/macos/dmg.sh"
+check     "and checked as Gatekeeper will check it" \
+          grep -q 'codesign --verify --deep --strict' "$ROOT/packaging/macos/dmg.sh"
+check     "the image says how to get past Gatekeeper, the way current macOS asks" \
+          grep -q 'Privacy & Security' "$ROOT/packaging/macos/dmg.sh"
 check     "and the workflow opens the image rather than trusting it built" \
           grep -q 'hdiutil attach' "$REL"
+check     "verifies the signature on what it opened" \
+          grep -q 'codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app' "$REL"
+check     "and starts the program in it" \
+          grep -q 'Crucible.app/Contents/MacOS/Crucible --version' "$REL"
 
 # Windows: a setup .exe, per-user so there is no administrator prompt.
 check     "Windows builds a setup program" \

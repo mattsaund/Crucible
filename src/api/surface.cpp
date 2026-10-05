@@ -7,6 +7,9 @@
 // finding the method it names, and wrapping what comes back.
 #include "crucible/api/surface.hpp"
 
+#include "crucible/config/paths.hpp"
+#include "crucible/session/store.hpp"
+
 #include <algorithm>
 
 #include "crucible/util/format.hpp"
@@ -179,6 +182,15 @@ std::string Surface::snapshot() {
                  // projects is the end, and this leaves room for it.
                  {"display", root.empty() ? std::string() : format::short_path(root)},
                  {"name", root.filename().empty() ? root.string() : root.filename().string()}};
+    if (is_scratch(root)) {
+        project["name"]       = "Scratchpad";
+        project["scratchpad"] = true;
+    }
+    if (root.empty()) {
+        // A chat with no project has no folder until its first message makes
+        // one; until then the bar says where that folder will be.
+        project["scratch_display"] = format::short_path(paths::scratchpad_dir());
+    }
     if (!asking.empty()) {
         project["pending_trust"]   = asking.string();
         project["pending_display"] = format::short_path(asking);
@@ -206,6 +218,9 @@ std::string Surface::snapshot() {
     };
     out["show_reasoning"] = config.ui.show_reasoning;
     out["auto_edits"]     = config.tools.auto_edits;
+    out["reasoning_effort"] = config.reasoning_effort;
+    out["session"]          = host_.session_id();
+    out["session_name"]     = host_.session_name();
 
     const update::State newer = host_.update();
     out["version"] = CRUCIBLE_VERSION;

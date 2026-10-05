@@ -6,6 +6,74 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.8.1 — 2026-10-05
+
+**The macOS download opens.** The disk image's application was not signed at
+all, so on Apple Silicon a downloaded copy was "damaged" to Gatekeeper -- and
+damaged has no Open Anyway. It is signed ad hoc now, every library and then the
+bundle, and checked the way Gatekeeper checks it before the image is made. It
+is still not signed with an Apple certificate, so the first open asks: System
+Settings → Privacy & Security → Open Anyway, as the image's read-me says. The
+application has an icon of its own on the Mac, drawn to Apple's grid so it sits
+at the same size as its neighbors in the dock.
+
+**MLX models.** A folder holding an MLX model -- a `config.json` and its
+weights as `.safetensors`, the way LM Studio and the mlx-community uploads lay
+them out -- is listed in every model menu and runs on Apple Silicon through
+MLX's own server, started from the training environment's Python on this
+machine. The models folder is read two levels deep for GGUF files as well, so
+LM Studio's `publisher/model/` folders need no moving.
+
+**Choose who answers, and how hard it thinks, from the box.** Two menus beside
+the **+**: *Delegator* -- which picks an expert for each prompt -- or one
+expert, to send every prompt to it until changed back; and reasoning effort,
+moved here from Settings → Generation. A model with no effort setting is not
+sent one: a local model gets the line only when its template reads it.
+
+**A recent-chats panel, and chat with no project open.** A panel on the right,
+folded and widened like the side menu, lists recent conversations across every
+project, each named for what it is about -- the delegator reads the first
+exchange and writes two to four words, "Math homework" -- and below them the
+projects you have opened. Choosing a conversation opens its folder and carries
+on with the expert's memory of it; choosing a project opens it. **New chat**
+starts a conversation that belongs to no project: its first message makes it a
+scratch folder of its own, `~/Crucible/Scratchpad/<when>`, for anything it
+makes. Opening and switching projects happens here now, and the project button
+is gone from the top bar, which keeps only the path of the folder the chat works
+in. Clicking the path opens that folder in the system's file browser -- Files,
+Nemo or Dolphin, Finder, Explorer.
+
+**The window remembers its shape.** The side menus' widths, the box's height and
+the expert prompts go to were kept in the webview's own storage, which did not
+outlive the window. They are kept in a file of Crucible's own now, and come
+back when it starts.
+
+**An empty code block before an answer is gone.** A model given tools to look
+at a project looks -- and a new chat's folder has nothing in it, so the listing
+came back blank and was drawn as an empty box. A command that prints nothing
+is not drawn; an expert is told when the folder is empty; and a chat turn does
+not run the same command twice.
+
+**Smaller things.**
+- Send is an arrow in an orange box; Stop, while something runs, the same box
+  in gray. Auto says whether it is on, *Auto on* or *Auto off*, at one width.
+- A reopened conversation shows what it cost, rather than carrying over the
+  count of whatever was open before it.
+- The chat no longer opens with a line per device and the GPU split, which
+  Settings, Hardware already shows; opening a project or a chat's scratch
+  folder is not announced in it either, since the top bar shows the path;
+  nothing is written under *Ask anything* and its suggestions; and Send, Auto
+  and the effort menu have no hover text.
+- Settings → Runtimes could call every runtime idle, driving nothing, though a
+  model was running on one: it showed what the window was told at startup,
+  before the engine had loaded any. It asks again each time Settings opens.
+- The right-hand panel's titles and buttons stay on one line however narrow it
+  is dragged; a title is cut short before a button wraps.
+- Cook's empty screen and the README say what a cook does: works in passes,
+  each improving on the last, until you stop it. They said "until it is done",
+  and the README still asked for a time limit the screen stopped taking in
+  0.7.1.
+
 ## 0.8.0 — 2026-10-05
 
 **Attach files, photos and folders.** A gray **+** at the bottom left of the

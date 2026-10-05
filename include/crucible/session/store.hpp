@@ -48,11 +48,27 @@ std::vector<Project> recent_projects(std::size_t limit = 12);
 /// Put `root` at the top of that list.
 void remember_project(const std::filesystem::path& root);
 
+/// What a small model is asked, to name a conversation from `excerpt`, its
+/// first exchange; and the name out of what it says -- empty when what it said
+/// was not a title. See Engine::name_session.
+std::string session_naming_prompt(const std::string& excerpt);
+std::string session_name_from(const std::string& reply);
+
+/// A name for when there is no model to ask: the opening words of the first
+/// prompt in `excerpt`.
+std::string fallback_session_name(const std::string& excerpt);
+
+/// Whether `root` is a chat's scratch folder -- inside
+/// paths::scratchpad_dir() -- rather than a project somebody opened.
+bool is_scratch(const std::filesystem::path& root);
+
 /// Enough about a stored session to choose one from a list.
 struct SessionSummary {
     std::string id;          ///< "20260830-142530", also the file name
     std::string started_at;  ///< "2026-08-30 14:25"
     std::string title;       ///< the first prompt, trimmed to one line
+    std::string name;        ///< what it is about, in a few words, once named
+    std::filesystem::path project;   ///< the folder it was had in
     int         turns = 0;
     TokenUsage  usage;
     std::filesystem::path file;
@@ -60,6 +76,12 @@ struct SessionSummary {
     /// "2 hours ago", "yesterday", "12 Aug"
     std::string when() const;
 };
+
+/// The conversations had lately, across every project Crucible has kept a
+/// history for -- scratch folders included -- newest first. Only the newest
+/// few files of each project are read, so this stays cheap as history grows.
+/// One whose folder is gone is left out: it could not be opened again.
+std::vector<SessionSummary> recent_chats(std::size_t limit);
 
 /// Reading and writing one project's sessions.
 ///
@@ -81,6 +103,17 @@ public:
     void adopt(std::string id);
 
     const std::string& session_id() const { return session_id_; }
+
+    /// What the conversation being recorded is about, in a few words --
+    /// "Math homework" -- written with every save from now on. Empty until
+    /// it has been named; see Engine::name_session.
+    void set_name(std::string name) { name_ = std::move(name); }
+    const std::string& name() const { return name_; }
+
+    /// Name a stored conversation, in its file. For one that is not the one
+    /// being recorded: a name that arrives after the conversation was put
+    /// away.
+    bool rename(const std::string& id, const std::string& name, std::string& error) const;
 
     /// Write the current session. Turns still streaming are skipped: a
     /// half-finished reply is not something to resume into.
@@ -110,6 +143,7 @@ private:
 
     Project     project_;
     std::string session_id_;
+    std::string name_;
     /// What was already counted for this session, so re-saving it does not
     /// add the same tokens to the project total twice.
     TokenUsage  counted_;

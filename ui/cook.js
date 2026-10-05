@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Cook: one goal, worked in passes until it is done or you stop it.
+// Cook: one goal, worked in passes, each improving on the last, until you stop it.
 //
 // A prompt is one question and one answer; a cook is a goal and however long
 // it takes. The view is the journal as it happens, because a cook that only
@@ -86,7 +86,7 @@ views.cook = () => {
   // a runtime and a model exactly as a question does.
   const body = cook ? cookBody(cook, true)
     : readiness(`<div class="empty"><div class="empty-label quiet">Give it a goal</div>
-        <div class="status">It works until it is done or until you stop it.</div></div>`);
+        <div class="status">It works in passes, improving each one, until you stop it.</div></div>`);
   // A write waiting for a yes, when Auto is off. Drawn where the journal
   // ends, which is where the cook is.
   const edit = state.snapshot.pending_edit ? pendingEdit(state.snapshot.pending_edit) : '';
@@ -94,7 +94,7 @@ views.cook = () => {
       <div class="scroller"><div id="transcript">${body}${edit}</div>
         <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
       ${composerView({ cook: true, hint: 'what should it work on?', send: 'Cook' })}
-    </div>`;
+    </div>` + recentsView();
 };
 
 actions['cook-stop'] = () => guard(() => call('cook.stop'));
