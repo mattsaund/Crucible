@@ -1131,6 +1131,11 @@ check     "and so are the tests, which check it" \
           grep -q 'crucible_utf8_manifest(crucible_tests)' "$ROOT/CMakeLists.txt"
 check     "a compiler other than MSVC gets it as a resource" \
           grep -q '1 24 "crucible.manifest"' "$ROOT/packaging/windows/manifest.rc"
+# mt.exe parses the manifest strictly and fails the link over anything that is
+# not well-formed XML -- a "--" inside its comment did exactly that once. No
+# parser is assumed here, so the one rule that bit is checked by hand.
+check_not "and its comment has no double hyphen, which XML forbids there" \
+          sh -c "grep -v '<!--' '$ROOT/packaging/windows/crucible.manifest' | grep -v -- '-->' | grep -q -- '--'"
 
 echo "  one version number, and a way to hear about the next one"
 # Crucible installs by compiling, so a copy of it is a snapshot of whatever main
