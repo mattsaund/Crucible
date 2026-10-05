@@ -10,6 +10,7 @@
 #include "crucible/lab/recipe.hpp"
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/runtime/devices.hpp"
+#include "crucible/util/format.hpp"
 
 namespace crucible::api {
 namespace {
@@ -181,12 +182,13 @@ Reply about(const json&, const Scene& scene) {
                         {"command", std::string(update::update_command())},
                         {"checked_at", newer.checked_at},
                         {"checks", scene.config.ui.check_updates}}},
-        {"files", json{{"config",   paths::config_file().string()},
-                       {"data",     paths::data_dir().string()},
-                       {"models",   scene.config.resolved_models_dir().string()},
-                       {"runtimes", paths::runtimes_dir().string()},
-                       {"projects", paths::projects_dir().string()},
-                       {"log",      paths::log_file().string()}}},
+        // For reading, so each is written with ~ for the home directory.
+        {"files", json{{"config",   format::short_path(paths::config_file())},
+                       {"data",     format::short_path(paths::data_dir())},
+                       {"models",   format::short_path(scene.config.resolved_models_dir())},
+                       {"runtimes", format::short_path(paths::runtimes_dir())},
+                       {"projects", format::short_path(paths::projects_dir())},
+                       {"log",      format::short_path(paths::log_file())}}},
         {"trusted", std::move(trusted)},
     });
 }

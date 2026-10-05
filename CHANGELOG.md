@@ -6,7 +6,7 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
-## Unreleased
+## 0.7.5 — 2026-10-04
 
 **An expert can be a model that is somewhere else.** A seat is a name, a
 description and a model, and the model no longer has to be a file: it can be

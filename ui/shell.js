@@ -314,9 +314,12 @@ actions['open-project'] = async () => {
 /// here: the page learns of it from the snapshot, and so does not have to
 /// remember that it asked.
 function trustWatch() {
-  const asking = (state.snapshot.project || {}).pending_trust;
+  const project = state.snapshot.project || {};
+  const asking = project.pending_trust;
   const showing = state.modal && state.modal.kind === 'trust';
-  if (asking && !showing) openModal({ kind: 'trust', path: asking, sticky: true });
+  if (asking && !showing) {
+    openModal({ kind: 'trust', path: project.pending_display || asking, sticky: true });
+  }
   else if (!asking && showing) closeModal();
 }
 

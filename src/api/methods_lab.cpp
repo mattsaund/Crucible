@@ -9,6 +9,7 @@
 #include "crucible/lab/hub.hpp"
 #include "crucible/lab/recipe.hpp"
 #include "crucible/runtime/devices.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
 
 namespace crucible::api {
@@ -86,6 +87,10 @@ json recipe_json(const lab::Recipe& recipe, std::uint64_t memory) {
                 {"epochs", recipe.epochs}, {"context", recipe.context},
                 {"learning_rate", recipe.learning_rate},
                 {"trained_path", recipe.trained_path},
+                // The same path for reading: with ~ for the home directory.
+                {"trained_display", recipe.trained_path.empty()
+                                        ? std::string()
+                                        : format::short_path(recipe.trained_path)},
                 {"trained_there", there},
                 {"trained_bytes", trained_bytes},
                 {"stage", std::string(lab::stage_id(recipe.stage))},

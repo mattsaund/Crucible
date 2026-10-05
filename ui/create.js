@@ -196,7 +196,7 @@ function createDetail(r) {
       ${spec('Export', `${r.format === 'mlx' ? 'MLX' : 'GGUF'} at ${escape(r.quantization)}${
         r.export_bytes ? ', about ' + bytes(r.export_bytes) : ''}`)}
       ${fits}
-      ${r.trained_path ? spec('File', escape(r.trained_path)
+      ${r.trained_path ? spec('File', escape(r.trained_display || r.trained_path)
           + (r.trained_there ? `  ·  ${bytes(r.trained_bytes)}` : '  (not there)'),
           r.trained_there ? '' : 'bad') : ''}
       ${r.started_at ? spec('Started', ago(r.started_at)) : ''}
@@ -584,7 +584,8 @@ actions['recipe-test'] = (e) => guard(async () => {
   const r = recipesList().find((x) => x.id === e.dataset.id);
   if (!r) return;
   const seat = await call('lab.test', { id: r.id });
-  openModal({ kind: 'tester', sticky: true, id: r.id, name: r.name, file: r.trained_path,
+  openModal({ kind: 'tester', sticky: true, id: r.id, name: r.name,
+              file: r.trained_display || r.trained_path,
               seat: seat.seat, from: seat.from,
               // However the window is closed, the seat goes with it.
               onClose: () => { call('lab.test.stop').catch(() => {}); } });

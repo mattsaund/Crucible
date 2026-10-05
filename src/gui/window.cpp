@@ -250,8 +250,19 @@ int App::run() {
     // everything that is not the window's own thread reaches the screen.
     std::string title = "Crucible";
     Pusher*     pushing = nullptr;
-    Pusher      pusher([this, &view, &surface, &title, &pushing] {
-        view.dispatch([this, &view, &surface, &title, &pushing] {
+    Pusher      pusher([this, &view, &surface, &title, &pushing, gate] {
+        view.dispatch([this, &view, &surface, &title, &pushing, gate] {
+            // The window may have closed since this was queued. A webview
+            // drains its queue on the way out, so this can run after the
+            // window it would draw into is gone -- and after the pusher that
+            // queued it is, too. Closing the window while a model was still
+            // loading did exactly that, and took the process down with it.
+            // The gate is closed the moment the window is, on this thread,
+            // so reading it here needs no lock.
+            if (!gate->open) {
+                return;
+            }
+
             // On the window's thread, which is the session's thread: the one
             // place the jobs a frame loop used to do can still be done.
             housekeeping();
@@ -293,14 +304,21 @@ int App::run() {
     // page's side symmetrical with Python's. The page parses it once more;
     // that is cheap and it keeps one encoder.
     view.bind("rpc",
-              [this, &view, surface, gate](const std::string& id, const std::string& arguments,
-                                           void*) {
+              [this, &view, &pusher, surface, gate](const std::string& id,
+                                                    const std::string& arguments, void*) {
                   const json request = first_argument(arguments);
                   api::Prepared call =
                       surface->prepare(request.is_string() ? request.get<std::string>()
                                                            : std::string());
                   if (!call.background) {
                       view.resolve(id, 0, json(surface->run(call)).dump());
+                      // An action may have changed something only the
+                      // session knows -- a folder now waiting to be trusted,
+                      // a seat taken away -- and nothing else would say so.
+                      // The engine wakes the page when *it* changes; this is
+                      // the same courtesy for everything that is not the
+                      // engine. Several in a row still make one redraw.
+                      pusher.wake();
                       return;
                   }
                   // A lookup: slow, and touching nothing of the session's.
@@ -385,11 +403,12 @@ int App::run() {
 
     // --- closing --------------------------------------------------------------
     //
-    // In this order. The gate first, so no worker speaks to the webview from
-    // here on; then the engine, whose thread calls the wake; and only then is
-    // the wake taken away. The pusher and the webview go as this function
-    // returns, pusher first, which is the order they were declared in
-    // reversed.
+    // In this order. The gate first, so nothing speaks to the webview from
+    // here on -- not a worker with an answer, and not a redraw still sitting
+    // in the webview's own queue; then the engine, whose thread calls the
+    // wake; and only then is the wake taken away. The pusher and the webview
+    // go as this function returns, pusher first, which is the order they were
+    // declared in reversed.
     {
         const std::lock_guard<std::mutex> lock(gate->mutex);
         gate->open = false;

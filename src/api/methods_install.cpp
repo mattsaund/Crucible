@@ -18,6 +18,7 @@
 #include "crucible/lab/pyenv.hpp"
 #include "crucible/runtime/backend.hpp"
 #include "crucible/runtime/registry.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
 
 namespace crucible::api {
@@ -114,7 +115,9 @@ Reply runtimes(const json&, const Scene&) {
         });
     }
     return good(json{{"runtimes",  std::move(listed)},
-                     {"directory", paths::runtimes_dir().string()},
+                     // For reading, not for opening: written with ~ for the
+                     // home directory, as the top bar writes the project.
+                     {"directory", format::short_path(paths::runtimes_dir())},
                      {"bytes",     total},
                      // False for a build with its backend compiled in, where
                      // there is nothing to install and the page says so.
@@ -228,7 +231,7 @@ Reply trainer(const json&, const Scene&) {
                      {"installed_at", status.installed_at},
                      {"bytes",  status.bytes},
                      {"note",   status.note},
-                     {"directory", lab::pyenv::root().string()},
+                     {"directory", format::short_path(lab::pyenv::root())},
                      {"usable_gpus",   status.usable_gpus},
                      {"unusable_gpus", status.unusable_gpus}});
 }

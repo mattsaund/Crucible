@@ -180,7 +180,8 @@ std::string Surface::snapshot() {
                  {"display", root.empty() ? std::string() : format::short_path(root)},
                  {"name", root.filename().empty() ? root.string() : root.filename().string()}};
     if (!asking.empty()) {
-        project["pending_trust"] = asking.string();
+        project["pending_trust"]   = asking.string();
+        project["pending_display"] = format::short_path(asking);
     }
     out["project"] = std::move(project);
 
