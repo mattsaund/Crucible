@@ -25,6 +25,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -48,7 +49,9 @@ extern const unsigned int  kMarkSvg_size;
 #include <webview/webview.h>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/util/format.hpp"
 #include "dialogs.hpp"
+#include "drops.hpp"
 #endif
 
 #if defined(CRUCIBLE_HAS_WEB_INDEX)
@@ -63,33 +66,13 @@ extern const unsigned int  kPageHtml_size;
 namespace crucible::gui {
 namespace {
 
-/// base64, because a data: URI is the only way to hand a webview a font that
-/// is not on disk anywhere.
-std::string base64(const unsigned char* data, std::size_t size) {
-    static constexpr char kAlphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((size + 2) / 3 * 4);
-    for (std::size_t i = 0; i < size; i += 3) {
-        const unsigned int a = data[i];
-        const unsigned int b = i + 1 < size ? data[i + 1] : 0;
-        const unsigned int c = i + 2 < size ? data[i + 2] : 0;
-        const unsigned int triple = (a << 16) | (b << 8) | c;
-        out += kAlphabet[(triple >> 18) & 0x3F];
-        out += kAlphabet[(triple >> 12) & 0x3F];
-        out += i + 1 < size ? kAlphabet[(triple >> 6) & 0x3F] : '=';
-        out += i + 2 < size ? kAlphabet[triple & 0x3F] : '=';
-    }
-    return out;
-}
-
 /// The flame, as a data URI the page can put in an <img>. Empty when this
 /// build has no artwork compiled in, and the page then shows the wordmark on
 /// its own, which is what it falls back to.
 std::string mark_data_uri() {
 #if defined(CRUCIBLE_HAS_EMBEDDED_MARK)
     return "data:image/svg+xml;base64,"
-         + base64(art::kMarkSvg, art::kMarkSvg_size);
+         + format::base64(std::string_view(reinterpret_cast<const char*>(art::kMarkSvg), art::kMarkSvg_size));
 #else
     return {};
 #endif
@@ -103,7 +86,8 @@ std::string font_faces() {
     const auto face = [](const char* weight, const unsigned char* data, unsigned int size) {
         return std::string("@font-face{font-family:'JetBrains Mono';font-weight:")
              + weight + ";font-display:block;src:url(data:font/ttf;base64,"
-             + base64(data, size) + ") format('truetype')}";
+             + format::base64(std::string_view(reinterpret_cast<const char*>(data), size))
+             + ") format('truetype')}";
     };
     return "<style>" + face("400", fonts::kRegular, fonts::kRegular_size)
                      + face("700", fonts::kBold,    fonts::kBold_size) + "</style>";
@@ -349,6 +333,7 @@ int App::run() {
                       request.title       = wanted.value("title", std::string{});
                       request.start       = wanted.value("start", std::string{});
                       request.filter_name = wanted.value("filter", std::string{});
+                      request.multiple    = wanted.value("multiple", false);
                       if (wanted.contains("extensions") && wanted["extensions"].is_array()) {
                           for (const json& one : wanted["extensions"]) {
                               if (one.is_string()) {
@@ -364,12 +349,38 @@ int App::run() {
                                     if (!gate->open) {
                                         return;
                                     }
+                                    if (answer.paths.empty() && !answer.path.empty()) {
+                                        answer.paths.push_back(answer.path);
+                                    }
                                     view.resolve(id, 0,
                                                  json{{"supported", answer.supported},
-                                                      {"path", answer.path}}.dump());
+                                                      {"path", answer.path},
+                                                      {"paths", answer.paths}}.dump());
                                 });
               },
               nullptr);
+
+    // --- files dropped on the window -----------------------------------------
+    //
+    // The page draws the overlay and takes the drop whatever happens here.
+    // Where the platform says where dropped files are, the page is told the
+    // paths and attaches those; where it does not, the page is told so before
+    // it loads and keeps copies of what it is handed instead. See drops.hpp.
+    //
+    // CRUCIBLE_PAGE_DROPS=1 takes the other road on a machine that has this
+    // one: the road Windows and macOS take, and a GTK 4 build would.
+    const char* page_drops = std::getenv("CRUCIBLE_PAGE_DROPS");
+    const auto  widget     = view.widget();
+    const bool paths_on_drop =
+        (page_drops == nullptr || *page_drops == '\0')
+        && drops::watch(widget.ok() ? widget.value() : nullptr,
+                        [&view, gate](std::vector<std::string> paths) {
+                            if (gate->open) {
+                                view.eval("window.crucibleDropped && window.crucibleDropped("
+                                          + json(paths).dump() + ")");
+                            }
+                        });
+    view.init(std::string("window.crucibleNativeDrops = ") + (paths_on_drop ? "true" : "false") + ";");
 
     engine_->start();
 

@@ -149,6 +149,13 @@ struct Provider {
 /// The slug for a provider name: lower case, dashes, nothing else.
 std::string provider_id_from_name(std::string_view name);
 
+/// Which API shape a provider at `base_url` speaks, from the address alone:
+/// "anthropic" for Anthropic's own host, "openai" for everything else -- which
+/// is what everything else speaks. An empty address is Anthropic's default
+/// only when nothing says otherwise, so it reads as "openai" here; the caller
+/// that means Anthropic says so.
+std::string provider_kind_for(std::string_view base_url);
+
 /// A service worth having a button for.
 ///
 /// One table, used three ways: the settings screen offers each as a starting

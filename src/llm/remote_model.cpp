@@ -104,6 +104,23 @@ bool is_effort(std::string_view effort) {
 
 namespace detail {
 
+namespace {
+
+/// A message's text, with a line saying its pictures were left out when the
+/// provider has refused pictures -- this model takes none, or not that one --
+/// so that "[Picture attached: chart.png]" is not followed by a model
+/// describing a chart it was never sent.
+std::string text_of(const ChatMessage& message, const Quirks& quirks) {
+    if (message.images.empty() || !quirks.no_images) {
+        return message.content;
+    }
+    return message.content + "\n\n[The picture" + (message.images.size() == 1 ? " was" : "s were")
+         + " not sent: the provider would not take " + (message.images.size() == 1 ? "it" : "them")
+         + ".]";
+}
+
+}  // namespace
+
 std::string anthropic_body(std::string_view model, const ChatRequest& request,
                            const ModelFacts& facts, const Quirks& quirks) {
     // The Messages API takes the system prompt as a field of its own and the
@@ -111,10 +128,20 @@ std::string anthropic_body(std::string_view model, const ChatRequest& request,
     // that already; this closes the gap -- system messages lifted out, a run
     // of same-role messages joined, and anything empty dropped, because an
     // empty text block is a 400.
+    //
+    // A message with pictures is a list of blocks, the pictures before the
+    // text that asks about them; one without is a plain string, as it always
+    // was.
     std::string system;
     json        turns = json::array();
+    const auto blocks_of = [](json& content) {
+        if (content.is_string()) {
+            content = json::array({json{{"type", "text"}, {"text", content.get<std::string>()}}});
+        }
+    };
     for (const ChatMessage& message : request.messages) {
-        if (trimmed(message.content).empty()) {
+        const bool with_images = !message.images.empty() && message.role == "user" && !quirks.no_images;
+        if (trimmed(message.content).empty() && !with_images) {
             continue;
         }
         if (message.role == "system") {
@@ -122,12 +149,32 @@ std::string anthropic_body(std::string_view model, const ChatRequest& request,
             continue;
         }
         const std::string role = message.role == "assistant" ? "assistant" : "user";
+        json content = text_of(message, quirks);
+        if (with_images) {
+            content = json::array();
+            for (const ChatImage& image : message.images) {
+                content.push_back(json{{"type", "image"},
+                                       {"source", json{{"type", "base64"},
+                                                       {"media_type", image.mime},
+                                                       {"data", image.data}}}});
+            }
+            if (!trimmed(message.content).empty()) {
+                content.push_back(json{{"type", "text"}, {"text", message.content}});
+            }
+        }
         if (!turns.empty() && turns.back()["role"] == role) {
-            std::string joined = turns.back()["content"].get<std::string>();
-            joined += "\n\n" + message.content;
-            turns.back()["content"] = std::move(joined);
+            json& previous = turns.back()["content"];
+            if (previous.is_string() && content.is_string()) {
+                previous = previous.get<std::string>() + "\n\n" + content.get<std::string>();
+            } else {
+                blocks_of(previous);
+                blocks_of(content);
+                for (json& block : content) {
+                    previous.push_back(std::move(block));
+                }
+            }
         } else {
-            turns.push_back(json{{"role", role}, {"content", message.content}});
+            turns.push_back(json{{"role", role}, {"content", std::move(content)}});
         }
     }
 
@@ -177,10 +224,25 @@ std::string openai_body(std::string_view model, const ChatRequest& request,
                         const Quirks& quirks) {
     json messages = json::array();
     for (const ChatMessage& message : request.messages) {
-        if (trimmed(message.content).empty()) {
+        const bool with_images = !message.images.empty() && message.role == "user" && !quirks.no_images;
+        if (trimmed(message.content).empty() && !with_images) {
             continue;
         }
-        messages.push_back(json{{"role", message.role}, {"content", message.content}});
+        if (!with_images) {
+            messages.push_back(json{{"role", message.role}, {"content", text_of(message, quirks)}});
+            continue;
+        }
+        // The text first and the pictures after, each as a data URL: the one
+        // form every server that takes pictures this way accepts.
+        json content = json::array();
+        if (!trimmed(message.content).empty()) {
+            content.push_back(json{{"type", "text"}, {"text", message.content}});
+        }
+        for (const ChatImage& image : message.images) {
+            content.push_back(json{{"type", "image_url"},
+                                   {"image_url", json{{"url", "data:" + image.mime + ";base64," + image.data}}}});
+        }
+        messages.push_back(json{{"role", message.role}, {"content", std::move(content)}});
     }
 
     json body;
@@ -339,6 +401,13 @@ bool adapt(Quirks& quirks, std::string_view kind, std::string_view message) {
         }
     };
 
+    // A model that cannot take pictures says so in every wording there is --
+    // "image input is not supported", "image_url is only supported by certain
+    // models", "does not support images" -- and all of them say "image".
+    if (contains(said, "image")) {
+        learn(quirks.no_images);
+    }
+
     if (kind == "anthropic") {
         if (contains(said, "fallback"))      { learn(quirks.no_fallbacks); }
         if (contains(said, "cache_control")) { learn(quirks.no_cache_control); }
@@ -455,11 +524,15 @@ std::vector<std::string> model_ids(std::string_view body) {
 int estimate_tokens(const std::vector<ChatMessage>& messages) {
     // Three bytes a token is on the heavy side for English and about right
     // for code; a few more per message for the role and the separators.
+    // A picture is about as many tokens as its pixels over 750, which for one
+    // the window has shrunk to fit is at most about sixteen hundred.
     std::size_t bytes = 0;
+    std::size_t images = 0;
     for (const ChatMessage& message : messages) {
         bytes += message.content.size();
+        images += message.images.size();
     }
-    return static_cast<int>(bytes / 3 + messages.size() * 8 + 16);
+    return static_cast<int>(bytes / 3 + messages.size() * 8 + images * 1600 + 16);
 }
 
 }  // namespace detail
@@ -559,6 +632,11 @@ public:
     /// llama.cpp, half the hosts serving DeepSeek-R1 -- writes `<think>` into
     /// the answer exactly as it would on this machine.
     bool reasons_inline() const override { return provider_.kind != "anthropic"; }
+
+    /// Until the provider refuses one. The refusal is a 400 that names the
+    /// picture, which adapt() learns from, and the request goes again with
+    /// the pictures left out -- the text still says what they were.
+    bool sees_images() const override { return !quirks_.no_images; }
 
 private:
     bool official_anthropic() const {

@@ -7,10 +7,10 @@
 // some data, a target -- filled in a step at a time and then run.
 
 const STAGES = [
-  ['finished', 'FINISHED',      'Tested and kept. These are offered to every seat.'],
-  ['testing',  'READY TO TEST', 'Trained. Talk to one before you keep it.'],
-  ['training', 'TRAINING',      'Started. Open one for its progress.'],
-  ['draft',    'DRAFTS',        'Not started.'],
+  ['finished', 'FINISHED'],
+  ['testing',  'READY TO TEST'],
+  ['training', 'TRAINING'],
+  ['draft',    'DRAFTS'],
 ];
 
 const METHODS = [
@@ -45,11 +45,10 @@ function specLine(r) {
 function createList() {
   if (!state.recipes) return '<p class="lede">Reading...</p>';
   const all = recipesList();
-  const groups = STAGES.map(([stage, title, note]) => {
+  const groups = STAGES.map(([stage, title]) => {
     const rows = all.filter((r) => r.stage === stage);
     if (!rows.length) return '';
-    return `<h2 style="margin-top:1.6rem">${title}</h2>
-      <p class="lede" style="margin-bottom:.8rem">${note}</p>` + rows.map((r) => `
+    return `<h2 style="margin-top:1.8rem">${title}</h2>` + rows.map((r) => `
       <div class="card pick" data-act="recipe-open" data-id="${escape(r.id)}">
         <div class="title"><strong>${escape(r.name || '(unnamed)')}</strong>
           <span class="tag">${escape(r.stage_text)}</span>
@@ -59,13 +58,10 @@ function createList() {
         <div class="hint">${escape(specLine(r))}</div>
       </div>`).join('');
   }).join('');
-  return `<div class="row"><h1 style="flex:1">Experts</h1>
-      <button class="action" data-act="recipe-new" title="Walks through it a step at a time">New expert</button></div>
-    <p class="lede">Fine-tunes made here. One subject each, and the delegator learns to route to it.
-      To use a model you already have as it is, add it on <button class="link" data-act="new-expert">a seat</button> instead.</p>
-    ${groups || `<p class="lede">Nothing made yet.</p><p class="lede">An expert here is a small model
-      taught one subject: pick a base, point it at examples of the subject, and train. It takes
-      minutes to hours depending on the card, and what comes out is a file that is yours.</p>`}`;
+  return `<h1>Create</h1>
+    <p class="lede">Fine-tunes made here. One subject each, and the delegator learns to route to it.</p>
+    <button class="action" data-act="recipe-new" title="Walks through it a step at a time">New expert</button>
+    ${groups}`;
 }
 
 // --- one recipe ---------------------------------------------------------------------------
@@ -177,7 +173,7 @@ function createDetail(r) {
         <button class="action" data-act="recipe-edit" data-id="${escape(r.id)}" data-step="4">Edit</button></div>`;
   }
 
-  return `<button class="link" data-act="recipe-close">&larr; All experts</button>
+  return `<button class="link" data-act="recipe-close">&larr; Create</button>
     <div class="row" style="margin-top:.6rem"><h1 style="flex:1">${escape(r.name || '(unnamed)')}
         <span class="tag">${escape(r.stage_text)}</span></h1>
       <button class="link" data-act="recipe-delete" data-id="${escape(r.id)}"

@@ -215,8 +215,9 @@ state.snapshot = {
                     detail: 'E assert 1 == 2' }] },
 };
 state.models = { directory: '/models', models: [
-  { name: 'physics.gguf', path: '/models/physics.gguf', bytes: 1200000000, made_here: false },
-  { name: 'Kitchen Physicist', path: '/lab/kitchen.gguf', bytes: 900000000, made_here: true, purpose: 'kitchen physics' }] };
+  { name: 'physics.gguf', path: '/models/physics.gguf', bytes: 1200000000 },
+  { name: 'kitchen-physicist-Q4_K_M.gguf', path: '/models/kitchen-physicist-Q4_K_M.gguf', bytes: 900000000 }],
+  display: '/models' };
 state.providers = {
   providers: [{ id: 'anthropic', name: 'Anthropic', kind: 'anthropic', base_url: '', endpoint: 'https://api.anthropic.com',
                 on_your_network: false, key: { source: 'convention', present: true, variable: 'ANTHROPIC_API_KEY' },
@@ -482,6 +483,227 @@ TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
     CHECK(side.find(">50%<") != std::string::npos);
     // A seat answered somewhere else is marked as one.
     CHECK(side.find("Answered by Anthropic") != std::string::npos);
+    // Turned with the SVG's own transform, about the circle's own center.
+    // A CSS rotation put the arc somewhere else in WebKit, half off the ring.
+    CHECK(side.find("transform=\"rotate(-90 16 16)\"") != std::string::npos);
+}
+
+TEST(the_provider_dialog_asks_for_an_address_a_key_and_a_model) {
+    const std::string modal = page().eval(
+        "modalView({ kind: 'provider', id: '', name: '', preset: '', base_url: '', api_key: '',"
+        " model: '', listed: [] })");
+    CHECK(modal.find("Endpoint address") != std::string::npos);
+    CHECK(modal.find("API key") != std::string::npos);
+    CHECK(modal.find("id=\"pv-model\"") != std::string::npos);
+    // A template is a dropdown now, and the wire format is not asked at all.
+    CHECK(modal.find("id=\"pv-template\"") != std::string::npos);
+    CHECK(modal.find("It speaks") == std::string::npos);
+    CHECK(modal.find("class=\"chip") == std::string::npos);
+}
+
+TEST(hardware_has_no_output_card_choice_and_tools_no_edit_checkbox) {
+    CHECK(page().eval("(state.settingsPage = 'hardware', views.settings())")
+              .find("holds the output") == std::string::npos);
+    CHECK(page().eval("(state.settingsPage = 'tools', views.settings())")
+              .find("Apply edits without asking") == std::string::npos);
+    // And the cook's box has the same Auto button the chat's has.
+    CHECK(page().eval("views.cook()").find("data-act=\"auto-edits\"") != std::string::npos);
+}
+
+TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
+    // With the cook out of the way, which would shut the chat's box.
+    const char* const with_tiles =
+        "(function () { var cook = state.snapshot.cook; state.snapshot.cook = null;"
+        " state.attached.chat = ["
+        "  { path: '/p/Resume.docx', name: 'Resume.docx', kind: 'document', label: 'DOCX', bytes: 5000 },"
+        "  { path: '/p/sky.png', name: 'sky.png', kind: 'image', label: 'PNG',"
+        "    thumb: 'data:image/jpeg;base64,AAAA', image: { mime: 'image/png', data: 'AAAA' } },"
+        "  { path: '/p/r.pdf', name: 'r.pdf', kind: 'document', label: 'PDF', preview: 'Summary <b>x</b>' },"
+        "  { path: '/p/src', name: 'src', kind: 'folder', label: 'FOLDER', files: 12 },"
+        "  { path: '/p/x.bin', name: 'x.bin', kind: 'file', label: 'BIN', error: 'not text' },"
+        "  { path: '/p/late.md', name: 'late.md', kind: 'file', label: 'MD', loading: true }];"
+        " state.attachMenu = 'chat';"
+        " var out = views.chat(); state.snapshot.cook = cook; return out; })()";
+    CHECK_EQ(drawn(with_tiles), "ok");
+    const std::string chat = page().eval(with_tiles);
+    // The plus, open, with its two items.
+    CHECK(chat.find("data-act=\"attach-menu\"") != std::string::npos);
+    CHECK(chat.find("aria-expanded=\"true\"") != std::string::npos);
+    CHECK(chat.find("Add files or photos") != std::string::npos);
+    CHECK(chat.find("Ctrl+U") != std::string::npos);
+    CHECK(chat.find("Add folder") != std::string::npos);
+    // A tile of each kind, each with a way to take it out again.
+    CHECK(chat.find(">DOCX<") != std::string::npos);
+    CHECK(chat.find("class=\"tile picture") != std::string::npos);
+    CHECK(chat.find("<img src=\"data:image/jpeg;base64,AAAA\"") != std::string::npos);
+    CHECK(chat.find("class=\"page-text\">Summary &lt;b&gt;x&lt;/b&gt;") != std::string::npos);
+    CHECK(chat.find("12 files") != std::string::npos);
+    CHECK(chat.find("tile doc wrong") != std::string::npos);
+    CHECK(chat.find("reading...") != std::string::npos);
+    std::size_t removable = 0;
+    for (std::size_t at = chat.find("data-act=\"attach-remove\""); at != std::string::npos;
+         at = chat.find("data-act=\"attach-remove\"", at + 1)) {
+        ++removable;
+    }
+    CHECK_EQ(removable, std::size_t{6});
+
+    // Nothing is sent while one is still being read; then each goes as its
+    // path, and the picture with the bytes the window shrank it to.
+    CHECK_EQ(page().eval("String(attachmentsFor('chat'))"), "null");
+    CHECK_EQ(page().eval("(state.attached.chat[5].loading = false,"
+                         " JSON.stringify(attachmentsFor('chat').slice(0, 2)))"),
+             "[{\"path\":\"/p/Resume.docx\"},{\"path\":\"/p/sky.png\",\"image\":{\"mime\":\"image/png\",\"data\":\"AAAA\"}}]");
+    page().eval("(state.attached.chat = [], state.attachMenu = null)");
+
+    // The cook keeps its own: what is in Chat's box is not in Cook's.
+    CHECK(page().eval("views.cook()").find("class=\"tiles\"") == std::string::npos);
+}
+
+TEST(a_sent_prompt_and_a_goal_show_what_was_attached) {
+    const std::string chat = page().eval(
+        "(function () { var t = state.snapshot.turns[0]; t.attachments = ["
+        " { path: '/p/a.pdf', name: 'a <b>.pdf', label: 'PDF', kind: 'document' }];"
+        " turnCache.clear(); var out = views.chat(); delete t.attachments; turnCache.clear(); return out; })()");
+    CHECK(chat.find("class=\"attached\"") != std::string::npos);
+    CHECK(chat.find("a &lt;b&gt;.pdf") != std::string::npos);
+    const std::string cook = page().eval(
+        "(function () { var c = state.snapshot.cook; c.attachments = ["
+        " { path: '/p/src', name: 'src', label: 'FOLDER', kind: 'folder' }];"
+        " var out = views.cook(); delete c.attachments; return out; })()");
+    CHECK(cook.find(">FOLDER<") != std::string::npos);
+}
+
+TEST(the_drop_overlay_says_where_a_drop_goes_or_why_it_cannot) {
+    // The busy state has a cook running and asking, which shuts both boxes
+    // -- the answer goes in, and nothing else.
+    CHECK_EQ(page().eval("dropTarget().why"), "Answer the cook's question first");
+    CHECK(page().eval("dropView(dropTarget())").find("Answer the cook&#39;s question first") != std::string::npos);
+    CHECK_EQ(page().eval("(function () { var s = state.snapshot.cook.state; state.snapshot.cook.state = 'working';"
+                         " var why = dropTarget().why; state.snapshot.cook.state = s; return why; })()"),
+             "A cook is running -- it has the experts");
+    const char* const without_cook =
+        "(function (what) { var cook = state.snapshot.cook, view = state.view;"
+        " state.snapshot.cook = null; var out = what();"
+        " state.snapshot.cook = cook; state.view = view; return out; })";
+    CHECK_EQ(page().eval(std::string(without_cook)
+                         + "(function () { state.view = 'cook'; return dropTarget().mode; })"),
+             "cook");
+    const std::string from_history = page().eval(
+        std::string(without_cook) + "(function () { state.view = 'history'; return dropView(dropTarget()); })");
+    CHECK(from_history.find("Drop files or folders here") != std::string::npos);
+    CHECK(from_history.find("They go in the box on Chat") != std::string::npos);
+    CHECK_EQ(page().eval(std::string(without_cook)
+                         + "(function () { var open = state.snapshot.project.open;"
+                           " state.snapshot.project.open = false; var why = dropTarget().why;"
+                           " state.snapshot.project.open = open; return why; })"),
+             "Open a project first");
+}
+
+TEST(a_drop_the_window_cannot_place_is_copied_in_pieces_and_attached) {
+    // The road WebView2 and WKWebView take, with stand-ins for what they hand
+    // the page: a folder with a file, a dependency folder, a hidden file and
+    // a picture in it, and a file beside it.
+    const std::string started = page().eval(R"JS(
+      (function () {
+        window.__calls = [];
+        window.__keptCall = call; window.__keptRender = render;
+        render = function () {};
+        if (typeof btoa === 'undefined') {
+          window.btoa = function (text) {
+            var a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = '';
+            for (var i = 0; i < text.length; i += 3) {
+              var n = (text.charCodeAt(i) << 16) | ((text.charCodeAt(i + 1) || 0) << 8) | (text.charCodeAt(i + 2) || 0);
+              out += a[(n >> 18) & 63] + a[(n >> 12) & 63]
+                   + (i + 1 < text.length ? a[(n >> 6) & 63] : '=') + (i + 2 < text.length ? a[n & 63] : '=');
+            }
+            return out;
+          };
+        }
+        call = function (method, params) {
+          window.__calls.push([method, params]);
+          if (method === 'attach.store') {
+            return Promise.resolve({ path: '/kept/' + params.path, top: '/kept/' + params.path.split('/')[0] });
+          }
+          if (method === 'attach.inspect') {
+            return Promise.resolve({ items: params.paths.map(function (p) {
+              return { path: p, name: p.split('/').pop(), kind: p === '/kept/proj' ? 'folder' : 'text', label: 'X' };
+            }) });
+          }
+          return Promise.resolve({});
+        };
+        function file(name, text) {
+          var bytes = Array.from(text).map(function (c) { return c.charCodeAt(0); });
+          return { isFile: true, isDirectory: false, name: name, file: function (ok) { ok({
+            size: bytes.length,
+            slice: function (a, b) { return { arrayBuffer: function () {
+              return Promise.resolve(new Uint8Array(bytes.slice(a, b)).buffer); } }; } }); } };
+        }
+        function folder(name, children) {
+          return { isFile: false, isDirectory: true, name: name, createReader: function () {
+            var given = false;
+            return { readEntries: function (ok) { var out = given ? [] : children; given = true; ok(out); } };
+          } };
+        }
+        state.attached.chat = [];
+        window.__done = false;
+        keepDropped('chat', [
+          folder('proj', [file('b.md', 'hello'), folder('node_modules', [file('x.js', 'no')]),
+                          file('.env', 'secret'), file('logo.png', 'png'), file('a.txt', '')]),
+          file('notes.txt', 'hi')
+        ]).then(function () { window.__done = true; }, function (e) { window.__done = 'failed: ' + e; });
+        return 'started';
+      })())JS");
+    CHECK_EQ(started, "started");
+    CHECK_EQ(page().eval("String(window.__done)"), "true");
+    // The folder is made first, then what is in it in name order -- without
+    // node_modules, the hidden file or the picture -- and then the file.
+    CHECK_EQ(page().eval(R"JS(JSON.stringify(window.__calls.filter(function (c) { return c[0] === 'attach.store'; })
+                           .map(function (c) { return [c[1].path, c[1].data, !!c[1].folder, !!c[1].append]; })))JS"),
+             R"([["proj","",true,false],["proj/a.txt","",false,false],["proj/b.md","aGVsbG8=",false,false],["notes.txt","aGk=",false,false]])");
+    // Every piece of one drop goes to the same place.
+    CHECK_EQ(page().eval("String(new Set(window.__calls.filter(function (c) { return c[0] === 'attach.store'; })"
+                         ".map(function (c) { return c[1].batch; })).size)"),
+             "1");
+    // And what is attached is the copies, looked at like anything else.
+    CHECK_EQ(page().eval("JSON.stringify(state.attached.chat.map(function (t) { return [t.path, t.kind, !!t.loading]; }))"),
+             R"([["/kept/proj","folder",false],["/kept/notes.txt","text",false]])");
+    page().eval("(call = window.__keptCall, render = window.__keptRender, state.attached.chat = [])");
+}
+
+TEST(an_allowed_write_stays_drawn_the_way_it_was_offered) {
+    // A new file: the code itself, colored, numbered, on the green of an
+    // addition -- not a gray unified diff with a header and a + on each line.
+    const std::string created = page().eval(
+        "writtenBlock('@@ line 1 @@\\n+def greet(name):\\n+    return name\\n', 'src/hello.py')");
+    CHECK(created.find("code-add") != std::string::npos);
+    CHECK(created.find(">python<") != std::string::npos);
+    CHECK(created.find("@@") == std::string::npos);
+    CHECK(created.find("class=\"kw\"") != std::string::npos || created.find("<span") != std::string::npos);
+
+    // An edit: the lines that moved, matched up again, so the line between
+    // two changes that neither touched reads as left alone.
+    const std::string changed = page().eval(
+        "writtenBlock('@@ line 1 @@\\n-def greet(name):\\n-\\n-if main:\\n-    print(1)\\n"
+        "+def greet(name, n):\\n+\\n+if main:\\n+    print(2)\\n', 'hello.py')");
+    CHECK(changed.find("from line 1") != std::string::npos);
+    CHECK(changed.find("+2  \xE2\x88\x92" "2") != std::string::npos);
+    CHECK(changed.find("dl dl-same") != std::string::npos);
+
+    // In a turn: a write's action draws this, anything else its output.
+    CHECK(page().eval("actionBody({ summary: 'created a.py', body: '@@ line 1 @@\\n+x = 1\\n', language: 'a.py' })")
+              .find("code-add") != std::string::npos);
+    CHECK(page().eval("actionBody({ summary: 'ran ls', body: 'a.py\\nb.py', language: '' })")
+              .find("code-add") == std::string::npos);
+}
+
+TEST(the_line_beside_an_expert_says_how_it_was_routed_only_when_unusual) {
+    CHECK(page().eval("views.chat()").find("router model") == std::string::npos);
+    CHECK(page().eval("turnWho({ route: { expert: 'physics', confidence: 0.93, source: 'router model' }, load_ms: 2300 })")
+              .find("93%") != std::string::npos);
+    CHECK(page().eval("turnWho({ route: { expert: 'physics', confidence: 1, source: 'pinned' } })")
+              .find(">pinned<") != std::string::npos);
+    CHECK(page().eval("turnWho({ route: { expert: 'physics', confidence: 0.4, source: 'fallback' } })")
+              .find(">fallback<") != std::string::npos);
 }
 
 TEST(what_came_from_a_model_is_never_markup) {
@@ -499,8 +721,8 @@ TEST(every_dialog_draws) {
              "{ kind: 'confirm', title: 'Sure?', body: 'It goes.', yes: 'Yes', no: 'No' }",
              "{ kind: 'new-expert', name: 'Rust', description: 'async', model: 'physics.gguf', provider: '' }",
              "{ kind: 'new-expert', name: 'C', description: 'd', model: 'claude-opus-5-5', provider: 'anthropic', error: 'taken' }",
-             "{ kind: 'provider', id: '', name: '', api: 'openai', base_url: '', api_key: '', models: '', preset: 'DeepSeek' }",
-             "{ kind: 'provider', id: 'anthropic', name: 'Anthropic', api: 'anthropic', base_url: '', api_key: '', models: 'a\\nb', preset: '', has_key: true }",
+             "{ kind: 'provider', id: '', name: '', preset: 'DeepSeek', base_url: 'https://api.deepseek.com/v1', api_key: '', model: '', listed: [] }",
+             "{ kind: 'provider', id: 'anthropic', name: 'Anthropic', preset: '', base_url: 'https://api.anthropic.com', api_key: '', model: 'claude-opus-5-5', listed: ['claude-opus-5-5', 'claude-haiku-4-5'], has_key: true, note: 'listed' }",
              "{ kind: 'browser', wanted: { folder: true, title: 'Choose' }, path: '/home', "
              "  listing: { path: '/home', parent: '/', home: '/home/me', entries: ['me'], files: [{ name: 'a.gguf', bytes: 5 }] } }",
              "{ kind: 'browser', wanted: { title: 'Choose' }, path: '', listing: null }",

@@ -20,6 +20,7 @@ JetBrains Mono's license requires, since the font is inside the binary.
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file, and is the API's encoder |
 | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | `2.304` | SIL OFL 1.1 | the interface typeface, compiled in rather than looked for |
 | [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the interface in the platform's own webview |
+| [miniz](https://github.com/richgel999/miniz) | `3.1.2` | MIT | opens the zip inside a `.docx`, `.xlsx`, `.pptx` or OpenDocument file attached to a prompt, and inflates a PDF's streams |
 
 One of these is not MIT, which is worth stating plainly rather than leaving a
 reader to notice. JetBrains Mono is under the SIL Open Font License, which
@@ -57,6 +58,29 @@ it ships with the system; on Linux the installer checks for it.
 Request headers and bodies are handed to it in a file only this user can read
 rather than on its command line, so a key is never somewhere another process
 on the machine can see it.
+
+## What an attachment is read with
+
+The documents attached to a prompt are read by Crucible's own code: miniz
+above for the formats that are zip files, and readers in `src/tools/` for
+PDF, RTF and the Office formats from before 2007. Two programs are used
+instead when the machine already has them, because they read more of the
+files in the wild: `pdftotext` (Poppler, GPL) for a PDF, and on Linux
+`catdoc` (GPL) for an old Word, Excel or PowerPoint file that the built-in
+reader finds nothing in -- `textutil`, part of macOS, does that job there.
+Each is run as a separate program, the way `curl` is; none is distributed
+with Crucible or linked into it.
+
+## NVIDIA's CUDA libraries
+
+A CUDA runtime downloaded from **Settings → Runtimes** needs two libraries
+from NVIDIA that the driver does not include: the CUDA runtime (`cudart`) and
+cuBLAS. Crucible fetches them from NVIDIA's own redistribution site,
+`developer.download.nvidia.com`, at the version the runtime was built
+against, and puts them beside it. They are NVIDIA's, under NVIDIA's license
+for redistributable CUDA components; **Crucible does not carry them**, and a
+machine that already has them on its library path uses its own. Removing the
+CUDA runtime removes them too.
 
 ## Providers
 

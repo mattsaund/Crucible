@@ -24,9 +24,8 @@ function cookSteps(steps, from) {
       <span class="tag">${escape(expertName(step.expert))}</span>`;
     if (!step.detail) return `<div class="step"><div class="step-head">${head}</div></div>`;
     const file = (step.changed || [])[0] || '';
-    const lang = file ? (file.match(/\.([A-Za-z0-9+#]+)$/) || [, ''])[1] : '';
     return `<details class="step"><summary class="step-head">${head}</summary>${
-      codeBlock(step.detail, step.kind === 'write' ? 'diff' : lang)}</details>`;
+      step.kind === 'write' ? writtenBlock(step.detail, file) : codeBlock(step.detail, languageOf(file))}</details>`;
   }).join('');
 }
 
@@ -63,6 +62,7 @@ function cookBody(cook, live) {
   return `<div class="goal-card">
         <div class="caption">GOAL</div>
         <div class="goal">${escape(cook.goal)}</div>
+        ${attachedChips(cook.attachments)}
         ${running ? `<button class="icon goal-stop" data-act="stop"
             title="Stop now, without the finishing pass" aria-label="Stop now">${ICONS.stop}</button>` : ''}
       </div>
@@ -87,8 +87,11 @@ views.cook = () => {
   const body = cook ? cookBody(cook, true)
     : readiness(`<div class="empty"><div class="empty-label quiet">Give it a goal</div>
         <div class="status">It works until it is done or until you stop it.</div></div>`);
+  // A write waiting for a yes, when Auto is off. Drawn where the journal
+  // ends, which is where the cook is.
+  const edit = state.snapshot.pending_edit ? pendingEdit(state.snapshot.pending_edit) : '';
   return sideView() + `<div class="pane">
-      <div class="scroller"><div id="transcript">${body}</div>
+      <div class="scroller"><div id="transcript">${body}${edit}</div>
         <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
       ${composerView({ cook: true, hint: 'what should it work on?', send: 'Cook' })}
     </div>`;

@@ -11,7 +11,8 @@
 #include <vector>
 
 #if !defined(_WIN32)
-#  include <stdlib.h>   // mkdtemp
+#  include <stdlib.h>   // mkdtemp, on glibc
+#  include <unistd.h>   // mkdtemp, on macOS -- stdlib.h has it there only outside strict C++ modes
 #endif
 
 #include "crucible/util/subprocess.hpp"

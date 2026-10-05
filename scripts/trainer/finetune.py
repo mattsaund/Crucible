@@ -482,12 +482,37 @@ def to_gguf(merged: Path, out: Path, recipe: dict, args) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
+def deliver(produced: Path, export_dir: Path) -> Path:
+    """Move the finished file into the models directory.
+
+    That is where every expert's model is picked from, so a fine-tune that
+    lands anywhere else is one that has to be gone looking for. The name drops
+    the dots the converter uses -- "kitchen-physicist-Q4_K_M.gguf" -- so it
+    reads like the other files there. A file of that name is replaced: training
+    the same recipe again is asking for the new one.
+    """
+    phase("exporting", f"to {export_dir}")
+    export_dir.mkdir(parents=True, exist_ok=True)
+    name = produced.name
+    if name.endswith(".gguf"):
+        stem = name[: -len(".gguf")]
+        head, _, quant = stem.rpartition(".")
+        name = f"{head}-{quant}.gguf" if head else name
+    target = export_dir / name
+    # shutil.move copies when the two are on different drives, which is the
+    # common case: the models directory is very often a big disk of its own.
+    shutil.move(str(produced), str(target))
+    return target
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fine-tune a Crucible expert")
     parser.add_argument("--recipe", required=True, help="recipe.json to run")
     parser.add_argument("--out", required=True, help="directory for the result")
     parser.add_argument("--convert-script", default="", help="convert_hf_to_gguf.py")
     parser.add_argument("--quantize-bin", default="", help="llama-quantize")
+    parser.add_argument("--export-dir", default="",
+                        help="where the finished GGUF goes: Crucible's models directory")
     parser.add_argument("--max-steps", type=int, default=0,
                         help="stop after this many optimizer steps (a smoke test)")
     args = parser.parse_args()
@@ -516,6 +541,8 @@ def main() -> int:
     merged = (train_mlx if (on_mac_gpu and have_mlx) else train_torch)(recipe, out, args)
 
     produced = to_gguf(merged, out, recipe, args)
+    if produced is not None and args.export_dir:
+        produced = deliver(produced, Path(args.export_dir))
     emit(
         "done",
         path=str(produced or merged),

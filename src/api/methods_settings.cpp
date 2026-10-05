@@ -7,7 +7,6 @@
 
 #include "crucible/config/paths.hpp"
 #include "crucible/config/trust.hpp"
-#include "crucible/lab/recipe.hpp"
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/util/format.hpp"
@@ -113,26 +112,23 @@ Reply config_set(const json& params, Host& host) {
     return good(json{{"warnings", warnings}});
 }
 
-/// What a seat can be pointed at on this machine: the models directory, and
-/// what the lab has finished. Both, because a fine-tune made here is a model
-/// and having to go and find its file would make the Create tab a detour.
+/// What a seat can be pointed at on this machine: the models directory.
+///
+/// One folder, and only that one. A fine-tune made here is written into it
+/// (see lab.train), so it appears in this list like anything else put there,
+/// and a seat -- the delegator's included -- is filled by choosing a name from
+/// one place rather than by browsing the disk for a file.
 Reply models(const json&, const Scene& scene) {
     const std::filesystem::path dir = scene.config.resolved_models_dir();
     json files = json::array();
     for (const ModelFile& file : scan_models(dir)) {
         files.push_back(json{{"name", file.name},
                              {"path", file.path.string()},
-                             {"bytes", file.bytes},
-                             {"made_here", false}});
+                             {"bytes", file.bytes}});
     }
-    for (const lab::Made& made : lab::finished_models()) {
-        files.push_back(json{{"name", made.name},
-                             {"path", made.path.string()},
-                             {"bytes", made.bytes},
-                             {"purpose", made.purpose},
-                             {"made_here", true}});
-    }
-    return good(json{{"directory", dir.string()}, {"models", std::move(files)}});
+    return good(json{{"directory", dir.string()},
+                     {"display", format::short_path(dir)},
+                     {"models", std::move(files)}});
 }
 
 /// The graphics cards, and which of the settings about them can work.

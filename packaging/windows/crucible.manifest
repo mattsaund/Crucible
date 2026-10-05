@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  SPDX-License-Identifier: MIT
+
+  Crucible's text is UTF-8 everywhere: what the page sends, what the file
+  dialog hands back, what the config file holds. Windows reads a program's
+  plain strings in the ANSI code page instead, unless the program says
+  otherwise -- and then a path with an "é" in it comes out as two wrong
+  characters and the file is "not there". This says otherwise, for the whole
+  process: std::filesystem, getenv and fopen all take UTF-8 from here on.
+
+  Windows 10 1903 and later. WebView2 needs Windows 10 anyway.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

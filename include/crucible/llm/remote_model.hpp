@@ -60,6 +60,7 @@ struct Quirks {
     bool no_sampling       = false;  ///< rejects temperature / top_p
     bool completion_tokens = false;  ///< wants max_completion_tokens, not max_tokens
     bool no_stream_usage   = false;  ///< rejects stream_options
+    bool no_images         = false;  ///< a text-only model: pictures are refused
 
     // The Messages shape, through a gateway that is not Anthropic's own.
     bool no_fallbacks     = false;

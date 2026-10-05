@@ -20,6 +20,7 @@
 #include "crucible/routing/router.hpp"
 #include "crucible/routing/expert.hpp"
 #include "crucible/session/usage.hpp"
+#include "crucible/tools/attachments.hpp"
 
 namespace crucible {
 
@@ -57,6 +58,10 @@ struct SeatState {
     std::string provider;
 };
 
+/// Something sent with a prompt: a file, a picture, a folder. See
+/// attach::Tile.
+using TurnAttachment = attach::Tile;
+
 /// Something a turn did to the world, and what came back.
 struct TurnAction {
     /// One line, as it reads in the transcript: "wrote src/calc.py  +12 -3".
@@ -77,6 +82,9 @@ struct TurnAction {
 struct Turn {
     std::string            prompt;
     std::string            reply;
+
+    /// What was attached to the prompt, in the order it was attached.
+    std::vector<TurnAttachment> attachments;
 
     /// The working a reasoning model does on the way to `reply`.
     ///
@@ -224,7 +232,7 @@ public:
     void set_resident(std::optional<ExpertId> id);
 
     /// Open a new turn and return its index.
-    std::size_t begin_turn(std::string prompt);
+    std::size_t begin_turn(std::string prompt, std::vector<TurnAttachment> attachments = {});
 
     /// Append an already-finished turn, as `/resume` does. Its tokens are not
     /// added to the session total: they were spent in an earlier session and

@@ -34,7 +34,7 @@ RunProgress::Phase phase_for(const std::string& name) {
     }
     if (name == "training")   { return RunProgress::Phase::Training; }
     if (name == "merging")    { return RunProgress::Phase::Merging; }
-    if (name == "converting" || name == "quantizing") {
+    if (name == "converting" || name == "quantizing" || name == "exporting") {
         return RunProgress::Phase::Exporting;
     }
     return RunProgress::Phase::Preparing;
@@ -104,6 +104,7 @@ std::string Trainer::running_id() const {
 bool Trainer::start(const Recipe& recipe,
                     const std::filesystem::path& convert_script,
                     const std::filesystem::path& quantize_bin,
+                    const std::filesystem::path& export_dir,
                     std::function<void()> on_change,
                     std::string& error) {
     {
@@ -143,8 +144,8 @@ bool Trainer::start(const Recipe& recipe,
     }
     cancel_.store(false);
     on_change_ = std::move(on_change);
-    worker_    = std::thread([this, recipe, convert_script, quantize_bin]() {
-        run(recipe, convert_script, quantize_bin);
+    worker_    = std::thread([this, recipe, export_dir, convert_script, quantize_bin]() {
+        run(recipe, export_dir, convert_script, quantize_bin);
     });
     return true;
 }
@@ -241,7 +242,8 @@ void Trainer::consume(const std::string& line) {
     }
 }
 
-void Trainer::run(Recipe recipe, std::filesystem::path convert_script,
+void Trainer::run(Recipe recipe, std::filesystem::path export_dir,
+                  std::filesystem::path convert_script,
                   std::filesystem::path quantize_bin) {
     const std::filesystem::path run_dir = pyenv::runs_dir() / recipe.id;
 
@@ -266,6 +268,10 @@ void Trainer::run(Recipe recipe, std::filesystem::path convert_script,
     if (!quantize_bin.empty()) {
         argv.emplace_back("--quantize-bin");
         argv.push_back(quantize_bin.string());
+    }
+    if (!export_dir.empty()) {
+        argv.emplace_back("--export-dir");
+        argv.push_back(export_dir.string());
     }
 
     auto        child = std::make_unique<util::Subprocess>();

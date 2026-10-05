@@ -111,6 +111,7 @@ Reply runtimes(const json&, const Scene&) {
             // nvcc".
             {"buildable", status.buildable},
             {"blocker",   status.blocker},
+            {"missing",   status.missing},
             {"modules",   std::move(modules)},
         });
     }

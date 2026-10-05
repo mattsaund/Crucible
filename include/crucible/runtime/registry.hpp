@@ -59,6 +59,11 @@ struct RuntimeStatus {
     bool        buildable = true;
     std::string blocker;
 
+    /// What an installed runtime still needs before it can load, or empty.
+    /// Only CUDA has anything here: NVIDIA's own libraries, which a machine
+    /// with a driver and no toolkit does not have. See cuda_libraries.hpp.
+    std::string missing;
+
     /// The module files, so uninstall knows what to delete.
     std::vector<std::filesystem::path> files;
 

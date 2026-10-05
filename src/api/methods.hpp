@@ -78,6 +78,9 @@ json snapshot_to_json(const Snapshot& snapshot);
 /// One step of a cook's journal.
 json cook_step_json(const CookStep& step);
 
+/// What was attached to a turn or a cook, for the tiles above it.
+json attachments_json(const std::vector<attach::Tile>& attachments);
+
 /// The refusal every engine-moving method makes when there is no engine.
 inline Reply no_engine() { return bad("the engine is not running"); }
 

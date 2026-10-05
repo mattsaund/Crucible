@@ -118,7 +118,8 @@ int run_runtime_setup(bool quiet, bool force) {
 
     const auto already = [&installed](BackendKind kind) {
         for (const RuntimeStatus& status : installed) {
-            if (status.kind == kind && status.installed && !status.stale) {
+            if (status.kind == kind && status.installed && !status.stale
+                && status.missing.empty()) {
                 return true;
             }
         }

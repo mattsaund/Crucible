@@ -337,6 +337,23 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
         ~ChainGuard() { llama_sampler_free(chain); }
     } guard{chain};
 
+    // Stop asked inside a decode as well as between them. A batch of prompt is
+    // one call, and on the processor one call of a large model's prompt is
+    // seconds -- long enough that a Stop which only looks between batches
+    // reads as a window that has stopped listening. The backends that run on
+    // the processor poll this between the operations of a graph; on a card it
+    // is the check between batches that does the work.
+    struct AbortGuard {
+        llama_context* ctx;
+        ~AbortGuard() { llama_set_abort_callback(ctx, nullptr, nullptr); }
+    } abort_guard{ctx_};
+    if (cancel) {
+        llama_set_abort_callback(
+            ctx_,
+            [](void* data) { return (*static_cast<const CancelCallback*>(data))(); },
+            const_cast<CancelCallback*>(&cancel));
+    }
+
     // --- prompt ingestion --------------------------------------------------
     const auto prompt_start = Clock::now();
     const int batch_size = std::max(1, params.n_batch);
@@ -352,6 +369,7 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
             std::min<std::size_t>(static_cast<std::size_t>(batch_size), tokens.size() - offset));
         llama_batch batch = llama_batch_get_one(tokens.data() + offset, count);
         if (llama_decode(ctx_, batch) != 0) {
+            stats.canceled  = cancel && cancel();   // aborted from inside, by Stop
             stats.prompt_ms = ms_since(prompt_start);
             cached_.clear();
             return stats;
@@ -395,6 +413,7 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
         llama_token next = token;
         llama_batch batch = llama_batch_get_one(&next, 1);
         if (llama_decode(ctx_, batch) != 0) {
+            stats.canceled = cancel && cancel();
             cached_.clear();
             break;
         }

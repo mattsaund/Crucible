@@ -111,6 +111,100 @@ TEST(the_filter_knows_when_the_answer_has_started) {
 // UTF-8 streaming
 // ---------------------------------------------------------------------------
 
+// --- a model's own tool calls ---------------------------------------------
+//
+// Each of these is a round gpt-oss actually produced in a cook, copied out of
+// a trace. Before the filter knew about them every one of them arrived as an
+// empty answer, and the journal said "(said nothing)" three hundred times.
+
+TEST(a_protocol_line_written_where_a_channel_name_goes_is_the_answer) {
+    // No <|message|> at all: the model put its message after <|channel|>.
+    const std::string raw =
+        "<|channel|>NOTE: The project has no test file. Need to list.<|end|>"
+        "<|start|>assistant<|channel|>LIST: .";
+    for (const std::size_t chunk : {1U, 5U, 999U}) {
+        const ResponseFilter::Piece out = filter_in_chunks(raw, chunk);
+        CHECK(out.answer.find("NOTE: The project has no test file. Need to list.\n") != std::string::npos);
+        CHECK(out.answer.find("\nLIST: .") != std::string::npos);
+        const std::optional<tools::ToolCall> call = tools::parse_tool_call(out.answer, out.reasoning);
+        CHECK(call.has_value());
+        if (call) {
+            CHECK(call->kind == tools::ToolKind::Note);
+        }
+    }
+}
+
+TEST(a_shell_call_in_the_models_own_format_becomes_run) {
+    const std::string raw =
+        "<|channel|>analysis<|message|>Let us look around.<|end|>"
+        "<|start|>assistant<|channel|>commentary to=container.exec code<|message|>"
+        "{\"cmd\":[\"bash\",\"-lc\",\"ls -R\"]}";
+    for (const std::size_t chunk : {1U, 7U, 999U}) {
+        const ResponseFilter::Piece out = filter_in_chunks(raw, chunk);
+        CHECK_EQ(out.answer, std::string("RUN: ls -R\n"));
+        CHECK_EQ(out.reasoning, std::string("Let us look around."));
+    }
+}
+
+TEST(a_call_addressed_to_a_verb_carries_the_verb) {
+    const ResponseFilter::Piece out = filter_in_chunks(
+        "<|channel|>commentary to=LIST <|constrain|>1<|message|>LIST: .\n", 3);
+    CHECK_EQ(out.answer, std::string("LIST: .\n"));
+}
+
+TEST(a_recipient_in_the_role_header_counts_too) {
+    const ResponseFilter::Piece out = filter_in_chunks(
+        "<|start|>assistant to=functions.read<|channel|>commentary json<|message|>"
+        "{\"path\": \"orbit.py\"}<|call|>", 4);
+    CHECK_EQ(out.answer, std::string("READ: orbit.py\n"));
+}
+
+TEST(a_write_in_the_models_own_format_keeps_the_whole_file) {
+    const ResponseFilter::Piece out = filter_in_chunks(
+        "<|channel|>commentary to=functions.write_file <|constrain|>json<|message|>"
+        "{\"path\": \"a.py\", \"content\": \"x = 1\\ny = 2\"}<|call|>", 6);
+    const std::optional<tools::ToolCall> call = tools::parse_tool_call(out.answer, out.reasoning);
+    CHECK(call.has_value());
+    if (call) {
+        CHECK(call->kind == tools::ToolKind::Write);
+        CHECK_EQ(call->argument, std::string("a.py"));
+        CHECK_EQ(call->content, std::string("x = 1\ny = 2"));
+    }
+}
+
+TEST(a_call_to_a_tool_crucible_does_not_have_stays_reasoning) {
+    const ResponseFilter::Piece out = filter_in_chunks(
+        "<|channel|>analysis to=python code<|message|>print(1)<|call|>", 2);
+    CHECK(out.answer.empty());
+    CHECK_EQ(out.reasoning, std::string("print(1)"));
+}
+
+TEST(an_ordinary_channel_name_with_no_message_is_not_an_answer) {
+    // A real channel cut off before its message is not a message.
+    const ResponseFilter::Piece out = filter_in_chunks("<|channel|>analysis", 1);
+    CHECK(out.answer.empty());
+    // And a final answer is untouched by any of the above.
+    const ResponseFilter::Piece plain = filter_in_chunks(
+        "<|channel|>final<|message|>The answer is 2x.", 3);
+    CHECK_EQ(plain.answer, std::string("The answer is 2x."));
+}
+
+TEST(each_call_is_read_the_way_its_tool_reads_arguments) {
+    CHECK_EQ(harmony_call_line("container.exec", R"({"cmd":["python3","-m","pytest","-q"]})"),
+             std::string("RUN: python3 -m pytest -q"));
+    CHECK_EQ(harmony_call_line("functions.run", R"({"command": "make"})"), std::string("RUN: make"));
+    CHECK_EQ(harmony_call_line("functions.list_dir", "{}"), std::string("LIST: ."));
+    CHECK_EQ(harmony_call_line("functions.search", R"({"query": "orbital speed"})"),
+             std::string("SEARCH: orbital speed"));
+    CHECK_EQ(harmony_call_line("functions.done", R"({"summary": "added docstrings"})"),
+             std::string("DONE: added docstrings"));
+    CHECK_EQ(harmony_call_line("READ", "orbit.py"), std::string("READ: orbit.py"));
+    CHECK(harmony_call_line("browser.open", R"({"id": 3})").empty());
+    // A file that itself holds a fence is written with the other delimiter.
+    CHECK(harmony_call_line("write", R"({"path": "R.md", "content": "```\ncode\n```"})")
+              .find("<<<") != std::string::npos);
+}
+
 TEST(utf8_lengths_are_read_from_the_lead_byte) {
     CHECK_EQ(detail::utf8_length('a'),  1);
     CHECK_EQ(detail::utf8_length(0xC3), 2);

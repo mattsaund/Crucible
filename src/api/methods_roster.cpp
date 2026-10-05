@@ -227,8 +227,14 @@ Reply provider_save(const json& params, Host& host) {
         if (fresh.id.empty()) {
             return bad("a provider needs a name");
         }
-        if (edited.provider(fresh.id) != nullptr) {
-            return bad("there is already a provider called " + fresh.name);
+        // Two of the same service is allowed -- two keys, two accounts -- so a
+        // taken name gets a number rather than a refusal. The screen never
+        // asks for a name, so there is nothing for anybody to change.
+        const std::string base_id   = fresh.id;
+        const std::string base_name = fresh.name;
+        for (int n = 2; edited.provider(fresh.id) != nullptr; ++n) {
+            fresh.id   = base_id + "-" + std::to_string(n);
+            fresh.name = base_name + " " + std::to_string(n);
         }
         target = &fresh;
     } else if (params.contains("name")) {
@@ -239,14 +245,21 @@ Reply provider_save(const json& params, Host& host) {
         }
     }
 
+    if (params.contains("base_url")) {
+        target->base_url = format::trim(params.value("base_url", std::string{}));
+        if (target->base_url.empty()) {
+            return bad("a provider needs an address");
+        }
+    }
+    // Said, or worked out from the address. The screen does not ask: which of
+    // the two shapes a service speaks follows from where it is.
     if (params.contains("kind")) {
         target->kind = params.value("kind", std::string{});
+    } else if (params.contains("base_url")) {
+        target->kind = provider_kind_for(target->base_url);
     }
     if (target->kind != "anthropic" && target->kind != "openai") {
         return bad("a provider speaks either \"anthropic\" or \"openai\"");
-    }
-    if (params.contains("base_url")) {
-        target->base_url = format::trim(params.value("base_url", std::string{}));
     }
     if (!target->base_url.empty() && target->base_url.rfind("https://", 0) != 0
         && target->base_url.rfind("http://", 0) != 0) {
@@ -335,10 +348,16 @@ Reply provider_models(const json& params, const Scene& scene) {
             return bad("there is no provider called \"" + id + "\"");
         }
         provider = *saved;
+        // An address being edited is the one to ask, not the one on file.
+        if (const std::string typed = format::trim(params.value("base_url", std::string{}));
+            !typed.empty()) {
+            provider.base_url = typed;
+            provider.kind     = provider_kind_for(typed);
+        }
     } else {
         provider.name     = params.value("name", std::string("that provider"));
-        provider.kind     = params.value("kind", std::string("openai"));
         provider.base_url = format::trim(params.value("base_url", std::string{}));
+        provider.kind     = params.value("kind", provider_kind_for(provider.base_url));
     }
     // A key typed and not yet saved wins over the one on file.
     if (params.contains("api_key")) {

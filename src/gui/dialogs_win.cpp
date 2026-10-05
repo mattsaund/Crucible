@@ -65,6 +65,9 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
     // show and nothing here can open.
     options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
     options |= request.folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST;
+    if (!request.folder && request.multiple) {
+        options |= FOS_ALLOWMULTISELECT;
+    }
     dialog->SetOptions(options);
 
     if (!request.title.empty()) {
@@ -100,14 +103,36 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
     // Modal, and it runs its own message loop while it is up, so the window
     // behind it keeps painting.
     if (SUCCEEDED(dialog->Show(static_cast<HWND>(window)))) {
-        IShellItem* chosen = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&chosen)) && chosen != nullptr) {
+        const auto take = [&answer](IShellItem* chosen) {
             PWSTR path = nullptr;
             if (SUCCEEDED(chosen->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path != nullptr) {
-                answer.path = narrow(path);
+                answer.paths.push_back(narrow(path));
                 CoTaskMemFree(path);
             }
-            chosen->Release();
+        };
+        // GetResults for a dialog that allowed several; GetResult, which
+        // fails on one that did, otherwise.
+        IShellItemArray* several = nullptr;
+        if (request.multiple && SUCCEEDED(dialog->GetResults(&several)) && several != nullptr) {
+            DWORD count = 0;
+            several->GetCount(&count);
+            for (DWORD i = 0; i < count; ++i) {
+                IShellItem* chosen = nullptr;
+                if (SUCCEEDED(several->GetItemAt(i, &chosen)) && chosen != nullptr) {
+                    take(chosen);
+                    chosen->Release();
+                }
+            }
+            several->Release();
+        } else {
+            IShellItem* chosen = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&chosen)) && chosen != nullptr) {
+                take(chosen);
+                chosen->Release();
+            }
+        }
+        if (!answer.paths.empty()) {
+            answer.path = answer.paths.front();
         }
     }
     dialog->Release();

@@ -54,6 +54,13 @@ constexpr int kToolRounds = 12;
 /// off the transcript -- shown as an answer it reads as the expert talking
 /// about the protocol -- and the sentence has to stay, because it is the only
 /// explanation of the change that will ever be written.
+/// Two stretches of a reply, a paragraph apart -- or whichever one there is.
+std::string paragraphs(const std::string& first, const std::string& second) {
+    if (first.empty())  { return second; }
+    if (second.empty()) { return first; }
+    return first + "\n\n" + second;
+}
+
 std::string prose_before_tool_call(const std::string& answer, tools::ToolKind kind) {
     const std::string verb(tools::tool_kind_name(kind));
     std::string upper;
@@ -132,7 +139,9 @@ constexpr double kPromptShare = 0.75;
 }  // namespace
 
 Engine::Engine(Config config, AppState& state, std::function<void()> wake)
-    : config_(std::move(config)), state_(state), wake_(std::move(wake)) {}
+    : config_(std::move(config)), state_(state), wake_(std::move(wake)) {
+    auto_edits_.store(config_.tools.auto_edits);
+}
 
 Engine::~Engine() {
     stop();
@@ -161,16 +170,67 @@ void Engine::stop() {
     }
 }
 
-void Engine::submit(std::string prompt, std::optional<ExpertId> pinned) {
+void Engine::submit(std::string prompt, std::optional<ExpertId> pinned,
+                    std::vector<attach::Attachment> attachments) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
-        request.kind   = RequestKind::Prompt;
-        request.prompt = std::move(prompt);
-        request.pinned = std::move(pinned);
+        request.kind        = RequestKind::Prompt;
+        request.prompt      = std::move(prompt);
+        request.pinned      = std::move(pinned);
+        request.attachments = std::move(attachments);
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
+}
+
+attach::Composed Engine::read_attachments(std::vector<attach::Attachment> attachments,
+                                          const ChatModel& model,
+                                          const std::vector<ChatMessage>& messages,
+                                          double share) {
+    // A picture sent before keeps the bytes it was sent with; one the window
+    // has just sent is remembered for the next time.
+    for (attach::Attachment& one : attachments) {
+        if (one.kind != attach::Kind::Image) {
+            continue;
+        }
+        const auto known = std::find_if(pictures_.begin(), pictures_.end(),
+                                        [&](const auto& entry) { return entry.first == one.path; });
+        if (one.image.data.empty() && known != pictures_.end()) {
+            one.image = known->second;
+        } else if (!one.image.data.empty()) {
+            if (known != pictures_.end()) {
+                pictures_.erase(known);
+            }
+            pictures_.emplace_back(one.path, one.image);
+            if (pictures_.size() > 16) {
+                pictures_.erase(pictures_.begin());
+            }
+        }
+    }
+
+    // What is left of the share once the conversation is in it -- counting
+    // no more than a quarter of the share for history, which the overflow
+    // policy will trim to make room. A question about a document is about
+    // the document more than about what was said three exchanges ago.
+    std::vector<ChatMessage> bare;
+    for (const ChatMessage& message : messages) {
+        if (message.role == "system") {
+            bare.push_back(message);
+        }
+    }
+    if (!messages.empty()) {
+        bare.push_back(messages.back());
+    }
+    const int budget  = static_cast<int>(static_cast<double>(model.context_size()) * share);
+    const int base    = model.prompt_tokens(bare);
+    const int history = std::max(0, model.prompt_tokens(messages) - base);
+    const int room    = budget - base - std::min(history, budget / 4);
+    // Three characters a token, which errs toward fitting for prose and is
+    // about right for code; and never less than a page, so that a model
+    // with a small context still sees the start of what it was given.
+    const std::size_t chars = std::max<std::size_t>(static_cast<std::size_t>(std::max(room, 0)) * 3, 4000);
+    return attach::compose(attachments, chars, model.sees_images());
 }
 
 void Engine::write_examples(ExpertId id) {
@@ -190,6 +250,8 @@ std::vector<std::pair<ExpertId, std::vector<std::string>>> Engine::take_written_
 }
 
 void Engine::apply_config(Config config) {
+    // Now, not when the queue reaches it: see auto_edits_.
+    auto_edits_.store(config.tools.auto_edits);
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -210,6 +272,11 @@ void Engine::cancel() {
     // A turn parked on an edit is inside await_edit_approval, not looking at
     // the flag. Waking it is what lets Stop end a turn that is waiting on you.
     edit_answered_.notify_all();
+    // The same for a cook parked on a question. Missing this was a lockup:
+    // Stop now on a cook that was asking something left the worker waiting
+    // for an answer that would never come, and everything after it queued
+    // behind a thread that would never take another request.
+    cook_answered_.notify_all();
     // And one waiting on a provider is inside a read. A local model looks at
     // the flag between tokens; a remote one may not send a token for a minute
     // while it thinks, and Stop should not take a minute.
@@ -261,9 +328,22 @@ void Engine::approve_edit(bool approved) {
     edit_answered_.notify_all();
 }
 
-bool Engine::await_edit_approval(std::size_t turn, const std::string& answer,
+bool Engine::await_edit_approval(std::size_t turn, const std::string& reply,
                                  const tools::ToolCall& call,
                                  const tools::WorkshopSettings& workshop) {
+    // The protocol line comes off the transcript before the question goes up,
+    // not after it is answered. Left on, the file is on screen twice while the
+    // user decides -- once as a raw `WRITE: path` and a fence, once in the
+    // panel asking about it -- and the raw one is the worse copy: no header, no
+    // line numbers, and a language nobody declared.
+    if (tools::resolve_in_root(workshop.root, call.argument)) {
+        state_.set_reply(turn, reply);
+    }
+    return ask_about_edit(call, workshop);
+}
+
+bool Engine::ask_about_edit(const tools::ToolCall& call,
+                            const tools::WorkshopSettings& workshop) {
     // What the file is now, so the two can be shown side by side. A path that
     // does not resolve inside the root is not a question to put to the user --
     // run_tool would refuse it anyway, and asking would be asking them to
@@ -277,18 +357,17 @@ bool Engine::await_edit_approval(std::size_t turn, const std::string& answer,
     auto edit    = std::make_shared<PendingEdit>();
     edit->path   = call.argument;
     edit->after  = call.content;
+    // As the write will leave it: the workshop ends every file with a
+    // newline, and a preview without one shows a last line being removed
+    // that nothing is going to remove.
+    if (!edit->after.empty() && edit->after.back() != '\n') {
+        edit->after += '\n';
+    }
     if (std::ifstream in(*target, std::ios::binary); in) {
         std::ostringstream buffer;
         buffer << in.rdbuf();
         edit->before = buffer.str();
     }
-
-    // The protocol line comes off the transcript before the question goes up,
-    // not after it is answered. Left on, the file is on screen twice while the
-    // user decides -- once as a raw `WRITE: path` and a fence, once in the
-    // panel asking about it -- and the raw one is the worse copy: no header, no
-    // line numbers, and a language nobody declared.
-    state_.set_reply(turn, prose_before_tool_call(answer, call.kind));
 
     state_.set_pending_edit(edit);
     state_.set_mood(Mood::Idle, "waiting on you: " + call.argument);
@@ -356,7 +435,7 @@ void Engine::run() {
         hub_.adopt(config_);
     }
 
-    load_router_if_resident();
+    ready_delegator();
     state_.configure_seats(config_);
     state_.set_mood(Mood::Idle);
     if (wake_) {
@@ -385,6 +464,7 @@ void Engine::run() {
             host_->release_expert();
             state_.set_resident(std::nullopt);
             router_.reset();
+            router_failed_for_.clear();
 
             // The device list is exactly what just changed, and the split was
             // worked out from the old one.
@@ -396,7 +476,7 @@ void Engine::run() {
                 host_->set_gpu_config(config_.gpu);
             }
 
-            load_router_if_resident();
+            ready_delegator();
             state_.set_mood(Mood::Idle, "runtime changed");
             if (wake_) {
                 wake_();
@@ -445,7 +525,7 @@ void Engine::run() {
             // whatever a model asks for, so an exception escaping here would
             // take the process, and the window with it, down mid-edit.
             try {
-                do_cook(request.prompt, request.budget_seconds, request.root);
+                do_cook(request.prompt, request.budget_seconds, request.root, request.attachments);
             } catch (const std::exception& e) {
                 state_.set_mood(Mood::Error, e.what());
                 state_.add_notice(std::string("cook failed: ") + e.what());
@@ -459,6 +539,7 @@ void Engine::run() {
             if (wake_) {
                 wake_();
             }
+            settle();
             continue;
         }
 
@@ -506,6 +587,7 @@ void Engine::run() {
         if (wake_) {
             wake_();
         }
+        settle();
     }
 
     // Free the models before the backend goes away.
@@ -540,12 +622,19 @@ void Engine::load_router() {
                 wake_();
             }
         },
-        [this] { return cancel_.load(std::memory_order_relaxed); },
+        // Closing the window ends a load as surely as Stop does.
+        [this] {
+            return cancel_.load(std::memory_order_relaxed)
+                || !running_.load(std::memory_order_relaxed);
+        },
         error);
 
     if (model == nullptr) {
         router_ = std::make_unique<KeywordRouter>(
             std::make_shared<const Roster>(config_.roster));
+        // A load the user stopped is not a broken delegator, and should be
+        // tried again the next time one is wanted.
+        router_failed_for_ = error == "stopped" ? std::string() : config_.router.path;
         state_.add_notice("delegator: " + error + " -- routing on keywords instead");
         state_.set_delegator_ready(true);
         return;
@@ -557,6 +646,7 @@ void Engine::load_router() {
         routed->set_bias(router_bias_);
     }
     router_ = std::move(routed);
+    router_failed_for_.clear();
     state_.set_delegator_ready(true);
 }
 
@@ -574,16 +664,49 @@ void Engine::ensure_router() {
     load_router();
 }
 
-/// Load the delegator now, unless it is set to load on demand -- in which case
-/// putting it in memory before the first prompt is exactly what this mode
-/// exists to avoid, and Engine::resolve will fetch it when a decision is
-/// actually needed.
-void Engine::load_router_if_resident() {
-    if (config_.routing.keep_delegator_loaded || config_.router.model.empty()) {
-        load_router();
+void Engine::ready_delegator() {
+    if (router_ && (config_.router.model.empty() || host_->router() != nullptr)) {
+        return;  // already there, or keywords, which need nothing loaded
+    }
+    // A delegator that would not load the last time is not retried after
+    // every prompt -- that is the same failure, and the same notice, on a
+    // loop. A prompt still tries it (see ensure_router), and so does any
+    // change to which file it is or what it runs on.
+    if (router_ && router_failed_for_ == config_.router.path) {
         return;
     }
-    state_.add_notice("delegator loads on demand -- it is freed after each decision");
+    load_router();
+    // load_router leaves the status saying it is loading; the work is over.
+    state_.set_mood(Mood::Idle);
+}
+
+void Engine::settle() {
+    if (!running_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    // A Stop pressed during the request that just ended was about that
+    // request. Left set, it would stop this load the moment it began, and the
+    // next prompt would be routed on keywords for no reason anybody could see.
+    cancel_.store(false, std::memory_order_relaxed);
+    // Something else is already waiting. Loading the delegator for a prompt
+    // that is queued is still right -- the prompt needs it first thing -- but
+    // freeing an expert a queued cook or config change is about to use is not
+    // worth deciding here, and the next request settles again when it ends.
+    if (!config_.routing.keep_delegator_loaded) {
+        if (const std::optional<ExpertId> resident = host_->loaded_expert()) {
+            host_->release_expert();
+            state_.set_seat(*resident, SeatPhase::Dormant);
+            state_.set_resident(std::nullopt);
+        }
+    }
+    const Snapshot before = state_.snapshot();
+    ready_delegator();
+    // Whatever the last request ended by saying -- "canceled", an error -- is
+    // still the thing worth reading once the delegator is back.
+    state_.set_mood(before.mood == Mood::Error ? Mood::Error : Mood::Idle, before.status);
+    if (wake_) {
+        wake_();
+    }
 }
 
 void Engine::release_router() {
@@ -639,7 +762,7 @@ void Engine::do_apply_config(Config config) {
         release_router();
         router_bias_.clear();
         router_bias_for_.clear();
-        load_router_if_resident();
+        ready_delegator();
     }
 
     state_.configure_seats(current);
@@ -711,7 +834,7 @@ void Engine::do_write_examples(const ExpertId& id) {
     // The router holds a snapshot of the roster taken when it was built, so it
     // has to be rebuilt for the new examples to reach it.
     router_.reset();
-    load_router_if_resident();
+    ready_delegator();
 }
 
 RouteDecision Engine::resolve(const Request& request) {
@@ -730,7 +853,18 @@ RouteDecision Engine::resolve(const Request& request) {
 
     ensure_router();
     if (router_) {
-        decision = router_->route(request.prompt, cancel);
+        // What was attached says something about who should answer: "what
+        // does this do" means one thing beside main.rs and another beside
+        // a lease agreement. The names are enough to say it.
+        std::string routed = request.prompt;
+        if (!request.attachments.empty()) {
+            routed += "\n\nAttached:";
+            for (const attach::Attachment& one : request.attachments) {
+                routed += " " + (one.name.empty() ? std::filesystem::path(one.path).filename().string()
+                                                  : one.name);
+            }
+        }
+        decision = router_->route(routed, cancel);
     }
     // Then decide what to do about it.
     decision = apply_route_policy(decision, config_);
@@ -792,7 +926,11 @@ ChatModel* Engine::seat_model(const ExpertId& id, const ModelParams& params,
 }
 
 void Engine::handle(const Request& request) {
-    const std::size_t turn = state_.begin_turn(request.prompt);
+    std::vector<TurnAttachment> tiles;
+    for (const attach::Attachment& one : request.attachments) {
+        tiles.push_back(attach::tile_of(one));
+    }
+    const std::size_t turn = state_.begin_turn(request.prompt, std::move(tiles));
 
     const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
 
@@ -891,7 +1029,23 @@ void Engine::handle(const Request& request) {
         messages.insert(messages.end(), history_.begin() + static_cast<long>(from),
                         history_.end());
     }
-    messages.push_back({"user", request.prompt});
+    // What was attached goes above what was typed, so the question comes
+    // after the material it is about -- the order every model reads best.
+    ChatMessage asked{"user", request.prompt};
+    if (!request.attachments.empty()) {
+        state_.set_mood(Mood::Thinking, expert_name + " is reading the attachments");
+        if (wake_) {
+            wake_();
+        }
+        messages.push_back(asked);
+        attach::Composed composed = read_attachments(request.attachments, *expert, messages, kPromptShare);
+        messages.pop_back();
+        asked.content = composed.text + request.prompt;
+        for (attach::Image& image : composed.images) {
+            asked.images.push_back({std::move(image.mime), std::move(image.data)});
+        }
+    }
+    messages.push_back(asked);
 
     // --- does it still fit? -------------------------------------------------
     //
@@ -957,6 +1111,12 @@ void Engine::handle(const Request& request) {
         rounds = std::max(rounds, kToolRounds);
     }
     std::vector<std::string> already_searched;
+
+    // What the rounds before this one left on screen. A turn that reads a
+    // file, then writes one, then answers says something each time, and each
+    // is kept -- a paragraph apart, rather than run into the next sentence or
+    // replaced by it.
+    std::string earlier;
     for (int round = 0; round < rounds; ++round) {
         bool        first_answer = true;
         std::string answer;
@@ -978,6 +1138,9 @@ void Engine::handle(const Request& request) {
                 if (first_answer) {
                     first_answer = false;
                     state_.set_mood(Mood::Talking, expert_name + " is answering");
+                    if (!earlier.empty()) {
+                        state_.append_reply(turn, "\n\n");
+                    }
                 }
                 answer += said;
                 state_.append_reply(turn, said);
@@ -1041,7 +1204,7 @@ void Engine::handle(const Request& request) {
             // is loaded answers.
             if (outcome.discard_partial) {
                 // What streamed before a refusal is not half an answer.
-                state_.set_reply(turn, {});
+                state_.set_reply(turn, earlier);
             } else if (!answer.empty()) {
                 // fail_turn keeps a reply that had started, which is right --
                 // but then nothing would say why it stops where it does.
@@ -1098,11 +1261,15 @@ void Engine::handle(const Request& request) {
             // so it is the one that stops and asks -- unless they have said not
             // to. Everything else (reading, listing, running) either changes
             // nothing or was already agreed to by trusting the folder.
-            if (call->kind == tools::ToolKind::Write && !config_.tools.auto_edits
-                && !await_edit_approval(turn, answer, *call, workshop)) {
+            // The turn so far, and this round's prose up to the call.
+            const std::string kept = paragraphs(earlier, prose_before_tool_call(answer, call->kind));
+            if (call->kind == tools::ToolKind::Write && !auto_edits_.load()
+                && !await_edit_approval(turn, kept, *call, workshop)) {
                 state_.add_action(turn, TurnAction{
                     "declined the edit to " + call->argument, {}, {}});
-                state_.set_reply(turn, {});
+                // This round described a change that did not happen; what
+                // came before it still stands.
+                state_.set_reply(turn, earlier);
                 messages.push_back({"assistant", answer});
                 messages.push_back(
                     {"user", "The user declined that edit; the file is unchanged. Do "
@@ -1131,7 +1298,8 @@ void Engine::handle(const Request& request) {
             // was a request rather than an answer. True of the `WRITE: path`
             // line; false of the sentence above it explaining what was about to
             // change, which was thrown away with it every time.
-            state_.set_reply(turn, prose_before_tool_call(answer, call->kind));
+            earlier = kept;
+            state_.set_reply(turn, earlier);
             messages.push_back({"assistant", answer});
 
             std::string handback = result.output;
@@ -1192,7 +1360,7 @@ void Engine::handle(const Request& request) {
         }
         // That round produced a request, not an answer. The next round writes
         // the answer, and the request should not be sitting above it.
-        state_.set_reply(turn, {});
+        state_.set_reply(turn, earlier);
 
         // Only the answer goes back, never the reasoning: the formats that
         // produce reasoning say to drop it from the context, and feeding it
@@ -1226,7 +1394,9 @@ void Engine::handle(const Request& request) {
         const Snapshot current = state_.snapshot();
         if (turn < current.turns.size() && !current.turns[turn].reply.empty()) {
             const std::lock_guard<std::mutex> lock(mutex_);
-            history_.push_back({"user", request.prompt});
+            // With what was attached, so that the next question can be about
+            // it too. It is the first thing trimmed when room runs short.
+            history_.push_back(asked);
             history_.push_back({"assistant", current.turns[turn].reply});
         }
     }
@@ -1275,34 +1445,8 @@ void Engine::handle(const Request& request) {
         }
     }
 
-    // --- put the table back ------------------------------------------------
-    //
-    // With the delegator set to load on demand, the expert's turn is over the
-    // moment it has answered, and holding it while nothing is happening is
-    // holding memory the next decision needs. So the expert goes, the delegator
-    // comes back, and the next prompt is routed the instant it arrives rather
-    // than after a load.
-    //
-    // The cost is that a follow-up question reloads the expert. That is the
-    // trade this mode is: one model resident at a time, so either of them may
-    // be as large as the whole card.
-    if (!config_.routing.keep_delegator_loaded) {
-        // Only the expert that just answered, and only if it was here to
-        // begin with. After a turn a provider answered there is nothing of
-        // this turn's to free.
-        if (!params.remote() && host_->loaded_expert()) {
-            host_->release_expert();
-            state_.set_seat(decision.expert, SeatPhase::Dormant);
-            state_.set_resident(std::nullopt);
-        }
-        if (host_->router() == nullptr && !config_.router.model.empty()) {
-            state_.set_mood(Mood::Loading, "readying the delegator");
-            if (wake_) {
-                wake_();
-            }
-            ensure_router();
-        }
-    }
+    // The table is put back by settle(), once this returns and the engine is
+    // no longer busy -- for this ending and for every early return above.
 
     // The work has stopped, so the line goes and the seat goes dark. Whether
     // the weights are still in memory is a separate question, and the status

@@ -257,7 +257,10 @@ Reply lab_train(const json& params, Host& host) {
     // view is on screen.
     Host*       waking = &host;
     std::string error;
+    // Into the models directory, so the result is picked for a seat the way
+    // every other model is.
     if (!trainer->start(recipe, convert_script(), quantize_bin(),
+                        host.config().resolved_models_dir(),
                         [waking] { waking->wake(); }, error)) {
         return bad(error);
     }

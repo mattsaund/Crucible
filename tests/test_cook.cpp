@@ -88,6 +88,18 @@ TEST(a_diff_handles_an_insertion_at_either_end) {
     CHECK_EQ(fresh.removed, 0);
 }
 
+TEST(a_line_the_change_left_alone_is_not_counted_as_moved) {
+    // Two edits with a line between them that neither touched. The changed
+    // stretch runs from the first edit to the second, and the line inside it
+    // stayed where it was -- which the count says, as the block drawn under
+    // it does.
+    const std::string before = "def greet(name):\n    return name\n\nif main:\n    print(1)\n";
+    const std::string after  = "def greet(name, n):\n    return name * n\n\nif main:\n    print(2)\n";
+    const util::DiffStat stat = util::diff_stat(before, after);
+    CHECK_EQ(stat.removed, 3);
+    CHECK_EQ(stat.added, 3);
+}
+
 TEST(a_long_diff_says_it_was_cut_rather_than_stopping) {
     std::string before;
     std::string after;

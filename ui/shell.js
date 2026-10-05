@@ -24,17 +24,22 @@ const ICONS = {
 /// Beside the name of whatever is loading, on its own line: which model is
 /// coming up and how far along it is are one fact, and a bar somewhere else
 /// on the screen made them two.
+///
+/// The arc is turned to start at twelve o'clock with the SVG's own transform
+/// attribute, about the circle's own center. It used to be a CSS rotation, and
+/// WebKit placed that rotation's origin somewhere else: the arc swung off the
+/// circle, most of it was clipped, and what was left poked out over the name.
 function ring(progress) {
   const fraction = Math.max(0, Math.min(1, progress || 0));
-  const radius = 12.5;
+  const radius = 13;
   const around = 2 * Math.PI * radius;
-  return `<svg class="ring" viewBox="0 0 30 30" width="34" height="34" role="img"
+  return `<svg class="ring" viewBox="0 0 32 32" width="32" height="32" role="img"
       aria-label="${Math.round(fraction * 100)} percent loaded">
-    <circle class="ring-track" cx="15" cy="15" r="${radius}"/>
-    <circle class="ring-fill" cx="15" cy="15" r="${radius}"
+    <circle class="ring-track" cx="16" cy="16" r="${radius}"/>
+    <circle class="ring-fill" cx="16" cy="16" r="${radius}" transform="rotate(-90 16 16)"
             stroke-dasharray="${around.toFixed(2)}"
             stroke-dashoffset="${(around * (1 - fraction)).toFixed(2)}"/>
-    <text x="15" y="15.5">${Math.round(fraction * 100)}%</text></svg>`;
+    <text x="16" y="16.5">${Math.round(fraction * 100)}%</text></svg>`;
 }
 
 /// A file name out of whatever a seat's model was written as.
@@ -51,10 +56,13 @@ function expertName(id) {
 
 /// A dropdown of everything a seat can be pointed at.
 ///
-/// Four groups, in the order of how much of it is yours: nothing, what was
-/// made here, what is on this machine, and what is answered somewhere else.
-/// The value is "provider|model" for the last group and the file otherwise,
-/// which `splitModel` takes apart again.
+/// The models folder, and then each provider's models. One folder on purpose:
+/// it is where every model is chosen from and where a fine-tune made here is
+/// written to, so a model put there is a model every seat can have -- the
+/// delegator included -- and nothing has to be gone looking for.
+///
+/// The value is "provider|model" for a provider's and the file name
+/// otherwise, which `splitModel` takes apart again.
 function modelSelect(selected, provider, extra, localOnly) {
   const chosen = provider ? `${provider}|${selected}` : (selected || '');
   const option = (value, label, title) =>
@@ -62,17 +70,11 @@ function modelSelect(selected, provider, extra, localOnly) {
       title ? ` title="${escape(title)}"` : ''}>${escape(label)}</option>`;
 
   const files = state.models ? state.models.models : [];
-  const made  = files.filter((m) => m.made_here);
-  const local = files.filter((m) => !m.made_here);
   const known = new Set(files.flatMap((m) => [m.name, m.path]));
 
   let html = option('', '(none)');
-  if (made.length) {
-    html += `<optgroup label="Made in Crucible">${made.map((m) =>
-      option(m.path, `${m.name}  ·  ${bytes(m.bytes)}`, m.purpose)).join('')}</optgroup>`;
-  }
-  if (local.length) {
-    html += `<optgroup label="On this machine">${local.map((m) =>
+  if (files.length) {
+    html += `<optgroup label="Models folder">${files.map((m) =>
       option(m.name, `${m.name}  ·  ${bytes(m.bytes)}`)).join('')}</optgroup>`;
   }
   // `localOnly` is for the delegator, which has to be a file here.
@@ -84,10 +86,11 @@ function modelSelect(selected, provider, extra, localOnly) {
         offered.map((m) => option(`${p.id}|${m}`, m)).join('')}</optgroup>`;
     }
   }
-  // A file the seat names that the scan did not find: still offered, so the
-  // dropdown shows what is configured rather than quietly showing "(none)".
+  // A file the seat names that is not in the folder -- set before there was
+  // one folder, or since moved. Still offered, so the dropdown shows what is
+  // configured rather than quietly showing "(none)".
   if (selected && !provider && !known.has(selected)) {
-    html += option(selected, `${fileName(selected)}  (not found)`);
+    html += option(selected, `${fileName(selected)}  (not in the models folder)`);
   }
   return `<select${attrs(extra)}>${html}</select>`;
 }
@@ -299,6 +302,13 @@ function shortcuts(event) {
   const tab = { 1: 'chat', 2: 'cook', 3: 'create', 4: 'history' }[event.key];
   if (tab) { event.preventDefault(); enter(tab); }
   if (event.key === ',') { event.preventDefault(); actions.gear(); }
+  // Attach, from wherever the box is. Not over a dialog: the box is not
+  // what that is about.
+  if ((event.key === 'u' || event.key === 'U') && !state.modal
+      && (state.view === 'chat' || state.view === 'cook')) {
+    event.preventDefault();
+    attachPick(false);
+  }
 }
 
 // --- which folder ----------------------------------------------------------------------
@@ -354,11 +364,10 @@ modals['new-expert'] = (m) => `<div class="modal">
           escape(m.description)}</textarea>
         <div class="hint">The delegator routes on this, so name the things it should take.</div></div>
       <div class="field"><label for="ne-model">Model</label>
-        <div class="row">${modelSelect(m.model, m.provider,
-            { id: 'ne-model', 'data-change': 'ne-model' })}
-          <button class="action" type="button" data-act="ne-browse">Browse</button></div>
-        <div class="hint">One you fine-tuned in Create, a file on this machine, or a model at a
-          provider you have added. It can be left empty and chosen later.</div></div>
+        ${modelSelect(m.model, m.provider, { id: 'ne-model', 'data-change': 'ne-model' })}
+        <div class="hint">From the models folder${state.models ? `, ${escape(state.models.display)}` : ''},
+          or a provider you have added. A fine-tune made in Create lands in that folder too.
+          It can be left empty and chosen later.</div></div>
       ${m.error ? `<div class="bad">${escape(m.error)}</div>` : ''}
     </div>
     <div class="feet">
@@ -375,13 +384,6 @@ actions['new-expert'] = () => {
 };
 actions['ne-field'] = (e) => { state.modal[e.dataset.field] = e.value; };
 actions['ne-model'] = (e) => { Object.assign(state.modal, splitModel(e.value)); render(); };
-actions['ne-browse'] = async () => {
-  const modal = state.modal;
-  const path = await pickPath({ title: 'Choose a model file', filter: 'GGUF models',
-                                extensions: ['.gguf'],
-                                start: state.models ? state.models.directory : '' });
-  if (path) { modal.model = path; modal.provider = ''; render(); }
-};
 actions['ne-add'] = () => guard(async () => {
   const m = state.modal;
   await call('expert.add', { name: m.name, description: m.description,

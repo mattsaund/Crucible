@@ -1119,6 +1119,19 @@ check     "appimagetool is run in the way that works without FUSE" \
 check     "the Exec in the AppDir is a bare name, not an install path" \
           grep -q "CRUCIBLE_GUI_EXEC@|crucible|" "$ROOT/packaging/linux/appimage.sh"
 
+echo "  on Windows the program's strings are UTF-8, as they are everywhere else"
+# Without it, MSVC's std::filesystem reads a path in the ANSI code page, and a
+# folder with an accented letter anywhere in it is "not there".
+check     "the Windows manifest asks for the UTF-8 code page" \
+          grep -q '<activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>' \
+          "$ROOT/packaging/windows/crucible.manifest"
+check     "and the program is built with it" \
+          grep -q 'crucible_utf8_manifest(crucible)' "$ROOT/CMakeLists.txt"
+check     "and so are the tests, which check it" \
+          grep -q 'crucible_utf8_manifest(crucible_tests)' "$ROOT/CMakeLists.txt"
+check     "a compiler other than MSVC gets it as a resource" \
+          grep -q '1 24 "crucible.manifest"' "$ROOT/packaging/windows/manifest.rc"
+
 echo "  one version number, and a way to hear about the next one"
 # Crucible installs by compiling, so a copy of it is a snapshot of whatever main
 # looked like that afternoon and nothing on the machine says otherwise. The
@@ -1220,6 +1233,31 @@ check     "the page offers to build what is not installed" \
           grep -q 'data-act="runtime-build"' "$ROOT/ui/settings.js"
 check_not "and nothing disables that button for want of a compiler" \
           grep -qE 'runtime-build[^>]*buildable' "$ROOT/ui/settings.js"
+
+echo
+echo "  a downloaded CUDA runtime brings NVIDIA's libraries with it"
+
+# The module links cudart and cuBLAS of one CUDA major version, and the app
+# fetches them from NVIDIA by release. The two numbers live in two files; if
+# they drift, the libraries fetched are not the ones the module asks for, and
+# it fails to load exactly as it did before they were fetched at all.
+cuda_matches() {
+    local workflow app
+    workflow="$(grep -m1 -E "cuda: '[0-9.]+'" "$RT" | sed -E "s/.*cuda: '([0-9.]+)'.*/\1/")"
+    app="$(grep -m1 'kRelease' "$ROOT/include/crucible/runtime/cuda_libraries.hpp" \
+           | sed -E 's/.*"([0-9.]+)".*/\1/')"
+    [ -n "$workflow" ] && [ "$workflow" = "$app" ]
+}
+check     "the libraries come from the CUDA release the module was built with" cuda_matches
+check     "they are fetched when a CUDA runtime is installed" \
+          grep -q 'cuda_libraries::fetch' "$ROOT/src/runtime/prebuilt.cpp"
+check     "and loaded before the module that needs them" \
+          grep -q 'cuda_libraries::preload' "$ROOT/src/runtime/registry.cpp"
+# The download comes first on a machine with no nvcc -- that machine is the
+# whole reason there is a download.
+check     "a missing nvcc is only an error once the download has been tried" \
+          awk '/prebuilt::try_install/ { tried = 1 } /is not on PATH, and no prebuilt/ { exit !tried }' \
+              "$ROOT/src/runtime/builder.cpp"
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

@@ -233,12 +233,38 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
         return static_cast<std::uint64_t>(128ULL << 20);
     };
 
+    // Layer by layer, where the split says exactly which layers go where.
+    //
+    // A share of the total is right on average and wrong at the edges: the
+    // last layer carries the output weights and is several times the size of
+    // the others. Priority mode fills a card to the brim with the real layer
+    // sizes, so a check that assumed every layer was average put more on that
+    // card than the planner had -- and refused, in priority mode, a model that
+    // loaded in even mode on the same three cards.
+    std::vector<std::uint64_t> exact;   // bytes per device index, when known
+    std::size_t holds_output = split.size();
+    if (shape.known && !shape.units.empty() && !everywhere && !single) {
+        const std::vector<int> counts = llama_layer_assignment(split, shape.units.size());
+        exact.assign(split.size(), 0);
+        std::size_t unit = 0;
+        for (std::size_t device = 0; device < counts.size(); ++device) {
+            for (int i = 0; i < counts[device] && unit < shape.units.size(); ++i, ++unit) {
+                exact[device] += shape.unit_bytes(unit, params.n_ctx);
+                holds_output = device;
+            }
+        }
+    }
+
     for (const ComputeDevice* gpu : used) {
         const double share = everywhere
                                  ? static_cast<double>(gpu->memory_free) / weight
                                  : static_cast<double>(share_of(*gpu)) / weight;
-        const auto wants = static_cast<std::uint64_t>(static_cast<double>(divided) * share)
-                         + per_card;
+        const auto index = static_cast<std::size_t>(gpu->index);
+        const std::uint64_t layers =
+            index < exact.size()
+                ? exact[index] + (index == holds_output ? shape.logit_bytes(params.n_batch) : 0)
+                : static_cast<std::uint64_t>(static_cast<double>(divided) * share);
+        const std::uint64_t wants = layers + per_card;
         const std::uint64_t reserve = reserve_for(*gpu);
         const std::uint64_t room    = gpu->memory_free > reserve ? gpu->memory_free - reserve : 0;
         if (wants <= room) {
@@ -283,6 +309,27 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
 
     return "needs about " + format::bytes(needed) + " of video memory" + detail +
            " but only " + format::bytes(available) + " is free on " + where + advice;
+}
+
+/// Whether a direct-I/O load can be trusted on these devices.
+///
+/// Not on Vulkan. Direct I/O turns off memory-mapping, and without a mapping
+/// llama.cpp uploads the weights through pinned buffers and waits on an event
+/// for each one. On the Vulkan backend that wait never returns -- measured on
+/// an NVIDIA driver, 2026-10-04: the load stops at whatever percentage the
+/// first wait was reached, here 21%, inside
+/// ggml_backend_vk_device_event_synchronize, and nothing short of killing the
+/// process ends it. No progress callback fires while it waits, so Stop cannot
+/// either.
+///
+/// A mapped load has none of that machinery and is what every other setting
+/// already uses. What is given up is only the page-cache saving direct I/O
+/// exists for; "Dedicated VRAM only" still refuses a model that will not fit,
+/// which is the part of the setting that matters.
+bool direct_io_safe(const std::vector<ComputeDevice>& gpus) {
+    return std::none_of(gpus.begin(), gpus.end(), [](const ComputeDevice& gpu) {
+        return format::to_lower(gpu.backend).find("vulkan") != std::string::npos;
+    });
 }
 
 int resolve_threads(int configured) {
@@ -454,7 +501,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // operating system's page cache -- which would otherwise hold a second,
     // full-size copy of every model in RAM long after it was uploaded.
     model_params.no_host = params.no_host;
-    if (params.direct_io) {
+    if (params.direct_io && direct_io_safe(gpus)) {
         model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
     }
 

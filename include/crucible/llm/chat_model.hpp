@@ -23,10 +23,20 @@
 
 namespace crucible {
 
+/// A picture sent with a message: its type and its bytes, as base64.
+struct ChatImage {
+    std::string mime;   ///< "image/png", "image/jpeg", ...
+    std::string data;
+};
+
 /// One turn of a conversation, as handed to a model.
 struct ChatMessage {
     std::string role;     ///< "system" | "user" | "assistant"
     std::string content;
+
+    /// Pictures attached to a user's message. Only a model that says it
+    /// sees_images() is given any; the text says what they were either way.
+    std::vector<ChatImage> images = {};
 };
 
 /// Reported after a generation finishes, for the status line.
@@ -129,6 +139,12 @@ public:
     /// separately -- and whose answer may legitimately contain the very text
     /// the filter hunts for.
     virtual bool reasons_inline() const = 0;
+
+    /// Whether a picture attached to a message reaches the model. False for
+    /// a model on this machine -- llama.cpp can read pictures only through a
+    /// projector file Crucible does not load -- and true for a provider's
+    /// until it says otherwise.
+    virtual bool sees_images() const { return false; }
 };
 
 }  // namespace crucible

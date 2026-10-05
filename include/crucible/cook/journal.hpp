@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "crucible/routing/expert.hpp"
+#include "crucible/tools/attachments.hpp"
 
 namespace crucible {
 
@@ -80,6 +81,10 @@ struct Cook {
     std::string id;
     std::string goal;
     CookState   state = CookState::Idle;
+
+    /// What was attached to the goal. Read once when the cook starts and put
+    /// in front of every round, so it is not trimmed away like the rest.
+    std::vector<attach::Tile> attachments;
 
     /// Seconds the user asked for, or 0 for "until I stop it".
     int budget_seconds = 0;

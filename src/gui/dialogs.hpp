@@ -32,6 +32,10 @@ struct Request {
     /// means any file.
     std::string              filter_name;
     std::vector<std::string> extensions;
+
+    /// More than one may be chosen. Files only: every platform's folder
+    /// dialog chooses one.
+    bool multiple = false;
 };
 
 /// What came back.
@@ -42,6 +46,9 @@ struct Answer {
 
     /// The path chosen. Empty when the dialog was dismissed.
     std::string path;
+
+    /// Every path chosen, when more than one could be; `path` is the first.
+    std::vector<std::string> paths;
 };
 
 /// Show the dialog over `window`, which is the webview's native window handle

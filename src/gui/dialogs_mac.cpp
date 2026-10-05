@@ -21,7 +21,7 @@ namespace crucible::gui::dialogs {
 namespace {
 
 /// objc_msgSend has no one signature: it is called through a pointer of the
-/// type the method actually has. These are the four shapes used below.
+/// type the method actually has. These are the shapes used below.
 template <typename Result, typename... Arguments>
 Result send(id receiver, const char* selector, Arguments... arguments) {
     using Function = Result (*)(id, SEL, Arguments...);
@@ -57,7 +57,8 @@ void pick(void* /*window*/, const Request& request, std::function<void(Answer)> 
     const BOOL folder = request.folder ? YES : NO;
     send<void, BOOL>(panel, "setCanChooseFiles:", folder == YES ? NO : YES);
     send<void, BOOL>(panel, "setCanChooseDirectories:", folder);
-    send<void, BOOL>(panel, "setAllowsMultipleSelection:", NO);
+    send<void, BOOL>(panel, "setAllowsMultipleSelection:",
+                     request.multiple && folder == NO ? YES : NO);
     send<void, BOOL>(panel, "setCanCreateDirectories:", YES);
 
     if (!request.title.empty()) {
@@ -78,12 +79,21 @@ void pick(void* /*window*/, const Request& request, std::function<void(Answer)> 
 
     // Modal, with its own run loop while it is up.
     if (send<long>(panel, "runModal") == kModalResponseOK) {
-        const id url  = send<id>(panel, "URL");
-        const id path = url != nullptr ? send<id>(url, "path") : nullptr;
-        if (path != nullptr) {
-            if (const char* text = send<const char*>(path, "UTF8String")) {
-                answer.path = text;
+        // URLs, which holds the one URL as well when only one could be
+        // chosen.
+        const id urls = send<id>(panel, "URLs");
+        const unsigned long count = urls != nullptr ? send<unsigned long>(urls, "count") : 0;
+        for (unsigned long i = 0; i < count; ++i) {
+            const id url  = send<id, unsigned long>(urls, "objectAtIndex:", i);
+            const id path = url != nullptr ? send<id>(url, "path") : nullptr;
+            if (path != nullptr) {
+                if (const char* text = send<const char*>(path, "UTF8String")) {
+                    answer.paths.emplace_back(text);
+                }
             }
+        }
+        if (!answer.paths.empty()) {
+            answer.path = answer.paths.front();
         }
     }
     done(std::move(answer));

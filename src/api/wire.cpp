@@ -80,6 +80,9 @@ json turn_json(const Turn& turn) {
     if (!turn.reasoning.empty()) {
         out["reasoning"] = turn.reasoning;
     }
+    if (!turn.attachments.empty()) {
+        out["attachments"] = attachments_json(turn.attachments);
+    }
     if (turn.route) {
         // How the decision was reached, not just what it was. "the delegator
         // chose this, 100%" and "nothing chose it, this is the fallback" are
@@ -105,6 +108,14 @@ json turn_json(const Turn& turn) {
 }
 
 }  // namespace
+
+json attachments_json(const std::vector<attach::Tile>& attachments) {
+    json out = json::array();
+    for (const TurnAttachment& one : attachments) {
+        out.push_back(json{{"path", one.path}, {"name", one.name}, {"label", one.label}, {"kind", one.kind}});
+    }
+    return out;
+}
 
 json cook_step_json(const CookStep& step) {
     json one{{"iteration", step.iteration},
@@ -196,6 +207,7 @@ json snapshot_to_json(const Snapshot& snapshot) {
                              || cook.state == CookState::Finishing},
             {"id",       cook.id},
             {"goal",     cook.goal},
+            {"attachments", attachments_json(cook.attachments)},
             {"state",    std::string(cook_state_name(cook.state))},
             {"question", cook.question},
             {"outcome",  cook.outcome},

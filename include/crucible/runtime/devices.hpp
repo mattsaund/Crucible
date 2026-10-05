@@ -62,6 +62,16 @@ std::vector<ComputeDevice> gpu_devices();
 /// And the array is sized to `llama_max_devices()`, because that is how many
 /// floats llama.cpp copies out of the pointer it is given -- a shorter buffer
 /// is read past the end.
+/// How many of `units` layers llama.cpp gives each device for `split`.
+///
+/// Its own rule, replayed: the split is made cumulative and normalized, and
+/// layer `i` goes to the first device whose share exceeds `i / units`. Indexed
+/// the way `split` is. Anything that wants to know what a split will actually
+/// put on a card has to ask this rather than multiply by the share, because
+/// layers are not the same size -- the last one carries the output weights,
+/// and on a card filled to the brim the difference is the whole margin.
+std::vector<int> llama_layer_assignment(const std::vector<float>& split, std::size_t units);
+
 std::vector<float> llama_tensor_split(const std::vector<ComputeDevice>& gpus,
                                       const std::vector<float>& split);
 

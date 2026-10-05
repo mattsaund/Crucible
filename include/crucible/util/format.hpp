@@ -40,4 +40,12 @@ std::string bytes(std::uintmax_t count);
 /// the title off its own header on any normal terminal.
 std::string short_path(const std::filesystem::path& path);
 
+/// Bytes as base64, padded: what a data: URI and a picture sent to a model's
+/// API both carry.
+std::string base64(std::string_view bytes);
+
+/// base64 back to bytes. Padding is optional and white space is skipped;
+/// false when anything else is not part of the alphabet.
+bool from_base64(std::string_view text, std::string& out);
+
 }  // namespace crucible::format

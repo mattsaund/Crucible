@@ -131,9 +131,14 @@ public:
     /// `convert_script` and `quantize_bin` are llama.cpp's exporter and
     /// quantizer. Both may be empty: the run then stops at a Huggingface
     /// model directory and says so, which is a result, just not a file.
+    ///
+    /// `export_dir` is where the finished GGUF is put -- the models directory,
+    /// so that a fine-tune is picked for a seat like any other model. Empty
+    /// leaves it in the run's own folder.
     bool start(const Recipe& recipe,
                const std::filesystem::path& convert_script,
                const std::filesystem::path& quantize_bin,
+               const std::filesystem::path& export_dir,
                std::function<void()> on_change,
                std::string& error);
 
@@ -154,7 +159,7 @@ public:
     std::string running_id() const;
 
 private:
-    void run(Recipe recipe, std::filesystem::path convert_script,
+    void run(Recipe recipe, std::filesystem::path export_dir, std::filesystem::path convert_script,
              std::filesystem::path quantize_bin);
 
     /// One line from the child: progress if it parses as an event, log if not.

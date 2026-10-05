@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.7.5
+    VERSION     0.8.0
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -131,6 +131,7 @@ add_library(crucible_core STATIC
     # runtime: the loadable compute backends and the devices they expose
     src/runtime/backend.cpp
     src/runtime/prebuilt.cpp
+    src/runtime/cuda_libraries.cpp
     src/runtime/registry.cpp
     src/runtime/builder.cpp
     src/runtime/devices.cpp
@@ -159,6 +160,9 @@ add_library(crucible_core STATIC
     src/llm/model_shape.cpp
     src/llm/response_filter.cpp
     src/tools/web_search.cpp
+    src/tools/attachments.cpp
+    src/tools/pdf_text.cpp
+    src/tools/office_binary.cpp
     src/tools/workshop.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
@@ -196,7 +200,7 @@ target_include_directories(crucible_core PUBLIC
 
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
-    PRIVATE Threads::Threads)
+    PRIVATE Threads::Threads crucible_miniz)
 
 # The fine-tuning script, compiled in. Absent only if someone deleted it from
 # the source tree; the trainer then reports that rather than writing a file
@@ -225,6 +229,17 @@ target_compile_definitions(crucible_core PUBLIC
     # first tensor, so the tag the binary was built against travels with it.
     CRUCIBLE_LLAMA_TAG="${CRUCIBLE_LLAMA_TAG}")
 
+# On Windows, a program's plain strings are read in the ANSI code page unless
+# its manifest says UTF-8 -- and every string Crucible has is UTF-8. See
+# packaging/windows/crucible.manifest.
+function(crucible_utf8_manifest target)
+    if(MSVC)
+        target_sources(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/crucible.manifest)
+    else()
+        target_sources(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/manifest.rc)
+    endif()
+endfunction()
+
 # ---------------------------------------------------------------------------
 # crucible -- the program
 #
@@ -240,16 +255,19 @@ add_executable(crucible
 target_link_libraries(crucible PRIVATE crucible::core)
 
 # The platform's own file dialog: one function, and the implementation that
-# belongs to wherever this is being built. See src/gui/dialogs.hpp.
+# belongs to wherever this is being built. See src/gui/dialogs.hpp. And the
+# paths of files dropped on the window, which only GTK will say: see
+# src/gui/drops.hpp.
 if(WIN32)
-    target_sources(crucible PRIVATE src/gui/dialogs_win.cpp)
+    target_sources(crucible PRIVATE src/gui/dialogs_win.cpp src/gui/drops_none.cpp)
     # IFileOpenDialog is COM: ole32 makes the object, uuid names its class.
     target_link_libraries(crucible PRIVATE ole32 uuid shell32)
+    crucible_utf8_manifest(crucible)
 elseif(APPLE)
-    target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp)
+    target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp)
     target_link_libraries(crucible PRIVATE "-framework AppKit")
 else()
-    target_sources(crucible PRIVATE src/gui/dialogs_gtk.cpp)
+    target_sources(crucible PRIVATE src/gui/dialogs_gtk.cpp src/gui/drops_gtk.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -305,6 +323,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_trainer.cpp
         tests/test_prebuilt.cpp
         tests/test_update.cpp
+        tests/test_attachments.cpp
         tests/test_spelling.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
@@ -323,6 +342,9 @@ if(CRUCIBLE_BUILD_TESTS)
     # the log as one line from CTest and nothing else.
     if(WIN32)
         target_link_libraries(crucible_tests PRIVATE dbghelp)
+        # The tests run with the code page the program does, so the one that
+        # opens a file by a UTF-8 path checks the manifest as well.
+        crucible_utf8_manifest(crucible_tests)
     endif()
     target_include_directories(crucible_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     # So the spelling lint can walk the project from wherever it is run.

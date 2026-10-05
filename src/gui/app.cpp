@@ -279,9 +279,13 @@ bool App::retry_turn(std::size_t index) {
         return false;
     }
     const std::string prompt = snapshot.turns[index].prompt;
+    std::vector<attach::Attachment> attachments;
+    for (const TurnAttachment& tile : snapshot.turns[index].attachments) {
+        attachments.push_back(attach::from_tile(tile));
+    }
     state_.truncate_turns(index);
     rebuild_history();
-    engine_->submit(prompt);
+    engine_->submit(prompt, std::nullopt, std::move(attachments));
     return true;
 }
 
@@ -304,7 +308,7 @@ void App::rebuild_history() {
         // in the context teaches it that not answering is a thing that happens
         // here.
         if (!turn.failed && !turn.canceled && !turn.reply.empty()) {
-            history.push_back({"user", turn.prompt});
+            history.push_back({"user", attach::recalled(turn.attachments) + turn.prompt});
             history.push_back({"assistant", turn.reply});
         }
     }

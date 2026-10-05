@@ -394,7 +394,7 @@ async function pickPath(wanted) {
   // the top of a script *is* a property of window, so a binding called
   // pickPath would be replaced by this one the moment the script loaded --
   // and this would then call itself until the stack ran out.
-  if (window.nativeDialog) {
+  if (window.nativeDialog && !wanted.noNative) {
     try {
       // The window answers with an object, not with text to be parsed: this
       // is its own binding and not the surface, which answers in strings so
@@ -409,6 +409,22 @@ async function pickPath(wanted) {
                 onClose: () => resolve('') });
     browseTo(wanted.start || '');
   });
+}
+
+/// Ask for one path or several. Resolves to a list, empty when nothing was
+/// chosen. `multiple` lets the platform's dialog take more than one; the
+/// page's own picker, where there is no dialog, chooses one at a time.
+async function pickPaths(wanted) {
+  if (window.nativeDialog) {
+    try {
+      const answer = await window.nativeDialog(wanted);
+      if (answer && answer.supported) {
+        return (answer.paths && answer.paths.length ? answer.paths : [answer.path]).filter(Boolean);
+      }
+    } catch (e) { /* no dialog after all: fall through to the page's own */ }
+  }
+  const one = await pickPath(Object.assign({}, wanted, { noNative: true }));
+  return one ? [one] : [];
 }
 
 async function browseTo(path) {

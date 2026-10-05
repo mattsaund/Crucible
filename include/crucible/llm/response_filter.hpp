@@ -21,6 +21,15 @@
 // most of what followed them. A model that uses neither is unaffected -- every
 // byte it produces is answer, which is what the filter does with text it does
 // not recognize.
+//
+// Harmony has one more thing in it worth catching: a tool call. gpt-oss was
+// trained to call tools in its own format -- a message addressed `to=` a
+// function, with JSON for arguments -- and it reaches for that format even
+// when told to write `READ: file` on a line. Left alone, a call like that is
+// filed as reasoning and the round reads as an expert that said nothing. So a
+// message addressed to a tool is turned into the line Crucible's own protocol
+// would have used, when there is one that means the same thing, and goes to
+// the answer where the tool parser looks.
 #pragma once
 
 #include <string>
@@ -60,6 +69,7 @@ private:
         Answer,     ///< the default, and where a model with no markers stays
         Reasoning,  ///< inside `<think>` or a non-final harmony channel
         Discard,    ///< between harmony messages: role names and headers
+        Call,       ///< a harmony message addressed to a tool; see finish_call
     };
 
     /// What the parser is in the middle of reading.
@@ -71,10 +81,32 @@ private:
     /// Consume as much of `buffer_` as can be decided, appending to `piece`.
     void drain(Piece& piece, bool final_chunk);
 
+    /// A message has ended, or the output has. Settle whatever was open: a
+    /// tool call becomes a protocol line, and a "channel name" that never
+    /// reached a message turns out to have been the message itself.
+    void close_message(Piece& piece);
+
+    /// The tool call collected in `call_`, as an answer line or as reasoning.
+    void finish_call(Piece& piece);
+
+    /// Add a whole line to the answer, on a line of its own.
+    void answer_line(Piece& piece, std::string_view line);
+
     std::string buffer_;
     std::string channel_;
+    std::string header_;      ///< the role header before <|channel|>, which may name a recipient
+    std::string recipient_;   ///< who the message in `call_` is addressed to
+    std::string call_;        ///< the body of a message addressed to a tool
+    char        last_answer_ = '\n';  ///< the last character sent to the answer
     Sink        sink_  = Sink::Answer;
     State       state_ = State::Text;
 };
+
+/// The protocol line a harmony tool call means, or an empty string.
+///
+/// `recipient` is what the message was addressed to -- "functions.read",
+/// "container.exec", "LIST" -- and `body` is what it carried, usually JSON.
+/// Exposed for the tests; see the comment at the top of this file.
+std::string harmony_call_line(std::string_view recipient, std::string_view body);
 
 }  // namespace crucible

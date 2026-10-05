@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "crucible/runtime/cuda_libraries.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/http.hpp"
 #include "crucible/util/subprocess.hpp"
@@ -243,6 +244,15 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
     }
 
     clean();
+
+    // A CUDA module is half of what CUDA needs. The other half is NVIDIA's
+    // runtime and cuBLAS, which the toolkit installs and a driver does not --
+    // so they come with it, unless this machine already has them.
+    if (kind == BackendKind::Cuda && !cuda_libraries::complete() && !cuda_libraries::on_system()) {
+        if (!cuda_libraries::fetch(error, say)) {
+            return false;
+        }
+    }
     return true;
 }
 

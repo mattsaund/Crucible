@@ -295,7 +295,10 @@ std::string cuda_architectures(const std::vector<int>& present,
 std::string BuildProgress::label() const {
     switch (phase) {
         case Phase::Idle:           return "idle";
-        case Phase::FetchingSource: return "fetching llama.cpp source";
+        // What is actually happening, when the step says: the same phase covers
+        // downloading a prebuilt module and NVIDIA's libraries, and "fetching
+        // llama.cpp source" for a gigabyte of cuBLAS is a line that lies.
+        case Phase::FetchingSource: return step.empty() ? "fetching llama.cpp source" : step;
         case Phase::Configuring:    return "configuring";
         case Phase::Compiling:
             return "compiling " + format::number(static_cast<double>(percent) * 100.0, 0) + "%";
@@ -343,7 +346,21 @@ bool RuntimeBuilder::start(BackendKind kind, std::function<void()> on_change) {
         log_.clear();
     }
 
-    worker_ = std::thread([this, kind] { run(kind); });
+    // Contained. Everything in a build is somebody else's output -- a
+    // manifest, an archive, a compiler's log -- and an exception escaping a
+    // thread ends the program, which is a worse way for an install to fail
+    // than saying so.
+    worker_ = std::thread([this, kind] {
+        try {
+            run(kind);
+        } catch (const std::exception& e) {
+            fail(std::string("the install stopped unexpectedly: ") + e.what());
+            running_.store(false);
+        } catch (...) {
+            fail("the install stopped unexpectedly");
+            running_.store(false);
+        }
+    });
     return true;
 }
 
@@ -546,17 +563,6 @@ bool RuntimeBuilder::ensure_source(std::string& error) {
 void RuntimeBuilder::run(BackendKind kind) {
     const BackendInfo& info = backend_info(kind);
 
-    // Check the SDK first. A CUDA build that fails on a missing nvcc after
-    // four minutes of configuring teaches the user nothing they could not have
-    // been told immediately.
-    if (!info.required_tool.empty() && !util::on_path(std::string(info.required_tool))) {
-        const std::string hint = install_hint(info);
-        fail(std::string(info.required_tool) + " is not on PATH." +
-             (hint.empty() ? "" : "  Install it with:  " + hint));
-        running_.store(false);
-        return;
-    }
-
     // --- one that is already built ------------------------------------------
     //
     // Tried before the toolchain is: the whole point is the machine that has no
@@ -582,6 +588,20 @@ void RuntimeBuilder::run(BackendKind kind) {
             running_.store(false);
             return;
         }
+    }
+
+    // Check the SDK before compiling -- and only before compiling. A CUDA
+    // build that fails on a missing nvcc after four minutes of configuring
+    // teaches nothing that could not have been said at once; but this check
+    // used to come first, ahead of the download, and so a machine with no
+    // nvcc -- the very machine the download exists for -- was told to go and
+    // install one.
+    if (!info.required_tool.empty() && !util::on_path(std::string(info.required_tool))) {
+        const std::string hint = install_hint(info);
+        fail(std::string(info.required_tool) + " is not on PATH, and no prebuilt runtime "
+             "could be downloaded." + (hint.empty() ? "" : "  Install it with:  " + hint));
+        running_.store(false);
+        return;
     }
 
     std::string error;

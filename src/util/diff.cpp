@@ -14,6 +14,7 @@
 #include "crucible/util/diff.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -86,9 +87,33 @@ DiffStat diff_stat(std::string_view before, std::string_view after) {
     const std::vector<std::string> new_lines = lines_of(after);
     const Span span = differing_span(old_lines, new_lines);
 
+    // Inside the stretch that changed, a line can still be one the change
+    // left alone -- the `if __name__` between two edited functions. Counted
+    // as both removed and added, the figure says more moved than did, and
+    // disagrees with the block drawn under it, which matches lines up.
+    // The longest run they share is what did not move; past a size where
+    // the table would cost more than the figure is worth, the stretch is
+    // counted whole, as it always was.
+    const std::size_t n = span.before_end - span.head;
+    const std::size_t m = span.after_end - span.head;
+    std::size_t shared = 0;
+    if (n > 0 && m > 0 && n * m <= 4000000) {
+        std::vector<std::uint32_t> row(m + 1, 0);
+        std::vector<std::uint32_t> next(m + 1, 0);
+        for (std::size_t i = n; i-- > 0;) {
+            for (std::size_t j = m; j-- > 0;) {
+                row[j] = old_lines[span.head + i] == new_lines[span.head + j]
+                             ? next[j + 1] + 1
+                             : std::max(next[j], row[j + 1]);
+            }
+            std::swap(row, next);
+        }
+        shared = next[0];
+    }
+
     DiffStat stat;
-    stat.removed = static_cast<int>(span.before_end - span.head);
-    stat.added   = static_cast<int>(span.after_end - span.head);
+    stat.removed = static_cast<int>(n - shared);
+    stat.added   = static_cast<int>(m - shared);
     return stat;
 }
 

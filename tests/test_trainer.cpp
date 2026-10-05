@@ -127,7 +127,7 @@ TEST(a_run_refuses_to_start_without_an_environment_and_says_why) {
 
     Trainer     trainer;
     std::string error;
-    CHECK(!trainer.start(recipe, {}, {}, {}, error));
+    CHECK(!trainer.start(recipe, {}, {}, {}, {}, error));
     CHECK(!error.empty());
     CHECK(trainer.running_id().empty());
 }

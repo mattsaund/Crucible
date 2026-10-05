@@ -156,6 +156,74 @@ TEST(a_reply_that_is_not_utf8_cannot_break_the_next_request) {
 
 // --- the chat-completions shape --------------------------------------------
 
+TEST(a_picture_goes_to_claude_as_a_block_before_the_text_that_asks_about_it) {
+    std::vector<ChatMessage> messages = conversation();
+    messages.back().images = {{"image/png", "iVBORw0K"}};
+    const json body = anthropic(messages, ModelParams{});
+    const json& content = body["messages"][2]["content"];
+    CHECK(content.is_array());
+    CHECK_EQ(content.size(), std::size_t{2});
+    CHECK_EQ(content[0]["type"].get<std::string>(), std::string("image"));
+    CHECK_EQ(content[0]["source"]["type"].get<std::string>(), std::string("base64"));
+    CHECK_EQ(content[0]["source"]["media_type"].get<std::string>(), std::string("image/png"));
+    CHECK_EQ(content[0]["source"]["data"].get<std::string>(), std::string("iVBORw0K"));
+    CHECK_EQ(content[1]["text"].get<std::string>(), std::string("And at sunset?"));
+    // The turns without pictures are plain strings, as they always were.
+    CHECK(body["messages"][0]["content"].is_string());
+}
+
+TEST(two_user_turns_in_a_row_with_a_picture_join_as_blocks) {
+    const std::vector<ChatMessage> messages{
+        {"user", "First."},
+        {"user", "Second, with a picture.", {{"image/jpeg", "/9j/"}}},
+    };
+    const json body = anthropic(messages, ModelParams{});
+    CHECK_EQ(body["messages"].size(), std::size_t{1});
+    const json& content = body["messages"][0]["content"];
+    CHECK_EQ(content.size(), std::size_t{3});
+    CHECK_EQ(content[0]["text"].get<std::string>(), std::string("First."));
+    CHECK_EQ(content[1]["type"].get<std::string>(), std::string("image"));
+    CHECK_EQ(content[2]["text"].get<std::string>(), std::string("Second, with a picture."));
+}
+
+TEST(a_picture_goes_to_chat_completions_as_a_data_url) {
+    std::vector<ChatMessage> messages = conversation();
+    messages.back().images = {{"image/webp", "UklGR"}};
+    const json body = openai(messages, ModelParams{});
+    const json& content = body["messages"].back()["content"];
+    CHECK(content.is_array());
+    CHECK_EQ(content[0]["type"].get<std::string>(), std::string("text"));
+    CHECK_EQ(content[0]["text"].get<std::string>(), std::string("And at sunset?"));
+    CHECK_EQ(content[1]["type"].get<std::string>(), std::string("image_url"));
+    CHECK_EQ(content[1]["image_url"]["url"].get<std::string>(), std::string("data:image/webp;base64,UklGR"));
+}
+
+TEST(a_provider_that_refuses_pictures_is_sent_the_text_and_told_why) {
+    Quirks quirks;
+    CHECK(wire::adapt(quirks, "openai", "image input is not supported - hint: provide the mmproj"));
+    CHECK(quirks.no_images);
+    std::vector<ChatMessage> messages = conversation();
+    messages.back().images = {{"image/png", "iVBORw0K"}};
+    const json body = openai(messages, ModelParams{}, quirks);
+    const json& last = body["messages"].back()["content"];
+    CHECK(last.is_string());
+    CHECK_EQ(last.get<std::string>(),
+             std::string("And at sunset?\n\n[The picture was not sent: the provider would not take it.]"));
+
+    // And the same for Claude behind a gateway that will not take them.
+    Quirks gateway;
+    CHECK(wire::adapt(gateway, "anthropic", "messages.0.content.0.image: Extra inputs are not permitted"));
+    const json claude = anthropic(messages, ModelParams{}, {}, gateway);
+    CHECK(claude["messages"][2]["content"].is_string());
+}
+
+TEST(a_picture_counts_toward_the_token_estimate) {
+    std::vector<ChatMessage> messages = conversation();
+    const int without = wire::estimate_tokens(messages);
+    messages.back().images = {{"image/png", "x"}};
+    CHECK(wire::estimate_tokens(messages) >= without + 1500);
+}
+
 TEST(a_chat_completions_request_keeps_the_system_message_in_line) {
     ModelParams params;
     params.temperature = 0.25f;

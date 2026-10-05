@@ -442,9 +442,71 @@ function diffLines(before, after) {
 /// tinted by what is happening to it, and two buttons with no third option.
 /// A new file is shown whole; a change to one is shown as the lines that
 /// move, because the rest of the file is not what is being decided.
+/// The language a file's extension names: "py" for calc.py. Empty for a
+/// file with none, which highlight() takes as plain text.
+function languageOf(path) {
+  return (String(path || '').match(/\.([A-Za-z0-9+#]+)$/) || [, ''])[1];
+}
+
+/// Lines that changed, colored as what they are: the gutter says added or
+/// removed, and the code on each changed line is highlighted as code.
+/// `where` is said in the head when the rows are one part of a file.
+function diffBlock(rows, lang, where) {
+  const added = rows.filter((r) => r.kind === 'add').length;
+  const removed = rows.filter((r) => r.kind === 'del').length;
+  return `<div class="code"><div class="code-head">
+      <span class="lang">${escape(LANG_NAMES[String(lang || '').toLowerCase()] || lang || 'diff')}</span>
+      <span class="code-count">${where ? `${escape(where)}  ·  ` : ''}+${added}  −${removed}</span>
+    </div>
+    <div class="diff">${rows.map((row) => {
+      if (row.kind === 'note') return `<div class="dl dl-note">${escape(row.text)}</div>`;
+      const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' ';
+      return `<div class="dl dl-${row.kind}"><span class="sign">${sign}</span>${
+        row.kind === 'same' ? escape(row.text) : highlight(row.text, lang) || '&nbsp;'}</div>`;
+    }).join('')}</div></div>`;
+}
+
+/// A write that has happened, drawn the way it was offered: a new file as the
+/// code it is, an edit as the lines that moved. `diff` is what the session
+/// keeps of it (util::unified_diff): "@@ line N @@", then a line each marked
+/// ' ', '-' or '+', and a "... (...)" line when it was cut short.
+function writtenBlock(diff, path) {
+  const lang = languageOf(path);
+  const lines = String(diff || '').split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const head = /^@@ line (\d+) @@$/.exec(lines[0] || '');
+  if (!head) return codeBlock(String(diff || ''), lang);
+  const rows = [];
+  let cut = '';
+  for (const line of lines.slice(1)) {
+    if (line.startsWith('... (')) { cut = line; continue; }
+    const kind = line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : 'same';
+    rows.push({ kind, text: line.slice(1) });
+  }
+  const note = cut ? `<div class="status" style="padding:.4rem 0 0">${escape(cut.replace(/^\.\.\. /, ''))}</div>` : '';
+  // Nothing but added lines from the top: a file that did not exist, or was
+  // empty. Shown as the code itself, as it was when it was allowed.
+  if (rows.length && rows.every((r) => r.kind === 'add') && head[1] === '1') {
+    return codeBlock(rows.map((r) => r.text).join('\n'), lang, 'code-add') + note;
+  }
+  // What is kept is the whole changed stretch, every old line and then every
+  // new one. Matched up line by line again, the way the edit was offered, a
+  // line the change left alone reads as left alone.
+  const lead = [];
+  const tail = [];
+  while (rows.length && rows[0].kind === 'same') lead.push(rows.shift());
+  while (rows.length && rows[rows.length - 1].kind === 'same') tail.unshift(rows.pop());
+  const before = rows.filter((r) => r.kind === 'del').map((r) => r.text);
+  const after = rows.filter((r) => r.kind === 'add').map((r) => r.text);
+  const middle = !cut && before.length && after.length && rows.every((r) => r.kind !== 'same')
+    ? diffLines(before.join('\n'), after.join('\n')) : rows;
+  const matched = middle.length === 1 && middle[0].kind === 'note' ? rows : middle;
+  return diffBlock(lead.concat(matched, tail), lang, `from line ${head[1]}`) + note;
+}
+
 function pendingEdit(edit) {
   const isNew = !edit.before;
-  const lang = (edit.path.match(/\.([A-Za-z0-9+#]+)$/) || [, ''])[1];
+  const lang = languageOf(edit.path);
 
   let block;
   if (!(edit.after || '').trim()) {
@@ -460,16 +522,7 @@ function pendingEdit(edit) {
     const note = rows.length === 1 && rows[0].kind === 'note';
     block = note
       ? `<div class="status" style="padding:.6rem 1rem">${escape(rows[0].text)}</div>`
-      : `<div class="code"><div class="code-head">
-          <span class="lang">${escape(lang || 'diff')}</span>
-          <span class="code-count">+${rows.filter((r) => r.kind === 'add').length}  −${
-            rows.filter((r) => r.kind === 'del').length}</span>
-        </div>
-        <div class="diff">${rows.map((row) => {
-          const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' ';
-          return `<div class="dl dl-${row.kind}"><span class="sign">${sign}</span>${
-            row.kind === 'same' ? escape(row.text) : highlight(row.text, lang) || '&nbsp;'}</div>`;
-        }).join('')}</div></div>`;
+      : diffBlock(rows, lang);
   }
 
   return `<div class="edit">

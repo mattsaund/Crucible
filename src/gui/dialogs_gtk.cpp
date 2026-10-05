@@ -30,15 +30,34 @@ void on_response(GtkNativeDialog* dialog, gint response, gpointer data) {
 
     Answer answer;
     if (response == GTK_RESPONSE_ACCEPT) {
-        // The GFile rather than the filename: it is the one accessor both
-        // GTK versions have, and it is the one that is right for a path that
-        // is not valid UTF-8.
-        if (GFile* file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(dialog))) {
+        // GFiles rather than filenames: they are what both GTK versions
+        // hand back, and they are right for a path that is not valid UTF-8.
+        // The list is a GListModel in GTK 4 and a GSList in GTK 3.
+        const auto take = [&answer](GFile* file) {
             if (char* path = g_file_get_path(file)) {
-                answer.path = path;
+                answer.paths.emplace_back(path);
                 g_free(path);
             }
+        };
+#if GTK_MAJOR_VERSION >= 4
+        GListModel* files = gtk_file_chooser_get_files(GTK_FILE_CHOOSER(dialog));
+        for (guint i = 0; files != nullptr && i < g_list_model_get_n_items(files); ++i) {
+            auto* file = static_cast<GFile*>(g_list_model_get_item(files, i));
+            take(file);
             g_object_unref(file);
+        }
+        if (files != nullptr) {
+            g_object_unref(files);
+        }
+#else
+        GSList* files = gtk_file_chooser_get_files(GTK_FILE_CHOOSER(dialog));
+        for (GSList* at = files; at != nullptr; at = at->next) {
+            take(static_cast<GFile*>(at->data));
+        }
+        g_slist_free_full(files, g_object_unref);
+#endif
+        if (!answer.paths.empty()) {
+            answer.path = answer.paths.front();
         }
     }
     g_object_unref(dialog);
@@ -69,6 +88,10 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
 #else
         gtk_file_chooser_set_current_folder(chooser, request.start.c_str());
 #endif
+    }
+
+    if (!request.folder && request.multiple) {
+        gtk_file_chooser_set_select_multiple(chooser, TRUE);
     }
 
     if (!request.folder && !request.extensions.empty()) {

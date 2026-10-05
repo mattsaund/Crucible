@@ -6,7 +6,12 @@
 #include <algorithm>
 #include <cassert>
 #include <array>
+#include <cctype>
 #include <string_view>
+
+#include <nlohmann/json.hpp>
+
+#include "crucible/util/format.hpp"
 
 namespace crucible {
 namespace {
@@ -68,7 +73,199 @@ std::size_t next_candidate(std::string_view text, std::size_t from) {
     return text.find('<', from);
 }
 
+/// Who a harmony header addresses, or empty: the word after "to=".
+std::string recipient_of(std::string_view header) {
+    const std::size_t at = header.find("to=");
+    if (at == std::string_view::npos) {
+        return {};
+    }
+    std::string_view rest = header.substr(at + 3);
+    const std::size_t end = rest.find_first_of(" \t\r\n<");
+    return std::string(rest.substr(0, end));
+}
+
+/// Is this what a harmony channel name looks like? "analysis", "commentary",
+/// "final", optionally followed by a recipient and a type. Anything else that
+/// arrives where a channel name goes was the model writing its message in the
+/// wrong place -- which gpt-oss does, putting "LIST: ." straight after the
+/// marker with no <|message|> at all.
+bool looks_like_channel(std::string_view name) {
+    const std::string trimmed = format::trim(std::string(name));
+    for (const std::string_view known : {"analysis", "commentary", "final"}) {
+        if (trimmed.rfind(known, 0) == 0
+            && (trimmed.size() == known.size()
+                || std::isspace(static_cast<unsigned char>(trimmed[known.size()])) != 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The protocol's own verbs, as a line would begin with them.
+constexpr std::array<std::string_view, 9> kVerbs{{
+    "LIST", "READ", "WRITE", "RUN", "SEARCH", "ASK", "NOTE", "DONE", "HANDOFF",
+}};
+
+bool starts_with_verb(std::string_view text) {
+    for (const std::string_view verb : kVerbs) {
+        if (text.size() > verb.size() && text.substr(0, verb.size()) == verb
+            && text[verb.size()] == ':') {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
+
+std::string harmony_call_line(std::string_view recipient, std::string_view raw_body) {
+    using json = nlohmann::json;
+    const std::string body = format::trim(std::string(raw_body));
+
+    // Already the protocol, addressed to something for form's sake.
+    if (starts_with_verb(body)) {
+        return body;
+    }
+
+    // The function's own name, without the namespace it was filed under:
+    // "functions.read" and "container.exec" are "read" and "exec".
+    std::string name = format::to_lower(recipient);
+    if (const std::size_t dot = name.rfind('.'); dot != std::string::npos) {
+        name.erase(0, dot + 1);
+    }
+
+    const json args = json::parse(body, nullptr, /*allow_exceptions=*/false);
+    const auto field = [&args](std::initializer_list<const char*> keys) -> std::string {
+        if (!args.is_object()) {
+            return {};
+        }
+        for (const char* key : keys) {
+            const auto found = args.find(key);
+            if (found != args.end() && found->is_string()) {
+                return found->get<std::string>();
+            }
+        }
+        return {};
+    };
+    // What the body says when it is not JSON at all: the argument as written.
+    const std::string plain = args.is_discarded() ? body : std::string();
+
+    const auto is = [&name](std::initializer_list<const char*> names) {
+        return std::any_of(names.begin(), names.end(),
+                           [&name](const char* one) { return name == one; });
+    };
+
+    if (is({"exec", "bash", "shell", "sh", "run", "run_command", "execute", "terminal",
+            "command"})) {
+        std::string command = field({"command", "cmd", "script", "code"});
+        if (command.empty() && args.is_object() && args.contains("cmd")
+            && args["cmd"].is_array()) {
+            // ["bash", "-lc", "ls -R"] is a shell being asked to run the last
+            // element; anything else is the words of the command itself.
+            const json& words = args["cmd"];
+            const bool via_shell = words.size() >= 3 && words[0].is_string()
+                                && words[1].is_string() && words[2].is_string()
+                                && (words[1].get<std::string>() == "-lc"
+                                    || words[1].get<std::string>() == "-c");
+            if (via_shell) {
+                command = words[2].get<std::string>();
+            } else {
+                for (const json& word : words) {
+                    if (word.is_string()) {
+                        command += (command.empty() ? "" : " ") + word.get<std::string>();
+                    }
+                }
+            }
+        }
+        if (command.empty()) {
+            command = plain;
+        }
+        return command.empty() ? std::string() : "RUN: " + command;
+    }
+    if (is({"read", "open", "cat", "read_file", "open_file", "view", "view_file"})) {
+        const std::string path = !plain.empty() ? plain
+                               : field({"path", "file", "filename", "file_path", "target"});
+        return path.empty() ? std::string() : "READ: " + path;
+    }
+    if (is({"list", "ls", "list_dir", "list_files", "listdir", "dir"})) {
+        std::string path = !plain.empty() ? plain : field({"path", "dir", "directory"});
+        return "LIST: " + (path.empty() ? std::string(".") : path);
+    }
+    if (is({"write", "write_file", "create_file", "save", "save_file", "edit", "edit_file"})) {
+        const std::string path    = field({"path", "file", "filename", "file_path"});
+        const std::string content = field({"content", "contents", "text", "body", "data"});
+        if (path.empty()) {
+            return {};
+        }
+        // Fenced the way the protocol asks, unless the file itself holds a
+        // fence -- then the other delimiter the parser accepts.
+        const bool fenced = content.find("```") == std::string::npos;
+        return "WRITE: " + path + "\n" + (fenced ? "```" : "<<<") + "\n" + content + "\n"
+             + (fenced ? "```" : ">>>");
+    }
+    if (is({"search", "web_search", "find"})) {
+        const std::string query = !plain.empty() ? plain : field({"query", "q", "search"});
+        return query.empty() ? std::string() : "SEARCH: " + query;
+    }
+    // The verbs that carry a sentence rather than a path or a command.
+    struct Spoken {
+        std::array<const char*, 3> names;
+        const char*                verb;
+    };
+    static constexpr std::array<Spoken, 4> kSpoken{{
+        {{"note", "", ""},                       "NOTE"},
+        {{"ask", "ask_user", "question"},        "ASK"},
+        {{"done", "finish", "complete"},         "DONE"},
+        {{"handoff", "hand_off", ""},            "HANDOFF"},
+    }};
+    for (const Spoken& spoken : kSpoken) {
+        const bool named = std::any_of(spoken.names.begin(), spoken.names.end(),
+                                       [&name](const char* one) { return *one != '\0' && name == one; });
+        const char* verb = spoken.verb;
+        if (named) {
+            const std::string text = !plain.empty() ? plain
+                                   : field({"text", "message", "question", "summary",
+                                            "argument", "note", "work", "reason"});
+            return std::string(verb) + ": " + text;
+        }
+    }
+    return {};
+}
+
+void ResponseFilter::answer_line(Piece& piece, std::string_view line) {
+    if (line.empty()) {
+        return;
+    }
+    if (last_answer_ != '\n') {
+        piece.answer += '\n';
+    }
+    piece.answer += line;
+    piece.answer += '\n';
+    last_answer_ = '\n';
+}
+
+void ResponseFilter::finish_call(Piece& piece) {
+    const std::string line = harmony_call_line(recipient_, call_);
+    if (!line.empty()) {
+        answer_line(piece, line);
+    } else {
+        // Something no protocol verb means -- a Python sandbox, a browser it
+        // does not have. It was the model working, and that is where it goes.
+        piece.reasoning += call_;
+    }
+    call_.clear();
+    recipient_.clear();
+}
+
+void ResponseFilter::close_message(Piece& piece) {
+    if (sink_ == Sink::Call) {
+        finish_call(piece);
+    }
+    if (state_ == State::ChannelName && !looks_like_channel(channel_)) {
+        answer_line(piece, format::trim(channel_));
+    }
+    channel_.clear();
+}
 
 void ResponseFilter::drain(Piece& piece, bool final_chunk) {
     const auto emit = [this, &piece](std::string_view text) {
@@ -76,9 +273,13 @@ void ResponseFilter::drain(Piece& piece, bool final_chunk) {
             return;
         }
         switch (sink_) {
-            case Sink::Answer:    piece.answer    += text; break;
+            case Sink::Answer:
+                piece.answer += text;
+                last_answer_ = text.back();
+                break;
             case Sink::Reasoning: piece.reasoning += text; break;
-            case Sink::Discard:   break;
+            case Sink::Call:      call_ += text; break;
+            case Sink::Discard:   header_ += text; break;
         }
     };
 
@@ -132,17 +333,31 @@ void ResponseFilter::drain(Piece& piece, bool final_chunk) {
             channel_.clear();
             state_ = State::ChannelName;
         } else if (marker == "<|message|>") {
-            // "final" is the answer; "analysis" and "commentary" are the model
-            // working. A message with no channel at all is an answer -- that is
-            // what a model using only part of the convention means by it.
+            // Addressed to a tool -- in the channel name or the role header
+            // before it, both of which harmony allows -- is a call to collect.
+            // Otherwise "final" is the answer and "analysis" and "commentary"
+            // are the model working. A message with no channel at all is an
+            // answer: that is what a model using only part of the convention
+            // means by it.
+            recipient_ = recipient_of(channel_);
+            if (recipient_.empty()) {
+                recipient_ = recipient_of(header_);
+            }
             const bool final_channel = channel_.empty() || channel_ == "final";
-            sink_  = final_channel ? Sink::Answer : Sink::Reasoning;
+            sink_  = !recipient_.empty() ? Sink::Call
+                   : final_channel       ? Sink::Answer
+                                         : Sink::Reasoning;
+            call_.clear();
+            header_.clear();
             state_ = State::Text;
         } else if (marker == "<|start|>" || marker == "<|end|>" || marker == "<|return|>" ||
                    marker == "<|call|>") {
-            // Between messages: what follows is a role name and a header, not
-            // anything anybody wants to read.
-            channel_.clear();
+            // The end of a message. Whatever was open is settled now -- a
+            // call, or a channel name that was really the message -- and what
+            // follows is a role name and a header, not anything anybody wants
+            // to read.
+            close_message(piece);
+            header_.clear();
             sink_  = Sink::Discard;
             state_ = State::Text;
         } else if (marker == "<think>" || marker == "<|think>") {
@@ -174,6 +389,9 @@ ResponseFilter::Piece ResponseFilter::flush() {
     Piece piece;
     drain(piece, /*final_chunk=*/true);
     buffer_.clear();
+    // A call ends at <|call|>, and <|call|> is where generation stops -- so on
+    // the model that makes these the marker usually never arrives as text.
+    close_message(piece);
     return piece;
 }
 

@@ -243,6 +243,14 @@ std::string Provider::resolved_key() const {
     return from_environment(conventional_key_variable());
 }
 
+std::string provider_kind_for(std::string_view base_url) {
+    const std::string host = host_of(base_url);
+    const std::string_view suffix = "anthropic.com";
+    const bool anthropic = host.size() >= suffix.size()
+                        && host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return anthropic ? "anthropic" : "openai";
+}
+
 std::string provider_id_from_name(std::string_view name) {
     std::string id;
     for (const char raw : name) {

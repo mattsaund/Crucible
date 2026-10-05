@@ -9,6 +9,7 @@
 // sent; nothing touches the network.
 #include "test_helpers.hpp"
 
+#include "crucible/runtime/cuda_libraries.hpp"
 #include "crucible/runtime/prebuilt.hpp"
 
 using namespace crucible;
@@ -89,4 +90,38 @@ TEST(the_release_list_is_asked_of_the_repository_the_installers_come_from) {
     const std::string url = prebuilt::releases_url();
     CHECK(url.find("api.github.com") != std::string::npos);
     CHECK(url.find("mattsaund/Crucible") != std::string::npos);
+}
+
+// --- NVIDIA's libraries, which a downloaded CUDA module needs ----------------
+
+TEST(the_cuda_libraries_are_read_out_of_nvidias_manifest) {
+    // Trimmed from redistrib_13.3.1.json. The sizes are strings, which is
+    // what NVIDIA writes -- and reading one as a number once took the whole
+    // program down from the thread installing the runtime.
+    const std::string manifest = R"({
+        "release_label": "13.3.1",
+        "cuda_cudart": {
+            "version": "13.3.29",
+            "linux-x86_64": {"relative_path": "cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.3.29-archive.tar.xz",
+                             "size": "1573744"},
+            "windows-x86_64": {"relative_path": "cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.3.29-archive.zip",
+                               "size": "2589792"}
+        },
+        "libcublas": {
+            "version": "13.6.0.2",
+            "linux-x86_64": {"relative_path": "libcublas/linux-x86_64/libcublas-linux-x86_64-13.6.0.2-archive.tar.xz",
+                             "size": 817981368}
+        }
+    })";
+    const auto linux_archives = crucible::cuda_libraries::detail::archives(manifest, "linux-x86_64");
+    CHECK_EQ(linux_archives.size(), std::size_t{2});
+    if (linux_archives.size() == 2) {
+        CHECK(linux_archives[0].url.rfind("https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/", 0) == 0);
+        CHECK_EQ(linux_archives[0].size, std::uint64_t{1573744});
+        CHECK_EQ(linux_archives[1].size, std::uint64_t{817981368});
+        CHECK(!linux_archives[1].files.empty());
+    }
+    // A platform cuBLAS is not listed for is no set at all, not half of one.
+    CHECK(crucible::cuda_libraries::detail::archives(manifest, "windows-x86_64").empty());
+    CHECK(crucible::cuda_libraries::detail::archives("not json", "linux-x86_64").empty());
 }

@@ -68,6 +68,33 @@ FetchContent_Declare(nlohmann_json
 
 FetchContent_MakeAvailable(nlohmann_json)
 
+# --- miniz: zip archives and deflate ----------------------------------------
+#
+# For reading what somebody attaches to a prompt. A .docx, an .xlsx, a .pptx,
+# an .odt and an .epub are all zip files of XML, and the text in a PDF is
+# almost always deflate-compressed. One small C file does both, under the MIT
+# license, and is compiled in rather than looked for: zlib is on every Linux
+# machine and on neither of the other two.
+#
+# The release archive rather than the repository, because the archive is the
+# single amalgamated file -- the repository is the pieces it is made from and
+# the build that makes it.
+set(CRUCIBLE_MINIZ_TAG 3.1.2 CACHE STRING "miniz release to compile in")
+FetchContent_Declare(miniz
+    URL      https://github.com/richgel999/miniz/releases/download/${CRUCIBLE_MINIZ_TAG}/miniz-${CRUCIBLE_MINIZ_TAG}.zip
+    URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(miniz)
+add_library(crucible_miniz STATIC ${miniz_SOURCE_DIR}/miniz.c)
+target_include_directories(crucible_miniz SYSTEM PUBLIC ${miniz_SOURCE_DIR})
+# No time functions: nothing here writes an archive, and they are the part
+# that differs between platforms. And none of zlib's names -- `inflate`,
+# `compress`, `crc32` -- which miniz otherwise defines in the global
+# namespace, where they would sit beside Crucible's own.
+target_compile_definitions(crucible_miniz PUBLIC MINIZ_NO_TIME MINIZ_NO_ARCHIVE_WRITING_APIS
+                                                 MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+set_target_properties(crucible_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ---------------------------------------------------------------------------
 # The window
 # ---------------------------------------------------------------------------
@@ -182,6 +209,7 @@ set(CRUCIBLE_UI_FILES
     ${CRUCIBLE_UI_DIR}/render.js
     ${CRUCIBLE_UI_DIR}/base.js
     ${CRUCIBLE_UI_DIR}/shell.js
+    ${CRUCIBLE_UI_DIR}/attach.js
     ${CRUCIBLE_UI_DIR}/chat.js
     ${CRUCIBLE_UI_DIR}/cook.js
     ${CRUCIBLE_UI_DIR}/create.js

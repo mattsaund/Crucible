@@ -11,10 +11,15 @@
 /// box.
 function turnWho(turn) {
   const route = turn.route;
-  const who = route ? expertName(route.expert) : 'crucible';
+  // A route that named nobody -- no expert had a model -- is Crucible itself
+  // saying so, not a nameless seat.
+  const who = route && route.expert ? expertName(route.expert) : 'crucible';
   const bits = [];
   if (route && route.confidence > 0) bits.push(`${Math.round(route.confidence * 100)}%`);
-  if (route && route.source) bits.push(route.source);
+  // How it was routed, only when it was not the usual way: the delegator
+  // choosing is what every turn says, so it says nothing. Pinned, a fallback
+  // and keywords are the exceptions, and worth a word.
+  if (route && route.source && route.source !== 'router model') bits.push(route.source);
   // Only when it actually swapped. A turn answered by the model already
   // resident paid nothing, and a "0.0s" there is noise.
   if (turn.load_ms > 0) bits.push(`swapped in ${(turn.load_ms / 1000).toFixed(1)}s`);
@@ -40,7 +45,17 @@ function turnMeta(turn) {
 /// follows it.
 function turnActions(turn) {
   return (turn.actions || []).map((a) => `<div class="act"><span class="act-dot">·</span> ${
-    escape(a.summary)}${a.body ? codeBlock(a.body, a.language || '') : ''}</div>`).join('');
+    escape(a.summary)}${actionBody(a)}</div>`).join('');
+}
+
+/// What an action left to look at. A write names the file it wrote, and is
+/// drawn as the block that was allowed; anything else is its output.
+function actionBody(action) {
+  if (!action.body) return '';
+  if (action.language && /^@@ line \d+ @@/.test(action.body)) {
+    return writtenBlock(action.body, action.language);
+  }
+  return codeBlock(action.body, action.language || '');
 }
 
 /// What can be done to a turn, which depends on what is happening.
@@ -81,7 +96,7 @@ function turnView(turn, index, busy, showThinking) {
          <summary>thinking</summary><div class="md">${markdown(turn.reasoning)}</div></details>`
     : '';
   return `${turnControls(turn, index, busy)}
-      <div class="said">${escape(turn.prompt)}</div>
+      ${attachedChips(turn.attachments)}${turn.prompt ? `<div class="said">${escape(turn.prompt)}</div>` : ''}
       ${turnWho(turn)}${thought}${turnActions(turn)}${reply}${turnMeta(turn)}`;
 }
 
@@ -106,7 +121,7 @@ function turnsView(turns, from) {
         turnView(turn, index, busy, showThinking)}</div>`);
       continue;
     }
-    const signature = `${index}|${busy}|${showThinking}|${turn.prompt.length}|${
+    const signature = `${index}|${busy}|${showThinking}|${(turn.attachments || []).length}|${turn.prompt.length}|${
       turn.reply.length}|${(turn.reasoning || '').length}|${(turn.actions || []).length}|${
       turn.failed}|${turn.canceled}|${turn.output_tokens}`;
     let html = turnCache.get(signature);
@@ -202,14 +217,24 @@ function composerView(options) {
   else if (asking) hint = 'answer the question above';
   else if (cook && !options.cook) { hint = 'a cook is running -- it has the experts'; disabled = true; }
 
+  // Auto sits beside the box rather than in Settings because whether you are
+  // watching an expert edit your files is a decision that changes between one
+  // prompt and the next, and a switch you have to go and find is a switch that
+  // stays wherever it was last left. A cook asks too, when it is off, and the
+  // switch takes effect from its next write -- so it is here while one runs.
+  const autoButton = `<button type="button" class="action toggle" data-act="auto-edits"
+      aria-pressed="${auto_}" title="${auto_ ? 'Edits apply as they are made'
+                                             : 'Every edit is shown before it lands'}">Auto</button>`;
+
   let buttons;
   if (cook && options.cook && !asking) {
     // Two stops, because they are different things. The first makes a
     // finishing pass so the project is left in a state that runs; the second
     // is a cancel and leaves it wherever it got to.
     const finishing = cook.state === 'finishing';
-    buttons = `<span class="status composer-note">${
-        finishing ? 'wrapping up -- finishing touches, then it will stop' : 'cooking'}</span>
+    buttons = `${finishing ? `<span class="status composer-note">wrapping up -- finishing
+        touches, then it will stop</span>` : ''}
+      ${autoButton}
       <button type="button" class="action" data-act="cook-stop" ${finishing ? 'disabled' : ''}
               title="Stop taking new work, and leave the project in a state that runs">Stop and finish</button>
       <button type="button" class="action" data-act="stop"
@@ -217,27 +242,32 @@ function composerView(options) {
     disabled = true;
     hint = finishing ? 'finishing up' : 'cooking';
   } else {
-    // Auto sits beside the box rather than in Settings because whether you
-    // are watching an expert edit your files is a decision that changes
-    // between one prompt and the next, and a switch you have to go and find
-    // is a switch that stays wherever it was last left.
     const send = asking ? 'Answer' : options.send;
-    buttons = `${options.cook ? '' : `<button type="button" class="action toggle" data-act="auto-edits"
-          aria-pressed="${auto_}" title="${auto_ ? 'Edits apply as they are made'
-                                                 : 'Every edit is shown before it lands'}">Auto</button>`}
+    buttons = `${autoButton}
       ${s.busy && !asking
         ? `<button type="button" class="action" data-act="stop">${
              s.status === 'stopping' ? 'Stopping' : 'Stop'}</button>`
         : `<button class="action" ${disabled ? 'disabled' : ''}>${send}</button>`}`;
   }
 
+  // One rounded box: what is attached, then the text, then a row along the
+  // bottom with the plus at one end and the buttons at the other. More can
+  // be typed with tiles in it; they go with whatever is.
+  const mode = options.cook ? 'cook' : 'chat';
   return `<div class="foot">
       <div class="splitter-y" id="composer-splitter" title="Drag to make the box taller"></div>
-      <form class="composer" data-submit="send" data-mode="${options.cook ? 'cook' : 'chat'}">
-        <textarea id="prompt" data-draft data-key="composer-key" data-input="composer-grow"
-                  rows="${state.composerRows}" placeholder="${escape(hint)}" autocomplete="off"
-                  spellcheck="false" ${disabled ? 'disabled' : ''}></textarea>
-        ${buttons}
+      <form class="composer" data-submit="send" data-mode="${mode}">
+        <div class="box${disabled ? ' shut' : ''}">
+          ${disabled ? '' : attachTiles(mode)}
+          <textarea id="prompt" data-draft data-key="composer-key" data-input="composer-grow"
+                    rows="${state.composerRows}" placeholder="${escape(hint)}" autocomplete="off"
+                    spellcheck="false" ${disabled ? 'disabled' : ''}></textarea>
+          <div class="box-bar">
+            ${attachButton(mode, disabled || asking)}
+            <span class="spacer"></span>
+            ${buttons}
+          </div>
+        </div>
       </form>
       ${tallyView()}
     </div>`;
@@ -274,18 +304,41 @@ views.chat = () => {
 actions.send = (form) => {
   const box = form.querySelector('textarea');
   const text = box.value.trim();
-  if (!text) return;
+  const mode = form.dataset.mode;
   const s = state.snapshot;
   const asking = s.cook && s.cook.running && s.cook.state === 'asking';
-  if (s.busy && !asking) return;
-  box.value = '';
-  growComposer(box);
   // Text typed while a cook is asking is the answer to it, whichever view it
   // was typed on. The question is on screen; the box under it answers it.
-  if (asking) return guard(() => call('cook.answer', { answer: text }));
-  if (form.dataset.mode === 'cook') return guard(() => call('cook.start', { goal: text }));
+  // What is attached stays where it is for the next prompt.
+  if (asking) {
+    if (!text) return;
+    box.value = '';
+    growComposer(box);
+    return guard(() => call('cook.answer', { answer: text }));
+  }
+  if (s.busy) return;
+  const files = state.attached[mode] || [];
+  // A question can be only its attachments -- "here" and a PDF says enough
+  // -- but a goal has to say what it is.
+  if (!text && (mode === 'cook' || !files.length)) return;
+  const attachments = attachmentsFor(mode);
+  if (!attachments) {
+    state.error = 'still reading what is attached -- a moment';
+    return render();
+  }
+  box.value = '';
+  growComposer(box);
+  if (mode === 'cook') {
+    return guard(async () => {
+      await call('cook.start', { goal: text, attachments });
+      state.attached.cook = [];
+    });
+  }
   state.follow = true;
-  return guard(() => call('submit', pinned(text)));
+  return guard(async () => {
+    await call('submit', Object.assign(pinned(text), { attachments }));
+    state.attached.chat = [];
+  });
 };
 
 /// "/physics why is the sky blue" sends the question straight to Physics.

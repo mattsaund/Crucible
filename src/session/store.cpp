@@ -121,6 +121,14 @@ json turn_to_json(const Turn& turn) {
         {"canceled", turn.canceled},
         {"failed", turn.failed},
     };
+    if (!turn.attachments.empty()) {
+        json attachments = json::array();
+        for (const TurnAttachment& one : turn.attachments) {
+            attachments.push_back(json{{"path", one.path}, {"name", one.name},
+                                       {"label", one.label}, {"kind", one.kind}});
+        }
+        entry["attachments"] = std::move(attachments);
+    }
     if (turn.route) {
         entry["route"] = json{
             {"expert", turn.route->expert},
@@ -141,6 +149,16 @@ Turn turn_from_json(const json& entry) {
     turn.load_ms           = entry.value("load_ms", 0L);
     turn.canceled         = entry.value("canceled", false);
     turn.failed            = entry.value("failed", false);
+
+    if (const auto attachments = entry.find("attachments");
+        attachments != entry.end() && attachments->is_array()) {
+        for (const json& one : *attachments) {
+            if (one.is_object()) {
+                turn.attachments.push_back({one.value("path", ""), one.value("name", ""),
+                                            one.value("label", ""), one.value("kind", "file")});
+            }
+        }
+    }
 
     if (const auto route = entry.find("route"); route != entry.end() && route->is_object()) {
         RouteDecision decision;

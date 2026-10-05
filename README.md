@@ -72,7 +72,7 @@ history stay where they are — an update replaces the program and nothing else.
 The check is one request for a public version number, it says nothing about the
 machine, and the checkbox beside it turns it off.
 
-Versions are `MAJOR.MINOR.PATCH`, tagged `v0.7.5` on GitHub, and the release a
+Versions are `MAJOR.MINOR.PATCH`, tagged `v0.8.0` on GitHub, and the release a
 tag builds carries the installers for all three platforms. What changed in each
 is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -112,6 +112,24 @@ ___
 - It can stop to ask you a question, and hand work to a different expert
   mid-cook.
 
+### Attach
+
+- The **+** at the bottom left of the box, or Ctrl+U, attaches files, photos
+  or a whole folder through the platform's own file dialog — to a question or
+  to a cook's goal. Or drag them onto the window: it blurs behind an orange
+  outline and takes whatever you let go of. They sit in the box as tiles, and
+  you keep typing.
+- PDFs, Word (`.docx` and `.doc`), Excel, PowerPoint, OpenDocument, RTF, EPUB,
+  HTML, Markdown, code, CSV and any other text are read into the prompt above
+  what you typed, each under its own name. A folder sends its readable files,
+  skipping dependencies, build output and version control.
+- Each attachment is cut to what fits the answering expert's context, and the
+  prompt says where it was cut.
+- Pictures go to a provider's model as pictures, shrunk to what it takes. A
+  model on this machine reads text only and is told a picture was attached
+  that it cannot see.
+- Nothing is converted anywhere but here.
+
 ### Create
 
 - The tab is the experts you have made: what each one is for, what it was built
@@ -121,7 +139,9 @@ ___
   epochs, context and learning rate. It estimates what will fit on your card
   before the run rather than forty minutes into it.
 - Starting a run closes the wizard and puts the model in the list; clicking it
-  shows its specs and its progress.
+  shows its specs and its progress. The finished file is written into your
+  models folder, so it is chosen for a seat -- or as the delegator -- like any
+  other model there.
 - Testing opens a window that really runs the candidate. **Finish** keeps it
   and gives it a seat the delegator can route to; **Edit** goes back to the
   fine-tune parameters.
@@ -155,8 +175,8 @@ ___
 - `RUN` is the exception and is worth being exact about: a command starts in the
   project root and is otherwise a command. Real confinement means a sandbox,
   which is not here yet.
-- Auto mode off (the default) shows you each edit before it lands, old file
-  beside new. Cook always applies and records what it did.
+- Auto off (the default) shows you each edit before it lands, in Chat and in
+  Cook alike, and the switch sits beside the box on both screens.
 
 ![The question Crucible asks once per folder](docs/images/trust.png)
 
@@ -167,7 +187,10 @@ ___
   here where it is not. Either way against the same llama.cpp the program was
   built from, because a backend built against another one crashes on the first
   tensor.
-- A downloaded CUDA backend needs only an NVIDIA driver — no toolkit.
+- A downloaded CUDA backend needs only an NVIDIA driver — no toolkit. The two
+  libraries it needs that the driver lacks, NVIDIA's CUDA runtime and cuBLAS,
+  are fetched from NVIDIA with it (a few hundred megabytes) unless the machine
+  already has them.
 - Multiple GPUs: `auto`, `even`, `priority` (an order you arrange) or `single`.
 - Optional: keep every layer on the GPU, and refuse models that will not fit in
   video memory.

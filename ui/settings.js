@@ -98,13 +98,12 @@ function progressView(p, title, cancel, dismiss) {
 
 function pageGeneral(c) {
   const models = state.models;
-  const here = models ? models.models.filter((m) => !m.made_here).length : null;
+  const here = models ? models.models.length : null;
   return `<h1>General</h1><p class="lede">Who reads the prompt first, and where the models are.</p>
     <h2>DELEGATOR</h2>
     <div class="field"><label for="router-model">Delegator model</label>
-      <div class="row">${modelSelect(c.router ? c.router.model : '', '',
+      ${modelSelect(c.router ? c.router.model : '', '',
           { id: 'router-model', 'data-change': 'router-model' }, true)}
-        <button class="action" data-act="router-browse">Browse</button></div>
       <div class="hint">Reads the prompt, names the expert. Never answers. A small model is the
         right choice, and it has to be one on this machine: it is asked for a probability
         per expert, which is not a thing a provider's API will give.</div></div>
@@ -126,18 +125,14 @@ function pageGeneral(c) {
         <button class="action" data-act="models-browse">Browse</button>
       </div>
       <div class="hint">${here === null ? 'Looking...' : `${count(here, 'GGUF file')} here.`}
-        A seat can also name a file anywhere, by its full path.</div>
+        Every model is chosen from this folder -- the delegator's and each expert's -- and a
+        fine-tune made in Create is written into it.</div>
       <div class="row" style="margin-top:.6rem">
         <button class="action" data-act="models-rescan">Rescan</button>
         <button class="action" data-act="models-reset">Reset to default</button></div></div>`;
 }
 
 actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value).model } });
-actions['router-browse'] = async () => {
-  const path = await pickPath({ title: 'Choose the delegator model', filter: 'GGUF models',
-                                extensions: ['.gguf'], start: state.models ? state.models.directory : '' });
-  if (path) await configure({ router: { model: path } });
-};
 async function setModelsDir(path) {
   await configure({ models_dir: path });
   need('models', 'models', true);
@@ -166,17 +161,19 @@ function pageExperts(c) {
                   data-name="${escape(e.name)}"
                   title="Take this seat off the roster. The model itself is not touched.">Eject</button></div>
         <div class="hint" style="margin:.2rem 0 .6rem">${escape(e.blurb)}</div>
-        <div class="row">${modelSelect(seat.model || '', seat.provider || '',
+        ${modelSelect(seat.model || '', seat.provider || '',
             { 'data-change': 'expert-model', 'data-id': e.id, 'aria-label': `Model for ${e.name}` })}
-          <button class="action" data-act="expert-browse" data-id="${escape(e.id)}">Browse</button></div>
       </div>`;
   }).join('') || '<p class="lede">No experts yet. Add one, and the delegator has somewhere to send a prompt.</p>';
 
+  const folder = state.models ? state.models.display : (c.models_dir || '');
   return `<h1>Experts</h1><p class="lede">Which model answers for each subject.</p>
-    <div class="row" style="margin-bottom:1.2rem">
+    <div class="row" style="margin-bottom:.6rem">
       <button class="action" data-act="new-expert">New expert</button>
       <button class="action" data-act="models-rescan">Rescan models</button>
       <button class="link" data-act="view" data-view="create">or fine-tune one in Create</button></div>
+    <p class="lede" style="margin-bottom:1.2rem">Models come from <code>${escape(folder)}</code>
+      <button class="link" data-act="models-browse">Change folder</button></p>
     ${rows}
     <h2 style="margin-top:1.8rem">DEFAULT EXPERT</h2>
     <div class="field">
@@ -195,15 +192,6 @@ actions['expert-model'] = (e) => guard(async () => {
   await call('expert.set', { id: e.dataset.id, ...splitModel(e.value) });
   await reloadConfig();
 });
-actions['expert-browse'] = async (e) => {
-  const path = await pickPath({ title: 'Choose a model file', filter: 'GGUF models',
-                                extensions: ['.gguf'], start: state.models ? state.models.directory : '' });
-  if (!path) return;
-  await guard(async () => {
-    await call('expert.set', { id: e.dataset.id, model: path, provider: '' });
-    await reloadConfig();
-  });
-};
 actions['expert-remove'] = async (e) => {
   const sure = await confirmIt({ title: `Eject ${e.dataset.name}?`,
     body: 'The seat comes off the roster and the delegator stops routing to it. The model stays where it is.',
@@ -236,13 +224,10 @@ function pageProviders() {
                 data-name="${escape(p.name)}">Remove</button></div>
       <div class="hint">${escape(p.endpoint)}</div>
       <div class="hint ${p.key.source === 'none' && p.kind === 'anthropic' ? 'bad' : ''}">${keyLine(p.key)}</div>
-      <div class="hint">${p.models.length ? count(p.models.length, 'model') + ' listed' : 'no models listed yet'}${
+      <div class="hint">${p.models.length ? 'model: ' + escape(p.models.join(', ')) : 'no model chosen yet'}${
         p.seats.length ? `  ·  answers for ${escape(p.seats.join(', '))}` : '  ·  no expert uses it yet'}</div>
       ${p.kind === 'anthropic' && !p.on_your_network ? `<div class="hint">When Claude declines a request,
         Anthropic may answer it with another of its models instead. The transcript says so when it happens.</div>` : ''}
-      <div class="row" style="margin-top:.6rem">
-        <button class="action" data-act="provider-list" data-id="${escape(p.id)}">${
-          state.open.listing === p.id ? 'Asking...' : 'List its models'}</button></div>
     </div>`).join('');
 
   return `<h1>Providers</h1>
@@ -258,29 +243,36 @@ function pageProviders() {
       catches what the local ones could not place.</p>`;
 }
 
+/// The address a template stands for, written out. Anthropic's is the one the
+/// API defaults to, which the list leaves empty.
+const templateAddress = (k) => k.base_url || (k.kind === 'anthropic' ? 'https://api.anthropic.com' : '');
+
+/// Add a provider, or change one: where it is, the key, and the model.
+///
+/// Nothing else is asked. Which of the two API shapes it speaks is worked out
+/// from the address -- Anthropic's is Anthropic's, everything else speaks the
+/// OpenAI one -- and what it is called comes from the template, or the
+/// address when there was none. A template only fills in the address; it can
+/// be ignored, and "Custom" is for anything not on the list.
 modals.provider = (m) => {
   const known = state.providers ? state.providers.known : [];
   const preset = known.find((k) => k.name === m.preset);
+  const listed = m.listed || [];
   return `<div class="modal">
     <div class="head"><strong>${m.id ? 'Edit ' + escape(m.name) : 'Add a provider'}</strong>
       <div class="status">Prompts routed to its experts leave this machine and go here.</div></div>
     <div class="body-pad">
-      ${m.id ? '' : `<div class="chips left">${known.map((k) =>
-        `<button class="chip${m.preset === k.name ? ' on' : ''}" data-act="provider-preset"
-                 data-name="${escape(k.name)}">${escape(k.name)}</button>`).join('')}</div>
-        ${preset && preset.note ? `<div class="hint" style="margin:.6rem 0 0">${escape(preset.note)}</div>` : ''}`}
-      <div class="field" style="margin-top:1rem"><label for="pv-name">Name</label>
-        <input id="pv-name" data-input="pv-field" data-field="name" data-draft value="${escape(m.name)}"
-               placeholder="what to call it" ${m.id ? '' : 'data-focus'}></div>
-      <div class="field"><label for="pv-kind">It speaks</label>
-        <select id="pv-kind" data-change="pv-field" data-field="kind">
-          <option value="openai"${m.api === 'openai' ? ' selected' : ''}>the OpenAI chat-completions API (nearly everything)</option>
-          <option value="anthropic"${m.api === 'anthropic' ? ' selected' : ''}>the Anthropic Messages API (Claude)</option>
-        </select></div>
-      <div class="field"><label for="pv-url">Address</label>
+      ${m.id ? '' : `<div class="field"><label for="pv-template">Template</label>
+        <select id="pv-template" data-change="pv-template">
+          <option value=""${m.preset ? '' : ' selected'}>Custom -- any address</option>
+          ${known.map((k) => `<option value="${escape(k.name)}"${m.preset === k.name ? ' selected' : ''}>${
+            escape(k.name)}</option>`).join('')}
+        </select>
+        ${preset && preset.note ? `<div class="hint">${escape(preset.note)}</div>` : ''}</div>`}
+      <div class="field"><label for="pv-url">Endpoint address</label>
         <input id="pv-url" data-input="pv-field" data-field="base_url" data-draft spellcheck="false"
-               value="${escape(m.base_url)}" placeholder="${m.api === 'anthropic'
-                 ? 'https://api.anthropic.com  (leave empty for this)' : 'https://api.example.com/v1'}"></div>
+               value="${escape(m.base_url)}" placeholder="https://api.example.com/v1"
+               ${m.id ? '' : 'data-focus'}></div>
       <div class="field"><label for="pv-key">API key</label>
         <input id="pv-key" type="password" data-input="pv-field" data-field="api_key" data-draft
                autocomplete="off" value="${escape(m.api_key)}"
@@ -288,14 +280,19 @@ modals.provider = (m) => {
         <div class="hint">Written to the config file as typed: anyone who can read that file can
           read the key. To keep it out of the file, write <code>env:NAME</code> and it is read
           from that environment variable instead${preset && preset.key_variable
-            ? ` -- or leave it empty and set <code>${escape(preset.key_variable)}</code>` : ''}.</div></div>
-      <div class="field"><label for="pv-models">Models</label>
-        <textarea id="pv-models" rows="4" data-input="pv-field" data-field="models" data-draft
-                  spellcheck="false" placeholder="one per line, as the provider names them">${
-          escape(m.models)}</textarea>
-        <div class="row" style="margin-top:.5rem">
-          <button class="action" data-act="pv-list">${m.listing ? 'Asking...' : 'Ask it what it has'}</button>
-          <span class="status">${escape(m.note || '')}</span></div></div>
+            ? ` -- or leave it empty and set <code>${escape(preset.key_variable)}</code>` : ''}.
+          A server on your own network usually wants none.</div></div>
+      <div class="field"><label for="pv-model">Model</label>
+        <div class="row">
+          <input id="pv-model" data-input="pv-field" data-field="model" data-draft spellcheck="false"
+                 value="${escape(m.model)}" placeholder="as the provider names it">
+          <button class="action" type="button" data-act="pv-list">${m.listing ? 'Asking...' : 'List models'}</button>
+        </div>
+        ${listed.length ? `<select data-change="pv-pick" style="margin-top:.5rem" aria-label="Its models">
+            <option value="">${count(listed.length, 'model')} -- choose one</option>
+            ${listed.map((name) => `<option value="${escape(name)}"${name === m.model ? ' selected' : ''}>${
+              escape(name)}</option>`).join('')}</select>` : ''}
+        ${m.note ? `<div class="hint">${escape(m.note)}</div>` : ''}</div>
       ${m.error ? `<div class="bad">${escape(m.error)}</div>` : ''}
     </div>
     <div class="feet">
@@ -304,37 +301,55 @@ modals.provider = (m) => {
     </div></div>`;
 };
 
-actions['provider-new'] = () => openModal({ kind: 'provider', id: '', name: '', api: 'openai',
-  base_url: '', api_key: '', models: '', preset: '', has_key: false });
+actions['provider-new'] = () => openModal({ kind: 'provider', id: '', name: '', preset: '',
+  base_url: '', api_key: '', model: '', listed: [], has_key: false });
 actions['provider-edit'] = (e) => {
   const p = state.providers.providers.find((x) => x.id === e.dataset.id);
   if (!p) return;
-  openModal({ kind: 'provider', id: p.id, name: p.name, api: p.kind, base_url: p.base_url,
+  openModal({ kind: 'provider', id: p.id, name: p.name, preset: '', base_url: p.endpoint,
               api_key: p.key.source === 'variable' ? 'env:' + p.key.variable : '',
-              models: p.models.join('\n'), preset: '', has_key: p.key.source === 'typed' });
+              model: p.models[0] || '', listed: p.models, has_key: p.key.source === 'typed' });
 };
-actions['provider-preset'] = (e) => {
-  const k = state.providers.known.find((x) => x.name === e.dataset.name);
-  Object.assign(state.modal, { preset: k.name, name: k.name, api: k.kind, base_url: k.base_url });
+actions['pv-template'] = (e) => {
+  const m = state.modal;
+  const k = (state.providers.known || []).find((x) => x.name === e.value);
+  m.preset = k ? k.name : '';
+  m.base_url = k ? templateAddress(k) : '';
+  m.listed = [];
+  m.note = '';
   // The fields are drafts, which a redraw leaves alone; this is the one time
-  // the page means to overwrite what is in them.
-  for (const [id, value] of [['pv-name', k.name], ['pv-url', k.base_url]]) {
-    const field = document.getElementById(id);
-    if (field) field.value = value;
-  }
+  // the page means to overwrite what is in one.
+  const field = document.getElementById('pv-url');
+  if (field) field.value = m.base_url;
   render();
 };
-actions['pv-field'] = (e) => {
-  state.modal[e.dataset.field === 'kind' ? 'api' : e.dataset.field] = e.value;
-  if (e.dataset.field === 'kind') render();
+actions['pv-field'] = (e) => { state.modal[e.dataset.field] = e.value; };
+actions['pv-pick'] = (e) => {
+  if (!e.value) return;
+  state.modal.model = e.value;
+  const field = document.getElementById('pv-model');
+  if (field) field.value = e.value;
 };
-const linesOf = (text) => text.split('\n').map((l) => l.trim()).filter(Boolean);
-/// What the provider form holds, as the request that saves or tests it. The
-/// key is only sent when one was typed: an empty box means "the one on file".
+
+/// What the form holds, as the request that saves or tests it.
+///
+/// The key is only sent when one was typed: an empty box means "the one on
+/// file". The models are the one chosen, then any other this provider already
+/// answers a seat with -- changing the model here must not take one away from
+/// a seat that is using it.
 function providerRequest(m) {
-  const request = { name: m.name, kind: m.api, base_url: m.base_url, models: linesOf(m.models) };
-  if (m.id) request.id = m.id;
+  const address = m.base_url.trim();
+  const host = (address.match(/^[a-z]+:\/\/([^/:?#]+)/i) || [, ''])[1];
+  const request = { base_url: address };
+  if (m.id) {
+    request.id = m.id;
+  } else {
+    request.name = m.preset || host || 'Provider';
+  }
   if (m.api_key) request.api_key = m.api_key;
+  const inUse = ((state.config && state.config.experts) || [])
+    .filter((x) => m.id && x.provider === m.id).map((x) => x.model);
+  request.models = [...new Set([m.model.trim(), ...inUse].filter(Boolean))];
   return request;
 }
 actions['pv-list'] = () => guard(async () => {
@@ -342,14 +357,14 @@ actions['pv-list'] = () => guard(async () => {
   m.listing = true; m.note = ''; render();
   try {
     const found = await call('provider.models', providerRequest(m));
-    m.models = found.models.join('\n');
-    const box = document.getElementById('pv-models');
-    if (box) box.value = m.models;
-    m.note = `${count(found.models.length, 'model')}. Remove the ones you will not use.`;
+    m.listed = found.models;
+    m.note = '';
   } finally { m.listing = false; }
 });
 actions['pv-save'] = () => guard(async () => {
-  const reply = await call('provider.save', providerRequest(state.modal));
+  const m = state.modal;
+  if (!m.base_url.trim()) throw new Error('It needs an address.');
+  const reply = await call('provider.save', providerRequest(m));
   closeModal();
   if (reply.warning) state.error = reply.warning;
   state.providers = await call('providers');
@@ -364,14 +379,6 @@ actions['provider-remove'] = async (e) => {
     await reloadConfig();
   });
 };
-actions['provider-list'] = (e) => guard(async () => {
-  state.open.listing = e.dataset.id; render();
-  try {
-    const found = await call('provider.models', { id: e.dataset.id });
-    await call('provider.save', { id: e.dataset.id, models: found.models });
-    state.providers = await call('providers');
-  } finally { state.open.listing = null; }
-});
 
 // --- Generation -----------------------------------------------------------------------------
 
@@ -484,8 +491,8 @@ function pageHardware(c) {
 
     <h2 style="margin-top:1.6rem">${mode === 'priority' ? 'PRIORITY ORDER  --  FILLED TOP FIRST' : 'CARDS'}</h2>
     <div class="order">${cards}</div>
-    ${mode === 'single' || mode === 'priority' ? `<div class="field" style="margin-top:1rem">
-      <label for="main-gpu">${mode === 'single' ? 'The card' : 'The card that holds the output'}</label>
+    ${mode === 'single' ? `<div class="field" style="margin-top:1rem">
+      <label for="main-gpu">The card</label>
       <select id="main-gpu" data-change="set" data-path="gpu.main_gpu" data-kind="int">${
         d.gpus.map((g, i) => `<option value="${i}"${at(c, 'gpu.main_gpu') === i ? ' selected' : ''}>${
           escape(g.name)}</option>`).join('')}</select></div>` : ''}
@@ -541,6 +548,8 @@ function pageRuntimes() {
           <button class="link right" data-act="runtime-open" data-id="${r.id}">${open ? 'Less' : 'More'}</button></div>
         <div class="hint">${escape(r.blurb)}</div>
         <div class="hint">${facts.map(escape).join('  ·  ')}</div>
+        ${r.missing ? `<div class="hint bad">Installed, but it cannot start: it needs ${escape(r.missing)}.
+          Reinstall fetches them from NVIDIA.</div>` : ''}
         ${!r.installed && !r.buildable && r.blocker ? `<div class="hint">A download is tried first. If
           there is none for this machine it would have to be compiled here, and: ${escape(r.blocker)}</div>` : ''}
         ${open ? `<div class="runtime-detail">
@@ -652,8 +661,6 @@ function pageTools(c) {
     ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider',
       'A build is minutes; a command still going after this has hung, and is stopped.',
       { min: 5, max: 900, step: 5 })}
-    ${setting('tools.auto_edits', 'Apply edits without asking', 'bool',
-      'Off shows you each change before it lands. A cook ignores this and always applies.')}
 
     <h2 style="margin-top:1.8rem">THE WEB</h2>
     ${setting('tools.web_search', 'Let experts look things up', 'bool',

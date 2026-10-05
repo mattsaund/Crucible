@@ -41,6 +41,7 @@
 #include "crucible/engine/route_policy.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/workshop.hpp"
+#include "crucible/util/format.hpp"
 
 namespace crucible {
 namespace {
@@ -96,6 +97,16 @@ constexpr int kAbandonAt = 10;  ///< it is stuck; stop rather than burn the budg
 /// expert is not left in the chair for an hour. The answer is usually the seat
 /// already there, which costs one routing pass and no reload.
 constexpr int kCheckpointEvery = 12;
+
+/// How many rounds in a row may pass without an action before the cook stops.
+///
+/// A round with no command in it is answered with an instruction to take one,
+/// and a model that can follow the protocol does, within a round or two. One
+/// that cannot -- that answers in a tool-call format of its own, or not at all
+/// -- will not start on the ninth time of asking, and every round of trying
+/// is a few seconds of the card and a line of noise in the journal. This was
+/// three hundred lines of "(said nothing)" before there was a limit.
+constexpr int kIdleLimit = 8;
 
 /// What the expert is told it is doing, over and above its own system prompt.
 std::string cook_system_prompt(const Config& config, const std::string& goal,
@@ -159,6 +170,11 @@ std::string turn_text(const std::string& answer) {
     return answer.empty() ? std::string("(no reply)") : answer;
 }
 
+/// `text` without whitespace at either end.
+std::string trim_copy(const std::string& text) {
+    return format::trim(text);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -182,7 +198,8 @@ tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) 
     return workshop;
 }
 
-void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root) {
+void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
+                        std::vector<attach::Attachment> attachments) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -190,6 +207,7 @@ void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::p
         request.prompt         = std::move(goal);
         request.budget_seconds = budget_seconds;
         request.root           = std::move(root);
+        request.attachments    = std::move(attachments);
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
@@ -341,7 +359,8 @@ Engine::CookSeat Engine::take_the_seat(const std::string& work, const CookSeat& 
 // ---------------------------------------------------------------------------
 
 void Engine::do_cook(const std::string& goal, int budget_seconds,
-                     const std::filesystem::path& root) {
+                     const std::filesystem::path& root,
+                     std::vector<attach::Attachment> attachments) {
     cooking_.store(true, std::memory_order_relaxed);
     cook_stop_.store(false, std::memory_order_relaxed);
     cancel_.store(false, std::memory_order_relaxed);
@@ -356,6 +375,9 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     cook_.state         = CookState::Working;
     cook_.budget_seconds = budget_seconds;
     cook_.started_unix  = static_cast<std::int64_t>(std::time(nullptr));
+    for (const attach::Attachment& one : attachments) {
+        cook_.attachments.push_back(attach::tile_of(one));
+    }
     publish_cook();
 
     const tools::WorkshopSettings workshop = workshop_for(root);
@@ -383,6 +405,29 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     }
 
     const std::string system = cook_system_prompt(config_, goal, workshop, root);
+
+    // What the goal came with, read for whoever holds the seat and put in
+    // front of every round -- not into `recent`, which is trimmed, because a
+    // specification the cook forgets halfway through is worse than none.
+    // Read again when the seat changes hands: the next expert's context is
+    // another size, and it may or may not see pictures.
+    //
+    // A third of the context, so the work itself still has room.
+    constexpr double kAttachedShare = 0.33;
+    ChatMessage attached;
+    const ChatModel* attached_for = nullptr;
+    const auto read_for_seat = [&]() {
+        if (attachments.empty() || attached_for == seat.model) {
+            return;
+        }
+        attach::Composed composed = read_attachments(attachments, *seat.model, {{"system", system}},
+                                                     kAttachedShare);
+        attached = ChatMessage{"user", "The goal comes with these attached:\n\n" + composed.text};
+        for (attach::Image& image : composed.images) {
+            attached.images.push_back({std::move(image.mime), std::move(image.data)});
+        }
+        attached_for = seat.model;
+    };
     // The exchanges since the last trim. The goal and the running account are
     // rebuilt from the journal each round, so only this has to be carried.
     std::vector<ChatMessage> recent;
@@ -418,10 +463,17 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     int  strikes = 0;
     bool looping = false;
 
+    // Set alongside `looping` when what stopped it was rounds with no action
+    // at all, which wants a different sentence from the same action repeated.
+    bool stalled = false;
+
     // Set when the expert could not be asked at all -- a provider that is
     // down, a key that was revoked. There is no finishing pass after that:
     // the pass is the expert's, and the expert is what is missing.
     std::string unreachable;
+
+    // Rounds in a row that produced no command. See kIdleLimit.
+    int idle = 0;
 
     // Actions since the last time the delegator was asked who should be doing
     // this. See kCheckpointEvery.
@@ -440,6 +492,11 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
 
         std::vector<ChatMessage> messages;
         messages.push_back({"system", system});
+        read_for_seat();
+        if (!attached.content.empty()) {
+            messages.push_back(attached);
+            messages.push_back({"assistant", "Read. I will work from these."});
+        }
         if (const std::string account = running_account(cook_); !account.empty()) {
             messages.push_back({"user", account});
             messages.push_back({"assistant", "Understood. Continuing."});
@@ -477,11 +534,17 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             break;
         }
 
-        recent.push_back({"user", next_instruction});
-        recent.push_back({"assistant", turn_text(round.answer)});
-
         const std::optional<tools::ToolCall> call =
             tools::parse_tool_call(round.answer, round.reasoning);
+
+        // Only an exchange that said something goes into the history. A reply
+        // that was empty -- everything on a reasoning channel, or nothing at
+        // all -- left in the context is a model shown itself saying nothing,
+        // round after round, and taking the hint.
+        if (call || !trim_copy(round.answer).empty()) {
+            recent.push_back({"user", next_instruction});
+            recent.push_back({"assistant", turn_text(round.answer)});
+        }
 
         if (!call) {
             // It talked instead of acting. Recorded as a step so the user can
@@ -491,10 +554,30 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             step.iteration = cook_.iterations;
             step.expert    = seat.id;
             step.kind      = "think";
-            step.summary   = round.answer.empty() ? std::string("(said nothing)")
-                                                  : round.answer.substr(0, 200);
+            // What it was thinking, when it said nothing. "(said nothing)"
+            // three hundred times was true and told nobody why.
+            const std::string said = trim_copy(round.answer);
+            const std::string thought = trim_copy(round.reasoning);
+            step.summary = !said.empty()    ? said.substr(0, 200)
+                         : !thought.empty() ? "(only thought) " + thought.substr(0, 180)
+                                            : std::string("(said nothing)");
             step.ms        = round.ms;
             note_step(std::move(step));
+
+            if (++idle >= kIdleLimit) {
+                CookStep note;
+                note.iteration = cook_.iterations;
+                note.expert    = seat.id;
+                note.kind      = "note";
+                note.ok        = false;
+                note.summary   = "stopped: " + seat.name + " answered "
+                               + std::to_string(kIdleLimit)
+                               + " times in a row without taking an action";
+                note_step(std::move(note));
+                looping = true;
+                stalled = true;
+                break;
+            }
 
             // Distinguish "did not try" from "tried and got the syntax wrong".
             // A model writing `WRITE /path "fixed it"` is doing the work and
@@ -528,6 +611,8 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             }
             continue;
         }
+
+        idle = 0;
 
         if (call->kind == tools::ToolKind::Ask) {
             cook_.state    = CookState::Asking;
@@ -570,8 +655,8 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             const CookSeat next = take_the_seat(work, seat);
             if (next.model == nullptr) {
                 // Nobody could take it. Rather than end the cook, the expert
-                // that is already loaded carries on with the work it described
-                // -- a worse specialist finishing the job beats no job.
+                // that had it carries on with the work it described -- a worse
+                // specialist finishing the job beats no job.
                 CookStep note;
                 note.iteration = cook_.iterations;
                 note.expert    = seat.id;
@@ -579,6 +664,18 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
                 note.ok        = false;
                 note.summary   = next.error + " -- carrying on with " + seat.name;
                 note_step(std::move(note));
+
+                // Asked for again rather than assumed. A local expert is freed
+                // before the next one is loaded, so by the time that load has
+                // failed the one this seat pointed at is gone -- and carrying
+                // on with the old pointer was carrying on with freed memory.
+                long        load_ms = 0;
+                std::string error;
+                seat.model = seat_model(seat.id, seat.params, seat.name, load_ms, error);
+                if (seat.model == nullptr) {
+                    unreachable = error.empty() ? seat.name + " could not be loaded again" : error;
+                    break;
+                }
             } else {
                 if (next.id != seat.id) {
                     CookStep note;
@@ -624,6 +721,32 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             since_checkpoint = 0;
             next_instruction = "That piece is done. " + handoff_request;
             continue;
+        }
+
+        // A write waits for a yes when Auto is off, exactly as it does in a
+        // chat turn. Read at the moment of asking, so the button pressed
+        // halfway through a cook takes effect from the next write.
+        if (call->kind == tools::ToolKind::Write && !auto_edits_.load()) {
+            state_.set_mood(Mood::Idle, "waiting on you: " + call->argument);
+            const bool approved = ask_about_edit(*call, workshop);
+            if (cancel_.load(std::memory_order_relaxed)) {
+                break;
+            }
+            if (!approved) {
+                CookStep step;
+                step.iteration = cook_.iterations;
+                step.expert    = seat.id;
+                step.kind      = "note";
+                step.ok        = false;
+                step.summary   = "you declined the edit to " + call->argument;
+                note_step(std::move(step));
+                recent.push_back({"user", "The user declined that edit; the file is unchanged."});
+                next_instruction = "The user declined that edit, so the file is unchanged. Do "
+                                   "not try the same write again: change it, or do something "
+                                   "else towards the goal.";
+                continue;
+            }
+            state_.set_mood(Mood::Thinking, seat.name + " is working");
         }
 
         const auto started = Clock::now();
@@ -726,7 +849,9 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     // back to something that runs, and then says what happened.
     const bool interrupted = cancel_.load(std::memory_order_relaxed)
                           || !running_.load(std::memory_order_relaxed);
-    if (!interrupted && unreachable.empty()) {
+    // Not after it stalled either: the pass is that same expert asked six more
+    // times, and it has just shown it will not act.
+    if (!interrupted && unreachable.empty() && !stalled) {
         cook_.state = CookState::Finishing;
         publish_cook();
         state_.set_mood(Mood::Thinking, seat.name + " is finishing up");
@@ -801,6 +926,9 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     }
     if (cook_.outcome.empty()) {
         cook_.outcome = interrupted ? "interrupted"
+                      : stalled ? "stopped: the expert kept answering without taking an "
+                                  "action. Its replies are not in the form a cook needs -- "
+                                  "a different model may follow it better"
                       : looping ? "stopped: the expert repeated the same action without "
                                   "making progress -- a larger model may be needed for "
                                   "this goal"

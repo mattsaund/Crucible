@@ -179,10 +179,11 @@ void AppState::set_delegator_progress(float progress) {
     delegator_progress_ = progress < 0.0F ? 0.0F : (progress > 1.0F ? 1.0F : progress);
 }
 
-std::size_t AppState::begin_turn(std::string prompt) {
+std::size_t AppState::begin_turn(std::string prompt, std::vector<TurnAttachment> attachments) {
     const std::lock_guard<std::mutex> lock(mutex_);
     Turn turn;
-    turn.prompt    = std::move(prompt);
+    turn.prompt      = std::move(prompt);
+    turn.attachments = std::move(attachments);
     turn.streaming = true;
     turns_.push_back(std::move(turn));
     return turns_.size() - 1;

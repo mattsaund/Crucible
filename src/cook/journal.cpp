@@ -245,9 +245,16 @@ bool CookLog::save(const Cook& cook, std::string& error) const {
         });
     }
 
+    json attachments = json::array();
+    for (const attach::Tile& one : cook.attachments) {
+        attachments.push_back(json{{"path", one.path}, {"name", one.name},
+                                   {"label", one.label}, {"kind", one.kind}});
+    }
+
     const json doc{
         {"id",             cook.id},
         {"goal",           cook.goal},
+        {"attachments",    attachments},
         {"state",          std::string(cook_state_name(cook.state))},
         {"budget_seconds", cook.budget_seconds},
         {"started_unix",   cook.started_unix},
@@ -355,6 +362,16 @@ std::optional<Cook> CookLog::load(const std::string& id) const {
     cook.iterations     = doc.value("iterations", 0);
     cook.outcome        = doc.value("outcome", "");
     cook.question       = doc.value("question", "");
+
+    if (const auto attachments = doc.find("attachments");
+        attachments != doc.end() && attachments->is_array()) {
+        for (const json& one : *attachments) {
+            if (one.is_object()) {
+                cook.attachments.push_back({one.value("path", ""), one.value("name", ""),
+                                            one.value("label", ""), one.value("kind", "file")});
+            }
+        }
+    }
 
     if (const auto steps = doc.find("steps"); steps != doc.end() && steps->is_array()) {
         for (const json& entry : *steps) {

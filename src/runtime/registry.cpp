@@ -22,6 +22,7 @@
 #include <ggml-backend.h>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/runtime/cuda_libraries.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -256,6 +257,9 @@ bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
         return false;
     }
 
+    if (kind == BackendKind::Cuda) {
+        cuda_libraries::preload();   // before the module, which needs them
+    }
     if (ggml_backend_load(best.string().c_str()) == nullptr) {
         error = "could not load " + best.filename().string() +
                 " -- see the Crucible log";
@@ -268,11 +272,17 @@ void RuntimeRegistry::load_all() {
     if (!loadable_backends_supported()) {
         return;  // the backend is compiled in; there is nothing to load
     }
+    // NVIDIA's libraries first, when Crucible fetched them: the CUDA module
+    // names them as dependencies and would otherwise not load at all.
+    cuda_libraries::preload();
     const std::string dir = paths::runtimes_dir().string();
     ggml_backend_load_all_from_path(dir.c_str());
 }
 
 std::vector<RuntimeStatus> RuntimeRegistry::scan() {
+    // So that asking a CUDA module for its score -- which loads it -- can
+    // find what it depends on. See best_module.
+    cuda_libraries::preload();
     const auto installed = modules_in(paths::runtimes_dir());
     const auto devices   = registered_devices();
     const json manifest  = read_manifest(manifest_file());
@@ -303,6 +313,17 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
         if (const auto counted = devices.find(info.kind); counted != devices.end()) {
             status.active       = counted->second > 0;
             status.device_count = counted->second;
+        }
+
+        // A CUDA module that is here and not running, with NVIDIA's libraries
+        // in neither place it could find them. Said, because otherwise this
+        // looks exactly like a machine with no NVIDIA card: installed, no
+        // devices, and nothing to explain it.
+        if (info.kind == BackendKind::Cuda && status.installed) {
+            status.bytes += cuda_libraries::bytes();
+            if (!status.active && !cuda_libraries::complete() && !cuda_libraries::on_system()) {
+                status.missing = "NVIDIA's CUDA runtime and cuBLAS libraries";
+            }
         }
 
         if (status.files.size() > 1) {
@@ -386,6 +407,10 @@ bool RuntimeRegistry::remove(BackendKind kind, std::string& error) {
 
     // The build tree is far larger than the module and is pure cache.
     std::filesystem::remove_all(paths::runtime_build_dir() / std::string(info.id), ec);
+    // And NVIDIA's libraries, which were only ever there for this one.
+    if (kind == BackendKind::Cuda) {
+        cuda_libraries::remove();
+    }
     return true;
 }
 

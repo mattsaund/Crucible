@@ -6,6 +6,107 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.8.0 — 2026-10-05
+
+**Attach files, photos and folders.** A gray **+** at the bottom left of the
+box -- in Chat and in Cook -- opens a menu: *Add files or photos* (Ctrl+U) and
+*Add folder*, each through the platform's own file dialog. What you choose sits
+in the box as tiles above the text: a picture as itself, a PDF as its first
+page, anything else as its name and type, each with an × to take it out. Keep
+typing and send them together. PDFs, `.docx` and old `.doc`, `.xlsx` and
+`.xls`, `.pptx` and `.ppt`, OpenDocument, RTF, EPUB, HTML and every kind of
+plain text are read into the prompt, above what you typed and cut to what fits
+the expert that answers, with the cut said out loud. A folder sends its
+readable files and skips `node_modules`, build output and `.git`. Pictures go
+to a provider's model as pictures, shrunk to 1568 pixels; a model on this
+machine is told one was attached that it cannot see, and a provider that
+refuses pictures gets the text and a line saying the picture was left out.
+Everything is read here -- miniz for the zip-based formats, Crucible's own
+readers for the rest, and `pdftotext` or `catdoc` when the machine has them.
+A conversation and a cook's journal keep what was attached, and Ask again
+sends it again.
+
+**Or drag them onto the window.** Anything dragged over Crucible blurs the
+window behind an outline in the flame that says *Drop files or folders here*,
+and what you let go of goes in the box -- Chat's or Cook's, whichever is
+showing, and Chat's from any other view. When the box is shut the outline
+turns gray and says why. On Linux the files are attached where they are; on
+Windows and macOS, whose webviews never tell a page where a dropped file
+lives, Crucible keeps a copy in its own folder for two weeks and attaches
+that.
+
+**A downloaded CUDA runtime starts.** The prebuilt CUDA backend needs NVIDIA's
+CUDA runtime and cuBLAS libraries, which the driver does not include, so on a
+machine without the toolkit it installed and then could not load. Installing
+it now fetches those two from NVIDIA's own download site and puts them beside
+it; Settings says when a CUDA runtime is installed but missing them, and
+Reinstall fetches them. Installing no longer asks for `nvcc` before it has
+tried the download that does not need it.
+
+**Loading stuck at 21% is fixed.** With **Dedicated VRAM only** on, models
+were read with direct I/O, and on the Vulkan backend llama.cpp's upload from a
+direct read waits on an event that never fires: the load stopped at whatever
+percentage it had reached and nothing, Stop included, could end it. On Vulkan
+the model is now memory-mapped instead; the setting still refuses a model that
+will not fit, which is the part of it that matters.
+
+**A cook acts with gpt-oss.** That model calls tools in a format of its own --
+a message addressed to `container.exec` or `functions.write` -- and sometimes
+writes `LIST: .` where a channel name goes. Every one of those used to read as
+an empty reply, and a cook would answer "(said nothing)" hundreds of times.
+They are translated into the commands they mean now, a round with nothing in
+it no longer goes into the model's own history, and a cook that takes no
+action eight rounds running stops and says why.
+
+**Stopping does not lock anything up.** Stop now on a cook that was asking you
+a question left the engine waiting for an answer that would never come, and
+every later request queued behind it. It wakes now, as it already did for an
+edit waiting on you. Stop also interrupts a prompt partway through being read,
+and a handoff that could not load its new expert no longer carries on with the
+old one's freed memory.
+
+**The delegator is back before you need it.** It is loaded when Crucible
+starts and again the moment a prompt or a cook ends, however it ended, while
+the box is already free for the next prompt. "Load on demand" decides only
+when it is freed -- the instant it has routed -- not when it returns.
+
+**Priority order fits what even mode fits.** The check before a load measured
+each card's share as an average layer, and priority mode fills the first cards
+with real layer sizes right to the top -- so it refused models that loaded in
+even mode on the same cards. It counts the actual layers now.
+
+**One models folder.** Every model dropdown -- the delegator's, each expert's,
+New expert's -- lists the models folder and the providers' models, and a
+fine-tune made in Create is written into that folder when it finishes. The
+per-seat Browse buttons are gone; **Change folder** is beside the list.
+
+**Smaller things.**
+- The loading ring is a circle again, with the percentage in its middle. It
+  was rotated about the wrong point and swung half off itself, over the name.
+- Adding a provider asks for an address, a key and a model, with a template
+  list to fill the address in. Which API it speaks is worked out from the
+  address.
+- **Auto** is on the Cook screen too, and a cook asks before it writes when it
+  is off. The duplicate checkbox in Settings → Tools is gone.
+- Settings → Hardware no longer asks which card holds the output in priority
+  mode.
+- Create is titled Create, with New expert under its one line of explanation.
+- The macOS build compiles again.
+- An edit you allow stays in the transcript the way it was offered: a new
+  file as colored, numbered code, a change as the lines that moved, matched
+  up so a line it left alone reads as left alone. It used to turn into a gray
+  unified diff the moment it was written, and its count agreed with neither.
+- What an expert says before reading or writing a file and what it says after
+  are two paragraphs, and an answer that took several actions keeps what it
+  said before each one. They used to run together mid-sentence, or replace
+  each other.
+- The line beside the expert's name no longer says "router model" on every
+  turn; it names how a turn was routed only when it was unusual -- pinned, a
+  fallback, keywords.
+- On Windows, a path with an accented letter in it -- a project, the models
+  folder, an attachment -- is found. Windows read Crucible's UTF-8 paths in
+  its old ANSI code page; the program now declares UTF-8 as its own.
+
 ## 0.7.5 — 2026-10-04
 
 **An expert can be a model that is somewhere else.** A seat is a name, a

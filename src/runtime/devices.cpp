@@ -15,6 +15,31 @@
 
 namespace crucible {
 
+std::vector<int> llama_layer_assignment(const std::vector<float>& split, std::size_t units) {
+    std::vector<int> counts(split.size(), 0);
+    float running = 0.0F;
+    std::vector<float> cumulative(split.size(), 0.0F);
+    for (std::size_t i = 0; i < split.size(); ++i) {
+        running      += split[i];
+        cumulative[i] = running;
+    }
+    if (running <= 0.0F || units == 0) {
+        return counts;
+    }
+    for (float& value : cumulative) {
+        value /= running;
+    }
+    for (std::size_t unit = 0; unit < units; ++unit) {
+        const auto share = static_cast<float>(unit) / static_cast<float>(units);
+        const auto found = std::upper_bound(cumulative.begin(), cumulative.end(), share);
+        const auto device = static_cast<std::size_t>(std::distance(cumulative.begin(), found));
+        if (device < counts.size()) {
+            ++counts[device];
+        }
+    }
+    return counts;
+}
+
 std::uint64_t usable_memory(const ComputeDevice& gpu, std::uint64_t reserve) {
     // Free when the backend reports it, total when it does not. A backend that
     // reports neither gets nothing, and the caller falls back to an equal

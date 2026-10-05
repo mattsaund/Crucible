@@ -24,6 +24,7 @@
 #include "crucible/llm/remote_model.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
+#include "crucible/tools/attachments.hpp"
 #include "crucible/tools/workshop.hpp"
 
 namespace crucible {
@@ -45,7 +46,11 @@ public:
 
     /// Queue a prompt. `pinned` skips routing and sends it straight to that
     /// expert, which is how `/physics ...` works.
-    void submit(std::string prompt, std::optional<ExpertId> pinned = std::nullopt);
+    ///
+    /// `attachments` are read when the expert is known, not before: how much
+    /// of a long document fits is a question about that expert's context.
+    void submit(std::string prompt, std::optional<ExpertId> pinned = std::nullopt,
+                std::vector<attach::Attachment> attachments = {});
 
     /// Ask the current generation to stop at the next token boundary.
     void cancel();
@@ -103,7 +108,8 @@ public:
     /// Queued like any other request, and once it starts it holds the worker
     /// for its whole duration. Prompts submitted while it runs wait behind it,
     /// which is the truthful behavior: there is one engine and it is busy.
-    void start_cook(std::string goal, int budget_seconds, std::filesystem::path root);
+    void start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
+                    std::vector<attach::Attachment> attachments = {});
 
     /// Ask the running cook to wrap up.
     ///
@@ -178,12 +184,31 @@ private:
         // for Cook
         int                   budget_seconds = 0;
         std::filesystem::path root;
+
+        // for Prompt and Cook
+        std::vector<attach::Attachment> attachments;
     };
 
     void run();
     void handle(const Request& request);
     void load_router();
-    void load_router_if_resident();
+
+    /// Have the delegator loaded and waiting, whichever mode it is in.
+    ///
+    /// "Load on demand" decides when the delegator is *freed* -- the moment it
+    /// has routed, so the expert gets every byte -- not when it comes back.
+    /// It comes back as soon as the work is over, so that the next prompt is
+    /// routed the instant it is sent rather than after a load nobody asked to
+    /// wait for.
+    void ready_delegator();
+
+    /// Put the table back after a prompt or a cook, however it ended.
+    ///
+    /// With the delegator on demand: free the expert that answered and bring
+    /// the delegator back. Called once the request is over and the engine is
+    /// no longer busy, so the window is free to take the next prompt while it
+    /// happens -- the prompt simply waits its turn behind the load.
+    void settle();
 
     /// Make sure the delegator is loaded, freeing the expert first if there is
     /// no room for both. A no-op when it is already there.
@@ -197,7 +222,14 @@ private:
 
     // --- the cook loop, in engine_cook.cpp --------------------------------
     void do_cook(const std::string& goal, int budget_seconds,
-                 const std::filesystem::path& root);
+                 const std::filesystem::path& root,
+                 std::vector<attach::Attachment> attachments);
+
+    /// Attachments as a message's text and pictures, sized to `model`:
+    /// `share` of its context, less what `messages` already take.
+    attach::Composed read_attachments(std::vector<attach::Attachment> attachments,
+                                      const ChatModel& model,
+                                      const std::vector<ChatMessage>& messages, double share);
 
     /// The workshop, pointed at `root`.
     ///
@@ -290,7 +322,16 @@ private:
     std::vector<float>         router_bias_;
     std::string                router_bias_for_;
 
+    /// The delegator file that last failed to load, so that ready_delegator
+    /// does not try it again after every prompt. Empty when it did not fail.
+    std::string                router_failed_for_;
+
     std::vector<ChatMessage> history_;
+
+    /// Pictures as the window sent them, by path: shrunk to what a provider
+    /// takes. Asking a turn again sends the same picture rather than reading
+    /// the original, which may be too large to send. The last few only.
+    std::vector<std::pair<std::string, attach::Image>> pictures_;
 
     /// See take_written_examples. Guarded by its own mutex rather than by
     /// `mutex_`, which the worker holds while it waits for work.
@@ -317,12 +358,16 @@ private:
     /// Returns false when the edit was declined, and also when the turn was
     /// canceled or the engine is shutting down while parked here -- all three
     /// mean "do not write the file", which is the only question the caller has.
-    /// `turn` and `answer` are the reply the call came out of: the protocol
-    /// line is taken off it before the question goes up, so the file is not on
-    /// screen twice while the user decides.
-    bool await_edit_approval(std::size_t turn, const std::string& answer,
+    /// `reply` is what the turn should say while the user decides: everything
+    /// it had said, without the protocol line, so the file is not on screen
+    /// twice.
+    bool await_edit_approval(std::size_t turn, const std::string& reply,
                              const tools::ToolCall& call,
                              const tools::WorkshopSettings& workshop);
+
+    /// The same question without a turn to tidy: what a cook asks. True means
+    /// write it.
+    bool ask_about_edit(const tools::ToolCall& call, const tools::WorkshopSettings& workshop);
 
     /// The answer to an edit, handed across from the UI thread.
     std::mutex                   edit_mutex_;
@@ -341,6 +386,12 @@ private:
     std::atomic<bool>       running_{false};
     std::atomic<bool>       cancel_{false};
     std::atomic<bool>       busy_{false};
+
+    /// Whether a write may go ahead without asking. A copy of
+    /// `config_.tools.auto_edits` that the window sets the moment the Auto
+    /// button is pressed: a configuration change is queued behind whatever is
+    /// running, and a cook is an hour of running.
+    std::atomic<bool>       auto_edits_{false};
 };
 
 }  // namespace crucible
