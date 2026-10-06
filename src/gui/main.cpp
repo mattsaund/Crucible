@@ -21,6 +21,7 @@
 #include "crucible/session/store.hpp"
 #include "crucible/util/platform.hpp"
 #include "app.hpp"
+#include "crash.hpp"
 
 int main(int argc, char** argv) {
     // Started from a terminal, `crucible --help` prints the braille mark, and
@@ -40,6 +41,9 @@ int main(int argc, char** argv) {
     // and both finish without opening a window.
     if (options.runtime_status) {
         return crucible::run_runtime_status();
+    }
+    if (options.install_python) {
+        return crucible::run_python_setup(options.quiet, options.force);
     }
     if (options.install_runtimes) {
         return crucible::run_runtime_setup(options.quiet, options.force);
@@ -63,6 +67,9 @@ int main(int argc, char** argv) {
     // It opens on nothing instead. The top bar says No Project, the one button
     // there is Open Project, and the folder question is asked when a folder is
     // actually chosen -- by the same modal that has always guarded it.
+    // From here on, a crash says where it happened. See crash.hpp.
+    crucible::gui::crash::install(crucible::paths::data_dir() / "crash.log");
+
     std::vector<std::string> warnings;
     crucible::Config config = crucible::load_config(warnings);
 

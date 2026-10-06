@@ -267,7 +267,7 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
         if (!out) {
             return false;
         }
-        out << doc.dump(2) << '\n';
+        out << doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
         if (!out.good()) {
             return false;
         }
@@ -281,7 +281,7 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
             std::filesystem::remove(temp, ec);
             return false;
         }
-        out << doc.dump(2) << '\n';
+        out << doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
         std::filesystem::remove(temp, ec);
         return out.good();
     }
@@ -289,7 +289,7 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
 }
 
 std::string config_to_json_text(const Config& config) {
-    return config_to_json(config).dump();
+    return config_to_json(config).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 Config config_from_json_text(std::string_view text, std::vector<std::string>& warnings) {
@@ -378,7 +378,7 @@ void write_default_config(const std::filesystem::path& file) {
 
     std::ofstream out(file);
     if (out) {
-        out << doc.dump(2) << '\n';
+        out << doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
 }
 

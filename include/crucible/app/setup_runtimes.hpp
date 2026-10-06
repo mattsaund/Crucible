@@ -17,6 +17,10 @@
 // answer.
 #pragma once
 
+#include <vector>
+
+#include "crucible/runtime/backend.hpp"
+
 namespace crucible {
 
 /// Install the runtimes this machine wants: the processor backend always, and
@@ -30,6 +34,10 @@ namespace crucible {
 /// Returns a process exit code: 0 when every runtime it wanted is in place,
 /// 1 when at least one could not be, and 2 when there was nothing to do.
 int run_runtime_setup(bool quiet, bool force);
+
+/// The backends this machine should end up with: the CPU always, CUDA where
+/// there is an NVIDIA driver, and Metal or Vulkan where the platform has them.
+std::vector<BackendKind> runtimes_wanted_here();
 
 /// Print what is installed, what this machine could use, and what is missing.
 /// Returns 0 when at least one runtime is active.

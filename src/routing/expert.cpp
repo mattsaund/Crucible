@@ -181,69 +181,6 @@ bool Roster::update(const ExpertId& id, const Expert& replacement) {
 // What the delegator sees
 // ---------------------------------------------------------------------------
 
-std::vector<std::string> Roster::router_labels() const {
-    // The name, not the tag.
-    //
-    // This is worth 39 points. Scored on Crucible's 54-prompt benchmark with
-    // LFM2.5-1.2B, answering with the four-letter tags gets 48% and answering
-    // with the names gets 87%. The tags are not words: a delegator choosing
-    // between "PHIL" and "PHYS" is comparing two spellings that share a first
-    // token, and every philosophy question in the set went to physics.
-    // "Philosophy" and "Physics" are things the model knows about.
-    //
-    // The tags stay in the system prompt, where they measurably help (dropping
-    // them costs 6 points), and beside the name on screen, where a fixed width is what
-    // makes the chips line up.
-    std::vector<std::string> labels;
-    labels.reserve(experts_.size());
-    for (const Expert& expert : experts_) {
-        labels.push_back(expert.name);
-    }
-    return labels;
-}
-
-std::string Roster::router_system_prompt() const {
-    // Routable seats only, and deliberately compact. An earlier version
-    // described each subject in prose and closed by naming a catch-all; small
-    // models latched onto that closing line and answered it for almost
-    // everything (16% accurate). The delegator's job is to pick a specialist,
-    // so it is never shown a way to decline.
-    std::string prompt =
-        "You label a question with the one subject it belongs to.\n"
-        "Reply with only a tag and a confidence.\n\n";
-    for (const Expert& expert : experts_) {
-        // Tag, name, then the remit. The tag earns its place here even though
-        // the delegator answers with the name: on the 54-prompt benchmark,
-        // listing the options without their tags costs 6 points (87% to 81%).
-        // Reading it as a labeled menu appears to be what helps.
-        prompt += expert.tag;
-        prompt += "  ";
-        prompt += expert.name;
-        prompt += ": ";
-        prompt += expert.blurb;
-        prompt += "\n";
-    }
-    return prompt;
-}
-
-std::vector<std::pair<std::string, std::string>> Roster::router_examples() const {
-    std::vector<std::pair<std::string, std::string>> examples;
-    for (const Expert& expert : experts_) {
-        for (const std::string& question : expert.examples) {
-            if (question.empty()) {
-                continue;
-            }
-            // The answer is exactly one of router_labels() and nothing else.
-            // The delegator does not write a confidence -- that comes from
-            // comparing the labels against each other -- and an example that
-            // showed one would teach it to continue past the string being
-            // scored.
-            examples.emplace_back(question, expert.name);
-        }
-    }
-    return examples;
-}
-
 // ---------------------------------------------------------------------------
 // Deriving the fields a user is not asked for
 // ---------------------------------------------------------------------------
@@ -353,63 +290,6 @@ std::vector<std::string> derive_keywords(std::string_view name, std::string_view
     harvest(name);
     harvest(blurb);
     return words;
-}
-
-std::string example_request_prompt(std::string_view name, std::string_view blurb) {
-    // Asks for bare questions and nothing else. Every constraint here exists
-    // because a model broke it in testing: they number lists, they explain
-    // first, they answer their own question, and they drift towards the general
-    // ("what is chemistry") when not told to be specific.
-    std::string prompt = "An expert called \"";
-    prompt += name;
-    prompt += "\" handles: ";
-    prompt += blurb;
-    prompt +=
-        "\n\nWrite exactly two short questions a person would ask that this expert "
-        "should obviously answer.\n"
-        "Rules: one question per line. No numbering, no bullets, no quotes, no "
-        "explanation. Each question must be specific enough that it could not be "
-        "asked of a different expert.\n";
-    return prompt;
-}
-
-std::vector<std::string> parse_examples(std::string_view reply, std::size_t wanted) {
-    std::vector<std::string> questions;
-    std::istringstream       stream{std::string(reply)};
-    std::string              line;
-
-    while (std::getline(stream, line) && questions.size() < wanted) {
-        std::string text = trim(line);
-        if (text.empty()) {
-            continue;
-        }
-
-        // Strip the decoration models add whatever they were told: "1. ",
-        // "- ", "* ", "Q: ", and surrounding quotes.
-        std::size_t start = 0;
-        while (start < text.size() &&
-               ((std::isdigit(static_cast<unsigned char>(text[start])) != 0) ||
-                text[start] == '.' || text[start] == ')' || text[start] == '-' ||
-                text[start] == '*' || text[start] == ' ')) {
-            ++start;
-        }
-        text = trim(std::string_view(text).substr(start));
-        if (text.size() > 2 && (text.compare(0, 2, "Q:") == 0 || text.compare(0, 2, "A:") == 0)) {
-            text = trim(std::string_view(text).substr(2));
-        }
-        if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
-            text = trim(std::string_view(text).substr(1, text.size() - 2));
-        }
-
-        // A line of preamble ("Here are two questions:") ends in a colon and is
-        // not a question; a real one is long enough to be worth showing a
-        // model. Both filters are cheap and both fire in practice.
-        if (text.size() < 12 || text.back() == ':') {
-            continue;
-        }
-        questions.push_back(std::move(text));
-    }
-    return questions;
 }
 
 }  // namespace crucible

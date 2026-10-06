@@ -64,6 +64,13 @@ std::filesystem::path resolve_model_ref(const std::filesystem::path& models_dir,
 
 namespace {
 
+/// How far down a model is looked for. Four levels: a folder of models, a
+/// publisher's folder of them (LM Studio's layout), a folder of those, and
+/// Hugging Face's own cache -- models--org--name/snapshots/<hash>/ -- which
+/// is where an MLX model fetched by mlx_lm lands. An MLX model is a folder,
+/// and is listed whole, never looked inside.
+constexpr int kDeepest = 3;
+
 void scan_into(const std::filesystem::path& root, const std::filesystem::path& relative, int depth,
                std::vector<ModelFile>& found) {
     std::error_code ec;
@@ -94,7 +101,7 @@ void scan_into(const std::filesystem::path& root, const std::filesystem::path& r
                 model.bytes  = mlx::model_bytes(it->path());
                 model.format = "mlx";
                 found.push_back(std::move(model));
-            } else if (depth < 2) {
+            } else if (depth < kDeepest) {
                 scan_into(root, inside, depth + 1, found);
             }
         }
@@ -107,6 +114,18 @@ std::vector<ModelFile> scan_models(const std::filesystem::path& dir) {
     std::vector<ModelFile> found;
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) {
+        return found;
+    }
+    // The folder chosen may itself be one MLX model rather than a folder of
+    // them. It is listed by its whole path, which is what a seat names to
+    // reach it: a name is otherwise read as relative to this folder.
+    if (mlx::is_model_dir(dir)) {
+        ModelFile model;
+        model.name   = dir.string();
+        model.path   = dir;
+        model.bytes  = mlx::model_bytes(dir);
+        model.format = "mlx";
+        found.push_back(std::move(model));
         return found;
     }
     scan_into(dir, {}, 0, found);

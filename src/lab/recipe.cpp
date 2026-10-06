@@ -273,7 +273,7 @@ std::string serialize(const Recipe& recipe) {
     out["stage"] = std::string(stage_id(recipe.stage));
     if (recipe.started_at != 0)  { out["started_at"]  = recipe.started_at; }
     if (recipe.finished_at != 0) { out["finished_at"] = recipe.finished_at; }
-    return out.dump(2);
+    return out.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 /// Read a recipe back, filling in anything the file does not say.

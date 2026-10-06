@@ -150,7 +150,7 @@ bool write_cache(const State& state) {
         {"page", state.page},
         {"checked_at", state.checked_at},
     };
-    out << doc.dump(2) << '\n';
+    out << doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     return out.good();
 }
 

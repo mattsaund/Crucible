@@ -39,6 +39,21 @@ warning (More info → Run anyway) and macOS refuses the download the first time
 open Crucible once, then **System Settings → Privacy & Security → Open Anyway**.
 One-time answers on both.
 
+**On its first start it fetches what the download does not carry**, in the
+order it is needed, with the progress above the empty chat and nothing to
+click:
+
+- its own Python (3.12, about 25–70 MB depending on the platform), which
+  routing and cooks run on — no Python on your machine is needed or touched;
+- the compute runtimes this machine can use: the CPU always, CUDA with
+  NVIDIA's libraries where there is an NVIDIA driver, Metal on a Mac, Vulkan
+  elsewhere;
+- the training environment for Create, built from that Python — a few
+  gigabytes with CUDA, and on a Mac also what runs MLX models.
+
+A chat works as soon as Python and a runtime are in. Anything that fails says
+why and has **Try again**.
+
 **Or build from source, in one command:**
 
 ```sh
@@ -57,14 +72,14 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 - Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `--no-trainer`,
   `-y`, `--uninstall`.
 - Run either installer from inside a clone and it builds that clone.
-- No models and no compute runtimes are installed — both are picked later from
-  the settings screen.
-- **The fine-tuner is set up**, because training is the one feature that
-  cannot fetch what it needs mid-run. It is a private Python environment in
-  Crucible's own data folder, a few gigabytes, built from whatever Python the
-  machine has. It cannot break a system package and `crucible --uninstall`
-  takes it with everything else. `--no-trainer` skips it;
-  `crucible --install-trainer` adds or repairs it later.
+- Crucible's own Python and the compute runtimes this machine can use are put
+  in place too, so the first start has nothing left to fetch but what you
+  skipped. No models are installed.
+- **The fine-tuner is set up**: a private Python environment in Crucible's own
+  data folder, a few gigabytes, built from Crucible's own Python rather than
+  the machine's. It cannot break a system package and `crucible --uninstall`
+  takes it with everything else. `--no-trainer` skips it (the window fetches
+  it on first start instead); `crucible --install-trainer` adds or repairs it.
 
 **Updating:** the same command that installed it. Crucible checks GitHub once a
 day for a newer release; when there is one it says so in the transcript and
@@ -97,12 +112,19 @@ ___
 ### Delegate
 
 - A small router model scores every expert on your roster and sends the prompt
-  to the best fit, with a confidence you can set a threshold on.
+  to the best fit, with a confidence you can set a threshold on. The deciding
+  is done in Python, in a process of its own on Crucible's Python, and the
+  model is asked through the core — so how routing works can be changed and
+  measured (`crucible-routebench`) without rebuilding anything.
 - One model is resident at a time: the router is released, the expert loads,
   answers, and is released in its turn. Peak memory is the larger of the two,
   not the sum.
 - Naming an expert that does not exist is impossible — the router scores the
-  roster rather than generating a name.
+  roster rather than generating a name. It is shown the roster in three
+  orders and the answers averaged, because a small model leans towards
+  whichever expert it sees first.
+- Nothing is loaded until a prompt needs it: opening Crucible costs the card
+  nothing. Bring your own models — Crucible downloads none.
 - Or skip it: the menu beside the **+** in the box sends every prompt to one
   expert until you change it back, and `/name` does it for one prompt. The
   menu next to it sets how hard a reasoning model thinks; a model with no
@@ -196,8 +218,9 @@ ___
   tensor.
 - GGUF models, and on Apple Silicon **MLX** models too: a folder of
   `.safetensors` is run by MLX's own server, from the Python environment the
-  fine-tuner uses, on this machine only. The models folder is read two levels
-  deep, so LM Studio's `publisher/model/` layout works as it is.
+  fine-tuner uses, on this machine only. The models folder is read four levels
+  deep, so LM Studio's `publisher/model/` layout, a folder of MLX folders and
+  Hugging Face's own cache all work as they are.
 - A downloaded CUDA backend needs only an NVIDIA driver — no toolkit. The two
   libraries it needs that the driver lacks, NVIDIA's CUDA runtime and cuBLAS,
   are fetched from NVIDIA with it (a few hundred megabytes) unless the machine
@@ -205,6 +228,8 @@ ___
 - Multiple GPUs: `auto`, `even`, `priority` (an order you arrange) or `single`.
 - Optional: keep every layer on the GPU, and refuse models that will not fit in
   video memory.
+- A change in Settings → Hardware lets go of whatever it affects, and the next
+  prompt loads it the new way.
 
 ![Runtimes: what is installed, what it found, and what it would take to add more](docs/images/runtimes.png)
 
@@ -254,8 +279,10 @@ ___
 A C++20 compiler, CMake ≥ 3.24, git, and on Linux WebKitGTK's development
 files — `libwebkit2gtk-4.1-dev` on Debian and Ubuntu, `webkit2gtk4.1-devel` on
 Fedora. macOS and Windows provide their own webview. llama.cpp, webview and
-nlohmann/json are fetched and pinned automatically. Python 3.10 or newer is needed only for fine-tuning,
-and only to build the environment from — nothing links against it.
+nlohmann/json are fetched and pinned automatically. No Python is needed to build
+or to run: Crucible fetches its own on first start, or with
+`crucible --install-python`. The tests start the orchestrator, so running them
+wants a Python 3.10 or newer on PATH (or named by `CRUCIBLE_PYTHON`).
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -287,6 +314,11 @@ MIT — see [LICENSE](LICENSE). What is compiled into the binary is listed in
 --licenses` prints the notices from the program itself. Most of it is MIT;
 the JetBrains Mono typeface is under the SIL Open Font License, which is why
 the notices travel inside the binary rather than beside it.
+
+Crucible's own Python is not shipped with it either: on first start it fetches
+a pinned CPython 3.12 build from the python-build-standalone project, checks
+it against the SHA-256 compiled into Crucible, and unpacks it into its data
+folder. CPython is under the PSF License; THIRD_PARTY.md has the rest.
 
 The fine-tuner is separate and is not shipped with Crucible: pip fetches it
 onto your machine when you ask for it. It is mostly Apache-2.0, BSD and MIT,

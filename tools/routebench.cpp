@@ -10,6 +10,11 @@
 //
 // Sampling is greedy, so repeated runs give identical results and a change in
 // the score is a real change rather than sampling noise.
+//
+// The routing itself is the orchestrator's, in Python, exactly as the app runs
+// it: this loads the delegator, starts the orchestrator on Crucible's Python
+// (or CRUCIBLE_PYTHON), and answers its calls to format and score with the
+// model loaded here.
 
 #include <chrono>
 #include <cstdio>
@@ -22,9 +27,12 @@
 #include "crucible/llm/model_host.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/routing/benchmark.hpp"
+#include "crucible/lab/python.hpp"
+#include "crucible/orchestra/link.hpp"
 #include "crucible/routing/router.hpp"
 #include <array>
 #include <cstdlib>
+#include <fstream>
 
 using namespace crucible;
 
@@ -34,8 +42,16 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    float       calibration = ModelRouter::kCalibration;
+    float       calibration = 0.25F;  // the orchestrator's own, routing.CALIBRATION
     std::string explain;
+    // --cases FILE: a roster and the prompts to route against it, as JSON --
+    // {"roster": [{"id", "name", "tag", "blurb", "keywords", "examples"}...],
+    //  "cases": [["expected id", "prompt"], ...]} -- for a roster other than
+    // the nine the built-in cases are written for. --method NAME is handed to
+    // the orchestrator's router, which is how a routing idea is measured
+    // against the shipped one without a rebuild.
+    std::string cases_file;
+    std::string method;
 
     ModelParams params;
     params.path        = paths::expand_user(argv[1]).string();
@@ -61,6 +77,12 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--explain") {
             explain = argv[i + 1];
         }
+        if (std::string(argv[i]) == "--cases") {
+            cases_file = argv[i + 1];
+        }
+        if (std::string(argv[i]) == "--method") {
+            method = argv[i + 1];
+        }
     }
 
     ModelHost host(paths::log_file());
@@ -81,32 +103,108 @@ int main(int argc, char** argv) {
     // written for. A user's own config may have added seats or taken some
     // away; scoring against that would be measuring their roster, not the
     // delegator.
-    const auto roster = std::make_shared<const Roster>(benchmark_roster());
+    using json = nlohmann::json;
+    json experts = json::array();
+    std::vector<std::pair<std::string, std::string>> cases;
+    if (cases_file.empty()) {
+        for (const Expert& expert : benchmark_roster().experts()) {
+            experts.push_back(json{{"id", expert.id}, {"name", expert.name}, {"tag", expert.tag},
+                                   {"blurb", expert.blurb}, {"keywords", expert.keywords},
+                                   {"examples", expert.examples}});
+        }
+        for (const RouteCase& test : benchmark_cases()) {
+            cases.emplace_back(std::string(test.expect), std::string(test.prompt));
+        }
+    } else {
+        json doc;
+        try {
+            std::ifstream in(cases_file);
+            in >> doc;
+            experts = doc.at("roster");
+            for (const json& one : doc.at("cases")) {
+                cases.emplace_back(one.at(0).get<std::string>(), one.at(1).get<std::string>());
+            }
+        } catch (const std::exception& e) {
+            std::printf("could not read %s: %s\n", cases_file.c_str(), e.what());
+            return 1;
+        }
+    }
+    const auto name_of = [&experts](const std::string& id) {
+        for (const json& one : experts) {
+            if (one.value("id", "") == id) {
+                return one.value("name", id);
+            }
+        }
+        return id;
+    };
 
-    ModelRouter router(*model, params, roster);
-    router.set_calibration(calibration);
+    if (!lab::python::installed()) {
+        std::printf("Crucible's Python is not installed: run crucible --install-python, or set "
+                    "CRUCIBLE_PYTHON to a Python 3.10 or newer\n");
+        return 1;
+    }
 
-    // --explain dumps the arithmetic behind one decision, which is the only way
-    // to tell a delegator that dislikes a subject from a calibration that is
-    // taking it away.
+    // The orchestrator's calls, answered with the model loaded above.
+    const orchestra::Handler serve = [&](const std::string& method, const json& asked) -> json {
+        if (method == "delegator.ready") {
+            return json{{"available", true}, {"path", params.path}};
+        }
+        if (method == "delegator.format") {
+            std::vector<ChatMessage> messages;
+            for (const json& one : asked.value("messages", json::array())) {
+                messages.push_back({one.value("role", "user"), one.value("content", "")});
+            }
+            return json{{"text", model->format_chat(messages, true)}};
+        }
+        if (method == "delegator.score") {
+            std::vector<std::string> labels;
+            for (const json& one : asked.value("labels", json::array())) {
+                labels.push_back(one.get<std::string>());
+            }
+            json out = json::array();
+            for (const float score : model->score_labels(asked.value("prompt", ""), labels, {})) {
+                out.push_back(score <= kUnscored ? json(nullptr) : json(score));
+            }
+            return json{{"scores", out}, {"canceled", false}};
+        }
+        throw std::runtime_error("routebench has no " + method);
+    };
+
+    // Every seat is filled and there is no floor, so what comes back is the
+    // delegator's choice and nothing the policy did to it.
+    const auto request = [&](const std::string& prompt) {
+        json seats = json::object();
+        for (const json& expert : experts) {
+            seats[expert.value("id", "")] = json{{"model", true}};
+        }
+        json out{{"prompt", prompt}, {"roster", experts}, {"seats", seats},
+                 {"routing", {{"min_confidence", 0.0}, {"default_expert", ""}}},
+                 {"calibration", calibration}};
+        if (!method.empty()) {
+            out["method"] = method;
+        }
+        return out;
+    };
+
+    orchestra::Link orchestrator;
+    std::string started;
+    if (!orchestrator.start(started)) {
+        std::printf("the orchestrator would not start: %s\n", started.c_str());
+        return 1;
+    }
+
     if (!explain.empty()) {
-        router.route("warm up so the bias is measured", {});
-        const std::vector<float> raw  = router.raw_scores(explain);
-        const std::vector<float> bias = router.bias();
-        const std::vector<std::string> labels = roster->router_labels();
+        const json out = orchestrator.call("route.explain", request(explain), serve);
         std::printf("%-14s %9s %9s %9s\n", "expert", "raw", "bias", "calibrated");
-        for (std::size_t i = 0; i < labels.size() && i < raw.size(); ++i) {
-            const double adjusted =
-                static_cast<double>(raw[i]) -
-                static_cast<double>(calibration) *
-                    (i < bias.size() ? static_cast<double>(bias[i]) : 0.0);
-            std::printf("%-14s %9.2f %9.2f %9.2f\n", labels[i].c_str(),
-                        static_cast<double>(raw[i]),
-                        i < bias.size() ? static_cast<double>(bias[i]) : 0.0, adjusted);
+        for (std::size_t i = 0; i < out["labels"].size(); ++i) {
+            std::printf("%-14s %9.2f %9.2f %9.2f\n", out["labels"][i].get<std::string>().c_str(),
+                        out["raw"][i].get<double>(), out["bias"][i].get<double>(),
+                        out["calibrated"][i].get<double>());
         }
         std::printf("\nprompt: %s\n", explain.c_str());
         return 0;
     }
+
     std::printf("calibration %.2f\n\n", static_cast<double>(calibration));
     int    correct  = 0;
     double total_ms = 0.0;
@@ -118,14 +216,17 @@ int main(int argc, char** argv) {
     std::map<ExpertId, int> expected;
     std::map<ExpertId, int> chosen;
 
-    for (const RouteCase& test : benchmark_cases()) {
+    for (const auto& [expect, prompt] : cases) {
         const auto start = std::chrono::steady_clock::now();
-        const RouteDecision decision = router.route(std::string(test.prompt), {});
+        const json answer = orchestrator.call("route", request(prompt), serve);
+        RouteDecision decision;
+        decision.expert     = answer.value("expert", "");
+        decision.confidence = answer.value("confidence", 0.0F);
         const double ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - start).count();
         total_ms += ms;
 
-        const ExpertId want(test.expect);
+        const ExpertId want(expect);
         const bool ok = decision.expert == want;
         correct += ok ? 1 : 0;
         ++expected[want];
@@ -134,9 +235,8 @@ int main(int argc, char** argv) {
         if (!quiet) {
             std::printf("%s  %-12s (want %-12s) conf %.2f  %4.0fms  %.44s\n",
                         ok ? "ok  " : "MISS",
-                        expert_label(*roster, decision.expert).c_str(),
-                        expert_label(*roster, want).c_str(),
-                        static_cast<double>(decision.confidence), ms, std::string(test.prompt).c_str());
+                        name_of(decision.expert).c_str(), name_of(want).c_str(),
+                        static_cast<double>(decision.confidence), ms, prompt.c_str());
         }
     }
 
@@ -144,28 +244,29 @@ int main(int argc, char** argv) {
     // delegator can score 85% while never once choosing one of the nine, and
     // that seat is then unreachable however good the model is.
     std::printf("\n%-14s %-8s %-8s  where the misses went\n", "expert", "found", "chosen");
-    for (const Expert& expert : roster->experts()) {
-        const ExpertId& id = expert.id;
+    for (const json& expert : experts) {
+        const std::string id = expert.value("id", "");
         std::string went;
-        for (const Expert& other : roster->experts()) {
-            const int count = confusion[id][other.id];
-            if (other.id != id && count > 0) {
+        for (const json& other : experts) {
+            const std::string other_id = other.value("id", "");
+            const int count = confusion[id][other_id];
+            if (other_id != id && count > 0) {
                 if (!went.empty()) {
                     went += ", ";
                 }
-                went += other.name + " x" + std::to_string(count);
+                went += name_of(other_id) + " x" + std::to_string(count);
             }
         }
         // "chosen" counts how often the delegator picked this expert for
         // anything at all. A zero there is a seat nothing can reach.
-        std::printf("%-14s %d/%-6d %-8d  %s\n", expert.name.c_str(),
+        std::printf("%-14s %d/%-6d %-8d  %s\n", name_of(id).c_str(),
                     confusion[id][id], expected[id], chosen[id], went.c_str());
     }
 
-    std::printf("\n%d/%zu correct (%.0f%%), %.0fms per route\n", correct, benchmark_cases().size(),
-                100.0 * static_cast<double>(correct) / static_cast<double>(benchmark_cases().size()),
-                total_ms / static_cast<double>(benchmark_cases().size()));
-    // Nine seats, so anything near 11% is a model that is not reading the
-    // prompt at all -- usually a chat template or prompt problem, not the model.
-    return correct * 2 >= static_cast<int>(benchmark_cases().size()) ? 0 : 1;
+    std::printf("\n%d/%zu correct (%.0f%%), %.0fms per route\n", correct, cases.size(),
+                100.0 * static_cast<double>(correct) / static_cast<double>(cases.size()),
+                total_ms / static_cast<double>(cases.size()));
+    // Anything near one in the number of seats is a model that is not reading
+    // the prompt at all -- usually a chat template or prompt problem.
+    return correct * 2 >= static_cast<int>(cases.size()) ? 0 : 1;
 }

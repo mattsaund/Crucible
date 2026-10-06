@@ -29,6 +29,7 @@
 // compared, and the comparison is component by component rather than on the
 // strings. Both matter, and neither is obvious from the outside.
 #include "crucible/tools/workshop.hpp"
+#include "crucible/util/text.hpp"
 
 #include <algorithm>
 #include <array>
@@ -518,6 +519,8 @@ ToolResult do_run(const ToolCall& call, const WorkshopSettings& settings,
     const int status = child.wait();
     finished.store(true, std::memory_order_relaxed);
     watchdog.join();
+    // In the console's code page on Windows, not UTF-8. See console_to_utf8.
+    output = detail::console_to_utf8(output);
 
     ToolResult result;
     result.ok = status == 0 && !timed_out.load(std::memory_order_relaxed);
@@ -686,8 +689,31 @@ std::string clamp_output(std::string_view text, std::size_t limit) {
     return out;
 }
 
+namespace {
+ToolResult run_tool_as_is(const ToolCall& call, const WorkshopSettings& settings,
+                          const SearchSettings& search, const CancelCallback& cancel);
+}  // namespace
+
 ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
                     const SearchSettings& search, const CancelCallback& cancel) {
+    // Whatever a tool brought in -- a Latin-1 file, a listing of names that
+    // are bytes, output cut at the size limit in the middle of a character --
+    // leaves here as UTF-8, because it is about to be kept as JSON: in the
+    // session, in a cook's journal, and in what the window is sent.
+    ToolResult result = run_tool_as_is(call, settings, search, cancel);
+    result.output  = detail::scrub_utf8(result.output);
+    result.summary = detail::scrub_utf8(result.summary);
+    result.detail  = detail::scrub_utf8(result.detail);
+    for (std::string& path : result.changed) {
+        path = detail::scrub_utf8(path);
+    }
+    return result;
+}
+
+namespace {
+
+ToolResult run_tool_as_is(const ToolCall& call, const WorkshopSettings& settings,
+                          const SearchSettings& search, const CancelCallback& cancel) {
     if (!settings.enabled) {
         return failure("the workshop is switched off");
     }
@@ -714,6 +740,8 @@ ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
     // and it handles them before ever reaching here.
     return failure("nothing to do");
 }
+
+}  // namespace
 
 std::string workshop_instructions(const WorkshopSettings& settings,
                                   ToolAudience audience) {

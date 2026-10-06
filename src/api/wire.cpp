@@ -151,6 +151,9 @@ json snapshot_to_json(const Snapshot& snapshot) {
 
     // Present only while it is loading, so "is the delegator loading" and "how
     // far along" cannot disagree.
+    if (!snapshot.delegator_problem.empty()) {
+        out["delegator_problem"] = snapshot.delegator_problem;
+    }
     if (snapshot.delegator_progress >= 0.0F) {
         out["delegator_progress"] = snapshot.delegator_progress;
     }

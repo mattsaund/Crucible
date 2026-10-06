@@ -175,8 +175,6 @@ h2 {
 .empty { color: var(--faint); text-align: center; margin-top: 18vh; }
 .status { color: var(--faint); }
 /* What the program did, above the first turn. */
-.notices { color: var(--faint); margin: 0 0 2rem; }
-.notices div { padding: .12rem 0; }
 
 /* --- a fenced block ----------------------------------------------------- */
 .code {
@@ -816,3 +814,19 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .settings-page h1 .tag { margin-left: .6rem; font-size: 11px; color: var(--faint); }
 .settings-page .lede, .settings-page > p { max-width: 46rem; }
 .settings-page .order { max-width: 46rem; }
+
+/* What Crucible is fetching for itself, above the empty chat. */
+.setup {
+  max-width: 34rem; margin: 2.5rem auto 0; padding: 1rem 1.2rem;
+  background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 8px;
+}
+.setup-head { color: var(--text); margin-bottom: .7rem; }
+.setup-item { margin: .55rem 0; }
+.setup-line { display: flex; justify-content: space-between; gap: 1rem; }
+.setup-name { color: var(--text); flex: none; white-space: nowrap; }
+.setup-said { color: var(--faint); font-size: .9em; text-align: right;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.setup-item.done .setup-said { color: var(--dim); }
+.setup-item.failed .setup-said { color: var(--error); white-space: normal; }
+.setup-item .bar { margin-top: .35rem; }
+.setup .action { margin-top: .6rem; }

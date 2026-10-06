@@ -82,6 +82,22 @@ for redistributable CUDA components; **Crucible does not carry them**, and a
 machine that already has them on its library path uses its own. Removing the
 CUDA runtime removes them too.
 
+## Crucible's own Python
+
+Routing, the cook loop and the training environment run on a Python that
+Crucible fetches on its first start (or with `crucible --install-python`):
+a [CPython](https://www.python.org/) 3.12 build from the
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+project, at a version and SHA-256 compiled into Crucible, unpacked into its
+data folder. CPython is under the
+[PSF License](https://docs.python.org/3/license.html); the build carries the
+libraries CPython is linked with -- OpenSSL (Apache-2.0), SQLite (public
+domain), zlib, libffi, XZ, bzip2, Tcl/Tk and others under their own permissive
+licenses, which the build lists in its own `licenses` notes. **Crucible does
+not carry it**; it fetches it from the project's GitHub releases. The
+orchestrator that runs on it -- `scripts/orchestrator` -- is Crucible's own
+code and imports nothing outside Python's standard library.
+
 ## Providers
 
 A provider is somebody else's service, reached over HTTPS when you have added
@@ -93,9 +109,10 @@ under their terms and on your key.
 
 ## The training environment
 
-Fine-tuning runs in a Python environment that Crucible builds on request --
-`crucible --install-trainer`, which the installers offer and `--no-trainer`
-declines. **None of it is distributed with Crucible.** pip fetches it from
+Fine-tuning runs in a Python environment that Crucible builds from its own
+Python -- on its first start, or with `crucible --install-trainer`, which the
+installers run unless told `--no-trainer`. **None of it is distributed with
+Crucible.** pip fetches it from
 PyPI and from PyTorch's own index onto your machine, into a folder under
 Crucible's data directory, exactly as if you had run pip yourself. Crucible
 carries no copy, and a `crucible` binary is unaffected by any of these

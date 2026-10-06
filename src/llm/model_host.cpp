@@ -420,6 +420,31 @@ std::vector<std::string> ModelHost::devices() {
     return names;
 }
 
+ModelParams ModelHost::placed_delegator(const ModelParams& requested) const {
+    ModelParams params = requested;
+    place_delegator(params, gpu_);
+    const std::vector<int> cards = delegator_cards(gpu_);
+    if (cards.empty() || vram_shortfall(params.path, params, 0, {}).empty()) {
+        return params;  // the mode leaves it alone, or the card it was given holds it
+    }
+    // The card place_delegator chose is too small for this delegator. Another
+    // one may not be: the first that holds it gets it whole.
+    for (const int card : cards) {
+        ModelParams there = requested;
+        pin_to_card(there, card);
+        if (vram_shortfall(there.path, there, 0, {}).empty()) {
+            return there;
+        }
+    }
+    // No one card holds it, so it is divided the way an expert would be --
+    // which in "one card only" leaves it where it was, and the refusal stands.
+    ModelParams divided = requested;
+    if (refresh_gpu_split(divided, gpu_).empty()) {
+        return params;
+    }
+    return divided;
+}
+
 std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
                                              Role role,
                                              const ProgressCallback& progress,
@@ -451,7 +476,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // KV cache. See refresh_gpu_split.
     ModelParams params = requested;
     if (role == Role::Delegator) {
-        place_delegator(params, gpu_);
+        params = placed_delegator(requested);
     } else {
         refresh_gpu_split(params, gpu_);
     }
@@ -565,8 +590,7 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
     // system RAM, and a delegator running from there takes seconds per
     // decision with nothing on screen to say why.
     if (expert_) {
-        ModelParams planned = params;
-        place_delegator(planned, gpu_);
+        const ModelParams planned = placed_delegator(params);
         if (!vram_shortfall(planned.path, planned, 0, {}).empty()) {
             release_expert();
         }

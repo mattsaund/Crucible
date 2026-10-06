@@ -8,6 +8,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "crucible/config/config.hpp"
 
@@ -57,5 +58,18 @@ std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu);
 /// mode it does nothing at all: that mode is the user handing the decision to
 /// llama.cpp, and this is a decision.
 void place_delegator(ModelParams& params, const GpuConfig& gpu);
+
+/// Every card the delegator could have to itself, in the order to try them:
+/// the one place_delegator names, then the others by free memory, most first.
+/// "One card only" offers only that card, and "auto" none -- both are the user
+/// saying where models go. Empty with fewer than two cards.
+///
+/// Because "a small model" is an assumption, not a rule: a delegator can be
+/// a 20B, and pinned to a 12 GB card it does not fit while a 16 GB one beside
+/// it sits there with room.
+std::vector<int> delegator_cards(const GpuConfig& gpu);
+
+/// Put a model wholly on one card, by device index.
+void pin_to_card(ModelParams& params, int device);
 
 }  // namespace crucible

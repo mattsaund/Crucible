@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/lab/pyenv.hpp"
+#include "crucible/lab/python.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -750,16 +751,32 @@ bool Installer::run_command(const std::vector<std::string>& argv, float from, fl
 
 void Installer::run(Flavor flavor) {
     // --- a Python to build from --------------------------------------------
-    set_phase(Progress::Phase::FindingPython);
-    std::string                 found;
-    const std::filesystem::path host = host_python(found);
-    if (host.empty()) {
-        fail(found.empty()
-                 ? "no Python on this machine. " + python_hint()
-                 : "Python " + found + " is too old -- 3.10 or newer is needed. "
-                       + python_hint());
-        return;
+    //
+    // Crucible's own, fetched first if it is not here yet -- never whatever
+    // the machine happens to have, which on a Mac or Windows is usually
+    // nothing and on Linux is the system's, to be left alone.
+    set_phase(Progress::Phase::FindingPython, "Crucible's Python");
+    if (!python::installed()) {
+        std::string why;
+        const bool fetched = python::install(
+            [this](const python::Progress& progress) {
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    progress_.step = progress.phase == "downloading" && progress.total > 0
+                        ? "downloading Python, " + std::to_string(progress.done * 100 / progress.total) + "%"
+                        : progress.phase + " Python";
+                }
+                if (on_change_) {
+                    on_change_();
+                }
+            },
+            why);
+        if (!fetched) {
+            fail(why);
+            return;
+        }
     }
+    const std::filesystem::path host = python::interpreter();
 
     std::string error;
     if (!write_script(error)) {
@@ -855,7 +872,7 @@ void Installer::run(Flavor flavor) {
     manifest["host_python"]  = host.string();
     {
         std::ofstream out(manifest_file(), std::ios::trunc);
-        out << manifest.dump(2) << '\n';
+        out << manifest.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
 
     {

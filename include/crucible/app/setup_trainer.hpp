@@ -24,6 +24,11 @@ namespace crucible {
 /// because it is already there and `force` was not given.
 int run_trainer_setup(const std::string& flavor, bool force, bool quiet);
 
+/// `crucible --install-python`: fetch Crucible's own Python, the one routing,
+/// cooks and the training environment run on. 0 when it is in place, whether
+/// it was just fetched or already there; 1 when it could not be had.
+int run_python_setup(bool quiet, bool force);
+
 /// Print what is installed. Returns 0 when the trainer could run right now.
 int run_trainer_status();
 

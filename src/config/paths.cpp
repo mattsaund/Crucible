@@ -19,7 +19,6 @@
 
 
 namespace crucible::paths {
-namespace {
 
 std::filesystem::path home_dir() {
     if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
@@ -35,6 +34,8 @@ std::filesystem::path home_dir() {
 #endif
     return std::filesystem::current_path();
 }
+
+namespace {
 
 /// Honor an XDG variable if it is set to an absolute path, per the spec:
 /// a relative value must be ignored rather than resolved.

@@ -106,6 +106,45 @@ void place_delegator(ModelParams& params, const GpuConfig& gpu) {
     stamp(params, split, device);
 }
 
+std::vector<int> delegator_cards(const GpuConfig& gpu) {
+    const GpuSplitMode mode = gpu_split_mode_from_id(gpu.mode);
+    const std::vector<ComputeDevice> gpus = gpu_devices();
+    if (mode == GpuSplitMode::Auto || gpus.size() < 2) {
+        return {};
+    }
+    const int first = delegator_device(gpus, gpu);
+    std::vector<int> cards{first};
+    if (mode == GpuSplitMode::Single) {
+        return cards;
+    }
+    std::vector<ComputeDevice> rest;
+    for (const ComputeDevice& card : gpus) {
+        if (card.index != first) {
+            rest.push_back(card);
+        }
+    }
+    std::stable_sort(rest.begin(), rest.end(), [](const ComputeDevice& a, const ComputeDevice& b) {
+        return a.memory_free > b.memory_free;
+    });
+    for (const ComputeDevice& card : rest) {
+        cards.push_back(card.index);
+    }
+    return cards;
+}
+
+void pin_to_card(ModelParams& params, int device) {
+    const std::vector<ComputeDevice> gpus = gpu_devices();
+    if (gpus.empty() || device < 0) {
+        return;
+    }
+    std::vector<float> split(static_cast<std::size_t>(gpus.back().index) + 1, 0.0F);
+    if (static_cast<std::size_t>(device) >= split.size()) {
+        return;
+    }
+    split[static_cast<std::size_t>(device)] = 1.0F;
+    stamp(params, split, device);
+}
+
 std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu) {
     const std::vector<ComputeDevice> gpus = gpu_devices();
     if (gpus.empty()) {

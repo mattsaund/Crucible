@@ -868,7 +868,7 @@ void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces,
         };
     }
     if (std::ofstream out(manifest_path); out) {
-        out << manifest.dump(2) << '\n';
+        out << manifest.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
 
     // Register the new modules with ggml straight away.

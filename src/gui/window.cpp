@@ -219,6 +219,11 @@ int App::run() {
                  "          Reconfigure against WebKitGTK, WebView2 or WKWebView.\n");
     return 1;
 #else
+    // Whatever the download did not carry -- Crucible's Python, the runtimes,
+    // the training environment -- is fetched from here, with the window up to
+    // say how far along it is.
+    setup_.start();
+
     webview::webview view(/*debug=*/false, nullptr);
     view.set_title("Crucible");
     view.set_size(1180, 760, WEBVIEW_HINT_NONE);
@@ -252,7 +257,20 @@ int App::run() {
 
             // On the window's thread, which is the session's thread: the one
             // place the jobs a frame loop used to do can still be done.
-            housekeeping();
+            //
+            // Contained. Nothing here may end the window: an exception thrown
+            // from a callback the webview runs is uncaught by anything, and
+            // that is the process gone -- which is what saving a session that
+            // held a command's Windows-code-page output used to do. It is
+            // said, and the next push tries again.
+            try {
+                housekeeping();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "housekeeping failed: %s\n", e.what());
+                say(std::string("something went wrong saving: ") + e.what());
+            } catch (...) {
+                std::fprintf(stderr, "housekeeping failed\n");
+            }
 
             // The title follows the project, as the old window's did. Set
             // only when it changes; some window managers repaint the whole
@@ -271,8 +289,14 @@ int App::run() {
             // Read here rather than where the wake was raised, so the page
             // is given the state as it is when it is drawn rather than as it
             // was when something changed.
-            view.eval("window.crucibleSnapshot && window.crucibleSnapshot("
-                      + surface->snapshot() + ")");
+            std::string snapshot;
+            try {
+                snapshot = surface->snapshot();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "snapshot failed: %s\n", e.what());
+                return;
+            }
+            view.eval("window.crucibleSnapshot && window.crucibleSnapshot(" + snapshot + ")");
             if (pushing != nullptr) {
                 pushing->landed();
             }
@@ -298,7 +322,7 @@ int App::run() {
                       surface->prepare(request.is_string() ? request.get<std::string>()
                                                            : std::string());
                   if (!call.background) {
-                      view.resolve(id, 0, json(surface->run(call)).dump());
+                      view.resolve(id, 0, json(surface->run(call)).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
                       // An action may have changed something only the
                       // session knows -- a folder now waiting to be trusted,
                       // a seat taken away -- and nothing else would say so.
@@ -312,7 +336,7 @@ int App::run() {
                   // The page awaits it like any other call and the window
                   // goes on drawing in the meantime.
                   workers_.post([&view, surface, gate, id, call = std::move(call)] {
-                      const std::string reply = json(surface->run(call)).dump();
+                      const std::string reply = json(surface->run(call)).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
                       const std::lock_guard<std::mutex> lock(gate->mutex);
                       if (gate->open) {
                           view.resolve(id, 0, reply);
@@ -358,7 +382,7 @@ int App::run() {
                                     view.resolve(id, 0,
                                                  json{{"supported", answer.supported},
                                                       {"path", answer.path},
-                                                      {"paths", answer.paths}}.dump());
+                                                      {"paths", answer.paths}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
                                 });
               },
               nullptr);
@@ -380,7 +404,7 @@ int App::run() {
                   const std::string error = std::filesystem::is_directory(folder, ec)
                                                 ? dialogs::show_folder(folder.string())
                                                 : folder.string() + " is not there any more";
-                  view.resolve(id, 0, json{{"error", error}}.dump());
+                  view.resolve(id, 0, json{{"error", error}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
               },
               nullptr);
 
@@ -401,7 +425,7 @@ int App::run() {
                         [&view, gate](std::vector<std::string> paths) {
                             if (gate->open) {
                                 view.eval("window.crucibleDropped && window.crucibleDropped("
-                                          + json(paths).dump() + ")");
+                                          + json(paths).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + ")");
                             }
                         });
     view.init(std::string("window.crucibleNativeDrops = ") + (paths_on_drop ? "true" : "false") + ";");

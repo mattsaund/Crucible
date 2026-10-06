@@ -52,6 +52,7 @@ usage: crucible [options]
       --no-trust   skip the folder trust prompt for this run
   -y, --yes        with --uninstall, answer yes to everything
 
+      --install-python    fetch the Python that routing, cooks and training run on
       --install-runtimes  install the compute backends this machine can use
       --runtime-status    say which backends are installed and active, and exit
       --install-trainer   install the Python environment fine-tuning needs
@@ -113,6 +114,7 @@ Options parse_arguments(int argc, char** argv) {
             options.should_exit = true;
             return options;
         }
+        if (argument == "--install-python")   { options.install_python   = true; continue; }
         if (argument == "--install-runtimes") { options.install_runtimes = true; continue; }
         if (argument == "--runtime-status")   { options.runtime_status   = true; continue; }
         if (argument == "--install-trainer") { options.install_trainer = true; continue; }

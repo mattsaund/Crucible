@@ -23,6 +23,7 @@
 #include "crucible/llm/mlx_server.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/llm/remote_model.hpp"
+#include "crucible/orchestra/link.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/tools/attachments.hpp"
@@ -216,6 +217,9 @@ private:
 
     void run();
     void handle(const Request& request);
+
+    /// Load the delegator model, when one is set. A failure is said on the
+    /// delegator's row, and routing goes on keywords until it loads.
     void load_router();
 
     /// Have the delegator loaded and waiting, whichever mode it is in.
@@ -236,17 +240,37 @@ private:
     void settle();
 
     /// Make sure the delegator is loaded, freeing the expert first if there is
-    /// no room for both. A no-op when it is already there.
+    /// no room for both. A no-op when it is already there, or none is set.
     void ensure_router();
 
-    /// Drop the delegator, wrapper first. Only called with "keep delegator
-    /// loaded" off.
+    /// Drop the delegator. Only called with "keep delegator loaded" off.
     void release_router();
     void do_apply_config(Config config);
     void do_write_examples(const ExpertId& id);
     void do_name_session(const Request& request);
 
-    // --- the cook loop, in engine_cook.cpp --------------------------------
+    // --- the orchestrator ----------------------------------------------------
+    //
+    // Routing and the cook loop are Python, in a process of their own: see
+    // orchestra/link.hpp. They ask the core for what only the core may do, and
+    // it answers here, on this thread -- the one that owns the models.
+
+    /// Answer one of the orchestrator's requests. Throws with the reason when
+    /// it cannot be answered, which goes back to the orchestrator as an error.
+    nlohmann::json serve(const std::string& method, const nlohmann::json& params);
+
+    /// What the orchestrator needs to route: the prompt, the roster as the
+    /// delegator is shown it, which seats have a model, and the policy.
+    nlohmann::json routing_request(const std::string& prompt,
+                                   const std::optional<ExpertId>& pinned) const;
+
+    /// Have Crucible's Python, waiting for it while it is being downloaded.
+    /// False, with `error` saying why, when it is not coming.
+    bool wait_for_python(std::string& error);
+
+    orchestra::Link orchestra_;
+
+    // --- the cook, in engine_cook.cpp ---------------------------------------
     void do_cook(const std::string& goal, int budget_seconds,
                  const std::filesystem::path& root,
                  std::vector<attach::Attachment> attachments,
@@ -267,9 +291,6 @@ private:
     /// folder produces.
     tools::WorkshopSettings workshop_for(const std::filesystem::path& root) const;
 
-    /// Record a step, publish the journal and write it to disk.
-    void note_step(CookStep step);
-
     /// Publish the current journal to the UI. Called after every change.
     void publish_cook();
 
@@ -287,36 +308,34 @@ private:
     CookRound cook_round(ChatModel& model, const ModelParams& params,
                          const std::vector<ChatMessage>& messages);
 
-    /// Who is in the seat for a cook, and the model behind them.
-    ///
-    /// A cook is not one expert any more. It starts with whoever the goal
-    /// routes to, and any HANDOFF sends the next piece of work back through the
-    /// delegator -- so a programming expert that has finished the code can say
-    /// the next thing needed is documentation and have a writing expert put in
-    /// its place.
+    /// Who is in the seat for a cook, and the model behind them. The
+    /// orchestrator decides who; the core keeps the model, between its calls.
     struct CookSeat {
         ExpertId     id;
         std::string  name;
         ModelParams  params;
         ChatModel*   model = nullptr;
-        std::string  error;   ///< set when the model could not be loaded
     };
+    CookSeat cook_seat_;
 
-    /// Route `work` and make the winner resident, freeing whoever was there.
-    ///
-    /// Returns the seat that is actually loaded. On failure `model` is null and
-    /// `error` says why. A no-op when the delegator picks whoever is already in
-    /// the chair, which is the common case and must not cost a reload.
-    CookSeat take_the_seat(const std::string& work, const CookSeat& current,
-                           std::optional<ExpertId> pinned = std::nullopt);
+    /// What the cook's goal came with, and the pictures last read from it for
+    /// the seat -- sent with every round that carries the attachments.
+    std::vector<attach::Attachment> cook_attachments_;
+    std::vector<ChatImage>          cook_images_;
+    tools::WorkshopSettings         cook_workshop_;
+    tools::SearchSettings           cook_search_;
+
+    /// The cook's half of serve(): the seat, the tools, the journal.
+    nlohmann::json serve_cook(const std::string& method, const nlohmann::json& params);
 
     /// Block until the user answers the question a cook is waiting on, or the
     /// cook is stopped. Returns the answer, or nothing if it was stopped.
     std::optional<std::string> await_cook_answer();
 
-    /// Pick the expert that will actually answer. The router names a subject;
-    /// this decides what to do when that subject has no model configured.
-    RouteDecision resolve(const Request& request);
+    /// Pick the expert that will actually answer: the orchestrator's decision,
+    /// policy included. `error` says why there is none, when routing could not
+    /// be done at all.
+    RouteDecision resolve(const Request& request, std::string& error);
 
     /// The model behind `id`, ready to be asked: loaded onto the cards if it
     /// is a file, looked up if it is a provider's. Null with `error` set when
@@ -334,7 +353,6 @@ private:
     std::function<void()>  wake_;
 
     std::unique_ptr<ModelHost> host_;
-    std::unique_ptr<Router>    router_;
 
     /// The experts that are not on this machine. Nothing in it is resident in
     /// the sense `host_` means -- there are no weights -- so it sits beside
@@ -353,12 +371,6 @@ private:
 
     /// Stop the MLX server, and put its seat back to dormant.
     void stop_mlx();
-
-    /// The delegator's measured bias, kept across reloads of the same file so
-    /// an on-demand delegator does not re-measure it every prompt. See
-    /// ModelRouter::bias.
-    std::vector<float>         router_bias_;
-    std::string                router_bias_for_;
 
     /// The delegator file that last failed to load, so that ready_delegator
     /// does not try it again after every prompt. Empty when it did not fail.

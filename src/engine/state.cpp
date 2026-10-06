@@ -40,6 +40,7 @@ Snapshot AppState::snapshot() const {
     copy.linked          = linked_;
     copy.delegator_ready = delegator_ready_;
     copy.delegator_progress = delegator_progress_;
+    copy.delegator_problem  = delegator_problem_;
     copy.turns    = turns_;
     copy.notices  = notices_;
     copy.busy     = busy_;
@@ -172,6 +173,11 @@ void AppState::set_delegator_ready(bool ready) {
     const std::lock_guard<std::mutex> lock(mutex_);
     delegator_ready_    = ready;
     delegator_progress_ = -1.0F;
+}
+
+void AppState::set_delegator_problem(std::string problem) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    delegator_problem_ = std::move(problem);
 }
 
 void AppState::set_delegator_progress(float progress) {
@@ -320,11 +326,12 @@ void AppState::cancel_turn(std::size_t turn) {
 
 void AppState::add_notice(std::string notice) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    // Bounded, so a badly broken config -- one warning per misconfigured
-    // expert -- cannot push the chat off screen. The oldest go first: this is
-    // a status channel, and the newest line is the one somebody is waiting
-    // to see.
+    // Shown in the side menu's status line, not in the chat: the transcript is
+    // the conversation and nothing else. The newest is what the line says,
+    // until the next change of mood says something else. Kept, bounded, for
+    // the line's hover text -- the oldest go first.
     constexpr std::size_t kKept = 24;
+    status_ = notice;
     notices_.push_back(std::move(notice));
     if (notices_.size() > kKept) {
         notices_.erase(notices_.begin(),

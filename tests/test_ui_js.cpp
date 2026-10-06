@@ -490,6 +490,92 @@ TEST(the_top_bar_says_which_folder_the_chat_works_in) {
     CHECK(top.find("9.9.9 is available") != std::string::npos);
 }
 
+TEST(an_unlabeled_block_is_colored_in_the_language_its_code_is_in) {
+    // What gpt-oss sent for "a quick python script": the shebang above the
+    // fence, and a fence that names no language. Both drew as gray text.
+    const std::string drawn = page().eval(
+        "markdown('#!/usr/bin/env python3\\n```\\ndef main():\\n    n = int(input())\\n"
+        "    for _ in range(n):\\n        print(\"Hello World\")\\n\\n"
+        "if __name__ == \"__main__\":\\n    main()\\n```')");
+    CHECK(drawn.find(">python<") != std::string::npos);        // the block's header
+    CHECK(drawn.find("#!/usr/bin/env python3") != std::string::npos);
+    CHECK(drawn.find("<p>#!") == std::string::npos);            // not a paragraph above it
+    CHECK(drawn.find("class=\"tok-") != std::string::npos);   // and colored
+    // Each of these is plainly one language.
+    const char* const cases[][2] = {
+        {"fn main() {\\n    println!(\"hi\");\\n}", "rust"},
+        {"#include <stdio.h>\\nint main(void) { return 0; }", "c++"},
+        {"const x = 1;\\nconsole.log(x);", "javascript"},
+        {"SELECT name FROM users;", "sql"},
+        {"{\"a\": 1}", "json"},
+    };
+    for (const auto& one : cases) {
+        const std::string out = page().eval(std::string("markdown('```\\n") + one[0] + "\\n```')");
+        CHECK(out.find(std::string(">") + one[1] + "<") != std::string::npos);
+        if (out.find(std::string(">") + one[1] + "<") == std::string::npos) {
+            std::printf("      wanted %s for %s\n", one[1], one[0]);
+        }
+    }
+    // And prose in a block stays text.
+    CHECK(page().eval("markdown('```\\nThe answer is four.\\n```')").find(">text<") != std::string::npos);
+}
+
+TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
+    const std::string drawn = page().eval(
+        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
+        " setup: {running: true, items: ["
+        "  {id: 'python', label: 'Python 3.12.15', state: 'done', detail: '', download: 66924371},"
+        "  {id: 'runtime-cuda', label: 'CUDA runtime', state: 'working', detail: 'downloading',"
+        "   progress: 0.4, download: 0},"
+        "  {id: 'trainer', label: 'Training environment (cuda)', state: 'waiting', detail: '',"
+        "   download: 3000000000}]}});"
+        " const out = views.chat(); state.snapshot = was; return out; })()");
+    CHECK(drawn.find("Getting Crucible ready") != std::string::npos);
+    CHECK(drawn.find("Python 3.12.15") != std::string::npos);
+    CHECK(drawn.find("width:40%") != std::string::npos);        // measured, so a bar
+    CHECK(drawn.find("Try again") == std::string::npos);        // nothing failed
+    CHECK(drawn.find("Ask anything") != std::string::npos);     // and the box still works
+
+    const std::string failed = page().eval(
+        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
+        " setup: {running: false, items: ["
+        "  {id: 'python', label: 'Python 3.12.15', state: 'failed',"
+        "   detail: 'Python could not be downloaded: no route to host', download: 1}]}});"
+        " const out = views.chat(); state.snapshot = was; return out; })()");
+    CHECK(failed.find("no route to host") != std::string::npos);
+    CHECK(failed.find("data-act=\"setup-retry\"") != std::string::npos);
+
+    // Finished, it says nothing.
+    CHECK(page().eval("(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was,"
+                      " {turns: [], cook: null, setup: {running: false, items: [{id: 'python', label: 'P',"
+                      " state: 'done'}]}}); const out = views.chat(); state.snapshot = was;"
+                      " return out; })()").find("Getting Crucible ready") == std::string::npos);
+}
+
+TEST(the_chat_is_the_conversation_and_nothing_the_program_says) {
+    // Notices go to the side menu's status line -- its hover lists them --
+    // and never into the transcript, however many there are.
+    const std::string chat = page().eval("views.chat()");
+    const std::size_t from = chat.find("id=\"transcript\"");
+    const std::size_t to   = chat.find("id=\"jump\"");
+    CHECK(from != std::string::npos && to != std::string::npos);
+    const std::string transcript = chat.substr(from, to - from);
+    CHECK(transcript.find("opened demo") == std::string::npos);
+    CHECK(chat.find("class=\"notices\"") == std::string::npos);
+    CHECK(page().eval("sideView()").find("opened demo") != std::string::npos);
+}
+
+TEST(a_delegator_that_would_not_load_says_so_on_its_own_row) {
+    const std::string side = page().eval(
+        "(() => { state.snapshot.delegator_problem = 'would put 11.8 GB on the 3060';"
+        " const out = sideView(); delete state.snapshot.delegator_problem; return out; })()");
+    CHECK(side.find("data-phase=\"missing\"") != std::string::npos);
+    CHECK(side.find("would put 11.8 GB on the 3060") != std::string::npos);
+    CHECK(side.find("routed on keywords until it is") != std::string::npos);
+    const std::string chat = page().eval("views.chat()");
+    CHECK(chat.substr(chat.find("id=\"transcript\"")).find("11.8 GB") == std::string::npos);
+}
+
 TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
     const std::string side = page().eval("sideView()");
     // The delegator, 42% loaded, and an expert at 50%.
@@ -991,8 +1077,10 @@ TEST(a_fenced_block_is_code_all_the_way_to_its_close) {
 }
 
 TEST(code_keeps_its_indentation) {
-    // Re-flowed code is code that no longer runs.
-    CHECK(has("markdown('```\\ndef f():\\n    return 1\\n```\\n')", "\n    return 1"));
+    // Re-flowed code is code that no longer runs. (An unlabeled block of
+    // Python is colored as Python now, so the keyword is in a span.)
+    CHECK(has("markdown('```\\ndef f():\\n    return 1\\n```\\n')", "\n    <span class=\"tok-key\">return</span>"));
+    CHECK(has("markdown('```text\\nfirst\\n    indented\\n```\\n')", "\n    indented"));
 }
 
 TEST(inline_styling_is_split_into_runs) {

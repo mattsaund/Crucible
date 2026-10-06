@@ -8,6 +8,7 @@
 // lets a second interface -- the Python orchestrator, a test harness -- exist
 // without this file knowing.
 #include "app.hpp"
+#include "crash.hpp"
 
 #include <algorithm>
 #include <ctime>
@@ -37,6 +38,11 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     // because the person who can fix it is the one looking at the window.
     for (std::string& warning : warnings) {
         state_.add_notice(std::move(warning));
+    }
+    // A crash the last run recorded, pointed at once.
+    if (const std::string crashed = crash::since_last_start(paths::data_dir() / "crash.log");
+        !crashed.empty()) {
+        state_.add_notice(crashed);
     }
 
     state_.configure_seats(config_);
@@ -69,6 +75,7 @@ App::~App() {
     // closing the window could take as long as somebody's server takes to
     // time out.
     util::http::shut_down();
+    setup_.stop();
     if (engine_) {
         engine_->stop();
     }

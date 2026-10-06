@@ -3,6 +3,8 @@
 // The configuration, and the machine it is a configuration of.
 #include "methods.hpp"
 
+#include "crucible/lab/python.hpp"
+
 #include "crucible/llm/mlx_server.hpp"
 
 #include <algorithm>
@@ -105,7 +107,7 @@ Reply config_set(const json& params, Host& host) {
     }
 
     std::vector<std::string> warnings;
-    Config edited = config_from_json_text(document.dump(), warnings);
+    Config edited = config_from_json_text(document.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), warnings);
     if (const std::string refused = host.apply_config(std::move(edited)); !refused.empty()) {
         return bad(refused);
     }
@@ -196,7 +198,9 @@ Reply about(const json&, const Scene& scene) {
                        {"models",   format::short_path(scene.config.resolved_models_dir())},
                        {"runtimes", format::short_path(paths::runtimes_dir())},
                        {"projects", format::short_path(paths::projects_dir())},
-                       {"log",      format::short_path(paths::log_file())}}},
+                       {"python",   format::short_path(lab::python::root())},
+                       {"log",      format::short_path(paths::log_file())},
+                       {"crashes",  format::short_path(paths::data_dir() / "crash.log")}}},
         {"trusted", std::move(trusted)},
     });
 }
@@ -266,7 +270,7 @@ Reply prefs_set(const json& params, const Scene&) {
         if (!out) {
             return bad("could not write " + next.string());
         }
-        out << doc.dump(2) << '\n';
+        out << doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
     std::filesystem::rename(next, window_file(), ec);
     return ec ? bad("could not save " + window_file().string() + ": " + ec.message()) : good();

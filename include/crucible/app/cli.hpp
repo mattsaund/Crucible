@@ -24,6 +24,10 @@ struct Options {
     /// without a visit to the settings screen.
     bool install_runtimes = false;
     bool runtime_status   = false;  ///< --runtime-status
+
+    /// --install-python: fetch Crucible's own Python and exit. Routing and
+    /// cooks run on it; the window fetches it on first start otherwise.
+    bool install_python = false;
     bool force           = false;  ///< --force, with --install-trainer
     bool quiet           = false;  ///< --quiet, for an installer's own output
 

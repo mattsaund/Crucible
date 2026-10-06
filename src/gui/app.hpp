@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "crucible/app/setup.hpp"
 #include "crucible/api/surface.hpp"
 #include "crucible/app/update.hpp"
 #include "crucible/config/config.hpp"
@@ -66,6 +67,7 @@ private:
     lab::Trainer*          trainer() override { return &trainer_; }
     RuntimeBuilder*        runtime_builder() override { return &runtime_builder_; }
     lab::pyenv::Installer* trainer_installer() override { return &pyenv_installer_; }
+    Setup*                 setup() override { return &setup_; }
 
     Config      config() const override { return config_; }
     std::string apply_config(Config edited) override;
@@ -217,6 +219,12 @@ private:
     RuntimeBuilder        runtime_builder_;
     lab::pyenv::Installer pyenv_installer_;
     lab::Trainer          trainer_;
+
+    /// Fetches what the download did not carry, through the two above. After
+    /// them, so it is gone before they are. See app/setup.hpp.
+    Setup                 setup_{runtime_builder_, pyenv_installer_,
+                                 [this] { wake(); },
+                                 [this] { if (engine_) { engine_->reload_models(); } }};
 
     std::size_t persisted_turns_ = 0;
 

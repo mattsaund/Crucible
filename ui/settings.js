@@ -694,8 +694,10 @@ function pageAbout() {
     : u.latest ? `<p class="lede">This is the newest release (${escape(u.latest)}).</p>`
                : '<p class="lede">No release has been checked for yet.</p>';
   const files = [['Configuration', a.files.config], ['Models', a.files.models],
-                 ['Runtimes', a.files.runtimes], ['Projects and history', a.files.projects],
-                 ['Everything else', a.files.data], ['Log', a.files.log]];
+                 ['Runtimes', a.files.runtimes], ['Python', a.files.python],
+                 ['Projects and history', a.files.projects], ['Everything else', a.files.data],
+                 ['Log', a.files.log], ['Crash reports', a.files.crashes]]
+    .filter(([, path]) => path);
   return `<h1>About</h1><p class="lede">A local AI lab.</p>
     <div class="card"><div class="title"><strong>Crucible ${escape(a.version)}</strong></div>
       ${status}
@@ -705,9 +707,11 @@ function pageAbout() {
       `Asks GitHub once a day for the newest version number. Nothing about you or your work is
        sent: it is one request for one public page.`)}
     <h2 style="margin-top:1.8rem">WHAT LEAVES THIS MACHINE</h2>
-    <p class="lede">That version check. A web search, when you have turned searching on. Downloads
-      you start: a runtime, the trainer, a model from Huggingface. And a prompt, when it is routed
-      to an expert you have pointed at a provider. That is the whole list.</p>
+    <p class="lede">That version check. A web search, when you have turned searching on. What
+      Crucible fetches for itself on its first start -- its Python, the runtimes this machine
+      can use, the training environment -- and downloads you start, like a base model from
+      Huggingface for a fine-tune. And a prompt, when it is routed to an expert you have pointed
+      at a provider. That is the whole list.</p>
     <h2 style="margin-top:1.8rem">FILES</h2>
     <div class="runtime-detail" style="border:0;padding:0">${files.map(([label, path]) =>
       `<div><span>${label}</span>${escape(path)}</div>`).join('')}</div>

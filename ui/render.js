@@ -75,16 +75,25 @@ function markdown(src) {
   while (i < lines.length) {
     const line = lines[i];
 
+    // A script's first line written above its fence rather than inside it --
+    // gpt-oss does this with "#!/usr/bin/env python3" -- belongs to the code.
+    if (/^#!\S/.test(line) && /^\s*```\s*$/.test(lines[i + 1] || '')) {
+      lines.splice(i, 2, lines[i + 1], line);
+      continue;
+    }
+
     // A fence runs to its closing fence, or to the end -- a reply still
     // streaming has an opening fence and no closing one for a while, and it
-    // should read as code the whole time rather than flickering.
+    // should read as code the whole time rather than flickering. One that
+    // names no language is given the one its code is written in, when that
+    // is plain, so it is colored like any other.
     const fence = line.match(/^\s*```(\w*)\s*$/);
     if (fence) {
       const body = [];
       i += 1;
       while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
       i += 1;
-      out.push(codeBlock(body.join('\n'), fence[1]));
+      out.push(codeBlock(body.join('\n'), fence[1] || guessLanguage(body)));
       continue;
     }
 
@@ -246,6 +255,36 @@ const words = (list, fold) => {
   const all = (list || '').split(' ').filter(Boolean);
   return new Set(fold ? all.map((w) => w.toLowerCase()) : all);
 };
+
+/// The language of a block whose fence did not say, or '' when it is not plain.
+///
+/// A model leaves the language off often enough -- and an unlabeled block is
+/// drawn as gray text -- that guessing is worth it, but only on evidence: a
+/// shebang, or lines that could only be one language. Each sign is a whole
+/// line's worth of syntax, so prose in a block is not mistaken for code.
+function guessLanguage(lines) {
+  const code = lines.join('\n');
+  const bang = (lines[0] || '').match(/^#!.*?\b(python3?|bash|sh|zsh|node|ruby|php|lua)\b/);
+  if (bang) return { node: 'javascript', zsh: 'bash', sh: 'bash' }[bang[1]] || bang[1];
+  const signs = [
+    ['python', /^\s*(def \w+\(.*\)\s*(->.*)?:|class \w+(\(.*\))?:|from [\w.]+ import |import [\w.]+(, [\w.]+)*$|if __name__ == ['"]__main__['"]:|elif .*:$)/m],
+    ['rust', /^\s*(fn \w+(<.*>)?\(|let mut |use std::|impl\b|pub fn |println!\()/m],
+    ['go', /^\s*(package \w+$|func (\(.*\) )?\w+\(|import \($|fmt\.Print)/m],
+    ['cpp', /^\s*(#include\s*[<"]|int main\s*\(|std::|template\s*<|using namespace )/m],
+    ['java', /^\s*(public (static |final )*(class|void|interface)|System\.out\.print|using System;)/m],
+    ['javascript', /^\s*((const|let) \w+ = |function \w*\s*\(|console\.log\(|module\.exports|export (default |const |function )|import .* from ['"])/m],
+    ['sql', /^\s*(SELECT .* FROM |INSERT INTO |CREATE TABLE |UPDATE \w+ SET |DELETE FROM )/im],
+    ['bash', /^\s*(\$ |sudo |apt(-get)? |brew |npm |pip3? install |git |cd |export \w+=|echo )/m],
+  ];
+  for (const [lang, sign] of signs) {
+    if (sign.test(code)) return lang;
+  }
+  const json = code.trim();
+  if (/^[{[]/.test(json)) {
+    try { JSON.parse(json); return 'json'; } catch (e) { /* not JSON */ }
+  }
+  return '';
+}
 
 /// What a fence marker names. The aliases matter more than the list: a model
 /// writes ```c++ and ```cpp and ```C++ for the same thing.

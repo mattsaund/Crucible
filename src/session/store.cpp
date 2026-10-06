@@ -246,8 +246,9 @@ std::vector<Project> recent_projects(std::size_t limit) {
         const std::filesystem::path root = entry.get<std::string>();
         std::error_code ec;
         // Dropped rather than shown grayed out. A list whose entries open onto
-        // nothing is worse than a short one.
-        if (!std::filesystem::is_directory(root, ec)) {
+        // nothing is worse than a short one -- and one that offers System32,
+        // remembered by an older version, is worse than either.
+        if (!std::filesystem::is_directory(root, ec) || !is_project_place(root)) {
             continue;
         }
         found.push_back(Project::at(root));
@@ -256,85 +257,6 @@ std::vector<Project> recent_projects(std::size_t limit) {
         }
     }
     return found;
-}
-
-/// What the delegator is asked to name a conversation by. Examples in the
-/// prompt rather than rules alone: a small model told "a short title" writes
-/// a sentence, and told "two to four words" writes four words of the question.
-std::string session_naming_prompt(const std::string& excerpt) {
-    return "Here is the start of a conversation:\n\n" + excerpt
-         + "\n\nGive it a title of two to four words saying what it is about, like a "
-           "heading -- for example: Math homework, Fixing a Python import, Trip to Lisbon, "
-           "Orbital speed. Reply with the title and nothing else.";
-}
-
-/// A title out of what a model said: the first line, without the quotes,
-/// the "Title:", the bold or the full stop a model adds, and short.
-std::string session_name_from(const std::string& reply) {
-    std::string line;
-    std::istringstream lines(reply);
-    while (std::getline(lines, line)) {
-        line = format::trim(line);
-        if (!line.empty()) {
-            break;
-        }
-    }
-    for (const char* lead : {"Title:", "title:", "TITLE:"}) {
-        if (line.rfind(lead, 0) == 0) {
-            line = format::trim(line.substr(std::char_traits<char>::length(lead)));
-        }
-    }
-    std::string clean;
-    for (const char c : line) {
-        if (c != '"' && c != '*' && c != '#' && c != '`') {
-            clean += c;
-        }
-    }
-    clean = format::trim(clean);
-    while (!clean.empty() && (clean.back() == '.' || clean.back() == '!' || clean.back() == ':')) {
-        clean.pop_back();
-    }
-    if (!clean.empty() && clean.front() == '\'' && clean.back() == '\'') {
-        clean = clean.substr(1, clean.size() - 2);
-    }
-    // Six words at most: a title, not a sentence. A model that wrote one gave
-    // no title, and the fallback is better than its first six words.
-    std::istringstream words(clean);
-    std::string word;
-    int count = 0;
-    while (words >> word) {
-        ++count;
-    }
-    if (count == 0 || count > 6 || clean.size() > 48) {
-        return {};
-    }
-    if (std::islower(static_cast<unsigned char>(clean.front())) != 0) {
-        clean.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(clean.front())));
-    }
-    return clean;
-}
-
-/// The opening words of the first prompt, for when there is no model to
-/// ask: at most five, up to the first full stop or question mark.
-std::string fallback_session_name(const std::string& excerpt) {
-    std::string first = excerpt.substr(0, excerpt.find('\n'));
-    if (first.rfind("Question: ", 0) == 0) {
-        first = first.substr(10);   // how name_sessions hands the prompt over
-    }
-    const std::size_t end = first.find_first_of(".?!");
-    if (end != std::string::npos && end > 0) {
-        first = first.substr(0, end);
-    }
-    std::istringstream words(first);
-    std::string word;
-    std::string out;
-    for (int n = 0; n < 5 && words >> word; ++n) {
-        out += (out.empty() ? "" : " ") + word;
-    }
-    if (!out.empty() && std::islower(static_cast<unsigned char>(out.front())) != 0) {
-        out.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(out.front())));
-    }
-    return out;
 }
 
 bool is_scratch(const std::filesystem::path& root) {
@@ -348,7 +270,121 @@ bool is_scratch(const std::filesystem::path& root) {
     return mismatch.first == scratch.end();
 }
 
+namespace {
+
+/// `inner` is `outer` or somewhere under it, compared as paths -- and on
+/// Windows without regard to case, which is how its filesystem compares them.
+bool within(const std::filesystem::path& inner, const std::filesystem::path& outer) {
+    if (outer.empty()) {
+        return false;
+    }
+    auto i = inner.begin();
+    for (auto o = outer.begin(); o != outer.end(); ++o, ++i) {
+        if (o->empty()) {
+            continue;   // a trailing separator
+        }
+        if (i == inner.end()) {
+            return false;
+        }
+#if defined(_WIN32)
+        if (format::to_lower(i->string()) != format::to_lower(o->string())) {
+            return false;
+        }
+#else
+        if (*i != *o) {
+            return false;
+        }
+#endif
+    }
+    return true;
+}
+
+bool same_place(const std::filesystem::path& a, const std::filesystem::path& b) {
+    return !a.empty() && !b.empty() && within(a, b) && within(b, a);
+}
+
+std::filesystem::path canonical_or_as_is(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path out = std::filesystem::weakly_canonical(path, ec);
+    return ec || out.empty() ? path : out;
+}
+
+}  // namespace
+
+bool is_project_place(const std::filesystem::path& root) {
+    if (root.empty()) {
+        return false;
+    }
+    const std::filesystem::path here = canonical_or_as_is(root);
+
+    // A drive or the filesystem's root, and the home folder itself: nobody's
+    // project is everything they own.
+    if (here == here.root_path() || same_place(here, canonical_or_as_is(paths::home_dir()))) {
+        return false;
+    }
+
+    // Crucible's own: where it keeps data and settings, and where it is
+    // installed -- the folder its program is in, and the prefix above a bin/.
+    for (const std::filesystem::path& own : {paths::data_dir(), paths::config_dir()}) {
+        if (within(here, canonical_or_as_is(own))) {
+            return false;
+        }
+    }
+    if (const std::filesystem::path program = util::executable_path(); !program.empty()) {
+        std::filesystem::path installed = canonical_or_as_is(program.parent_path());
+        if (installed.filename() == "bin" || installed.filename() == "MacOS") {
+            installed = installed.parent_path();
+        }
+        if (installed.filename() == "Contents") {
+            installed = installed.parent_path();   // the .app bundle
+        }
+        if (within(here, installed)) {
+            return false;
+        }
+    }
+
+    // The system's own folders: the places themselves and everything in them.
+#if defined(_WIN32)
+    for (const char* variable : {"SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)",
+                                 "ProgramW6432", "ProgramData"}) {
+        if (const char* value = std::getenv(variable); value != nullptr && *value != '\0') {
+            if (within(here, canonical_or_as_is(value))) {
+                return false;
+            }
+        }
+    }
+#elif defined(__APPLE__)
+    for (const char* system : {"/System", "/Library", "/usr", "/bin", "/sbin", "/private",
+                               "/cores", "/dev", "/opt/homebrew"}) {
+        if (within(here, system)) {
+            return false;
+        }
+    }
+    for (const char* only : {"/Applications", "/Users", "/Volumes"}) {
+        if (same_place(here, only)) {
+            return false;
+        }
+    }
+#else
+    for (const char* system : {"/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
+                               "/boot", "/dev", "/proc", "/sys", "/run", "/var", "/snap"}) {
+        if (within(here, system)) {
+            return false;
+        }
+    }
+    for (const char* only : {"/home", "/opt", "/tmp", "/mnt", "/media", "/srv", "/root"}) {
+        if (same_place(here, only)) {
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
 void remember_project(const std::filesystem::path& root) {
+    if (!is_project_place(root)) {
+        return;
+    }
     const Project project = Project::at(root);
 
     std::vector<std::string> paths{project.root.string()};
@@ -365,7 +401,7 @@ void remember_project(const std::filesystem::path& root) {
     std::filesystem::create_directories(paths::projects_dir(), ec);
     std::ofstream out(recent_file());
     if (out) {
-        out << json(paths).dump(2) << '\n';
+        out << json(paths).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
 }
 
@@ -479,7 +515,7 @@ bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
             error = "could not write " + temp.string();
             return false;
         }
-        out << document.dump(1, '\t') << '\n';
+        out << document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
     std::filesystem::rename(temp, target, ec);
     if (ec) {
@@ -607,7 +643,7 @@ bool SessionStore::rename(const std::string& id, const std::string& name, std::s
             error = "could not write " + temp.string();
             return false;
         }
-        out << document.dump(1, '\t') << '\n';
+        out << document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
     std::error_code ec;
     std::filesystem::rename(temp, file, ec);
@@ -652,8 +688,9 @@ std::vector<SessionSummary> recent_chats(std::size_t limit) {
             summary.project = document.value("project", "");
             summary.file    = file;
             std::error_code there;
-            if (summary.project.empty() || !std::filesystem::is_directory(summary.project, there)) {
-                continue;
+            if (summary.project.empty() || !std::filesystem::is_directory(summary.project, there)
+                || !is_project_place(summary.project)) {
+                continue;   // gone, or System32 from an older version's start
             }
             if (const auto turns = document.find("turns"); turns != document.end() && turns->is_array()) {
                 summary.turns = static_cast<int>(turns->size());
@@ -704,7 +741,7 @@ void SessionStore::update_project_total(const TokenUsage& delta) const {
                {"project", project_.root.string()},
                {"usage", usage_to_json(total)},
            }
-               .dump(1, '\t')
+               .dump(1, '\t', false, nlohmann::json::error_handler_t::replace)
         << '\n';
 }
 

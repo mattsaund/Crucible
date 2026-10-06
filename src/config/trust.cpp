@@ -105,7 +105,7 @@ bool TrustStore::save() const {
     if (!out) {
         return false;
     }
-    out << json{{"trusted", entries}}.dump(2) << '\n';
+    out << json{{"trusted", entries}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     return out.good();
 }
 

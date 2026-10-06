@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace crucible::util {
@@ -37,6 +38,35 @@ public:
                const std::filesystem::path& cwd,
                const std::vector<std::string>& extra_env,
                std::string& error);
+
+    /// How the child's streams are wired, when the defaults will not do.
+    struct Streams {
+        /// A pipe to the child's standard input, for write_line. Without it
+        /// the child inherits this process's.
+        bool input = false;
+
+        /// Where the child's standard error goes, appended. Empty merges it
+        /// into the output read_line reads, which is what a build log wants.
+        /// A protocol spoken on standard output wants the opposite: a warning
+        /// written halfway through a message would corrupt the message.
+        std::filesystem::path errors;
+    };
+
+    /// start() with the streams wired as asked.
+    bool start(const std::vector<std::string>& argv,
+               const std::filesystem::path& cwd,
+               const std::vector<std::string>& extra_env,
+               std::string& error,
+               const Streams& streams);
+
+    /// Write `line` and a newline to the child's standard input. Only with
+    /// Streams::input. False once the child has gone away -- a broken pipe is
+    /// reported here, not raised as a signal that would end this process.
+    bool write_line(std::string_view line);
+
+    /// Close the child's standard input, which a child reading it sees as the
+    /// end of what it will be told.
+    void close_input();
 
     /// Read one line, without its newline. Returns false at end of output.
     /// Blocks, so call it from the thread that is allowed to wait.
@@ -77,9 +107,11 @@ private:
     void* process_ = nullptr;
     void* job_     = nullptr;
     void* read_    = nullptr;
+    void* write_   = nullptr;   ///< the child's standard input, with Streams::input
 #else
     int  pid_    = -1;
     int  fd_     = -1;
+    int  in_fd_  = -1;          ///< the child's standard input, with Streams::input
 #endif
     int  status_ = -1;
     bool reaped_ = false;

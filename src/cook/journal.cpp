@@ -218,19 +218,7 @@ std::filesystem::path CookLog::file_for(const std::string& id) const {
     return dir() / (id + ".json");
 }
 
-bool CookLog::save(const Cook& cook, std::string& error) const {
-    if (cook.id.empty()) {
-        error = "cook has no id";
-        return false;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(dir(), ec);
-    if (ec) {
-        error = "could not create " + dir().string() + ": " + ec.message();
-        return false;
-    }
-
+json cook_to_json(const Cook& cook) {
     json steps = json::array();
     for (const CookStep& step : cook.steps) {
         steps.push_back(json{
@@ -251,7 +239,7 @@ bool CookLog::save(const Cook& cook, std::string& error) const {
                                    {"label", one.label}, {"kind", one.kind}});
     }
 
-    const json doc{
+    return json{
         {"id",             cook.id},
         {"goal",           cook.goal},
         {"attachments",    attachments},
@@ -264,6 +252,76 @@ bool CookLog::save(const Cook& cook, std::string& error) const {
         {"question",       cook.question},
         {"steps",          steps},
     };
+}
+
+Cook cook_from_json(const json& doc, const std::string& fallback_id) {
+    Cook cook;
+    if (!doc.is_object()) {
+        cook.id = fallback_id;
+        return cook;
+    }
+    cook.id             = doc.value("id", fallback_id);
+    if (cook.id.empty()) {
+        cook.id = fallback_id;
+    }
+    cook.goal           = doc.value("goal", "");
+    cook.state          = cook_state_from_name(doc.value("state", "done"));
+    cook.budget_seconds = doc.value("budget_seconds", 0);
+    cook.started_unix   = doc.value("started_unix", std::int64_t{0});
+    cook.ended_unix     = doc.value("ended_unix", std::int64_t{0});
+    cook.iterations     = doc.value("iterations", 0);
+    cook.outcome        = doc.value("outcome", "");
+    cook.question       = doc.value("question", "");
+
+    if (const auto attachments = doc.find("attachments");
+        attachments != doc.end() && attachments->is_array()) {
+        for (const json& one : *attachments) {
+            if (one.is_object()) {
+                cook.attachments.push_back({one.value("path", ""), one.value("name", ""),
+                                            one.value("label", ""), one.value("kind", "file")});
+            }
+        }
+    }
+
+    if (const auto steps = doc.find("steps"); steps != doc.end() && steps->is_array()) {
+        for (const json& entry : *steps) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            CookStep step;
+            step.iteration = entry.value("iteration", 0);
+            step.expert    = entry.value("expert", "");
+            step.kind      = entry.value("kind", "");
+            step.summary   = entry.value("summary", "");
+            step.detail    = entry.value("detail", "");
+            step.ok        = entry.value("ok", true);
+            step.ms        = entry.value("ms", 0L);
+            if (const auto changed = entry.find("changed");
+                changed != entry.end() && changed->is_array()) {
+                for (const json& path : *changed) {
+                    if (path.is_string()) {
+                        step.changed.push_back(path.get<std::string>());
+                    }
+                }
+            }
+            cook.steps.push_back(std::move(step));
+        }
+    }
+    return cook;
+}
+
+bool CookLog::save(const Cook& cook, std::string& error) const {
+    if (cook.id.empty()) {
+        error = "cook has no id";
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir(), ec);
+    if (ec) {
+        error = "could not create " + dir().string() + ": " + ec.message();
+        return false;
+    }
 
     const std::filesystem::path file = file_for(cook.id);
     std::ofstream out(file);
@@ -271,7 +329,7 @@ bool CookLog::save(const Cook& cook, std::string& error) const {
         error = "could not write " + file.string();
         return false;
     }
-    out << doc.dump(2) << '\n';
+    out << cook_to_json(cook).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     return true;
 }
 
@@ -351,53 +409,7 @@ std::optional<Cook> CookLog::load(const std::string& id) const {
     if (!doc.is_object()) {
         return std::nullopt;
     }
-
-    Cook cook;
-    cook.id             = doc.value("id", id);
-    cook.goal           = doc.value("goal", "");
-    cook.state          = cook_state_from_name(doc.value("state", "done"));
-    cook.budget_seconds = doc.value("budget_seconds", 0);
-    cook.started_unix   = doc.value("started_unix", std::int64_t{0});
-    cook.ended_unix     = doc.value("ended_unix", std::int64_t{0});
-    cook.iterations     = doc.value("iterations", 0);
-    cook.outcome        = doc.value("outcome", "");
-    cook.question       = doc.value("question", "");
-
-    if (const auto attachments = doc.find("attachments");
-        attachments != doc.end() && attachments->is_array()) {
-        for (const json& one : *attachments) {
-            if (one.is_object()) {
-                cook.attachments.push_back({one.value("path", ""), one.value("name", ""),
-                                            one.value("label", ""), one.value("kind", "file")});
-            }
-        }
-    }
-
-    if (const auto steps = doc.find("steps"); steps != doc.end() && steps->is_array()) {
-        for (const json& entry : *steps) {
-            if (!entry.is_object()) {
-                continue;
-            }
-            CookStep step;
-            step.iteration = entry.value("iteration", 0);
-            step.expert    = entry.value("expert", "");
-            step.kind      = entry.value("kind", "");
-            step.summary   = entry.value("summary", "");
-            step.detail    = entry.value("detail", "");
-            step.ok        = entry.value("ok", true);
-            step.ms        = entry.value("ms", 0L);
-            if (const auto changed = entry.find("changed");
-                changed != entry.end() && changed->is_array()) {
-                for (const json& path : *changed) {
-                    if (path.is_string()) {
-                        step.changed.push_back(path.get<std::string>());
-                    }
-                }
-            }
-            cook.steps.push_back(std::move(step));
-        }
-    }
-    return cook;
+    return cook_from_json(doc, id);
 }
 
 bool CookLog::remove(const std::string& id, std::string& error) const {

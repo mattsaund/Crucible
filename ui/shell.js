@@ -289,7 +289,9 @@ function sideView() {
   // Assigned is enough to draw it as present. With the delegator set to load
   // on demand it is out of memory most of the time, and that is the design
   // working rather than a seat with nothing in it.
-  const delegatorPhase = routing ? 'active' : delegator.model ? 'dormant' : 'unconfigured';
+  const problem = s.delegator_problem || '';
+  const delegatorPhase = routing ? 'active' : problem ? 'missing'
+                       : delegator.model ? 'dormant' : 'unconfigured';
 
   if (!sidebarOpen()) {
     // Closed, it is a rail rather than nothing: the dots still say which seat
@@ -319,20 +321,26 @@ function sideView() {
     </button>`;
   }).join('') || '<div class="status">None yet.</div>';
 
-  const status = state.error || s.status || '';
+  // What the program last said stays on the line until something else is:
+  // an idle engine says nothing, which would otherwise wipe it the moment it
+  // was put there -- a crash pointed at on startup was never seen.
+  const said = (s.notices || []).slice(-6).join('\n');
+  const status = state.error || s.status || (s.notices || []).slice(-1)[0] || '';
   const loaded = !!s.resident || (s.delegator_ready && !!delegator.model);
   // Eject is sized to its own word rather than to the panel: it is an
   // occasional action, and a button stretched across a side menu that can be
   // dragged to four hundred pixels reads as the most important thing here.
   return `<aside style="width:${sidebarWidth()}rem">
-      <div class="side-status${state.error ? ' bad' : s.busy ? ' busy' : ''}" title="${escape(status)}">${
+      <div class="side-status${state.error ? ' bad' : s.busy ? ' busy' : ''}" title="${escape(said || status)}">${
         escape(status) || '&nbsp;'}</div>
       <div class="roster-scroll">
         <h2${linked >= 0 ? ' class="on-trunk-gap"' : ''}>DELEGATOR</h2>
         <button class="seat${routing ? ' linked' : ''}${linked >= 0 ? ' trunk-start' : ''}"
                 data-act="settings-page" data-page="general" data-phase="${delegatorPhase}"
-                title="${escape(delegator.model ? 'Reads the prompt, names the expert.\n' + delegator.model
-                                                : 'No delegator: prompts are routed on keywords.')}">
+                title="${escape(problem
+                  ? `${delegator.model} could not be loaded: ${problem}.\nPrompts are routed on keywords until it is.`
+                  : delegator.model ? 'Reads the prompt, names the expert.\n' + delegator.model
+                  : 'No delegator: prompts are routed on keywords.')}">
           <span class="dot"></span><span class="name">${escape(delegator.model || '(none)')}</span>
           ${loading ? ring(s.delegator_progress) : ''}
         </button>
@@ -549,6 +557,23 @@ window.crucibleSnapshot = (snapshot) => {
 /// Things to do when the engine says something changed, beyond redrawing.
 /// A long job that pokes the window as it goes is followed from here.
 const onSnapshot = [];
+
+/// When Crucible finishes fetching something for itself, what the page knew
+/// about runtimes is out of date: the empty chat asked at startup, before
+/// there were any, and would go on saying "No runtime" over a working one.
+let setupFinished = '';
+onSnapshot.push(() => {
+  const items = (state.snapshot.setup && state.snapshot.setup.items) || [];
+  const finished = items.filter((i) => i.state === 'done' || i.state === 'failed')
+    .map((i) => i.id).join(',');
+  if (finished !== setupFinished) {
+    setupFinished = finished;
+    if (finished) {
+      need('runtimes', 'runtimes', true);
+      need('trainer', 'trainer', true);
+    }
+  }
+});
 
 /// The window's remembered shape, from wherever it is remembered.
 function recall() {

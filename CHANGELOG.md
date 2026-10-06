@@ -6,6 +6,109 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## Unreleased
+
+**Crucible fetches everything it needs.** A download carries the program and
+nothing else, and for a long time the rest was a visit to the settings screen.
+Now, on its first start, Crucible fetches what is missing in the order it is
+needed, with the progress above the empty chat: its own Python, the compute
+runtimes this machine can use (the CPU always, CUDA with NVIDIA's libraries
+where there is an NVIDIA driver, Metal or Vulkan), and the training
+environment. A chat works as soon as Python and a runtime are in; anything that
+fails says why and has **Try again**. `crucible --install-python` does the
+first part from a terminal, and the installers run it.
+
+**Its own Python.** A pinned CPython 3.12 build from the python-build-standalone
+project, checked against the SHA-256 compiled into Crucible and unpacked into
+its data folder. The training environment is built from it, so fine-tuning no
+longer needs a Python on the machine -- a Mac or Windows PC usually has none --
+and the installers no longer ask a Linux system for one.
+
+**Routing and cooks run in Python.** The two pieces of orchestration --
+deciding which expert answers, and the cook loop -- are a Python package now,
+`scripts/orchestrator`, run in a process of its own on Crucible's Python and
+spoken to over a pipe. The core keeps what must not be duplicated: the models,
+the cards, the trusted folder and its tools, the journal. The router was moved
+without changing a decision: on the 54-prompt benchmark it picks the same
+expert as before for every prompt, with the same confidence, and
+`crucible-routebench` now measures the Python router the app actually runs.
+
+**Routing that is not fooled by the order of the list.** A delegator leans
+towards a seat for where it sits on the roster as well as for what it is --
+gpt-oss-20b, shown five experts, sent biology questions to Chemistry because
+it was fourth. The roster is now shown three ways -- as listed, reversed, and
+turned halfway -- and the three answers averaged, and the delegator is asked
+for the subject's name, which is what it is scored on. On a five-expert roster
+of fifty questions: LFM2.5-1.2B from 45 to 49 right, gpt-oss-20b from 39 to
+48; on the nine-subject benchmark, gpt-oss-20b from 50 to 54 of 54 and LFM
+unchanged at 50. With gpt-oss as the delegator a pH question goes to Chemistry
+now; LFM still finds it as much Mathematics as Chemistry, and below the
+confidence floor, so with a default expert set it goes there. The price is a
+routing pass three times over: a few hundred milliseconds with a small
+delegator, a second or two with gpt-oss.
+
+**Naming a chat and writing an expert's examples are Python's too**, like the
+routing they serve. A reasoning delegator's thinking no longer ends up as a
+chat's name -- with gpt-oss as the delegator, chats were named after their
+first words because its answer came after its working.
+
+**Nothing is loaded until it is needed.** The delegator used to load the moment
+Crucible opened. It now loads for the first prompt, and is brought back after
+each one for the next; opening the window costs a card nothing. Changing the
+delegator, or a runtime arriving, no longer loads one either.
+
+**Hardware settings take effect.** A loaded model keeps the cards it was loaded
+onto, so a change in Settings → Hardware -- the mode, the order, one card,
+VRAM only -- or to a seat's context or GPU layers did nothing until Eject or a
+restart. Whatever a change affects is now let go, and the next prompt loads it
+the new way.
+
+**MLX folders, however they are kept.** A folder of MLX models is found four
+levels down -- in a folder of them, a publisher's folder inside that, or
+Hugging Face's own cache -- and a models folder that is itself one MLX model is
+listed too. On a Mac the training environment Crucible now fetches on its first
+start is also what runs them, so they are offered rather than marked "cannot
+run here".
+
+**Windows: no more closing when a prompt is answered.** A command's output on
+Windows is in the console's code page, not UTF-8 -- and so is a Latin-1 file
+anywhere -- and saving a conversation that held some threw from the window's
+own thread, which ended the program. Command output is now read in the
+console's code page, everything kept is written as UTF-8 whatever it held, and
+nothing the window does after an answer can end it. And should Crucible ever
+crash again, it writes where to `crash.log` in its data folder and says so the
+next time it starts.
+
+**Windows: System32 is not a project.** Older versions opened whatever folder
+they were started in -- System32 from the Start menu, the install folder from a
+shortcut -- and remembered it. A drive's root, the home folder itself, the
+system's folders and Crucible's own are never listed as projects or recent
+chats again, and never remembered.
+
+**A delegator too big for its card finds another.** The delegator was given one
+card of its own -- the last in the priority order -- on the assumption that it
+is small. A 20B delegator did not fit on a 12 GB card while a 16 GB one beside
+it had room, and routing fell back to keywords with a long warning in the chat.
+It now goes to whichever card holds it, and is divided across them when none
+does.
+
+**The chat is the conversation and nothing else.** What Crucible has to say --
+a setting applied, a runtime ready, a model that would not load -- goes to the
+status line at the top of the side menu, whose hover lists the last few. A
+delegator that could not be loaded is marked on its own row, with the reason.
+
+**Smaller things.**
+- A code block a model left unlabeled is colored in the language its code is
+  written in, and a script's first line written above the fence -- gpt-oss
+  writes `#!/usr/bin/env python3` there -- is put back inside it.
+- A cook that keeps going in circles is stopped, as it was always meant to be:
+  restarting it reset the count that would have, so it never was.
+- A cook's thought is cut at a word in the journal, not through one.
+- "no expert has no model" now reads "no expert was named".
+- `crucible-routebench --cases FILE` measures a roster of your own, and
+  `crucible-smoke` sends one prompt through the whole engine with no window --
+  which is how a Windows build is run here under Wine.
+
 ## 0.8.1 — 2026-10-05
 
 **The macOS download opens.** The disk image's application was not signed at

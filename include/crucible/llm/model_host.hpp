@@ -91,6 +91,10 @@ private:
     /// expert is spread over the cards to fit, the delegator is pinned to one.
     enum class Role { Delegator, Expert };
 
+    /// Where the delegator goes: a card of its own when one has room for it,
+    /// and divided like an expert when none does. See delegator_cards.
+    ModelParams placed_delegator(const ModelParams& requested) const;
+
     std::unique_ptr<LoadedModel> load(const ModelParams& params,
                                       Role role,
                                       const ProgressCallback& progress,

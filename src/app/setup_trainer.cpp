@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cstdio>
 #include <iostream>
+#include <optional>
 #include <thread>
 
 #include "crucible/lab/pyenv.hpp"
+#include "crucible/lab/python.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
 
@@ -123,15 +125,9 @@ int run_trainer_setup(const std::string& flavor_id, bool force, bool quiet) {
                   << "  " << pyenv::flavor_note(flavor) << ".\n";
     }
 
-    std::string                 version;
-    const std::filesystem::path host = pyenv::host_python(version);
-    if (host.empty()) {
-        std::cerr << "  No usable Python found"
-                  << (version.empty() ? "" : " (found " + version + ")") << ".\n"
-                  << "  " << pyenv::python_hint() << "\n";
-        return 1;
-    }
-
+    // No Python is needed from the machine: the environment is built from
+    // Crucible's own, which the installer below fetches first if it is not
+    // already here.
     const bool  interactive = util::stdin_is_a_terminal() && !quiet;
     Line        line(interactive);
     pyenv::Installer installer;
@@ -164,6 +160,48 @@ int run_trainer_setup(const std::string& flavor_id, bool force, bool quiet) {
         // of text.
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
+}
+
+int run_python_setup(bool quiet, bool force) {
+    if (lab::python::installed() && !force) {
+        if (!quiet) {
+            std::cout << "  Crucible's Python " << lab::python::installed_version()
+                      << " is already installed.\n";
+        }
+        return 0;
+    }
+    const std::optional<lab::python::Build> build = lab::python::build_here();
+    if (!build) {
+        std::cerr << "  No build of Python is published for this platform.\n";
+        return 1;
+    }
+    if (!quiet) {
+        std::cout << "  Fetching Crucible's Python " << build->version << " ("
+                  << format::bytes(build->bytes) << ").\n";
+    }
+    const bool interactive = util::stdin_is_a_terminal() && !quiet;
+    Line line(interactive);
+    std::string error;
+    const bool ok = lab::python::install(
+        [&](const lab::python::Progress& progress) {
+            if (quiet) {
+                return;
+            }
+            line.show(progress.phase == "downloading"
+                          ? "downloading " + format::bytes(progress.done) + " of "
+                                + format::bytes(progress.total)
+                          : progress.phase);
+        },
+        error);
+    line.done();
+    if (!ok) {
+        std::cerr << "    Python could not be installed: " << error << "\n";
+        return 1;
+    }
+    if (!quiet) {
+        std::cout << "    Python " << build->version << " is in " << lab::python::root().string() << "\n";
+    }
+    return 0;
 }
 
 }  // namespace crucible

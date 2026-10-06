@@ -4,6 +4,8 @@
 // time, counting the tokens it cost, and writing the history to disk.
 #include "test_helpers.hpp"
 
+#include "crucible/util/platform.hpp"
+
 // ---------------------------------------------------------------------------
 // Reasoning and answer
 // ---------------------------------------------------------------------------
@@ -425,21 +427,6 @@ TEST(a_conversation_named_once_keeps_its_name_and_is_listed_by_it) {
     CHECK_EQ(listed[1].title, std::string("can you check problem 3"));
 }
 
-TEST(a_name_is_what_a_model_said_with_the_decoration_taken_off) {
-    CHECK_EQ(session_name_from("\"Math homework.\""), std::string("Math homework"));
-    CHECK_EQ(session_name_from("Title: fixing a Python import\n\nBecause..."),
-             std::string("Fixing a Python import"));
-    CHECK_EQ(session_name_from("\n**Trip to Lisbon**\n"), std::string("Trip to Lisbon"));
-    // A sentence is not a title, and nothing is not one either.
-    CHECK(session_name_from("This conversation is about the user asking how to do their math").empty());
-    CHECK(session_name_from("").empty());
-    // With no model to ask: the opening words of the question.
-    CHECK_EQ(fallback_session_name("Question: can you help with my math homework? It is due\nAnswer: Sure"),
-             std::string("Can you help with my"));
-    CHECK_EQ(fallback_session_name("Question: test\nAnswer: ok"), std::string("Test"));
-    CHECK(session_naming_prompt("Question: x").find("Math homework") != std::string::npos);
-}
-
 TEST(recent_chats_come_from_every_project_newest_first) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path() / "data");
@@ -592,4 +579,86 @@ TEST(projects_in_different_directories_do_not_share_history) {
     CHECK_EQ(first.name, std::string("src"));
     CHECK_EQ(second.name, std::string("src"));
     CHECK(first.dir != second.dir);
+}
+
+TEST(system_folders_and_crucibles_own_are_never_projects) {
+    TempDir dir;
+    ScopedDataHome data(dir.path() / "data");
+    // Ordinary folders are.
+    std::filesystem::create_directories(dir.path() / "work" / "orbit");
+    CHECK(is_project_place(dir.path() / "work" / "orbit"));
+    // A filesystem's root is not, nor the home folder itself.
+    CHECK(!is_project_place(dir.path().root_path()));
+    CHECK(!is_project_place(paths::home_dir()));
+    // Nor Crucible's data, nor anything in it.
+    CHECK(!is_project_place(paths::data_dir()));
+    CHECK(!is_project_place(paths::data_dir() / "projects"));
+    // Nor where it is installed: the folder its program is in, and above bin/.
+    const std::filesystem::path program = util::executable_path();
+    if (!program.empty()) {
+        CHECK(!is_project_place(program.parent_path()));
+    }
+#if defined(_WIN32)
+    if (const char* windows = std::getenv("SystemRoot"); windows != nullptr) {
+        CHECK(!is_project_place(std::filesystem::path(windows) / "System32"));
+        CHECK(!is_project_place(std::filesystem::path(windows) / "SYSTEM32"));
+    }
+#else
+    CHECK(!is_project_place("/usr/lib"));
+    CHECK(!is_project_place("/etc"));
+#endif
+}
+
+TEST(an_old_versions_system32_is_never_remembered_or_listed) {
+    TempDir dir;
+    ScopedDataHome data(dir.path() / "data");
+    std::filesystem::create_directories(dir.path() / "work" / "orbit");
+    remember_project(dir.path() / "work" / "orbit");
+    // As an older version would have left it: the data folder itself, and a
+    // system one, written into the list directly.
+    {
+        const std::vector<Project> before = recent_projects();
+        CHECK_EQ(before.size(), std::size_t{1});
+    }
+    remember_project(paths::data_dir());
+    remember_project(dir.path().root_path());
+    std::vector<Project> listed = recent_projects();
+    CHECK_EQ(listed.size(), std::size_t{1});
+    std::filesystem::create_directories(paths::projects_dir());
+    {
+        std::ofstream out(paths::projects_dir() / "recent.json");
+        out << nlohmann::json(std::vector<std::string>{paths::data_dir().string(),
+                                                       (dir.path() / "work" / "orbit").string(),
+                                                       dir.path().root_path().string()}).dump();
+    }
+    listed = recent_projects();
+    CHECK_EQ(listed.size(), std::size_t{1});
+    if (!listed.empty()) {
+        CHECK_EQ(listed.front().name, std::string("orbit"));
+    }
+}
+
+
+TEST(a_turn_holding_bytes_that_are_not_utf8_still_saves) {
+    // What a command prints on Windows is in the console's code page, not
+    // UTF-8 -- a `dir` listing in many locales carries 0xFF as its thousands
+    // separator -- and a Latin-1 file read into a turn is the same on any
+    // system. Saving that threw from the window's own thread, which took the
+    // window with it: Crucible closed the moment a turn that ran a command
+    // was saved.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    SessionStore store(Project::current());
+    std::vector<Turn> turns{finished_turn("list the folder", "Here it is.", 12)};
+    turns[0].actions.push_back({"$ dir -- exit 0", std::string("12\xff" "345 bytes free\n caf\xe9"), ""});
+    turns[0].reply += std::string(" \xe2\x82");   // a character cut off at the end of a stream
+    std::string error;
+    bool saved = false;
+    try {
+        saved = store.save(turns, TokenUsage{}, error);
+    } catch (const std::exception& e) {
+        error = std::string("threw: ") + e.what();
+    }
+    CHECK(saved);
+    CHECK_EQ(error, std::string());
 }

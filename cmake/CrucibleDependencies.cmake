@@ -170,6 +170,22 @@ file(MAKE_DIRECTORY ${CRUCIBLE_GENERATED_DIR})
 # one this build expects beats one that could be looked for, found stale, or
 # edited. It is written out beside its virtual environment when that is
 # installed, so upgrading Crucible upgrades the trainer.
+# The orchestrator -- routing and the cook loop -- is Python too, and is
+# compiled in for the same reason the trainer is: the package written out at
+# startup is always exactly the one this build expects. src/orchestra/package.cpp
+# lists the same files.
+set(CRUCIBLE_ORCHESTRATOR_DIR ${CMAKE_CURRENT_LIST_DIR}/../scripts/orchestrator/crucible_orchestrator)
+set(CRUCIBLE_ORCHESTRATOR_CPP "")
+foreach(_entry "__init__.py:Init" "__main__.py:Run" "main.py:Main" "rpc.py:Rpc"
+               "routing.py:Routing" "cook.py:Cook" "naming.py:Naming")
+    string(REPLACE ":" ";" _parts "${_entry}")
+    list(GET _parts 0 _file)
+    list(GET _parts 1 _symbol)
+    crucible_embed(_generated ${CRUCIBLE_ORCHESTRATOR_DIR}/${_file}
+                   kOrchestrator${_symbol} crucible::orchestra::embedded orchestrator_${_symbol})
+    list(APPEND CRUCIBLE_ORCHESTRATOR_CPP ${_generated})
+endforeach()
+
 set(CRUCIBLE_TRAINER_PY  ${CMAKE_CURRENT_LIST_DIR}/../scripts/trainer/finetune.py)
 set(CRUCIBLE_TRAINER_CPP "")
 if(EXISTS ${CRUCIBLE_TRAINER_PY})

@@ -120,6 +120,10 @@ add_library(crucible_core STATIC
     src/util/http.cpp
     src/util/workers.cpp
     src/util/subprocess.cpp
+    src/util/sha256.cpp
+    src/lab/python.cpp
+    src/orchestra/link.cpp
+    src/orchestra/package.cpp
 
     # config: what is on disk -- settings, paths, folder trust
     src/config/paths.cpp
@@ -173,7 +177,6 @@ add_library(crucible_core STATIC
     # engine: the delegation loop and the state the UI reads
     src/engine/overflow.cpp
     src/engine/state.cpp
-    src/engine/route_policy.cpp
     src/engine/engine.cpp
     src/engine/engine_cook.cpp
 
@@ -192,6 +195,7 @@ add_library(crucible_core STATIC
     src/app/uninstall.cpp
     src/app/setup_trainer.cpp
     src/app/setup_runtimes.cpp
+    src/app/setup.cpp
     src/app/update.cpp
 )
 add_library(crucible::core ALIAS crucible_core)
@@ -202,6 +206,9 @@ target_include_directories(crucible_core PUBLIC
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
     PRIVATE Threads::Threads crucible_miniz)
+
+# The orchestrator package, compiled in. See src/orchestra/package.cpp.
+target_sources(crucible_core PRIVATE ${CRUCIBLE_ORCHESTRATOR_CPP})
 
 # The fine-tuning script, compiled in. Absent only if someone deleted it from
 # the source tree; the trainer then reports that rather than writing a file
@@ -252,6 +259,7 @@ endfunction()
 add_executable(crucible
     src/gui/main.cpp
     src/gui/app.cpp
+    src/gui/crash.cpp
     src/gui/window.cpp)
 target_link_libraries(crucible PRIVATE crucible::core)
 
@@ -262,7 +270,8 @@ target_link_libraries(crucible PRIVATE crucible::core)
 if(WIN32)
     target_sources(crucible PRIVATE src/gui/dialogs_win.cpp src/gui/drops_none.cpp)
     # IFileOpenDialog is COM: ole32 makes the object, uuid names its class.
-    target_link_libraries(crucible PRIVATE ole32 uuid shell32)
+    # dbghelp: a crash's stack by name, in crash.log. See src/gui/crash.hpp.
+    target_link_libraries(crucible PRIVATE ole32 uuid shell32 dbghelp)
     crucible_utf8_manifest(crucible)
 elseif(APPLE)
     target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp)
@@ -296,6 +305,13 @@ if(CRUCIBLE_BUILD_TOOLS)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         target_compile_options(crucible-routebench PRIVATE ${_crucible_warnings})
     endif()
+    # crucible-smoke: one prompt through the whole engine with no window, for
+    # a platform's prompt path where a window cannot be opened.
+    add_executable(crucible-smoke tools/smoke.cpp)
+    target_link_libraries(crucible-smoke PRIVATE crucible::core)
+    if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_compile_options(crucible-smoke PRIVATE ${_crucible_warnings})
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -325,7 +341,8 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_prebuilt.cpp
         tests/test_update.cpp
         tests/test_attachments.cpp
-        tests/test_spelling.cpp)
+        tests/test_spelling.cpp
+        tests/test_orchestra.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
     # They are tested by running ui/render.js in JavaScriptCore -- the same

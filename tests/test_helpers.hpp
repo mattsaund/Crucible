@@ -29,7 +29,6 @@
 #include "crucible/config/config.hpp"
 #include "crucible/config/gpu_policy.hpp"
 #include "crucible/routing/benchmark.hpp"
-#include "crucible/engine/route_policy.hpp"
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/llm/model_shape.hpp"
 #include "crucible/llm/response_filter.hpp"
@@ -139,19 +138,6 @@ private:
     static int& counter() { static int n = 0; return n; }
     std::filesystem::path path_;
 };
-
-/// The shipped roster, shared by every test that needs one. Built once: it is
-/// immutable, and the routers take it by shared_ptr anyway.
-inline const std::shared_ptr<const Roster>& shipped() {
-    static const std::shared_ptr<const Roster> roster =
-        std::make_shared<const Roster>(testing::sample_roster());
-    return roster;
-}
-
-inline ExpertId route_of(const std::string& prompt) {
-    KeywordRouter router(shipped());
-    return router.route(prompt, {}).expert;
-}
 
 /// A journal step, built by name. CookStep has grown a field in the middle
 /// more than once, and a positional literal has to be edited every time.

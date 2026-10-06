@@ -168,10 +168,10 @@ TEST(scanning_finds_mlx_folders_and_models_a_level_or_two_down) {
     write(dir.path() / "mlx-community" / "Qwen3-4B-4bit" / "model.safetensors", 300);
     write(dir.path() / "mlx-community" / "Qwen3-4B-4bit" / "tokenizer.json", 7);
     // A config with no weights is not a model; a hidden folder is not looked
-    // in; three levels down is further than anybody keeps one.
+    // in; five levels down is further than anybody keeps one.
     write(dir.path() / "half" / "config.json", 5);
     write(dir.path() / ".cache" / "x.gguf", 10);
-    write(dir.path() / "a" / "b" / "c" / "deep.gguf", 10);
+    write(dir.path() / "a" / "b" / "c" / "d" / "e" / "deep.gguf", 10);
 
     const std::vector<ModelFile> found = scan_models(dir.path());
     std::vector<std::string> names;
@@ -191,6 +191,62 @@ TEST(scanning_finds_mlx_folders_and_models_a_level_or_two_down) {
     CHECK(mlx::is_model_dir(dir.path() / "mlx-community" / "Qwen3-4B-4bit"));
     CHECK(!mlx::is_model_dir(dir.path() / "half"));
     CHECK(!mlx::is_model_dir(dir.path() / "top.gguf"));
+}
+
+TEST(a_folder_of_mlx_folders_is_found_however_it_is_nested) {
+    // MLX models are folders. A folder of them, a publisher's folder of them
+    // inside a folder, and Hugging Face's cache with its links to blobs are all
+    // ways a Mac keeps them; each is listed whole and never looked inside.
+    TempDir dir;
+    const auto write = [](const std::filesystem::path& file, std::size_t bytes) {
+        std::filesystem::create_directories(file.parent_path());
+        std::ofstream out(file, std::ios::binary);
+        out << std::string(bytes, '\0');
+    };
+    const auto mlx_model = [&write](const std::filesystem::path& folder) {
+        write(folder / "config.json", 5);
+        write(folder / "model-00001-of-00002.safetensors", 100);
+        write(folder / "model-00002-of-00002.safetensors", 100);
+        write(folder / "tokenizer.json", 7);
+    };
+    mlx_model(dir.path() / "Qwen3-4B-4bit");
+    mlx_model(dir.path() / "mlx" / "Llama-3.2-3B-4bit");
+    mlx_model(dir.path() / "mine" / "mlx-community" / "gemma-3-4b-it-4bit");
+    // Hugging Face's own layout, the weights links into a blob store.
+    const auto snapshot = dir.path() / "hub" / "models--mlx-community--Phi-4-mini-4bit" / "snapshots" / "abc123";
+    write(dir.path() / "hub" / "blobs" / "weights", 200);
+    write(snapshot / "config.json", 5);
+    std::error_code linked;
+    std::filesystem::create_symlink(dir.path() / "hub" / "blobs" / "weights",
+                                    snapshot / "model.safetensors", linked);
+
+    std::vector<std::string> names;
+    for (const ModelFile& file : scan_models(dir.path())) {
+        names.push_back(file.name + ":" + file.format);
+    }
+    const auto has = [&names](const std::string& name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    CHECK(has("Qwen3-4B-4bit:mlx"));
+    CHECK(has("mlx/Llama-3.2-3B-4bit:mlx"));
+    CHECK(has("mine/mlx-community/gemma-3-4b-it-4bit:mlx"));
+    if (!linked) {   // a filesystem that cannot hold a link skips this one
+        CHECK(has("hub/models--mlx-community--Phi-4-mini-4bit/snapshots/abc123:mlx"));
+    }
+    // Nothing from inside a model was listed as a model of its own.
+    for (const std::string& name : names) {
+        CHECK(name.find(".safetensors") == std::string::npos);
+    }
+
+    // And the models folder may itself be one.
+    const std::vector<ModelFile> itself = scan_models(dir.path() / "Qwen3-4B-4bit");
+    CHECK_EQ(itself.size(), std::size_t{1});
+    if (!itself.empty()) {
+        CHECK_EQ(itself[0].format, std::string("mlx"));
+        CHECK_EQ(resolve_model_ref(dir.path() / "Qwen3-4B-4bit", itself[0].name),
+                 dir.path() / "Qwen3-4B-4bit");
+        CHECK_EQ(itself[0].bytes, std::uintmax_t{200});
+    }
 }
 
 TEST(scanning_a_missing_directory_is_not_an_error) {
@@ -398,9 +454,10 @@ TEST(a_user_made_expert_survives_a_round_trip_through_disk) {
     CHECK(!back.keywords.empty());
     CHECK_EQ(reloaded.expert("rust-async").model, std::string("rust.gguf"));
 
-    // And it is a seat like any other by the time the delegator sees it.
-    const std::vector<std::string> labels = reloaded.roster.router_labels();
-    CHECK(std::find(labels.begin(), labels.end(), "Rust Async") != labels.end());
+    // And it is a seat like any other by the time the delegator sees it: the
+    // roster is what the orchestrator's prompt is built from, name and all.
+    CHECK(reloaded.roster.find("rust-async").has_value());
+    CHECK_EQ(reloaded.roster.at(*reloaded.roster.find("rust-async")).name, std::string("Rust Async"));
 }
 
 TEST(the_config_shape_the_readme_documents_actually_loads) {
@@ -516,7 +573,6 @@ TEST(a_config_whose_experts_are_all_gone_loads_as_an_empty_list) {
     // Someone who deleted every seat wanted every seat deleted. Silently
     // restoring nine of them would make /ejectexpert a no-op across restarts.
     CHECK(config.roster.experts().empty());
-    CHECK(config.roster.router_labels().empty());
     CHECK(config.configured_experts().empty());
 }
 

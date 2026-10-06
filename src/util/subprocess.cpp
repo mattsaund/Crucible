@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <utility>
 
 #if defined(_WIN32)
@@ -41,6 +42,7 @@ std::vector<char*> to_argv(const std::vector<std::string>& args) {
 #if !defined(_WIN32)
 
 Subprocess::~Subprocess() {
+    close_input();
     if (running()) {
         terminate();
         wait();
@@ -53,8 +55,10 @@ Subprocess::Subprocess(Subprocess&& other) noexcept { *this = std::move(other); 
 Subprocess& Subprocess::operator=(Subprocess&& other) noexcept {
     if (this != &other) {
         close_pipe();
+        close_input();
         pid_    = std::exchange(other.pid_, -1);
         fd_     = std::exchange(other.fd_, -1);
+        in_fd_  = std::exchange(other.in_fd_, -1);
         status_ = std::exchange(other.status_, -1);
         reaped_ = std::exchange(other.reaped_, false);
         buffer_ = std::move(other.buffer_);
@@ -74,6 +78,14 @@ bool Subprocess::start(const std::vector<std::string>& argv,
                        const std::filesystem::path& cwd,
                        const std::vector<std::string>& extra_env,
                        std::string& error) {
+    return start(argv, cwd, extra_env, error, Streams{});
+}
+
+bool Subprocess::start(const std::vector<std::string>& argv,
+                       const std::filesystem::path& cwd,
+                       const std::vector<std::string>& extra_env,
+                       std::string& error,
+                       const Streams& streams) {
     if (argv.empty()) {
         error = "no command given";
         return false;
@@ -84,12 +96,52 @@ bool Subprocess::start(const std::vector<std::string>& argv,
         error = std::string("pipe: ") + std::strerror(errno);
         return false;
     }
+    // This process's end of each pipe is its own: a child started later must
+    // not inherit it, or it holds the pipe open and the end of it never comes.
+    ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+
+    int in[2] = {-1, -1};
+    if (streams.input) {
+        if (::pipe(in) != 0) {
+            error = std::string("pipe: ") + std::strerror(errno);
+            ::close(fds[0]);
+            ::close(fds[1]);
+            return false;
+        }
+        ::fcntl(in[1], F_SETFD, FD_CLOEXEC);
+        // A write to a child that has died raises SIGPIPE, whose default is
+        // to end this process. write_line reports it as a failed write.
+        static std::once_flag ignored;
+        std::call_once(ignored, [] { ::signal(SIGPIPE, SIG_IGN); });
+    }
+
+    int errors = -1;
+    if (!streams.errors.empty()) {
+        errors = ::open(streams.errors.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+        if (errors < 0) {
+            error = "could not open " + streams.errors.string() + ": " + std::strerror(errno);
+            ::close(fds[0]);
+            ::close(fds[1]);
+            if (in[0] >= 0) {
+                ::close(in[0]);
+                ::close(in[1]);
+            }
+            return false;
+        }
+    }
 
     const pid_t pid = ::fork();
     if (pid < 0) {
         error = std::string("fork: ") + std::strerror(errno);
         ::close(fds[0]);
         ::close(fds[1]);
+        if (in[0] >= 0) {
+            ::close(in[0]);
+            ::close(in[1]);
+        }
+        if (errors >= 0) {
+            ::close(errors);
+        }
         return false;
     }
 
@@ -100,8 +152,13 @@ bool Subprocess::start(const std::vector<std::string>& argv,
         // a parent's destructors.
         ::close(fds[0]);
         ::dup2(fds[1], STDOUT_FILENO);
-        ::dup2(fds[1], STDERR_FILENO);
+        ::dup2(errors >= 0 ? errors : fds[1], STDERR_FILENO);
         ::close(fds[1]);
+        if (in[0] >= 0) {
+            ::close(in[1]);
+            ::dup2(in[0], STDIN_FILENO);
+            ::close(in[0]);
+        }
 
         // Its own process group, so terminate() can signal the whole build
         // tree -- cmake spawns make, which spawns compilers, and killing only
@@ -122,8 +179,16 @@ bool Subprocess::start(const std::vector<std::string>& argv,
 
     // --- parent ------------------------------------------------------------
     ::close(fds[1]);
+    if (in[0] >= 0) {
+        ::close(in[0]);
+    }
+    if (errors >= 0) {
+        ::close(errors);
+    }
+    close_input();
     pid_    = pid;
     fd_     = fds[0];
+    in_fd_  = in[1];
     status_ = -1;
     reaped_ = false;
     eof_    = false;
@@ -215,6 +280,33 @@ void Subprocess::interrupt() {
 
 bool Subprocess::running() const {
     return pid_ > 0;
+}
+
+bool Subprocess::write_line(std::string_view line) {
+    if (in_fd_ < 0) {
+        return false;
+    }
+    std::string out(line);
+    out += '\n';
+    std::size_t written = 0;
+    while (written < out.size()) {
+        const ssize_t sent = ::write(in_fd_, out.data() + written, out.size() - written);
+        if (sent > 0) {
+            written += static_cast<std::size_t>(sent);
+        } else if (sent < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return false;   // EPIPE: the child is gone
+        }
+    }
+    return true;
+}
+
+void Subprocess::close_input() {
+    if (in_fd_ >= 0) {
+        ::close(in_fd_);
+        in_fd_ = -1;
+    }
 }
 
 bool on_path(const std::string& program) {
@@ -348,6 +440,7 @@ std::string last_error() {
 }  // namespace
 
 Subprocess::~Subprocess() {
+    close_input();
     if (running()) {
         terminate();
         wait();
@@ -368,9 +461,11 @@ Subprocess::Subprocess(Subprocess&& other) noexcept { *this = std::move(other); 
 Subprocess& Subprocess::operator=(Subprocess&& other) noexcept {
     if (this != &other) {
         close_pipe();
+        close_input();
         process_ = std::exchange(other.process_, nullptr);
         job_     = std::exchange(other.job_, nullptr);
         read_    = std::exchange(other.read_, nullptr);
+        write_   = std::exchange(other.write_, nullptr);
         status_  = std::exchange(other.status_, -1);
         reaped_  = std::exchange(other.reaped_, false);
         buffer_  = std::move(other.buffer_);
@@ -394,6 +489,14 @@ bool Subprocess::start(const std::vector<std::string>& argv,
                        const std::filesystem::path& cwd,
                        const std::vector<std::string>& extra_env,
                        std::string& error) {
+    return start(argv, cwd, extra_env, error, Streams{});
+}
+
+bool Subprocess::start(const std::vector<std::string>& argv,
+                       const std::filesystem::path& cwd,
+                       const std::vector<std::string>& extra_env,
+                       std::string& error,
+                       const Streams& streams) {
     if (argv.empty()) {
         error = "no command given";
         return false;
@@ -414,6 +517,37 @@ bool Subprocess::start(const std::vector<std::string>& argv,
     }
     ::SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
 
+    // Standard input, the other way round: the child's end is inheritable
+    // and this process's is not.
+    HANDLE input_read  = nullptr;
+    HANDLE input_write = nullptr;
+    if (streams.input) {
+        if (::CreatePipe(&input_read, &input_write, &attributes, 0) == 0) {
+            error = "CreatePipe: " + last_error();
+            ::CloseHandle(read_end);
+            ::CloseHandle(write_end);
+            return false;
+        }
+        ::SetHandleInformation(input_write, HANDLE_FLAG_INHERIT, 0);
+    }
+
+    HANDLE errors = nullptr;
+    if (!streams.errors.empty()) {
+        errors = ::CreateFileW(streams.errors.wstring().c_str(), FILE_APPEND_DATA,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (errors == INVALID_HANDLE_VALUE) {
+            error = "could not open " + streams.errors.string() + ": " + last_error();
+            ::CloseHandle(read_end);
+            ::CloseHandle(write_end);
+            if (input_read != nullptr) {
+                ::CloseHandle(input_read);
+                ::CloseHandle(input_write);
+            }
+            return false;
+        }
+    }
+
     // A job the whole tree lands in, so terminate() reaches the compilers a
     // build spawns and not only the build tool.
     HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
@@ -428,8 +562,9 @@ bool Subprocess::start(const std::vector<std::string>& argv,
     startup.cb         = sizeof(startup);
     startup.dwFlags    = STARTF_USESTDHANDLES;
     startup.hStdOutput = write_end;
-    startup.hStdError  = write_end;  // merged, the way the POSIX side merges them
-    startup.hStdInput  = ::GetStdHandle(STD_INPUT_HANDLE);
+    // Merged, the way the POSIX side merges them, unless asked for a file.
+    startup.hStdError  = errors != nullptr ? errors : write_end;
+    startup.hStdInput  = input_read != nullptr ? input_read : ::GetStdHandle(STD_INPUT_HANDLE);
 
     // The environment additions, as "NAME=VALUE" the way the POSIX side takes
     // them. Applied to this process before the child inherits it: there is no
@@ -453,9 +588,18 @@ bool Subprocess::start(const std::vector<std::string>& argv,
         directory.empty() ? nullptr : directory.c_str(), &startup, &info);
 
     ::CloseHandle(write_end);  // the child owns its copy now
+    if (input_read != nullptr) {
+        ::CloseHandle(input_read);
+    }
+    if (errors != nullptr) {
+        ::CloseHandle(errors);
+    }
     if (started == 0) {
         error = argv[0] + ": " + last_error();
         ::CloseHandle(read_end);
+        if (input_write != nullptr) {
+            ::CloseHandle(input_write);
+        }
         if (job != nullptr) {
             ::CloseHandle(job);
         }
@@ -470,9 +614,11 @@ bool Subprocess::start(const std::vector<std::string>& argv,
     ::ResumeThread(info.hThread);
     ::CloseHandle(info.hThread);
 
+    close_input();
     process_ = info.hProcess;
     job_     = job;
     read_    = read_end;
+    write_   = input_write;
     status_  = -1;
     reaped_  = false;
     eof_     = false;
@@ -537,6 +683,32 @@ int Subprocess::wait() {
 void Subprocess::terminate() {
     interrupt();
     close_pipe();  // unblocks a read_line() waiting on output
+}
+
+bool Subprocess::write_line(std::string_view line) {
+    if (write_ == nullptr) {
+        return false;
+    }
+    std::string out(line);
+    out += '\n';
+    std::size_t written = 0;
+    while (written < out.size()) {
+        DWORD sent = 0;
+        if (::WriteFile(static_cast<HANDLE>(write_), out.data() + written,
+                        static_cast<DWORD>(out.size() - written), &sent, nullptr) == 0
+            || sent == 0) {
+            return false;   // the child is gone
+        }
+        written += sent;
+    }
+    return true;
+}
+
+void Subprocess::close_input() {
+    if (write_ != nullptr) {
+        ::CloseHandle(static_cast<HANDLE>(write_));
+        write_ = nullptr;
+    }
 }
 
 void Subprocess::interrupt() {

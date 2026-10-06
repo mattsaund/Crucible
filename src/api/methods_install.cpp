@@ -12,6 +12,8 @@
 // most need to do either is the one where nothing can run yet.
 #include "methods.hpp"
 
+#include "crucible/app/setup.hpp"
+
 #include <mutex>
 
 #include "crucible/config/paths.hpp"
@@ -322,9 +324,19 @@ Reply trainer_remove(const json&, Host& host) {
     return good(json{{"removed", true}});
 }
 
+/// Try again whatever Crucible could not fetch for itself.
+Reply setup_retry(const json&, Host& host) {
+    if (host.setup() == nullptr) {
+        return bad("there is nothing to set up here");
+    }
+    host.setup()->start();
+    return good();
+}
+
 }  // namespace
 
 void install_methods(std::vector<Method>& table) {
+    table.push_back({"setup.retry",      nullptr, setup_retry});
     table.push_back({"runtimes",         runtimes, nullptr});
     table.push_back({"runtime.build",    nullptr, runtime_build});
     table.push_back({"runtime.cancel",   nullptr, runtime_cancel});

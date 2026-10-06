@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "crucible/routing/expert.hpp"
 #include "crucible/tools/attachments.hpp"
 
@@ -141,6 +143,13 @@ struct CookSummary {
 /// directory it ran in exactly as a conversation is. Saving is whole-file and
 /// happens as the cook runs, not only at the end: a cook that is killed after
 /// fifty minutes should still be able to tell you what it changed.
+/// A cook as JSON, and back: the shape a journal file is written in, and the
+/// shape the orchestrator publishes a cook in as it runs. One function each
+/// way, so the two cannot drift apart. A field that is missing reads as its
+/// default; `fallback_id` stands in for a missing id.
+nlohmann::json cook_to_json(const Cook& cook);
+Cook           cook_from_json(const nlohmann::json& doc, const std::string& fallback_id = {});
+
 class CookLog {
 public:
     /// `project_dir` is the per-project history folder -- `Project::dir`, the

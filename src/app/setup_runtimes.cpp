@@ -75,6 +75,12 @@ std::vector<BackendKind> wanted_here() {
     return wanted;
 }
 
+}  // namespace
+
+std::vector<BackendKind> runtimes_wanted_here() { return wanted_here(); }
+
+namespace {
+
 std::string name_of(BackendKind kind) {
     return std::string(backend_info(kind).id);
 }

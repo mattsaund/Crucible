@@ -15,10 +15,12 @@
 #include <cctype>
 #include <chrono>
 #include <exception>
+#include <stdexcept>
+#include <thread>
 
 #include "crucible/config/gpu_policy.hpp"
 #include "crucible/config/paths.hpp"
-#include "crucible/engine/route_policy.hpp"
+#include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
 #include "crucible/engine/overflow.hpp"
@@ -464,7 +466,10 @@ void Engine::run() {
         hub_.adopt(config_);
     }
 
-    ready_delegator();
+    // Nothing is loaded at startup. The delegator comes when the first prompt
+    // needs it, and after each prompt it is brought back for the next one
+    // (see settle) -- but a window that was only opened costs no memory on a
+    // card somebody may be using for something else.
     state_.configure_seats(config_);
     state_.set_mood(Mood::Idle);
     if (wake_) {
@@ -492,7 +497,7 @@ void Engine::run() {
             // the moment least likely to have room for it.
             host_->release_expert();
             state_.set_resident(std::nullopt);
-            router_.reset();
+            release_router();
             router_failed_for_.clear();
 
             // The device list is exactly what just changed, and the split was
@@ -503,7 +508,8 @@ void Engine::run() {
                 host_->set_gpu_config(config_.gpu);
             }
 
-            ready_delegator();
+            // Not loaded again here: the next prompt loads it, on the new
+            // hardware.
             state_.set_mood(Mood::Idle, "runtime changed");
             if (wake_) {
                 wake_();
@@ -523,10 +529,6 @@ void Engine::run() {
         }
 
         if (request.kind == RequestKind::ReleaseAll) {
-            // The wrapper first, then the models. release_router drops the
-            // ModelRouter that holds a reference to the loaded delegator, and
-            // freeing the model out from under it would leave a live object
-            // pointing at nothing.
             release_router();
             host_->release_expert();
             stop_mlx();
@@ -633,18 +635,18 @@ void Engine::run() {
         settle();
     }
 
-    // Free the models before the backend goes away, and stop MLX's server,
-    // which is a process of its own and would outlive the window.
-    router_.reset();
+    // Free the models before the backend goes away, and stop MLX's server and
+    // the orchestrator, which are processes of their own and would outlive
+    // the window.
     host_.reset();
     stop_mlx();
+    orchestra_.stop();
 }
 
 void Engine::load_router() {
     if (config_.router.model.empty()) {
-        router_ = std::make_unique<KeywordRouter>(
-            std::make_shared<const Roster>(config_.roster));
-        state_.add_notice("no delegator model assigned");
+        // The side menu says "(none)" on the delegator's row, and why.
+        state_.set_delegator_problem({});
         state_.set_delegator_ready(true);  // keywords need nothing loaded
         return;
     }
@@ -675,49 +677,40 @@ void Engine::load_router() {
         error);
 
     if (model == nullptr) {
-        router_ = std::make_unique<KeywordRouter>(
-            std::make_shared<const Roster>(config_.roster));
         // A load the user stopped is not a broken delegator, and should be
-        // tried again the next time one is wanted.
+        // tried again the next time one is wanted. Until it loads, prompts
+        // are routed on keywords -- the orchestrator is told it is not there.
         router_failed_for_ = error == "stopped" ? std::string() : config_.router.path;
-        state_.add_notice("delegator: " + error + " -- routing on keywords instead");
+        // On the delegator's row in the side menu, not in the chat.
+        state_.set_delegator_problem(error == "stopped" ? std::string() : error);
         state_.set_delegator_ready(true);
         return;
     }
-
-    auto routed = std::make_unique<ModelRouter>(
-        *model, config_.router, std::make_shared<const Roster>(config_.roster));
-    if (router_bias_for_ == config_.router.path) {
-        routed->set_bias(router_bias_);
-    }
-    router_ = std::move(routed);
     router_failed_for_.clear();
+    state_.set_delegator_problem({});
     state_.set_delegator_ready(true);
 }
 
 void Engine::ensure_router() {
-    if (router_ && host_->router() != nullptr) {
-        return;  // already there
-    }
-    if (config_.router.model.empty()) {
-        if (!router_) {
-            router_ = std::make_unique<KeywordRouter>(
-            std::make_shared<const Roster>(config_.roster));
-        }
-        return;
+    if (config_.router.model.empty() || host_->router() != nullptr) {
+        return;  // keywords, which need nothing loaded, or already there
     }
     load_router();
 }
 
 void Engine::ready_delegator() {
-    if (router_ && (config_.router.model.empty() || host_->router() != nullptr)) {
-        return;  // already there, or keywords, which need nothing loaded
+    if (config_.router.model.empty()) {
+        load_router();   // nothing to load; says so on the delegator's row
+        return;
+    }
+    if (host_->router() != nullptr) {
+        return;  // already there
     }
     // A delegator that would not load the last time is not retried after
-    // every prompt -- that is the same failure, and the same notice, on a
-    // loop. A prompt still tries it (see ensure_router), and so does any
-    // change to which file it is or what it runs on.
-    if (router_ && router_failed_for_ == config_.router.path) {
+    // every prompt -- that is the same failure, on a loop. A prompt still
+    // tries it (see ensure_router), and so does any change to which file it
+    // is or what it runs on.
+    if (router_failed_for_ == config_.router.path) {
         return;
     }
     load_router();
@@ -756,86 +749,105 @@ void Engine::settle() {
 }
 
 void Engine::release_router() {
-    // The wrapper holds a reference to the loaded model, so it goes first --
-    // and its calibration is kept, because the next load is the same file.
-    if (const auto* routed = dynamic_cast<const ModelRouter*>(router_.get())) {
-        router_bias_     = routed->bias();
-        router_bias_for_ = config_.router.path;
-    }
-    router_.reset();
+    // The orchestrator keeps the delegator's measured lean itself, by file,
+    // so freeing the model costs the next load nothing but the load.
     host_->release_router();
     state_.set_delegator_ready(false);
 }
+
+namespace {
+
+/// Whether a model loaded with `before` has to be loaded again to be `after`:
+/// the settings baked in when it loads -- the file, its context, how it sits
+/// on the cards -- not the ones handed to each request.
+bool loads_differently(const ModelParams& before, const ModelParams& after) {
+    return before.path != after.path || before.n_ctx != after.n_ctx
+        || before.n_batch != after.n_batch || before.n_gpu_layers != after.n_gpu_layers
+        || before.split_mode != after.split_mode || before.flash_attn != after.flash_attn;
+}
+
+/// Whether Settings, Hardware changed anything.
+bool hardware_differs(const GpuConfig& before, const GpuConfig& after) {
+    return before.mode != after.mode || before.priority != after.priority
+        || before.main_gpu != after.main_gpu || before.gpu_only != after.gpu_only
+        || before.vram_only != after.vram_only;
+}
+
+}  // namespace
 
 void Engine::do_apply_config(Config config) {
     config.resolve_models();
     apply_gpu_policy(config);
 
-    std::string previous_router;
-    std::string previous_expert;
-    std::optional<ExpertId> resident = host_->loaded_expert();
+    Config before;
+    const std::optional<ExpertId> resident = host_->loaded_expert();
     {
         const std::lock_guard<std::mutex> lock(config_mutex_);
-        previous_router = config_.router.path;
-        if (resident) {
-            previous_expert = config_.expert(*resident).path;
-        }
+        before  = config_;
         config_ = std::move(config);
         host_->set_gpu_config(config_.gpu);
         hub_.adopt(config_);
     }
-
     const Config current = this->config();
 
-    // Drop the resident expert if the file behind its seat changed, so the next
-    // prompt loads what the user just chose rather than the old weights.
+    // A loaded model keeps the cards and the context it was loaded with, so a
+    // change to either -- in Settings, Hardware, or a seat's own loading
+    // settings -- does nothing until it is loaded again. It is freed here and
+    // the next prompt loads it the new way; otherwise a change would only
+    // take effect after an Eject or a restart, which reads as one that did not
+    // stick.
+    const bool hardware = hardware_differs(before.gpu, current.gpu);
+    bool       freed    = false;
+
+    // The resident expert, if its seat now loads differently -- or was ejected
+    // outright, which reads as an empty path and is the same answer: drop it,
+    // rather than leave its weights resident and unreachable.
     if (resident) {
-        // An expert whose seat has been ejected outright reads as an empty
-        // path here, which takes the same branch as one whose file changed:
-        // drop it. That is what makes Eject free the weights of the
-        // expert it just removed rather than leaving them resident and
-        // unreachable.
-        const std::string now = current.expert(*resident).path;
-        if (now != previous_expert || now.empty()) {
+        const ModelParams now = current.expert(*resident);
+        if (now.path.empty() || hardware || loads_differently(before.expert(*resident), now)) {
             host_->release_expert();
+            state_.set_seat(*resident, SeatPhase::Dormant);
             state_.set_resident(std::nullopt);
+            freed = true;
         }
     }
 
-    // The router is resident for the whole session, so a change to it has to be
-    // acted on here or it would never take effect.
-    if (current.router.path != previous_router) {
+    // The delegator, likewise; a different one is loaded by the next prompt
+    // that needs it.
+    if (host_->router() != nullptr
+        && (hardware || loads_differently(before.router, current.router))) {
         release_router();
-        router_bias_.clear();
-        router_bias_for_.clear();
-        ready_delegator();
+        freed = true;
+    }
+    if (before.router.path != current.router.path) {
+        router_failed_for_.clear();
     }
 
     state_.configure_seats(current);
     state_.set_resident(host_->loaded_expert());
-    state_.set_mood(Mood::Idle, "settings applied");
+    state_.set_mood(Mood::Idle, freed ? "settings applied -- models load with them from the next prompt"
+                                      : "settings applied");
 }
 
 void Engine::do_name_session(const Request& request) {
-    // The delegator, when there is one: it is small, it is loaded more often
-    // than anything else, and naming a conversation is the kind of short
-    // reading-and-saying it does well. Without it, the opening words of the
-    // first prompt, which is what the list showed before there were names.
-    std::string name;
-    ensure_router();
-    if (LoadedModel* model = host_->router()) {
-        ModelParams params = config_.router;
-        params.temperature = 0.2F;
-        params.max_tokens  = 24;
-        const std::vector<ChatMessage> messages{{"user", session_naming_prompt(request.prompt)}};
-        std::string reply;
-        const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
-        model->generate(model->format_chat(messages, true), params,
-                        [&reply](std::string_view chunk) { reply += chunk; }, cancel);
-        name = session_name_from(reply);
+    // The orchestrator's: it asks the delegator, when there is one, and takes
+    // the opening words of the first prompt when there is not. Without the
+    // orchestrator there is no name, and the list shows that first prompt,
+    // which is what it showed before there were names.
+    std::string error;
+    if (!wait_for_python(error)) {
+        return;
     }
-    if (name.empty()) {
-        name = fallback_session_name(request.prompt);
+    std::string name;
+    try {
+        const nlohmann::json out = orchestra_.call(
+            "name.session", {{"excerpt", request.prompt}},
+            [this](const std::string& method, const nlohmann::json& params) {
+                return serve(method, params);
+            });
+        name = out.value("name", "");
+    } catch (const std::exception&) {
+        return;
     }
     if (name.empty()) {
         return;
@@ -853,34 +865,30 @@ void Engine::do_write_examples(const ExpertId& id) {
     if (!expert.examples.empty()) {
         return;  // already has them; this is not a rewrite
     }
-
-    ensure_router();
-    LoadedModel* model = host_->router();
-    if (model == nullptr) {
-        return;  // no delegator: the seat still routes on its blurb and keywords
+    std::string error;
+    if (!wait_for_python(error)) {
+        return;  // the seat still routes on its blurb and keywords
     }
 
     state_.set_mood(Mood::Thinking, "writing examples for " + expert.name);
     if (wake_) {
         wake_();
     }
-
-    // Sampled rather than scored, and warmer than routing: two questions that
-    // are near-copies of each other teach the delegator nothing, and greedy
-    // decoding on a short prompt produces exactly that.
-    ModelParams params = config_.router;
-    params.temperature = 0.6F;
-    params.max_tokens  = 128;
-
-    const std::vector<ChatMessage> messages{
-        {"user", example_request_prompt(expert.name, expert.blurb)}};
-
-    std::string reply;
-    const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
-    model->generate(model->format_chat(messages, true), params,
-                    [&reply](std::string_view chunk) { reply += chunk; }, cancel);
-
-    std::vector<std::string> examples = parse_examples(reply);
+    std::vector<std::string> examples;
+    try {
+        const nlohmann::json out = orchestra_.call(
+            "examples.write", {{"name", expert.name}, {"blurb", expert.blurb}},
+            [this](const std::string& method, const nlohmann::json& params) {
+                return serve(method, params);
+            });
+        for (const nlohmann::json& one : out.value("examples", nlohmann::json::array())) {
+            if (one.is_string()) {
+                examples.push_back(one.get<std::string>());
+            }
+        }
+    } catch (const std::exception&) {
+        examples.clear();
+    }
     state_.set_mood(Mood::Idle);
     if (examples.empty()) {
         // A small delegator can fail to follow the format, and that is not
@@ -893,57 +901,198 @@ void Engine::do_write_examples(const ExpertId& id) {
         const std::lock_guard<std::mutex> lock(written_mutex_);
         written_examples_.emplace_back(id, examples);
     }
-
-    // Folded into the engine's own copy as well, so the delegator built for the
-    // next prompt already has them -- the UI's copy is updated separately when
-    // it drains the outbox, and waiting for that round trip would mean the
-    // first prompt after adding an expert routed without the examples that were
-    // just written for it.
+    // Folded into the engine's own copy as well, so the next prompt is routed
+    // with them: the window's copy is updated when it drains the outbox, and
+    // waiting for that round trip would route the first prompt without them.
     Expert updated = expert;
     updated.examples = std::move(examples);
     {
         const std::lock_guard<std::mutex> lock(config_mutex_);
         config_.roster.update(id, updated);
     }
-    // The router holds a snapshot of the roster taken when it was built, so it
-    // has to be rebuilt for the new examples to reach it.
-    router_.reset();
-    ready_delegator();
 }
 
-RouteDecision Engine::resolve(const Request& request) {
-    const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
-
-    // A pinned route needs no delegator at all, which is worth saying twice:
-    // with "keep delegator loaded" off, a slash command costs nothing to route.
-    RouteDecision decision;
-    if (request.pinned) {
-        decision.expert     = *request.pinned;
-        decision.confidence = 1.0F;
-        decision.source     = RouteSource::Forced;
-        decision.detail     = "pinned by slash command";
-        return apply_route_policy(decision, config_);
+bool Engine::wait_for_python(std::string& error) {
+    if (lab::python::installed()) {
+        return true;
     }
-
-    ensure_router();
-    if (router_) {
-        // What was attached says something about who should answer: "what
-        // does this do" means one thing beside main.rs and another beside
-        // a lease agreement. The names are enough to say it.
-        std::string routed = request.prompt;
-        if (!request.attachments.empty()) {
-            routed += "\n\nAttached:";
-            for (const attach::Attachment& one : request.attachments) {
-                routed += " " + (one.name.empty() ? std::filesystem::path(one.path).filename().string()
-                                                  : one.name);
-            }
+    // Being fetched as Crucible starts (see the window's setup): a prompt sent
+    // in the first minute of a new install waits for it rather than failing.
+    if (lab::python::installing()) {
+        state_.set_mood(Mood::Loading, "getting ready: downloading Crucible's Python");
+        if (wake_) {
+            wake_();
         }
-        decision = router_->route(routed, cancel);
+        while (lab::python::installing() && !lab::python::installed()) {
+            if (cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)) {
+                error = "stopped";
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        if (lab::python::installed()) {
+            return true;
+        }
     }
-    // Then decide what to do about it.
-    decision = apply_route_policy(decision, config_);
+    error = "Routing and cooks run on Crucible's own Python, which is not installed. It is "
+            "downloaded when Crucible starts -- check the connection and restart Crucible, "
+            "or run crucible --install-python.";
+    return false;
+}
 
-    if (!config_.routing.keep_delegator_loaded
+nlohmann::json Engine::routing_request(const std::string& prompt,
+                                       const std::optional<ExpertId>& pinned) const {
+    using json = nlohmann::json;
+    json roster = json::array();
+    json seats  = json::object();
+    for (const Expert& expert : config_.roster.experts()) {
+        roster.push_back(json{{"id", expert.id}, {"name", expert.name}, {"tag", expert.tag},
+                              {"blurb", expert.blurb}, {"keywords", expert.keywords},
+                              {"examples", expert.examples}});
+        seats[expert.id] = json{{"model", config_.has_expert(expert.id)},
+                                {"remote", config_.expert(expert.id).remote()}};
+    }
+    return json{
+        {"prompt", prompt},
+        {"pinned", pinned ? *pinned : std::string()},
+        {"roster", roster},
+        {"seats", seats},
+        {"routing", {{"min_confidence", config_.routing.min_confidence},
+                     {"default_expert", config_.routing.default_expert}}},
+    };
+}
+
+nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& params) {
+    using json = nlohmann::json;
+
+    // --- the delegator -----------------------------------------------------
+    if (method == "delegator.ready") {
+        ensure_router();
+        const bool loaded = host_->router() != nullptr;
+        return json{{"available", loaded}, {"path", loaded ? config_.router.path : std::string()}};
+    }
+    if (method == "delegator.generate") {
+        // A few words of writing -- a conversation's name, an expert's
+        // examples. A reasoning model thinks first: its thinking is filtered
+        // out, it is given room for it, and asked for as little of it as it
+        // takes.
+        LoadedModel* model = host_->router();
+        if (model == nullptr) {
+            throw std::runtime_error("the delegator is not loaded");
+        }
+        std::vector<ChatMessage> messages;
+        if (model->takes_effort()) {
+            messages.push_back({"system", "Reasoning: low"});
+        }
+        for (const json& one : params.value("messages", json::array())) {
+            messages.push_back({one.value("role", "user"), one.value("content", "")});
+        }
+        ModelParams asked = config_.router;
+        asked.temperature = params.value("temperature", 0.2F);
+        asked.max_tokens  = params.value("max_tokens", 64);
+        if (model->takes_effort()) {
+            asked.max_tokens = std::max(asked.max_tokens, 512);   // its thinking comes first
+        }
+        std::string    reply;
+        ResponseFilter filter;   // a thinking block or a harmony channel is not the answer
+        const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
+        model->generate(model->format_chat(messages, true), asked,
+                        [&](std::string_view chunk) { reply += filter.feed(chunk).answer; },
+                        cancel);
+        reply += filter.flush().answer;
+        return json{{"text", reply}};
+    }
+    if (method == "delegator.format" || method == "delegator.score") {
+        LoadedModel* model = host_->router();
+        if (model == nullptr) {
+            throw std::runtime_error("the delegator is not loaded");
+        }
+        if (method == "delegator.format") {
+            std::vector<ChatMessage> messages;
+            for (const json& one : params.value("messages", json::array())) {
+                messages.push_back({one.value("role", "user"), one.value("content", "")});
+            }
+            return json{{"text", model->format_chat(messages, true)}};
+        }
+        std::vector<std::string> labels;
+        for (const json& one : params.value("labels", json::array())) {
+            labels.push_back(one.is_string() ? one.get<std::string>() : std::string());
+        }
+        const bool cancelable = params.value("cancelable", true);
+        const CancelCallback cancel = [this] { return cancel_.load(std::memory_order_relaxed); };
+        const std::vector<float> scores =
+            model->score_labels(params.value("prompt", ""), labels, cancelable ? cancel : CancelCallback{});
+        json out = json::array();
+        for (const float score : scores) {
+            out.push_back(score <= kUnscored ? json(nullptr) : json(score));
+        }
+        return json{{"scores", out},
+                    {"canceled", cancelable && cancel_.load(std::memory_order_relaxed)}};
+    }
+
+    // --- the switches the window sets ---------------------------------------
+    if (method == "engine.flags") {
+        return json{{"stop", cook_stop_.load(std::memory_order_relaxed)},
+                    {"cancel", cancel_.load(std::memory_order_relaxed)},
+                    {"running", running_.load(std::memory_order_relaxed)},
+                    {"auto_edits", auto_edits_.load(std::memory_order_relaxed)}};
+    }
+    if (method == "mood") {
+        const std::string mood = params.value("mood", "idle");
+        const Mood as = mood == "thinking" ? Mood::Thinking
+                      : mood == "loading"  ? Mood::Loading
+                      : mood == "routing"  ? Mood::Routing
+                      : mood == "error"    ? Mood::Error
+                                           : Mood::Idle;
+        state_.set_mood(as, params.value("text", ""));
+        if (params.contains("linked")) {
+            const json& linked = params["linked"];
+            state_.set_linked(linked.is_string() && !linked.get<std::string>().empty()
+                                  ? std::optional<ExpertId>(linked.get<std::string>())
+                                  : std::nullopt);
+        }
+        if (wake_) {
+            wake_();
+        }
+        return json::object();
+    }
+
+    return serve_cook(method, params);
+}
+
+RouteDecision Engine::resolve(const Request& request, std::string& error) {
+    // What was attached says something about who should answer: "what does
+    // this do" means one thing beside main.rs and another beside a lease
+    // agreement. The names are enough to say it.
+    std::string routed = request.prompt;
+    if (!request.pinned && !request.attachments.empty()) {
+        routed += "\n\nAttached:";
+        for (const attach::Attachment& one : request.attachments) {
+            routed += " " + (one.name.empty() ? std::filesystem::path(one.path).filename().string()
+                                              : one.name);
+        }
+    }
+
+    RouteDecision decision;
+    if (!wait_for_python(error)) {
+        return decision;
+    }
+    nlohmann::json answer;
+    try {
+        answer = orchestra_.call("route", routing_request(routed, request.pinned),
+                                 [this](const std::string& method, const nlohmann::json& params) {
+                                     return serve(method, params);
+                                 });
+    } catch (const std::exception& e) {
+        error = std::string("routing failed: ") + e.what();
+        return decision;
+    }
+    decision.expert     = answer.value("expert", "");
+    decision.confidence = answer.value("confidence", 0.0F);
+    decision.source     = route_source_from_name(answer.value("source", "fallback"));
+    decision.detail     = answer.value("detail", "");
+
+    if (!request.pinned && !config_.routing.keep_delegator_loaded
         && !config_.expert(decision.expert).remote()) {
         // Its work for this prompt is done, and the expert is about to want
         // every byte it was holding. Unless the expert is somewhere else: then
@@ -1051,7 +1200,18 @@ void Engine::handle(const Request& request) {
         wake_();
     }
 
-    const RouteDecision decision = resolve(request);
+    std::string routing_error;
+    const RouteDecision decision = resolve(request, routing_error);
+    if (!routing_error.empty()) {
+        if (routing_error == "stopped") {
+            state_.cancel_turn(turn);
+            state_.set_mood(Mood::Idle);
+        } else {
+            state_.fail_turn(turn, routing_error);
+            state_.set_mood(Mood::Error, routing_error);
+        }
+        return;
+    }
     state_.set_route(turn, decision);
     // From here the side menu draws a line from the delegator to this seat.
     state_.set_linked(decision.expert);

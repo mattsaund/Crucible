@@ -174,6 +174,12 @@ struct Snapshot {
     /// not loading. With the delegator set to load on demand this happens
     /// before every prompt, which makes it worth drawing.
     float delegator_progress = -1.0F;
+
+    /// Why the delegator could not be loaded, or empty when it was (or none is
+    /// set). Drawn on the delegator's row in the side menu rather than in the
+    /// chat: it is a fact about a seat, and prompts are routed on keywords
+    /// until it changes.
+    std::string delegator_problem;
     std::vector<Turn>                   turns;
     std::vector<std::string>            notices;
     bool                                busy = false;
@@ -260,6 +266,9 @@ public:
 
     /// The delegator is loading and is this far along, 0..1.
     void set_delegator_progress(float progress);
+
+    /// Why the delegator could not be loaded; empty clears it.
+    void set_delegator_problem(std::string problem);
     void finish_turn(std::size_t turn, const GenerationStats& stats, long load_ms);
     void fail_turn(std::size_t turn, std::string_view reason);
 
@@ -336,6 +345,7 @@ private:
     std::optional<ExpertId>              linked_;
     bool                                 delegator_ready_ = false;
     float                                delegator_progress_ = -1.0F;
+    std::string                          delegator_problem_;
     std::vector<Turn>                    turns_;
     std::vector<std::string>             notices_;
     bool                                 busy_ = false;

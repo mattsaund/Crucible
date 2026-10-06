@@ -6,6 +6,7 @@
 // file is only the part that is the same for all of them: reading a request,
 // finding the method it names, and wrapping what comes back.
 #include "crucible/api/surface.hpp"
+#include "crucible/app/setup.hpp"
 
 #include "crucible/config/paths.hpp"
 #include "crucible/session/store.hpp"
@@ -221,6 +222,28 @@ std::string Surface::snapshot() {
     out["reasoning_effort"] = config.reasoning_effort;
     out["session"]          = host_.session_id();
     out["session_name"]     = host_.session_name();
+
+    // What Crucible is fetching for itself, while it is, and anything that
+    // failed until it is retried. See app/setup.hpp.
+    if (Setup* setup = host_.setup()) {
+        const std::vector<Setup::Item> items = setup->items();
+        if (!items.empty()) {
+            json list = json::array();
+            for (const Setup::Item& item : items) {
+                const char* state = item.state == Setup::Item::State::Working ? "working"
+                                  : item.state == Setup::Item::State::Done    ? "done"
+                                  : item.state == Setup::Item::State::Failed  ? "failed"
+                                                                              : "waiting";
+                json one{{"id", item.id}, {"label", item.label}, {"state", state},
+                         {"detail", item.detail}, {"download", item.download}};
+                if (item.progress >= 0.0F) {
+                    one["progress"] = item.progress;
+                }
+                list.push_back(std::move(one));
+            }
+            out["setup"] = json{{"running", setup->running()}, {"items", list}};
+        }
+    }
 
     const update::State newer = host_.update();
     out["version"] = CRUCIBLE_VERSION;

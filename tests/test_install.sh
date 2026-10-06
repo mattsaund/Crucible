@@ -740,14 +740,32 @@ check     "the nominated default is what catches the rest" \
           grep -q 'default_expert' "$HERE/../include/crucible/config/config.hpp"
 
 echo
+echo "  Crucible brings its own Python"
+
+check     "the installer fetches it, --no-trainer or not" \
+          grep -q '^    install_python$' "$HERE/../install.sh"
+check     "and asks the system for none" \
+          bash -c '! grep -q "PKGS_PY=(" "$1"' _ "$HERE/../install.sh"
+check     "the Windows installer fetches it too" \
+          grep -q -- '--install-python' "$HERE/../install.ps1"
+check     "the program can fetch it by itself" \
+          grep -q '"--install-python"' "$HERE/../src/app/cli.cpp"
+
+echo
 echo "  a cook can change hands"
 
 # The verb table specifically, not the instructions -- those name it too, so a
 # grep for the word alone would pass with the verb renamed out from under it.
 check     "HANDOFF is in the verb table" \
           grep -q '"HANDOFF", ToolKind::Handoff' "$HERE/../src/tools/workshop.cpp"
+# The loop is the orchestrator's now, in Python, and a handoff goes back
+# through the same route() a prompt does.
 check     "the cook loop re-routes on one" \
-          grep -q 'take_the_seat' "$HERE/../src/engine/engine_cook.cpp"
+          grep -q 'after = self.take_the_seat(work)' \
+          "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
+check     "and the delegator decides it, the same way it decides a prompt" \
+          grep -q 'decision = routing.route(self.core' \
+          "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
 # The whole memory argument for the design: one expert resident at a time.
 # A cook takes a seat through the same door a chat turn does, and that door
 # is where the swap is.

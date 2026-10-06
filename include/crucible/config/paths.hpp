@@ -49,6 +49,9 @@ std::filesystem::path projects_dir();
 /// where it would be hidden and an uninstall would take it.
 std::filesystem::path scratchpad_dir();
 
+/// The user's home folder: HOME, or USERPROFILE on Windows.
+std::filesystem::path home_dir();
+
 /// data_dir()/dropped -- copies of files dropped on a window whose webview
 /// does not say where a dropped file is. One folder per drop; see
 /// ui/attach.js.

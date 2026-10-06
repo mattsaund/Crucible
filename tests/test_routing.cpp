@@ -216,8 +216,6 @@ TEST(every_seat_can_be_ejected_including_the_last_one) {
         CHECK(roster.remove(roster.at(0).id, error));
     }
     CHECK(roster.experts().empty());
-    CHECK(roster.router_labels().empty());
-    CHECK(roster.router_examples().empty());
 }
 
 TEST(expert_label_falls_back_to_the_id_it_was_given) {
@@ -257,212 +255,24 @@ TEST(derived_keywords_drop_the_words_that_would_match_everything) {
     CHECK(std::find(words.begin(), words.end(), "filing") != words.end());
 }
 
-TEST(worked_examples_are_parsed_out_of_whatever_the_model_replied_with) {
-    // Every shape here is one a model actually produced when asked for two
-    // questions and told not to decorate them.
-    const std::vector<std::string> got = parse_examples(
-        "Here are two questions:\n"
-        "1. What preload should an M8 bolt take in aluminum?\n"
-        "2) \"How do I damp a resonant bracket at 40Hz?\"\n"
-        "- a third one that should not be kept\n");
-
-    CHECK_EQ(got.size(), std::size_t{2});
-    CHECK_EQ(got[0], std::string("What preload should an M8 bolt take in aluminum?"));
-    CHECK_EQ(got[1], std::string("How do I damp a resonant bracket at 40Hz?"));
-}
-
-TEST(a_preamble_line_is_not_mistaken_for_a_question) {
-    // A line ending in a colon is the model introducing its list, and a very
-    // short line is not a question worth showing a delegator.
-    const std::vector<std::string> got = parse_examples(
-        "Sure, here you go:\nok\nWhat is the yield strength of 6061-T6 aluminum?\n");
-    CHECK_EQ(got.size(), std::size_t{1});
-    CHECK_EQ(got[0], std::string("What is the yield strength of 6061-T6 aluminum?"));
-}
-
 // ---------------------------------------------------------------------------
-// Router labels
+// The worked examples the delegator is shown
+//
+// The delegator's prompt is built by the orchestrator (see
+// scripts/orchestrator/crucible_orchestrator/routing.py); what it is built from
+// is the roster, and these hold the roster's examples to what that needs.
 // ---------------------------------------------------------------------------
-
-TEST(a_reasoning_format_is_asked_where_its_answer_actually_goes) {
-    // The failure this exists for, and it is not a subtle one: a delegator
-    // whose chat format opens the assistant turn with a channel marker was
-    // being asked how likely each subject was as the very next token, at a
-    // position where no word can occur at all. gpt-oss-20b scored 13% -- the
-    // 11% that guessing gives -- and put 52 of 54 prompts in one seat.
-    CHECK_EQ(answer_prefix("<|start|>user<|message|>hi<|end|><|start|>assistant"),
-             "<|channel|>final<|message|>");
-
-    // Formats whose assistant turn begins with the answer need nothing, which
-    // is most of them.
-    CHECK(answer_prefix("<|im_start|>assistant\n").empty());
-    CHECK(answer_prefix("### Assistant:").empty());
-    CHECK(answer_prefix("").empty());
-
-    // And the header has to be at the end. One earlier in the conversation is a
-    // turn that already happened.
-    CHECK(answer_prefix("<|start|>assistant<|message|>hello<|return|>").empty());
-}
-
-TEST(router_labels_name_every_seat_in_roster_order) {
-    const Roster roster = testing::sample_roster();
-    const std::vector<std::string> labels = roster.router_labels();
-
-    // The two are read in lockstep by ModelRouter: labels[i] is what it scores
-    // for experts()[i]. A mismatch in length or order would route every prompt
-    // to the wrong seat while looking entirely healthy.
-    CHECK_EQ(labels.size(), roster.size());
-    for (std::size_t i = 0; i < labels.size(); ++i) {
-        CHECK_EQ(labels[i], roster.at(i).name);
-    }
-}
-
-TEST(router_labels_carry_no_padding) {
-    // A leading or trailing space changes how a label tokenizes, which would
-    // score it at a position the model was never shown.
-    for (const std::string& label : testing::sample_roster().router_labels()) {
-        CHECK(!label.empty());
-        CHECK(label.front() != ' ');
-        CHECK(label.back() != ' ');
-    }
-}
-
-TEST(the_delegator_can_only_answer_with_a_seat_that_exists) {
-    const Roster roster = testing::sample_roster();
-    const std::vector<std::string> labels = roster.router_labels();
-
-    // Unrepresentable, not merely unlikely: the scorer compares exactly these
-    // strings, so there is nowhere for an invented answer to come from.
-    CHECK_EQ(labels.size(), roster.size());
-
-    // And the worked examples answer with exactly those labels -- an example
-    // that answered anything else would teach the model to produce a string
-    // the scorer never asks about.
-    for (const auto& [question, answer] : roster.router_examples()) {
-        CHECK(std::find(labels.begin(), labels.end(), answer) != labels.end());
-    }
-}
-
-TEST(router_system_prompt_describes_every_expert) {
-    const Roster roster = testing::sample_roster();
-    const std::string prompt = roster.router_system_prompt();
-    for (const Expert& expert : roster.experts()) {
-        CHECK(prompt.find(expert.name) != std::string::npos);
-        CHECK(prompt.find(expert.blurb) != std::string::npos);
-    }
-
-    // The prompt must not offer a way to decline. An earlier version closed by
-    // naming a catch-all and small models answered it for almost everything --
-    // 16% accurate against 96% now -- so the wording that did it stays out, and
-    // so does any seat the scorer cannot name.
-    CHECK(prompt.find("fits no other") == std::string::npos);
-    CHECK(prompt.find("Fallback")      == std::string::npos);
-    CHECK(prompt.find("FALL")          == std::string::npos);
-}
-
-TEST(an_added_expert_reaches_the_delegator_without_anything_else_being_edited) {
-    Roster roster = testing::sample_roster();
-    Expert expert;
-    expert.name     = "Tax Law";
-    expert.blurb    = "deductions, filing, corporate structure, capital gains";
-    expert.examples = {"can I deduct a home office", "when is capital gains tax due"};
-
-    std::string error;
-    CHECK(roster.add(expert, error));
-
-    // This is the whole point of generating the delegator's inputs from the
-    // list rather than storing them beside it: one call to add(), and the
-    // labels, the system prompt and the worked examples all know about it.
-    const std::vector<std::string> labels = roster.router_labels();
-    CHECK(std::find(labels.begin(), labels.end(), "Tax Law") != labels.end());
-    CHECK(roster.router_system_prompt().find("deductions, filing") != std::string::npos);
-
-    int examples = 0;
-    for (const auto& [question, answer] : roster.router_examples()) {
-        examples += answer == "Tax Law" ? 1 : 0;
-    }
-    CHECK_EQ(examples, 2);
-}
-
-TEST(an_ejected_expert_leaves_the_delegator_prompt_entirely) {
-    Roster roster = testing::sample_roster();
-    std::string error;
-    CHECK(roster.remove("chemistry", error));
-
-    const std::string prompt = roster.router_system_prompt();
-    CHECK(prompt.find("Chemistry") == std::string::npos);
-    CHECK(prompt.find("titration") == std::string::npos);
-
-    const std::vector<std::string> labels = roster.router_labels();
-    CHECK(std::find(labels.begin(), labels.end(), "Chemistry") == labels.end());
-    for (const auto& [question, answer] : roster.router_examples()) {
-        CHECK(answer != "Chemistry");
-    }
-}
-
-TEST(a_nominated_default_expert_catches_what_does_not_fit) {
-    Config config;
-    config.roster = testing::sample_roster();
-    config.experts["physics"].model  = "p.gguf";
-    config.experts["language"].model = "l.gguf";
-
-    // No default nominated: an uncertain route is taken at face value, because
-    // there is nothing better to do with it.
-    RouteDecision proposed;
-    proposed.expert     = "physics";
-    proposed.confidence = 0.20F;
-    proposed.source     = RouteSource::Model;
-    RouteDecision out = apply_route_policy(proposed, config);
-    CHECK_EQ(out.expert, ExpertId("physics"));
-    CHECK(out.detail.find("undecided") != std::string::npos);
-
-    // Nominate one, and it takes the uncertain route instead.
-    config.routing.default_expert = "language";
-    out = apply_route_policy(proposed, config);
-    CHECK_EQ(out.expert, ExpertId("language"));
-    CHECK(out.source == RouteSource::Fallback);
-    CHECK(out.detail.find("Language") != std::string::npos);
-}
-
-TEST(a_default_expert_with_no_model_is_not_used) {
-    Config config;
-    config.roster = testing::sample_roster();
-    config.experts["physics"].model = "p.gguf";
-    // Nominated but never filled. Routing to it would turn a working prompt
-    // into a "no model configured" failure one layer further down.
-    config.routing.default_expert = "language";
-
-    RouteDecision proposed;
-    proposed.expert     = "chemistry";   // no model either
-    proposed.confidence = 0.95F;
-    proposed.source     = RouteSource::Model;
-
-    const RouteDecision out = apply_route_policy(proposed, config);
-    CHECK_EQ(out.expert, ExpertId("physics"));
-    CHECK(out.detail.find("Chemistry has no model") != std::string::npos);
-}
 
 TEST(every_expert_gets_the_same_number_of_worked_examples) {
     const Roster roster = testing::sample_roster();
-    const std::vector<std::pair<std::string, std::string>> examples = roster.router_examples();
-
     // The same number each, because a seat with more examples than its
     // neighbors is a seat the delegator is being nudged towards -- and the
     // nudge is invisible in the score until another seat stops being reachable.
-    CHECK_EQ(examples.size(), roster.size() * 2);
-
-    std::map<std::string, int> seen;
-    const std::vector<std::string> labels = roster.router_labels();
-    for (const auto& [question, answer] : examples) {
-        CHECK(!question.empty());
-        // The answer is exactly the label that gets scored, and nothing else:
-        // an example demonstrating a longer answer would teach the delegator to
-        // continue past the string the scorer measures.
-        CHECK(std::find(labels.begin(), labels.end(), answer) != labels.end());
-        ++seen[answer];
-    }
     for (const Expert& expert : roster.experts()) {
-        CHECK_EQ(seen[expert.name], 2);
+        CHECK_EQ(expert.examples.size(), std::size_t{2});
+        for (const std::string& question : expert.examples) {
+            CHECK(!question.empty());
+        }
     }
 }
 
@@ -500,7 +310,12 @@ TEST(no_worked_example_is_a_benchmark_prompt) {
         }
     }
 
-    for (const auto& [question, answer] : testing::sample_roster().router_examples()) {
+    std::vector<std::string> questions;
+    const Roster sample = testing::sample_roster();
+    for (const Expert& expert : sample.experts()) {
+        questions.insert(questions.end(), expert.examples.begin(), expert.examples.end());
+    }
+    for (const std::string& question : questions) {
         const std::set<std::string> example = words(question);
         for (const RouteCase& test : benchmark_cases()) {
             std::vector<std::string> rare;
@@ -522,198 +337,12 @@ TEST(no_worked_example_is_a_benchmark_prompt) {
 // Keyword router
 // ---------------------------------------------------------------------------
 
-TEST(keyword_router_picks_the_obvious_subject) {
-    CHECK(route_of("compute the derivative of this polynomial") == "mathematics");
-    CHECK(route_of("my code hits a segfault when I compile")    == "programming");
-    CHECK(route_of("explain the lagrangian of this system")     == "physics");
-    CHECK(route_of("balance this reaction and find the enthalpy") == "chemistry");
-    CHECK(route_of("how does an enzyme change a protein")       == "biology");
-    CHECK(route_of("what torque does this bearing take")        == "engineering");
-    CHECK(route_of("is free will compatible with determinism")  == "philosophy");
-    CHECK(route_of("how does migration reshape a community")    == "sociology");
-    CHECK(route_of("proofread this paragraph for tone")         == "language");
-}
-
-TEST(keyword_router_names_nobody_when_nothing_matches) {
-    KeywordRouter router(shipped());
-    const RouteDecision decision = router.route("hello there", {});
-    // An empty expert is what "no decision" means. Naming a seat here would be
-    // inventing one, and the route policy is what decides where an undecided
-    // prompt actually goes.
-    CHECK(decision.expert.empty());
-    CHECK(decision.source     == RouteSource::Fallback);
-    CHECK(decision.confidence == 0.0F);
-}
-
-TEST(a_seat_with_no_keywords_never_wins_on_score) {
-    // A prompt with real keywords goes to its expert.
-    CHECK(route_of("compute the derivative of this polynomial") == "mathematics");
-    CHECK(route_of("balance this reaction and find the enthalpy") == "chemistry");
-
-    // A seat that gave the keyword scorer nothing to match on scores zero and
-    // is never chosen by it -- which is the honest outcome, not a special case.
-    Roster roster = testing::sample_roster();
-    Expert quiet;
-    quiet.name     = "Quiet";
-    quiet.blurb    = "a seat with no keywords at all";
-    quiet.keywords = {};  // add() would derive some, so they are cleared below
-    std::string error;
-    CHECK(roster.add(quiet, error));
-    if (const std::optional<std::size_t> found = roster.find("quiet")) {
-        Expert stripped = roster.at(*found);
-        stripped.keywords.clear();
-        CHECK(roster.update("quiet", stripped));
-    }
-
-    KeywordRouter router(std::make_shared<const Roster>(roster));
-    CHECK(router.route("mmm", {}).expert.empty());
-    CHECK(router.route("compute the derivative", {}).expert == "mathematics");
-}
-
-TEST(keyword_router_matches_whole_words_only) {
-    // Keywords hide inside ordinary words: "ion" (Chemistry) sits in "question"
-    // and "opinion", "cell" (Biology) sits in "excellent". None of them should
-    // count, so this prompt matches nothing and nobody is named. Substring
-    // matching would score Chemistry three times and route there.
-    CHECK(route_of("an excellent question about your opinion").empty());
-
-    // "gene" (Biology) hides inside both "generate" and "general".
-    CHECK(route_of("generate a general overview").empty());
-
-    // The same words as whole words must still match.
-    CHECK(route_of("what is an ion")            == "chemistry");
-    CHECK(route_of("describe a gene")           == "biology");
-    CHECK(route_of("write a function to parse") == "programming");
-}
-
-TEST(keyword_router_confidence_reflects_ambiguity) {
-    KeywordRouter router(shipped());
-    const RouteDecision clear = router.route(
-        "derivative integral polynomial theorem eigenvalue", {});
-    const RouteDecision mixed = router.route(
-        "derivative of the enzyme torque circuit", {});
-    // A prompt pulling in four directions should not report the same certainty
-    // as one that only ever points at maths.
-    CHECK(clear.confidence > mixed.confidence);
-    CHECK(clear.confidence <= 0.95F);
-}
-
 // ---------------------------------------------------------------------------
 // Routing policy
 //
 // What happens to the delegator's answer. Extracted from the engine as a pure
 // function precisely so these rules can be checked without loading a model.
 // ---------------------------------------------------------------------------
-
-namespace {
-
-/// A config with the named seats filled, so policy tests read as a sentence.
-/// The first is nominated as the default expert unless a test says otherwise --
-/// that is the seat that plays the part the built-in Fallback used to.
-Config config_with(std::initializer_list<ExpertId> filled) {
-    Config config;
-    // A fresh Config carries no experts at all now, so the roster these route
-    // to is the test fixture rather than anything Crucible ships.
-    config.roster = testing::sample_roster();
-    for (const ExpertId& seat : filled) {
-        config.experts[seat].model = "some-model.gguf";
-    }
-    return config;
-}
-
-RouteDecision proposal(ExpertId expert, float confidence, RouteSource source) {
-    RouteDecision decision;
-    decision.expert     = std::move(expert);
-    decision.confidence = confidence;
-    decision.source     = source;
-    return decision;
-}
-
-}  // namespace
-
-TEST(a_decision_nobody_made_names_nobody) {
-    // A default-constructed decision is what the engine gets when the delegator
-    // could not run -- no model assigned, or a load that failed. It must not
-    // name a real expert: whatever it names is where the prompt goes, and
-    // defaulting to a seat would send every such prompt there as though
-    // something had chosen it.
-    const RouteDecision nothing;
-    CHECK(nothing.expert.empty());
-    CHECK(nothing.source == RouteSource::Fallback);
-    CHECK(nothing.confidence == 0.0F);
-}
-
-TEST(a_confident_route_to_a_filled_seat_stands) {
-    const Config config = config_with({"physics", "language"});
-    const RouteDecision out =
-        apply_route_policy(proposal("physics", 0.95F, RouteSource::Model), config);
-    CHECK(out.expert == "physics");
-    CHECK(out.source  == RouteSource::Model);
-}
-
-TEST(an_unconfident_route_goes_to_the_nominated_default) {
-    Config config = config_with({"physics", "language"});
-    config.routing.min_confidence = 0.60F;
-    config.routing.default_expert = "language";
-
-    const RouteDecision out =
-        apply_route_policy(proposal("physics", 0.40F, RouteSource::Model), config);
-    // Below the floor the delegator is treated as having made no decision.
-    CHECK(out.expert == "language");
-    CHECK(out.source  == RouteSource::Fallback);
-    CHECK(out.detail.find("undecided") != std::string::npos);
-    CHECK(out.detail.find("Physics")   != std::string::npos);
-}
-
-TEST(a_pinned_route_ignores_the_confidence_floor) {
-    Config config = config_with({"physics", "language"});
-    config.routing.min_confidence = 0.99F;
-    config.routing.default_expert = "language";
-
-    // The user chose this expert; second-guessing them would be wrong even at
-    // a confidence the model never reports.
-    const RouteDecision out =
-        apply_route_policy(proposal("physics", 1.0F, RouteSource::Forced), config);
-    CHECK(out.expert == "physics");
-    CHECK(out.source  == RouteSource::Forced);
-}
-
-TEST(a_zero_floor_disables_the_confidence_check) {
-    Config config = config_with({"physics", "language"});
-    config.routing.min_confidence = 0.0F;
-    config.routing.default_expert = "language";
-    const RouteDecision out =
-        apply_route_policy(proposal("physics", 0.01F, RouteSource::Model), config);
-    CHECK(out.expert == "physics");
-}
-
-TEST(an_empty_seat_sends_work_to_the_nominated_default) {
-    Config config = config_with({"physics", "language"});
-    config.routing.default_expert = "language";
-    const RouteDecision out =
-        apply_route_policy(proposal("chemistry", 0.95F, RouteSource::Model), config);
-    CHECK(out.expert == "language");
-    CHECK(out.source  == RouteSource::Fallback);
-    CHECK(out.detail.find("Chemistry has no model") != std::string::npos);
-}
-
-TEST(with_no_default_nominated_any_filled_seat_is_used) {
-    // A partly-configured install should still answer rather than fail, and
-    // should say plainly that it substituted.
-    const Config config = config_with({"physics"});
-    const RouteDecision out =
-        apply_route_policy(proposal("chemistry", 0.95F, RouteSource::Model), config);
-    CHECK(out.expert == "physics");
-    CHECK(out.source  == RouteSource::Fallback);
-    CHECK(out.detail.find("used Physics") != std::string::npos);
-}
-
-TEST(with_nothing_configured_the_route_reports_it) {
-    const Config config;
-    const RouteDecision out =
-        apply_route_policy(proposal("chemistry", 0.95F, RouteSource::Model), config);
-    CHECK(out.detail.find("no experts have a model") != std::string::npos);
-}
 
 // ---------------------------------------------------------------------------
 // The blank slate
@@ -728,49 +357,6 @@ TEST(a_fresh_config_has_no_experts_at_all) {
     CHECK(fresh.roster.empty());
     CHECK_EQ(fresh.roster.size(), std::size_t{0});
     CHECK(fresh.configured_experts().empty());
-    // And nothing generated from it pretends otherwise.
-    CHECK(fresh.roster.router_labels().empty());
-    CHECK(fresh.roster.router_examples().empty());
-}
-
-TEST(the_keyword_router_names_nobody_on_an_empty_roster) {
-    KeywordRouter router(std::make_shared<const Roster>(Roster::bare()));
-    const RouteDecision out = router.route("why is the sky blue", {});
-    CHECK(out.expert.empty());
-}
-
-TEST(an_empty_roster_routes_to_nobody_rather_than_failing) {
-    const Config fresh;
-    const RouteDecision out =
-        apply_route_policy(proposal("physics", 0.95F, RouteSource::Model), fresh);
-    // Whatever it says, it must say something and it must not name a seat that
-    // does not exist.
-    CHECK(!out.detail.empty());
-    CHECK(fresh.roster.find(out.expert) == std::nullopt);
-}
-
-TEST(the_delegator_prompt_survives_having_no_experts_to_describe) {
-    const Roster bare = Roster::bare();
-    // Generated rather than stored, so an empty roster must produce an empty or
-    // harmless prompt rather than one describing experts that are not there.
-    const std::string prompt = bare.router_system_prompt();
-    CHECK(prompt.find("Mathematics") == std::string::npos);
-    CHECK(prompt.find("Physics") == std::string::npos);
-}
-
-TEST(an_uncertain_route_with_no_default_is_taken_at_face_value) {
-    // The old behavior sent this to a built-in Fallback seat that on most
-    // installs had no model either, so the prompt failed instead of being
-    // answered by the delegator's best guess. With nothing nominated, the guess
-    // stands and the transcript records the doubt.
-    Config config = config_with({"physics"});
-    config.routing.min_confidence = 0.60F;
-
-    const RouteDecision out =
-        apply_route_policy(proposal("physics", 0.20F, RouteSource::Model), config);
-    CHECK(out.expert == "physics");
-    CHECK(out.source  == RouteSource::Model);
-    CHECK(out.detail.find("undecided") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

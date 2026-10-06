@@ -103,20 +103,8 @@ public:
 
     // --- everything the delegator sees, generated from the list above ------
 
-    /// The labels the delegator chooses between, in roster order.
-    std::vector<std::string> router_labels() const;
 
-    /// The system prompt handed to the delegator, listing every seat and its
-    /// remit.
-    std::string router_system_prompt() const;
 
-    /// Worked examples as (question, label) pairs.
-    ///
-    /// Sent as real user/assistant turns rather than pasted into the system
-    /// prompt. On a 1.2B model that difference took routing accuracy from 42%
-    /// to 74%: a small instruct model follows a demonstrated dialogue far more
-    /// reliably than a block of Q/A text.
-    std::vector<std::pair<std::string, std::string>> router_examples() const;
 
 private:
     std::vector<Expert> experts_;
@@ -152,19 +140,6 @@ std::string make_expert_tag(std::string_view name, const std::vector<std::string
 /// "the" scores every prompt ever written.
 std::vector<std::string> derive_keywords(std::string_view name, std::string_view blurb);
 
-/// The prompt that asks a loaded model to write worked examples for a new
-/// expert, one question per line.
-///
-/// Kept here beside everything else the roster generates so the wording lives
-/// with the format that parses it.
-std::string example_request_prompt(std::string_view name, std::string_view blurb);
 
-/// Pull example questions out of whatever the model replied with.
-///
-/// Tolerant on purpose: models number their lists, bullet them, quote them, and
-/// wrap them in a sentence of preamble. Anything that survives stripping that
-/// and still ends up looking like a question is kept, and at most `wanted` are
-/// returned.
-std::vector<std::string> parse_examples(std::string_view reply, std::size_t wanted = 2);
 
 }  // namespace crucible

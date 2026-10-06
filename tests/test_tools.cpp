@@ -462,21 +462,6 @@ TEST(a_file_named_two_ways_is_recorded_once) {
     CHECK_EQ(cook.files_touched().size(), std::size_t{1});
 }
 
-TEST(different_work_reaches_a_different_expert) {
-    // The whole point of a handoff: the line an expert writes goes back through
-    // the delegator, and work of a different kind lands in a different seat.
-    // Checked with the keyword router, which needs no model and is therefore
-    // the same answer every time.
-    CHECK(route_of("write the API documentation and proofread the README prose")
-          == "language");
-    CHECK(route_of("refactor the parser function and fix the segfault")
-          == "programming");
-    // Words the Engineering keyword set actually carries -- "preload" and
-    // "bolted joint" are in its worked examples, which is what the *model*
-    // router reads, not this one.
-    CHECK(route_of("what torque should this bearing and weld take") == "engineering");
-}
-
 TEST(a_command_starts_in_the_project_but_is_not_confined_to_it) {
     TempDir dir;
     const auto root = dir.path() / "project";

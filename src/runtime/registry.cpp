@@ -402,7 +402,7 @@ bool RuntimeRegistry::remove(BackendKind kind, std::string& error) {
     manifest.erase(std::string(info.id));
     std::ofstream out(manifest_file());
     if (out) {
-        out << manifest.dump(2) << '\n';
+        out << manifest.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
 
     // The build tree is far larger than the module and is pure cache.

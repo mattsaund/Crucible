@@ -45,18 +45,20 @@ struct Project {
 /// entries open onto nothing is worse than a short one.
 std::vector<Project> recent_projects(std::size_t limit = 12);
 
-/// Put `root` at the top of that list.
+/// Put `root` at the top of that list -- unless it cannot be a project. See
+/// is_project_place.
 void remember_project(const std::filesystem::path& root);
 
-/// What a small model is asked, to name a conversation from `excerpt`, its
-/// first exchange; and the name out of what it says -- empty when what it said
-/// was not a title. See Engine::name_session.
-std::string session_naming_prompt(const std::string& excerpt);
-std::string session_name_from(const std::string& reply);
-
-/// A name for when there is no model to ask: the opening words of the first
-/// prompt in `excerpt`.
-std::string fallback_session_name(const std::string& excerpt);
+/// Whether `root` is somewhere a person keeps work, rather than a place the
+/// system or Crucible itself keeps things.
+///
+/// Not a drive's root or the home folder itself, not the system's own folders
+/// (Windows and Program Files; /System, /usr and the like), and not where
+/// Crucible is installed or keeps its data. Older versions opened whatever
+/// folder they were started in -- System32 from the Windows Start menu, the
+/// install folder from a shortcut -- and remembered it as a project; those are
+/// never listed, and never remembered again.
+bool is_project_place(const std::filesystem::path& root);
 
 /// Whether `root` is a chat's scratch folder -- inside
 /// paths::scratchpad_dir() -- rather than a project somebody opened.

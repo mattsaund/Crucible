@@ -925,7 +925,6 @@ ensure_cmake() {
 # --------------------------------------------------------------------------
 PKGS_BASE=()
 PKGS_GUI=()
-PKGS_PY=()
 
 # Which packages this distribution needs. Two lists, and only two: a C++
 # toolchain, and the headers the desktop app links against. There used to be a
@@ -938,31 +937,26 @@ PKGS_PY=()
 # Split out from the install so --check can report them without touching
 # anything.
 resolve_packages() {
-    PKGS_BASE=(); PKGS_GUI=(); PKGS_PY=()
+    PKGS_BASE=(); PKGS_GUI=()
     case "$PKG" in
         apt)    PKGS_BASE=(build-essential cmake git pkg-config curl ca-certificates)
                 # The interface. Crucible draws it in the platform's own
                 # webview, which on Linux means WebKitGTK -- the one piece of
                 # it that is a package rather than part of the system.
                 PKGS_GUI=(libwebkit2gtk-4.1-dev libgtk-3-dev)
-                # What the fine-tuner is built on. python3-venv is separate on
-                # Debian and Ubuntu and its absence is the single most common
-                # reason `python3 -m venv` fails on a machine that has Python.
-                PKGS_PY=(python3 python3-venv python3-pip) ;;
+                # No Python here, on any system: Crucible fetches its own,
+                # the same build everywhere -- see `crucible --install-python`.
+                ;;
         dnf)    PKGS_BASE=(gcc-c++ make cmake git pkgconf-pkg-config curl)
-                PKGS_GUI=(webkit2gtk4.1-devel gtk3-devel)
-                PKGS_PY=(python3 python3-pip) ;;
+                PKGS_GUI=(webkit2gtk4.1-devel gtk3-devel) ;;
         pacman) PKGS_BASE=(base-devel cmake git curl)
-                PKGS_GUI=(webkit2gtk-4.1 gtk3)
-                PKGS_PY=(python python-pip) ;;
+                PKGS_GUI=(webkit2gtk-4.1 gtk3) ;;
         zypper) PKGS_BASE=(gcc-c++ make cmake git-core curl)
-                PKGS_GUI=(webkit2gtk3-soup2-devel gtk3-devel)
-                PKGS_PY=(python3 python3-pip) ;;
+                PKGS_GUI=(webkit2gtk3-soup2-devel gtk3-devel) ;;
         # macOS: the compiler, git, curl and WKWebView all come with the
         # system or the command line tools. Only cmake is actually missing.
         brew)   PKGS_BASE=(cmake)
-                PKGS_GUI=()
-                PKGS_PY=(python@3.12) ;;
+                PKGS_GUI=() ;;
     esac
     return 0
 }
@@ -1013,22 +1007,6 @@ install_dependencies() {
         phase_end
     fi
 
-    # Python, for the fine-tuner. Only when it is going to be used: this is
-    # the one dependency that exists for a feature rather than for the build,
-    # and --no-trainer should not install it.
-    if [ "$INSTALL_TRAINER" = 1 ] && [ "${#PKGS_PY[@]}" -gt 0 ]; then
-        phase 20 "installing Python for the fine-tuner"
-        local py_have=() py_pkg
-        for py_pkg in ${PKGS_PY[@]+"${PKGS_PY[@]}"}; do
-            if pkg_available "$py_pkg"; then py_have+=("$py_pkg"); fi
-        done
-        if [ "${#py_have[@]}" -gt 0 ]; then
-            pkg_install ${py_have[@]+"${py_have[@]}"} ||
-                warn "Python did not install; the fine-tuner can be set up later with
-      crucible --install-trainer"
-        fi
-        phase_end
-    fi
     return 0
 }
 
@@ -1618,9 +1596,9 @@ path_advice() {
 # --------------------------------------------------------------------------
 # Done by the program rather than here. `crucible --install-trainer` drives
 # the same code the settings screen does, which means one implementation of
-# "find a Python, make a venv, resolve the right torch" instead of one here,
-# one in PowerShell and one in C++ that could disagree about what "installed"
-# means.
+# "fetch Crucible's Python, make a venv, resolve the right torch" instead of
+# one here, one in PowerShell and one in C++ that could disagree about what
+# "installed" means.
 #
 # Never fatal. A machine with no Python, a proxy that blocks PyPI, a disk that
 # fills up -- none of those are a reason to fail an install of a program that
@@ -1629,6 +1607,25 @@ path_advice() {
 # The compute backends. Quick -- tens of megabytes over the wire -- so it runs
 # before the trainer, and a machine that gives up partway through the big
 # download still ends up able to run a model.
+# Crucible's own Python, which routing and cooks run on -- and the trainer is
+# built from. Always, --no-trainer or not: without it no prompt is routed.
+# Tens of megabytes, so it goes first. Never fatal either: the window fetches
+# it on first start if this could not.
+install_python() {
+    progress_end
+    printf '\n'
+    step "Fetching Crucible's Python"
+    if "$PREFIX/bin/crucible" --install-python; then
+        PYTHON_READY=1
+    else
+        PYTHON_READY=0
+        printf '\n'
+        warn "Crucible's Python did not install. The window will try again when it starts."
+        info "or try again now with:  $PREFIX/bin/crucible --install-python"
+    fi
+    return 0
+}
+
 install_runtimes() {
     [ "$INSTALL_RUNTIMES" = 1 ] || { muted "skipping the compute runtimes (--no-runtimes)"; return 0; }
 
@@ -1778,6 +1775,7 @@ main() {
 
     # Both after the binary exists, because it is the binary that does them.
     # Each ends the progress display itself.
+    install_python
     install_runtimes
     install_trainer
     progress_end
@@ -1803,6 +1801,11 @@ main() {
     fi
     printf '    config        %s\n' "$CONFIG_DIR"
     printf '    models        %s\n' "$MODELS_DIR"
+    if [ "${PYTHON_READY:-0}" = 1 ]; then
+        printf '    python        ready\n'
+    else
+        printf '    python        not yet -- the window fetches it when it starts\n'
+    fi
     if [ "$INSTALL_RUNTIMES" = 1 ]; then
         if [ "${RUNTIMES_READY:-0}" = 1 ]; then
             printf '    runtimes      installed\n'

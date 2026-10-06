@@ -712,15 +712,28 @@ Visual Studio Build Tools, then run this again:
         [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
         $addedToPath = $true
     }
+    # Crucible's own Python, which routing and cooks run on and the trainer is
+    # built from. Always, -NoTrainer or not: without it no prompt is routed.
+    # Never fatal: the window fetches it on first start if this could not.
+    Stop-Progress
+    Write-Host ''
+    Step-Begin "Fetching Crucible's Python"
+    & (Join-Path $binDir 'crucible.exe') --install-python
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ''
+        Write-Warn "Crucible's Python did not install. The window will try again when it starts."
+        Write-Note "or try again now with:  $(Join-Path $binDir 'crucible.exe') --install-python"
+    }
+
     # The fine-tuner's Python environment, done by the program rather than
     # here: `crucible --install-trainer` drives the same code the settings
-    # screen does, so there is one implementation of "find a Python, make a
-    # venv, resolve the right torch" instead of one in shell, one here and
-    # one in C++ that could disagree.
+    # screen does, so there is one implementation of "fetch Crucible's Python,
+    # make a venv, resolve the right torch" instead of one in shell, one here
+    # and one in C++ that could disagree.
     #
-    # Never fatal. No Python, a proxy that blocks PyPI, a full disk -- none of
-    # those is a reason to fail an install of a program that runs models
-    # perfectly well without a trainer.
+    # Never fatal. A proxy that blocks PyPI, a full disk -- none of those is a
+    # reason to fail an install of a program that runs models perfectly well
+    # without a trainer.
     $runtimesReady = $false
     if (-not $NoRuntimes) {
         Stop-Progress

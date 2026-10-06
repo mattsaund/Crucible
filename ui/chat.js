@@ -147,8 +147,41 @@ const OPENERS = ['What is in this project?', 'Explain a file to me', 'Find and f
 /// One thing at a time, in the order they have to be fixed: there is no point
 /// saying a model is missing to somebody who has not got a runtime to load
 /// it with. Each names the one button that fixes it.
+/// What Crucible is fetching for itself, while it is: its Python, the
+/// runtimes, the training environment. Shown above whatever the empty view
+/// says, not instead of it -- a chat works as soon as Python and a runtime are
+/// in, and the training environment can take a quarter of an hour.
+function setupView() {
+  const setup = state.snapshot.setup;
+  if (!setup || !setup.items) return '';
+  const failed = setup.items.filter((i) => i.state === 'failed');
+  if (!setup.running && !failed.length) return '';
+  const rows = setup.items.map((item) => {
+    const measured = typeof item.progress === 'number' && item.state === 'working';
+    const size = item.download && item.state !== 'done' ? `  ·  ${bytes(item.download)}` : '';
+    const said = item.state === 'done' ? 'ready'
+               : item.state === 'waiting' ? `waiting${size}`
+               : item.detail || item.state;
+    return `<div class="setup-item ${escape(item.state)}">
+        <div class="setup-line"><span class="setup-name">${escape(item.label)}</span>
+          <span class="setup-said">${escape(said)}</span></div>
+        ${measured ? `<div class="bar"><span style="width:${Math.round(item.progress * 100)}%"></span></div>` : ''}
+      </div>`;
+  }).join('');
+  return `<div class="setup">
+      <div class="setup-head">${setup.running ? 'Getting Crucible ready'
+                                               : 'Some of what Crucible needs did not install'}</div>
+      ${rows}
+      ${!setup.running && failed.length
+        ? '<button class="action" data-act="setup-retry">Try again</button>' : ''}
+    </div>`;
+}
+
+actions['setup-retry'] = () => guard(() => call('setup.retry'));
+
 function readiness(ready) {
   const s = state.snapshot;
+  const getting = setupView();
   const seated = (s.experts || []).some((e) => e.phase !== 'unconfigured');
   const anyLocal = (s.experts || []).some((e) => e.phase !== 'unconfigured' && !e.provider);
   const runtimes = state.runtimes;
@@ -157,7 +190,8 @@ function readiness(ready) {
 
   let label = '';
   let fix = '';
-  if (noRuntime && (anyLocal || !seated)) {
+  const installing = s.setup && s.setup.running;
+  if (noRuntime && (anyLocal || !seated) && !installing) {
     // Only when something local wants one. A roster answered entirely by
     // providers needs no runtime, and should not be told to install one.
     label = 'No runtime';
@@ -166,12 +200,12 @@ function readiness(ready) {
     label = 'No model selected';
     fix = '<button class="action" data-act="settings-page" data-page="experts">Settings</button>';
   }
-  if (fix) return `<div class="empty"><div class="empty-label">${label}</div>${fix}</div>`;
+  if (fix) return getting + `<div class="empty"><div class="empty-label">${label}</div>${fix}</div>`;
   // Nothing in the way. `ready` is what the view says then: Chat offers
   // somewhere to start, Cook says what a cook is.
-  return ready || `<div class="empty"><div class="empty-label quiet">Ask anything</div>
+  return getting + (ready || `<div class="empty"><div class="empty-label quiet">Ask anything</div>
       <div class="chips">${OPENERS.map((text) =>
-        `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`;
+        `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`);
 }
 
 // --- the box ------------------------------------------------------------------------
@@ -373,9 +407,10 @@ function composerView(options) {
 views.chat = () => {
   const s = state.snapshot;
   const turns = s.turns || [];
-  const notices = (s.notices || []).length
-    ? `<div class="notices">${s.notices.map((n) => `<div>- ${escape(n)}</div>`).join('')}</div>`
-    : '';
+  // No notices here: the transcript is the conversation and nothing else.
+  // What the program has to say goes to the side menu's status line, and a
+  // seat that would not load says so on its own row.
+  //
   // A cook is the same experts doing the same work for longer, so the journal
   // of one that is running is drawn here too rather than only on its own tab:
   // somebody watching Chat should not have to guess why the box is shut.
@@ -387,7 +422,7 @@ views.chat = () => {
     : '';
   const body = turns.length || cooking ? turnsView(turns, 0) + cooking : readiness();
   return sideView() + `<div class="pane">
-      <div class="scroller"><div id="transcript">${notices}${body}${
+      <div class="scroller"><div id="transcript">${body}${
           s.pending_edit ? pendingEdit(s.pending_edit) : ''}</div>
         <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
       ${composerView({ hint: 'Ask it something', send: 'Send' })}

@@ -37,6 +37,10 @@
 #include "crucible/lab/trainer.hpp"
 #include "crucible/runtime/builder.hpp"
 
+namespace crucible {
+class Setup;
+}  // namespace crucible
+
 namespace crucible::api {
 
 /// Whoever owns the session, as the surface sees them.
@@ -64,6 +68,10 @@ public:
     virtual lab::Trainer*          trainer() { return nullptr; }
     virtual RuntimeBuilder*        runtime_builder() { return nullptr; }
     virtual lab::pyenv::Installer* trainer_installer() { return nullptr; }
+
+    /// What is being fetched for Crucible to run: its Python, the runtimes,
+    /// the training environment. See app/setup.hpp.
+    virtual Setup*                 setup() { return nullptr; }
 
     // --- the configuration -------------------------------------------------
 
