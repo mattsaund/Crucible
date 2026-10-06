@@ -243,8 +243,10 @@ TEST(a_folder_of_mlx_folders_is_found_however_it_is_nested) {
     CHECK_EQ(itself.size(), std::size_t{1});
     if (!itself.empty()) {
         CHECK_EQ(itself[0].format, std::string("mlx"));
+        // As canonical paths: a runner's temp folder is spelled two ways --
+        // /var and /private/var on a Mac, RUNNER~1 and the long name on Windows.
         CHECK_EQ(resolve_model_ref(dir.path() / "Qwen3-4B-4bit", itself[0].name),
-                 dir.path() / "Qwen3-4B-4bit");
+                 std::filesystem::weakly_canonical(dir.path() / "Qwen3-4B-4bit"));
         CHECK_EQ(itself[0].bytes, std::uintmax_t{200});
     }
 }

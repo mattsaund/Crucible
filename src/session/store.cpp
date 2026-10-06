@@ -354,13 +354,18 @@ bool is_project_place(const std::filesystem::path& root) {
         }
     }
 #elif defined(__APPLE__)
-    for (const char* system : {"/System", "/Library", "/usr", "/bin", "/sbin", "/private",
+    // /etc, /var and /tmp are links into /private, and canonical paths are
+    // compared: the system's parts of it are refused, not all of it -- the
+    // per-user temporary folders are under /private/var too.
+    for (const char* system : {"/System", "/Library", "/usr", "/bin", "/sbin", "/private/etc",
+                               "/private/var/db", "/private/var/root", "/private/var/log",
                                "/cores", "/dev", "/opt/homebrew"}) {
         if (within(here, system)) {
             return false;
         }
     }
-    for (const char* only : {"/Applications", "/Users", "/Volumes"}) {
+    for (const char* only : {"/Applications", "/Users", "/Volumes", "/private", "/private/var",
+                             "/private/tmp"}) {
         if (same_place(here, only)) {
             return false;
         }
