@@ -6,7 +6,7 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
-## Unreleased
+## 0.8.5 — 2026-10-05
 
 **Crucible fetches everything it needs.** A download carries the program and
 nothing else, and for a long time the rest was a visit to the settings screen.
@@ -16,7 +16,8 @@ runtimes this machine can use (the CPU always, CUDA with NVIDIA's libraries
 where there is an NVIDIA driver, Metal or Vulkan), and the training
 environment. A chat works as soon as Python and a runtime are in; anything that
 fails says why and has **Try again**. `crucible --install-python` does the
-first part from a terminal, and the installers run it.
+first part from a terminal, and the installers run it. Models are not among
+what it fetches: those are always yours to bring.
 
 **Its own Python.** A pinned CPython 3.12 build from the python-build-standalone
 project, checked against the SHA-256 compiled into Crucible and unpacked into

@@ -136,6 +136,8 @@ TEST(the_orchestrator_answers_over_the_pipe) {
     }
     TempDir dir;
     ScopedDataHome home(dir.path());
+    const char* had = std::getenv("CRUCIBLE_PYTHON");
+    const std::string previous = had != nullptr ? had : "";
     set_env("CRUCIBLE_PYTHON", python);
 
     orchestra::Link link;
@@ -175,7 +177,11 @@ TEST(the_orchestrator_answers_over_the_pipe) {
     CHECK(!link.running());
     CHECK_EQ(link.call("ping", {{"say", "again"}}, nullptr).value("pong", ""), "again");
     link.stop();
-    unset_env("CRUCIBLE_PYTHON");
+    if (previous.empty()) {
+        unset_env("CRUCIBLE_PYTHON");
+    } else {
+        set_env("CRUCIBLE_PYTHON", previous);
+    }
 }
 
 TEST(every_file_of_the_orchestrator_is_compiled_in) {
