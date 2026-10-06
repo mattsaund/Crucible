@@ -451,10 +451,8 @@ void Engine::run() {
     // have typed a question is the worse way to learn it.
     if (devices.empty()) {
         state_.add_notice(RuntimeRegistry::any_installed()
-                              ? "a runtime is installed but found no hardware it can drive "
-                                "-- see Settings, Runtimes"
-                              : "no runtime installed -- install one in Settings, Runtimes, "
-                                "before assigning models");
+                              ? "the runtime found no hardware -- see Settings, Runtimes"
+                              : "no runtime -- install one in Settings, Runtimes");
     }
 
     {
@@ -1228,8 +1226,7 @@ void Engine::handle(const Request& request) {
 
     if (!config_.has_expert(decision.expert)) {
         state_.fail_turn(turn,
-            "No expert has a model yet. Add one in Settings, Experts -- a GGUF file "
-            "on this machine, or a model at a provider.");
+            "No expert has a model. Add one in Settings, Experts.");
         state_.set_linked(std::nullopt);
         state_.set_mood(Mood::Error, "no experts configured");
         return;
@@ -1334,11 +1331,9 @@ void Engine::handle(const Request& request) {
             // stopped being able to see, so the program says it instead.
             state_.set_linked(std::nullopt);
             state_.fail_turn(
-                turn, "this conversation no longer fits in the context: "
-                      + std::to_string(used) + " tokens of a "
+                turn, "this conversation no longer fits: " + std::to_string(used) + " of "
                       + std::to_string(expert->context_size())
-                      + "-token window. Raise \"Context size\" in settings, start a new "
-                        "conversation, or change what happens on overflow.");
+                      + " tokens. Raise \"Context\" in Settings, Generation, or start a new chat.");
             state_.set_mood(Mood::Error, "context full");
             return;
         }
@@ -1719,17 +1714,15 @@ void Engine::handle(const Request& request) {
             if (shown.empty() || asked_to_search || asked_to_act) {
                 std::string why;
                 if (asked_to_act) {
-                    why = "the expert ran out of turns before it finished the work -- ask "
-                          "again and it will carry on from what is on disk";
+                    why = "ran out of turns before finishing -- ask again to carry on";
                 } else if (asked_to_search) {
-                    why = "the expert kept asking to search instead of answering -- raise "
-                          "\"Search rounds\" in settings, or ask again more narrowly";
+                    why = "kept searching instead of answering -- raise \"Searches per "
+                          "prompt\" in Settings, Tools";
                 } else if (stats.hit_limit) {
-                    why = "the expert used its whole token budget thinking and never got to "
-                          "an answer -- raise \"Max tokens\" in settings, or lower "
-                          "\"Reasoning effort\" in settings";
+                    why = "thought until \"Longest reply\" ran out -- raise it in Settings, "
+                          "Generation, or lower the effort";
                 } else {
-                    why = "the expert stopped without writing an answer";
+                    why = "stopped without answering";
                 }
                 state_.set_reply(turn, "(" + why + ")");
             }

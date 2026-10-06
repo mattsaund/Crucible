@@ -14,17 +14,17 @@ const STAGES = [
 ];
 
 const METHODS = [
-  ['qlora', 'QLoRA', 'The base is loaded in four bits and a small adapter is trained on top. Fits where little else does.'],
-  ['lora',  'LoRA',  'The base is loaded whole and an adapter trained on top. Wants several times the memory, and is a little more faithful.'],
+  ['qlora', 'QLoRA', '4-bit base. Least memory.'],
+  ['lora',  'LoRA',  'Full base. More memory.'],
 ];
 const QUANTIZATIONS = ['Q4_K_M', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16'];
 const WIZARD_STEPS = [
-  ['Name',       'What it is called, and what it is for.'],
-  ['Base model', 'The model it starts as. Smaller trains faster and fits more machines.'],
-  ['Data',       'What it learns from. Its own subject, in the shape of questions and answers.'],
-  ['Tools',      'Optional: examples of calling tools, if it should learn to.'],
-  ['Target',     'How it is trained and what comes out.'],
-  ['Review',     'What will run, and whether anything is still missing.'],
+  ['Name',       ''],
+  ['Base model', ''],
+  ['Data',       'Questions and answers.'],
+  ['Tools',      'Optional.'],
+  ['Target',     ''],
+  ['Review',     ''],
 ];
 
 const recipesList = () => (state.recipes ? state.recipes.recipes : []);
@@ -53,14 +53,13 @@ function createList() {
         <div class="title"><strong>${escape(r.name || '(unnamed)')}</strong>
           <span class="tag">${escape(r.stage_text)}</span>
           ${r.trained_path ? `<button class="action right" data-act="recipe-test" data-id="${escape(r.id)}"
-              ${r.trained_there ? '' : 'disabled title="The trained file is not where the recipe says it is."'}>Test</button>` : ''}</div>
+              ${r.trained_there ? '' : 'disabled title="Trained file missing"'}>Test</button>` : ''}</div>
         <div class="hint">${escape(r.purpose || 'no description')}</div>
         <div class="hint">${escape(specLine(r))}</div>
       </div>`).join('');
   }).join('');
   return `<h1>Create</h1>
-    <p class="lede">Fine-tunes made here. One subject each, and the delegator learns to route to it.</p>
-    <button class="action" data-act="recipe-new" title="Walks through it a step at a time">New expert</button>
+    <button class="action" data-act="recipe-new">New expert</button>
     ${groups}`;
 }
 
@@ -88,8 +87,7 @@ function runView(r) {
   if (mine && run.phase === 'running') {
     return `<div class="install">
         <div class="row"><strong>${escape(run.label)}</strong>
-          <button class="action" data-act="run-stop"
-                  title="Stops the run. Nothing is kept: a fine-tune cannot be resumed.">Stop the run</button></div>
+          <button class="action" data-act="run-stop" title="Can't be resumed">Stop the run</button></div>
         <div class="bar"><span style="width:${Math.round(run.percent * 100)}%"></span></div>
         <div class="status">${run.seconds_left > 0 ? `about ${span(run.seconds_left)} left`
                                                    : `running for ${span(run.seconds)}`}</div>
@@ -118,13 +116,11 @@ function runView(r) {
   }
   // Marked as training, and nothing is. A run belongs to the window that
   // started it, so this is what a recipe looks like after that window closed.
-  return `<p class="lede">Nothing is running${r.started_at ? `. Started ${ago(r.started_at)}` : ''}.
-      A run belongs to the window that started it, and that one has gone.</p>
+  return `<p class="lede">Not running${r.started_at ? `. Started ${ago(r.started_at)}` : ''}.</p>
     <div class="row">
       <button class="action" data-act="recipe-train" data-id="${escape(r.id)}">Start again</button>
       <button class="action" data-act="recipe-draft" data-id="${escape(r.id)}">Put it back to a draft</button></div>
-    <h2 style="margin-top:1.6rem">A FILE TRAINED SOMEWHERE ELSE</h2>
-    <p class="lede">Trained this recipe with unsloth, axolotl or mlx_lm? Point at what came out.</p>
+    <h2 style="margin-top:1.6rem">TRAINED ELSEWHERE</h2>
     <div class="row"><button class="action" data-act="recipe-attach" data-id="${escape(r.id)}">Choose the file</button></div>`;
 }
 
@@ -134,8 +130,8 @@ function createDetail(r) {
     `<div><span>${label}</span><span class="${cls || ''}">${value}</span></div>`;
   const fit = r.fit || {};
   const fits = !r.parameters_b ? ''
-    : !fit.known ? spec('Fits', 'no GPU runtime installed, so nothing can say', 'meh')
-    : spec('Fits', `needs about ${bytes(fit.needed)} of the ${bytes(fit.have)} this machine has`,
+    : !fit.known ? spec('Fits', 'unknown', 'meh')
+    : spec('Fits', `needs ${bytes(fit.needed)} of ${bytes(fit.have)}`,
            fit.possible ? '' : 'bad');
   const method = METHODS.find(([id]) => id === r.method) || METHODS[0];
 
@@ -146,7 +142,7 @@ function createDetail(r) {
     stage = `<h2 style="margin-top:1.6rem">BEFORE IT CAN RUN</h2>
       <p class="lede${blocked ? ' bad' : ''}">${blocked ? 'still needs ' + r.missing.map(escape).join(', ')
                                                         : 'nothing missing'}</p>
-      ${noTrainer ? '<p class="lede bad">The fine-tuner is not set up on this machine.</p>' : ''}
+      ${noTrainer ? '<p class="lede bad">Training is not set up.</p>' : ''}
       <div class="row">
         <button class="action" data-act="recipe-edit" data-id="${escape(r.id)}">Continue setup</button>
         ${noTrainer
@@ -157,16 +153,12 @@ function createDetail(r) {
     stage = `<h2 style="margin-top:1.6rem">TRAINING</h2>${runView(r)}`;
   } else if (r.stage === 'testing') {
     stage = `<h2 style="margin-top:1.6rem">BEFORE YOU KEEP IT</h2>
-      <p class="lede">It has been trained and nothing else. Ask it the things it is for, and a few
-        it is not: a fine-tune that has forgotten how to talk is a common result and an easy one
-        to spot. Keeping it puts it on the roster; until then it is only a file.</p>
       <div class="row">
         <button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${r.trained_there ? ''
-          : 'disabled title="The trained file is not where the recipe says it is."'}>Test</button>
+          : 'disabled title="Trained file missing"'}>Test</button>
         <button class="action" data-act="recipe-edit" data-id="${escape(r.id)}" data-step="4">Edit</button></div>`;
   } else {
     stage = `<h2 style="margin-top:1.6rem">ON THE ROSTER</h2>
-      <p class="lede">Kept. It is offered to every seat, and the one it was given is on Experts.</p>
       <div class="row">
         <button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${
           r.trained_there ? '' : 'disabled'}>Test again</button>
@@ -237,7 +229,7 @@ actions['recipe-attach'] = async (e) => {
 };
 actions['recipe-delete'] = async (e) => {
   const sure = await confirmIt({ title: 'Delete this expert?',
-    body: `${e.dataset.name}: the recipe and anything it trained are removed from this machine. A seat it was given stays, pointing at a file that is gone.`,
+    body: `${e.dataset.name}: the recipe and what it trained.`,
     yes: 'Delete', no: 'Keep' });
   if (!sure) return;
   await guard(async () => {
@@ -273,20 +265,20 @@ const slugOf = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(
 /// searches the wizard holds: the base model, the data, the tools.
 function hubPicker(m, slot, kind) {
   const hub = m[slot];
-  const rows = hub.searching ? '<div class="status">asking Huggingface...</div>'
+  const rows = hub.searching ? '<div class="status">Searching...</div>'
     : hub.error ? `<div class="bad">${escape(hub.error)}</div>`
-    : hub.asked && !hub.items.length ? '<div class="status">nothing on Huggingface matched that</div>'
+    : hub.asked && !hub.items.length ? '<div class="status">No matches.</div>'
     : hub.items.map((item) => `<div class="order-row">
         <span class="order-name">${escape(item.id)}
           <span class="status">${compact(item.downloads)} downloads${
             item.parameters_b ? `  ·  ${item.parameters_b}B` : ''}${
-            item.gated ? '  ·  gated: needs an account that has accepted its terms' : ''}</span></span>
+            item.gated ? '  ·  gated' : ''}</span></span>
         <button class="action" data-act="wz-use" data-slot="${slot}" data-id="${escape(item.id)}"
                 data-params="${item.parameters_b || 0}">${kind === 'model' ? 'Use' : 'Add'}</button>
       </div>`).join('');
   return `<form class="row" data-submit="wz-search" data-slot="${slot}" data-hub="${kind}">
       <input data-draft data-input="wz-query" data-slot="${slot}" value="${escape(hub.query)}"
-             placeholder="${kind === 'model' ? 'a model to start from: qwen, llama-3.2, smollm' : 'a dataset: its subject, or its name'}">
+             placeholder="${kind === 'model' ? 'qwen, llama-3.2, smollm' : 'subject or name'}">
       <button class="action">Search</button></form>
     <div class="order" style="margin-top:.6rem">${rows}</div>`;
 }
@@ -301,7 +293,7 @@ function localPicker(slot, label, filter, extensions, verb) {
 }
 
 function chosenList(list, slot) {
-  if (!list.length) return '<div class="status">none yet</div>';
+  if (!list.length) return '<div class="status">None.</div>';
   return `<div class="order">${list.map((a, i) => `<div class="order-row">
       <span class="order-name">${escape(a.label || a.id)}
         <span class="status">${a.source === 'local' ? 'this machine' : 'Huggingface'}</span></span>
@@ -317,42 +309,40 @@ function wizardStep(m) {
       <div class="field"><label for="wz-name">Name</label>
         <input id="wz-name" data-draft data-focus data-input="wz-field" data-field="name"
                value="${escape(r.name)}" placeholder="Kitchen Physicist">
-        <div class="hint">${r.name ? `saved as ${escape(r.id || slugOf(r.name))}` : 'What the seat will be called.'}</div></div>
-      <div class="field"><label for="wz-purpose">DESCRIPTION</label>
+        ${r.name ? `<div class="hint">saved as ${escape(r.id || slugOf(r.name))}</div>` : ''}</div>
+      <div class="field"><label for="wz-purpose">Description</label>
         <textarea id="wz-purpose" rows="4" data-draft data-input="wz-field" data-field="purpose">${
           escape(r.purpose)}</textarea>
-        <div class="hint">What it is for. The delegator routes on this, so say what it should take.</div></div>`;
+        <div class="hint">Used for routing.</div></div>`;
     case 1: return `
       <h2>FROM HUGGINGFACE</h2>${hubPicker(m, 'hub', 'model')}
-      <h2 style="margin-top:1.4rem">OR A FILE ON THIS MACHINE</h2>
-      ${localPicker('base', 'a model directory or file', 'Models', ['.gguf', '.safetensors', '.bin'], 'Use this')}
+      <h2 style="margin-top:1.4rem">OR A LOCAL FILE</h2>
+      ${localPicker('base', 'model folder or file', 'Models', ['.gguf', '.safetensors', '.bin'], 'Use this')}
       <h2 style="margin-top:1.4rem">CHOSEN</h2>
       ${r.base.id ? `<div class="order-row"><span class="order-name">${escape(r.base.label || r.base.id)}
             <span class="status">${r.base.source === 'local' ? 'this machine' : 'Huggingface'}</span></span></div>
-          <div class="field" style="margin-top:.7rem"><label for="wz-params">Size, in billions of parameters</label>
+          <div class="field" style="margin-top:.7rem"><label for="wz-params">Parameters, in billions</label>
             <input id="wz-params" type="number" step="any" min="0" data-change="wz-params"
                    value="${r.parameters_b || ''}" placeholder="1.2">
-            <div class="hint">${!r.parameters_b ? 'Not known. Say, and the estimates below can be made.'
+            <div class="hint">${!r.parameters_b ? 'Unknown.'
               : fit && fit.methods[r.method].known
-                ? `${r.method === 'lora' ? 'LoRA' : 'QLoRA'} needs about ${bytes(fit.methods[r.method].needed)}; this machine has ${bytes(fit.methods[r.method].have)}.`
-                : 'No GPU runtime is installed, so nothing can say whether it fits.'}</div></div>`
-        : '<div class="status">none yet</div>'}`;
+                ? `${r.method === 'lora' ? 'LoRA' : 'QLoRA'} needs ${bytes(fit.methods[r.method].needed)} of ${bytes(fit.methods[r.method].have)}.`
+                : ''}</div></div>`
+        : '<div class="status">None.</div>'}`;
     case 2: return `
       <h2>FROM HUGGINGFACE</h2>${hubPicker(m, 'dataHub', 'dataset')}
-      <h2 style="margin-top:1.4rem">OR FILES ON THIS MACHINE</h2>
-      ${localPicker('data', 'a .jsonl, .json, .csv or .parquet file', 'Datasets',
+      <h2 style="margin-top:1.4rem">OR LOCAL FILES</h2>
+      ${localPicker('data', '.jsonl, .json, .csv or .parquet', 'Datasets',
                     ['.jsonl', '.json', '.csv', '.parquet', '.txt'], 'Add')}
       <h2 style="margin-top:1.4rem">CHOSEN</h2>${chosenList(r.data, 'data')}`;
     case 3: return `
-      <p class="lede">Leave this empty unless the expert should learn to call tools. If it should,
-        these are examples of doing so, in the same shapes as the data.</p>
       <h2>FROM HUGGINGFACE</h2>${hubPicker(m, 'toolHub', 'dataset')}
-      <h2 style="margin-top:1.4rem">OR FILES ON THIS MACHINE</h2>
-      ${localPicker('tools', 'a .jsonl or .json file', 'Datasets', ['.jsonl', '.json'], 'Add')}
+      <h2 style="margin-top:1.4rem">OR LOCAL FILES</h2>
+      ${localPicker('tools', '.jsonl or .json', 'Datasets', ['.jsonl', '.json'], 'Add')}
       <h2 style="margin-top:1.4rem">CHOSEN</h2>${chosenList(r.tools, 'tools')}`;
     case 4: {
       const estimate = (id) => !fit ? '' : !fit.methods[id].known ? ''
-        : `needs about ${bytes(fit.methods[id].needed)}, this machine has ${bytes(fit.methods[id].have)}`;
+        : `needs ${bytes(fit.methods[id].needed)} of ${bytes(fit.methods[id].have)}`;
       return `
       <h2>METHOD</h2>
       <div class="radios">${METHODS.map(([id, label, gloss]) => `<label class="radio${r.method === id ? ' on' : ''}">
@@ -361,32 +351,30 @@ function wizardStep(m) {
           <span><strong>${label}</strong><span class="hint">${gloss}</span>
             <span class="hint ${fit && fit.methods[id].known && !fit.methods[id].possible ? 'bad' : ''}">${
               estimate(id)}</span></span></label>`).join('')}</div>
-      <h2 style="margin-top:1.4rem">SIZE OF WHAT COMES OUT</h2>
+      <h2 style="margin-top:1.4rem">QUANTIZATION</h2>
       <div class="radios tight">${QUANTIZATIONS.map((q) => `<label class="radio${r.quantization === q ? ' on' : ''}">
           <input type="radio" name="wz-quant" value="${q}" data-change="wz-field" data-field="quantization"${
             r.quantization === q ? ' checked' : ''}>
           <span><strong>${q}</strong><span class="hint">${
             fit && fit.sizes[q] ? 'about ' + bytes(fit.sizes[q]) : ''}</span></span></label>`).join('')}</div>
       <h2 style="margin-top:1.4rem">THE RUN</h2>
-      <div class="field"><label for="wz-epochs">Passes over the data: ${r.epochs}</label>
+      <div class="field"><label for="wz-epochs">Epochs: ${r.epochs}</label>
         <input id="wz-epochs" type="range" min="1" max="10" step="1" value="${r.epochs}" data-follow
                data-input="wz-number" data-field="epochs"></div>
       <div class="field"><label for="wz-context">Context, in tokens: ${r.context}</label>
         <input id="wz-context" type="range" min="256" max="4096" step="128" value="${r.context}" data-follow
-               data-input="wz-number" data-field="context">
-        <div class="hint">The longest example it will see whole. Longer costs memory fast.</div></div>
+               data-input="wz-number" data-field="context"></div>
       <div class="field"><label for="wz-rate">Learning rate: ${rate(r.learning_rate)}</label>
         <input id="wz-rate" type="range" min="-6" max="-3" step="0.05" data-follow
                value="${Math.log10(r.learning_rate).toFixed(2)}" data-input="wz-rate">
-        <div class="hint">How big a step each example makes. Too high forgets everything it knew;
-          too low learns nothing in the time. 1e-5 to 2e-4 is where fine-tunes live.</div></div>
+        <div class="hint">Usually 1e-5 to 2e-4.</div></div>
       <h2 style="margin-top:1.4rem">FORMAT</h2>
-      <div class="radios tight">${[['gguf', 'GGUF', 'What Crucible loads. The right answer unless you know otherwise.'],
-                                   ['mlx', 'MLX', 'For Apple silicon, in Apple\'s own format.']].map(([id, label, gloss]) => `
+      <div class="radios tight">${[['gguf', 'GGUF', ''],
+                                   ['mlx', 'MLX', 'Apple silicon']].map(([id, label, gloss]) => `
         <label class="radio${r.format === id ? ' on' : ''}">
           <input type="radio" name="wz-format" value="${id}" data-change="wz-field" data-field="format"${
             r.format === id ? ' checked' : ''}>
-          <span><strong>${label}</strong><span class="hint">${gloss}</span></span></label>`).join('')}</div>`;
+          <span><strong>${label}</strong>${gloss ? `<span class="hint">${gloss}</span>` : ''}</span></label>`).join('')}</div>`;
     }
     default: {
       const missing = wizardMissing(r);
@@ -403,10 +391,7 @@ function wizardStep(m) {
         ${row('Comes out as', `${r.format === 'mlx' ? 'MLX' : 'GGUF'} at ${escape(r.quantization)}`)}
       </div>
       <h2 style="margin-top:1.4rem">STILL MISSING</h2>
-      <p class="lede${missing.length ? ' bad' : ''}">${missing.length ? missing.map(escape).join(', ') : 'nothing'}</p>
-      <p class="lede">Starting downloads the base model and the data if they are not here, trains on
-        this machine, and writes the result beside the recipe. It can be stopped; it cannot be
-        resumed. Nothing is uploaded.</p>`;
+      <p class="lede${missing.length ? ' bad' : ''}">${missing.length ? missing.map(escape).join(', ') : 'nothing'}</p>`;
     }
   }
 }
@@ -425,14 +410,13 @@ modals.wizard = (m) => {
   const r = m.recipe;
   const last = m.step === WIZARD_STEPS.length - 1;
   const missing = wizardMissing(r);
-  const [title, blurb] = WIZARD_STEPS[m.step];
+  const blurb = WIZARD_STEPS[m.step][1];
   return `<div class="modal wide">
     <div class="head">
       <div class="chips left">${WIZARD_STEPS.map(([name], i) =>
         `<button class="chip${i === m.step ? ' on' : i < m.step ? ' done' : ''}" data-act="wz-step"
                  data-step="${i}">${i + 1}  ${name}</button>`).join('')}</div>
-      <div style="margin-top:.8rem"><strong>${title}</strong>
-        <div class="status">${blurb}</div></div></div>
+      ${blurb ? `<div class="status" style="margin-top:.8rem">${blurb}</div>` : ''}</div>
     <div class="body-pad wizard-body">${wizardStep(m)}
       ${m.error ? `<div class="bad" style="margin-top:.8rem">${escape(m.error)}</div>` : ''}</div>
     <div class="feet">
@@ -555,15 +539,14 @@ actions['wz-train'] = () => guard(async () => {
 modals.tester = (m) => {
   const turns = (state.snapshot.turns || []);
   const talk = turns.length > m.from ? turnsView(turns, m.from)
-    : '<div class="status">Ask it something it should be good at -- and something it should not.</div>';
+    : '';
   return `<div class="modal wide">
     <div class="head"><strong>Testing ${escape(m.name)}</strong>
       <div class="status">${escape(m.file)}</div></div>
     <div class="body-pad">
-      <div class="status">The same engine as Chat, with this file seated for as long as this window is open.</div>
       <div class="listing" id="test-talk">${talk}</div>
       <form class="row" data-submit="test-send" style="margin-top:.8rem">
-        <input id="test-prompt" data-draft data-focus placeholder="Ask it something it should be good at"
+        <input id="test-prompt" data-draft data-focus placeholder="Ask it something"
                autocomplete="off" style="flex:1">
         <button class="action" ${state.snapshot.busy ? 'disabled' : ''}>Send</button></form>
       ${m.error ? `<div class="bad" style="margin-top:.6rem">${escape(m.error)}</div>` : ''}
@@ -572,7 +555,7 @@ modals.tester = (m) => {
       <button class="action" data-act="test-keep">Finish</button>
       <button class="action" data-act="test-edit">Edit</button>
       <button class="action" data-act="modal-close">Close</button>
-      <span class="status">Finishing puts it on the roster. Closing changes nothing.</span>
+      <span class="status">Finish adds it to the roster.</span>
     </div></div>`;
 };
 
@@ -609,7 +592,4 @@ actions['test-edit'] = () => {
 };
 
 /// Keep the test window's own transcript at its bottom, as Chat's is.
-afterDraw.push(() => {
-  const talk = document.getElementById('test-talk');
-  if (talk) talk.scrollTop = talk.scrollHeight;
-});
+afterDraw.push(() => keepAtBottom('test-talk'));

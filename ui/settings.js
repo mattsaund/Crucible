@@ -99,37 +99,27 @@ function progressView(p, title, cancel, dismiss) {
 function pageGeneral(c) {
   const models = state.models;
   const here = models ? models.models.length : null;
-  return `<h1>General</h1><p class="lede">Who reads the prompt first, and where the models are.</p>
-    <h2>DELEGATOR</h2>
-    <div class="field"><label for="router-model">Delegator model</label>
-      ${modelSelect(c.router ? c.router.model : '', '',
-          { id: 'router-model', 'data-change': 'router-model' }, true)}
-      <div class="hint">Reads the prompt, names the expert. Never answers. A small model is the
-        right choice, and it has to be one on this machine: it is asked for a probability
-        per expert, which is not a thing a provider's API will give.</div></div>
-    ${setting('routing.keep_delegator_loaded', 'Keep the delegator in memory between prompts', 'bool',
-      `Off, exactly one model is in memory at a time: the delegator is freed the instant it
-       has routed and comes back when the expert is done, so the peak is the larger of the
-       two rather than their sum. On, it stays -- and its whole footprint is gone from every
-       expert that follows.`)}
-    ${setting('routing.min_confidence', 'Confidence floor', 'slider',
-      `Below this the delegator is treated as undecided and the prompt goes to the default
-       expert instead, or is taken at face value when there is none. 0 turns the check off.`,
-      { min: 0, max: 1, step: 0.01 })}
-
-    <h2 style="margin-top:1.8rem">MODELS</h2>
-    <div class="field"><label for="models-dir">Models directory</label>
+  return `<h1>General</h1>
+    <h2>MODELS</h2>
+    <div class="field"><label for="models-dir">Models folder</label>
       <div class="row">
         <input id="models-dir" data-change="models-dir" spellcheck="false"
                value="${escape(models ? models.directory : (c.models_dir || ''))}">
         <button class="action" data-act="models-browse">Browse</button>
       </div>
-      <div class="hint">${here === null ? 'Looking...' : `${count(here, 'model')} here, GGUF or MLX.`}
-        Every model is chosen from this folder -- the delegator's and each expert's -- and a
-        fine-tune made in Create is written into it.</div>
+      <div class="hint">${here === null ? 'Looking...' : `${count(here, 'model')}, GGUF or MLX`}</div>
       <div class="row" style="margin-top:.6rem">
         <button class="action" data-act="models-rescan">Rescan</button>
-        <button class="action" data-act="models-reset">Reset to default</button></div></div>`;
+        <button class="action" data-act="models-reset">Reset to default</button></div></div>
+
+    <h2 style="margin-top:1.8rem">DELEGATOR</h2>
+    <div class="field"><label for="router-model">Delegator model</label>
+      ${modelSelect(c.router ? c.router.model : '', '',
+          { id: 'router-model', 'data-change': 'router-model' }, true)}
+      <div class="hint">Picks the expert. Local only.</div></div>
+    ${setting('routing.keep_delegator_loaded', 'Keep loaded between prompts', 'bool', 'Uses more memory.')}
+    ${setting('routing.min_confidence', 'Confidence floor', 'slider',
+      'Below this, the default expert answers.', { min: 0, max: 1, step: 0.01 })}`;
 }
 
 actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value).model } });
@@ -159,21 +149,21 @@ function pageExperts(c) {
           ${e.provider ? `<span class="tag">${ICONS.cloud} ${escape(e.provider)}</span>` : ''}
           <button class="link right" data-act="expert-remove" data-id="${escape(e.id)}"
                   data-name="${escape(e.name)}"
-                  title="Take this seat off the roster. The model itself is not touched.">Eject</button></div>
+                  title="Remove from the roster">Eject</button></div>
         <div class="hint" style="margin:.2rem 0 .6rem">${escape(e.blurb)}</div>
         ${modelSelect(seat.model || '', seat.provider || '',
             { 'data-change': 'expert-model', 'data-id': e.id, 'aria-label': `Model for ${e.name}` })}
       </div>`;
-  }).join('') || '<p class="lede">No experts yet. Add one, and the delegator has somewhere to send a prompt.</p>';
+  }).join('') || '<p class="lede">No experts yet.</p>';
 
   const folder = state.models ? state.models.display : (c.models_dir || '');
-  return `<h1>Experts</h1><p class="lede">Which model answers for each subject.</p>
+  return `<h1>Experts</h1>
     <div class="row" style="margin-bottom:.6rem">
       <button class="action" data-act="new-expert">New expert</button>
       <button class="action" data-act="models-rescan">Rescan models</button>
-      <button class="link" data-act="view" data-view="create">or fine-tune one in Create</button></div>
-    <p class="lede" style="margin-bottom:1.2rem">Models come from <code>${escape(folder)}</code>
-      <button class="link" data-act="models-browse">Change folder</button></p>
+      <button class="link" data-act="view" data-view="create">Fine-tune one</button></div>
+    <p class="lede" style="margin-bottom:1.2rem"><code>${escape(folder)}</code>
+      <button class="link" data-act="models-browse">Change</button></p>
     ${rows}
     <h2 style="margin-top:1.8rem">DEFAULT EXPERT</h2>
     <div class="field">
@@ -182,9 +172,7 @@ function pageExperts(c) {
         ${roster.map((e) => `<option value="${escape(e.id)}"${
           at(c, 'routing.default_expert') === e.id ? ' selected' : ''}>${escape(e.name)}</option>`).join('')}
       </select>
-      <div class="hint">Takes what the delegator could not place: a prompt it was unsure about,
-        or one routed to a seat with no model. A large general model -- one on this machine or
-        one at a provider -- is what belongs here.</div></div>`;
+      <div class="hint">Answers when routing is unsure.</div></div>`;
 }
 
 const reloadConfig = async () => { state.config = await call('config'); };
@@ -194,7 +182,7 @@ actions['expert-model'] = (e) => guard(async () => {
 });
 actions['expert-remove'] = async (e) => {
   const sure = await confirmIt({ title: `Eject ${e.dataset.name}?`,
-    body: 'The seat comes off the roster and the delegator stops routing to it. The model stays where it is.',
+    body: 'The model file stays.',
     yes: 'Eject', no: 'Keep' });
   if (sure) await guard(async () => { await call('expert.remove', { id: e.dataset.id }); await reloadConfig(); });
 };
@@ -204,12 +192,11 @@ actions['default-expert'] = (e) => configure({ routing: { default_expert: e.valu
 
 /// Where a provider's key comes from, in words. Never the key.
 function keyLine(key) {
-  if (key.source === 'typed') return 'a key is saved in the config file';
-  if (key.source === 'variable') {
-    return `reads $${escape(key.variable)}${key.present ? '' : ' -- which is not set'}`;
+  if (key.source === 'typed') return 'key saved';
+  if (key.source === 'variable' || key.source === 'convention') {
+    return `$${escape(key.variable)}${key.present === false ? ' (not set)' : ''}`;
   }
-  if (key.source === 'convention') return `using $${escape(key.variable)} from the environment`;
-  return key.variable ? `no key -- add one, or set $${escape(key.variable)}` : 'no key';
+  return 'no key';
 }
 
 function pageProviders() {
@@ -224,23 +211,14 @@ function pageProviders() {
                 data-name="${escape(p.name)}">Remove</button></div>
       <div class="hint">${escape(p.endpoint)}</div>
       <div class="hint ${p.key.source === 'none' && p.kind === 'anthropic' ? 'bad' : ''}">${keyLine(p.key)}</div>
-      <div class="hint">${p.models.length ? 'model: ' + escape(p.models.join(', ')) : 'no model chosen yet'}${
-        p.seats.length ? `  ·  answers for ${escape(p.seats.join(', '))}` : '  ·  no expert uses it yet'}</div>
-      ${p.kind === 'anthropic' && !p.on_your_network ? `<div class="hint">When Claude declines a request,
-        Anthropic may answer it with another of its models instead. The transcript says so when it happens.</div>` : ''}
+      <div class="hint">${p.models.length ? escape(p.models.join(', ')) : 'no model'}${
+        p.seats.length ? `  ·  ${escape(p.seats.join(', '))}` : ''}</div>
     </div>`).join('');
 
   return `<h1>Providers</h1>
-    <p class="lede">Models that are somewhere else. Everything else in Crucible stays on this
-      machine. A prompt routed to an expert that a provider answers for is sent to that
-      provider, with the conversation so far and the system prompt -- and nothing is, until
-      you add one here and point an expert at it.</p>
     <div class="row" style="margin-bottom:1.2rem">
       <button class="action" data-act="provider-new">Add a provider</button></div>
-    ${cards || '<p class="lede">None. Every expert is answered on this machine.</p>'}
-    <p class="lede" style="margin-top:1.4rem">An expert answered by a provider is chosen like any
-      other: on Experts, pick one of its models for a seat -- or make it the default expert, so it
-      catches what the local ones could not place.</p>`;
+    ${cards}`;
 }
 
 /// The address a template stands for, written out. Anthropic's is the one the
@@ -259,37 +237,33 @@ modals.provider = (m) => {
   const preset = known.find((k) => k.name === m.preset);
   const listed = m.listed || [];
   return `<div class="modal">
-    <div class="head"><strong>${m.id ? 'Edit ' + escape(m.name) : 'Add a provider'}</strong>
-      <div class="status">Prompts routed to its experts leave this machine and go here.</div></div>
+    <div class="head"><strong>${m.id ? 'Edit ' + escape(m.name) : 'Add a provider'}</strong></div>
     <div class="body-pad">
       ${m.id ? '' : `<div class="field"><label for="pv-template">Template</label>
         <select id="pv-template" data-change="pv-template">
-          <option value=""${m.preset ? '' : ' selected'}>Custom -- any address</option>
+          <option value=""${m.preset ? '' : ' selected'}>Custom</option>
           ${known.map((k) => `<option value="${escape(k.name)}"${m.preset === k.name ? ' selected' : ''}>${
             escape(k.name)}</option>`).join('')}
         </select>
         ${preset && preset.note ? `<div class="hint">${escape(preset.note)}</div>` : ''}</div>`}
-      <div class="field"><label for="pv-url">Endpoint address</label>
+      <div class="field"><label for="pv-url">Address</label>
         <input id="pv-url" data-input="pv-field" data-field="base_url" data-draft spellcheck="false"
                value="${escape(m.base_url)}" placeholder="https://api.example.com/v1"
                ${m.id ? '' : 'data-focus'}></div>
       <div class="field"><label for="pv-key">API key</label>
         <input id="pv-key" type="password" data-input="pv-field" data-field="api_key" data-draft
                autocomplete="off" value="${escape(m.api_key)}"
-               placeholder="${m.has_key ? 'saved -- leave empty to keep it' : 'paste it, or env:NAME'}">
-        <div class="hint">Written to the config file as typed: anyone who can read that file can
-          read the key. To keep it out of the file, write <code>env:NAME</code> and it is read
-          from that environment variable instead${preset && preset.key_variable
-            ? ` -- or leave it empty and set <code>${escape(preset.key_variable)}</code>` : ''}.
-          A server on your own network usually wants none.</div></div>
+               placeholder="${m.has_key ? 'saved' : preset && preset.key_variable
+                 ? `key, env:NAME, or empty for $${escape(preset.key_variable)}` : 'key or env:NAME'}">
+        <div class="hint">Stored in config.json.</div></div>
       <div class="field"><label for="pv-model">Model</label>
         <div class="row">
           <input id="pv-model" data-input="pv-field" data-field="model" data-draft spellcheck="false"
-                 value="${escape(m.model)}" placeholder="as the provider names it">
-          <button class="action" type="button" data-act="pv-list">${m.listing ? 'Asking...' : 'List models'}</button>
+                 value="${escape(m.model)}">
+          <button class="action" type="button" data-act="pv-list">${m.listing ? 'Asking...' : 'List'}</button>
         </div>
         ${listed.length ? `<select data-change="pv-pick" style="margin-top:.5rem" aria-label="Its models">
-            <option value="">${count(listed.length, 'model')} -- choose one</option>
+            <option value="">${count(listed.length, 'model')}</option>
             ${listed.map((name) => `<option value="${escape(name)}"${name === m.model ? ' selected' : ''}>${
               escape(name)}</option>`).join('')}</select>` : ''}
         ${m.note ? `<div class="hint">${escape(m.note)}</div>` : ''}</div>
@@ -372,7 +346,7 @@ actions['pv-save'] = () => guard(async () => {
 });
 actions['provider-remove'] = async (e) => {
   const sure = await confirmIt({ title: `Remove ${e.dataset.name}?`,
-    body: 'Its address and key are forgotten. Nothing is sent to it again.', yes: 'Remove', no: 'Keep' });
+    body: 'Its key is forgotten.', yes: 'Remove', no: 'Keep' });
   if (sure) await guard(async () => {
     await call('provider.remove', { id: e.dataset.id });
     state.providers = await call('providers');
@@ -383,64 +357,41 @@ actions['provider-remove'] = async (e) => {
 // --- Generation -----------------------------------------------------------------------------
 
 function pageGeneration() {
-  return `<h1>Generation</h1><p class="lede">How every expert loads and samples, unless one overrides it.</p>
+  return `<h1>Generation</h1>
     <h2>SAMPLING</h2>
-    ${setting('defaults.temperature', 'Temperature', 'slider',
-      'Higher wanders further from the likeliest next word.', { min: 0, max: 2, step: 0.01 })}
-    ${setting('defaults.top_p', 'Top P', 'slider',
-      'Keep the likeliest words whose probabilities add up to this.', { min: 0, max: 1, step: 0.01 })}
-    ${setting('defaults.top_k', 'Top K', 'slider',
-      'Never consider more than this many candidates. 0 is no limit.', { min: 0, max: 200, step: 1 })}
-    ${setting('defaults.min_p', 'Min P', 'slider',
-      'Drop anything this much less likely than the best candidate.', { min: 0, max: 1, step: 0.01 })}
-    ${setting('defaults.repeat_penalty', 'Repeat penalty', 'slider',
-      '1 is off. Higher discourages saying the same thing twice.', { min: 1, max: 2, step: 0.01 })}
-    ${setting('defaults.repeat_last_n', 'Repeat window', 'int',
-      'How many recent tokens the penalty looks back over.')}
-    ${setting('defaults.max_tokens', 'Longest reply', 'int', 'Tokens. -1 runs until the model stops.')}
-    <div class="hint" style="margin:-.6rem 0 1.4rem">A model at a provider is sent the temperature
-      and Top P where its API takes them, and never the rest: they are about sampling this
-      machine's own arithmetic.</div>
+    ${setting('defaults.temperature', 'Temperature', 'slider', 'Higher is more random.',
+      { min: 0, max: 2, step: 0.01 })}
+    ${setting('defaults.top_p', 'Top P', 'slider', '', { min: 0, max: 1, step: 0.01 })}
+    ${setting('defaults.top_k', 'Top K', 'slider', '0 is no limit.', { min: 0, max: 200, step: 1 })}
+    ${setting('defaults.min_p', 'Min P', 'slider', '', { min: 0, max: 1, step: 0.01 })}
+    ${setting('defaults.repeat_penalty', 'Repeat penalty', 'slider', '1 is off.', { min: 1, max: 2, step: 0.01 })}
+    ${setting('defaults.repeat_last_n', 'Repeat window', 'int', 'Tokens.')}
+    ${setting('defaults.max_tokens', 'Longest reply', 'int', 'Tokens. -1 is no limit.')}
 
     <h2 style="margin-top:1.8rem">PROMPTING</h2>
-    ${setting('system_prompt', 'System prompt', 'text',
-      'What every expert is told before the conversation. Tool instructions are added after it.')}
-    ${setting('ui.show_reasoning', 'Show a reasoning model\'s working', 'bool',
-      'Whether "thinking" starts open above a reply. Opening or closing one changes this too.')}
+    ${setting('system_prompt', 'System prompt', 'text', '')}
 
-    <h2 style="margin-top:1.8rem">WHEN THE CONVERSATION OUTGROWS THE CONTEXT</h2>
-    ${setting('tools.overflow', 'Context truncation', 'choice',
-      `Every long conversation reaches this. Rolling is right for a conversation; truncate
-       middle is for one that opened with something that has to survive; stop is for when
-       losing any of it would be worse than stopping. Whichever it is, the transcript says
-       when it drops anything.`,
-      [['rolling', 'Rolling window -- drop the oldest exchanges'],
-       ['middle', 'Truncate middle -- keep the beginning and the end'],
-       ['stop', 'Stop at the limit -- refuse rather than forget']])}
+    <h2 style="margin-top:1.8rem">CONTEXT</h2>
+    ${setting('tools.overflow', 'When it is full', 'choice', '',
+      [['rolling', 'Drop the oldest'], ['middle', 'Drop the middle'], ['stop', 'Stop']])}
 
     <h2 style="margin-top:1.8rem">LOADING</h2>
-    ${setting('defaults.n_ctx', 'Context', 'int', 'Tokens a model can see at once. More costs memory.')}
-    ${setting('defaults.n_gpu_layers', 'GPU layers', 'int',
-      '-1 puts every layer it can on the graphics cards. 0 runs on the processor.')}
-    ${setting('defaults.split_mode', 'Split granularity', 'choice',
-      'How a model too big for one card is cut between several.',
-      [['layer', 'By layer -- whole layers on each card'],
-       ['row', 'By row -- one layer across cards, where the backend can'],
-       ['none', 'Do not split -- one card or none']])}
-    ${setting('defaults.n_batch', 'Batch', 'int', 'Tokens read per step while taking in a prompt.')}
-    ${setting('defaults.n_threads', 'Threads', 'int', '0 uses every core.')}
-    ${setting('defaults.flash_attn', 'Flash attention', 'bool', 'Faster and lighter where the backend has it.')}`;
+    ${setting('defaults.n_ctx', 'Context', 'int', 'Tokens.')}
+    ${setting('defaults.n_gpu_layers', 'GPU layers', 'int', '-1 is all, 0 is none.')}
+    ${setting('defaults.split_mode', 'Split', 'choice', '',
+      [['layer', 'By layer'], ['row', 'By row'], ['none', 'No split']])}
+    ${setting('defaults.n_batch', 'Batch', 'int', '')}
+    ${setting('defaults.n_threads', 'Threads', 'int', '0 is every core.')}
+    ${setting('defaults.flash_attn', 'Flash attention', 'bool', '')}`;
 }
 
 // --- Hardware ---------------------------------------------------------------------------------
 
 const GPU_MODES = [
-  ['auto', 'Automatic', 'Let llama.cpp decide. One card always ends up here.'],
-  ['even', 'Even, by memory',
-   'Proportional to each card\'s free memory, so they finish together. The right choice for cards of different sizes.'],
-  ['priority', 'Priority order',
-   'Fill the cards in the order below, spilling into the next only when one is full.'],
-  ['single', 'One card only', 'Everything on the card chosen below.'],
+  ['auto', 'Automatic', 'llama.cpp decides.'],
+  ['even', 'Even', 'By free memory.'],
+  ['priority', 'Priority', 'Fill in order.'],
+  ['single', 'One card', ''],
 ];
 
 /// The order the cards are filled in, with any the config does not mention
@@ -454,11 +405,10 @@ function gpuOrder() {
 
 function pageHardware(c) {
   const d = state.devices;
-  if (!d) return '<h1>Hardware</h1><p class="lede">Looking at the machine...</p>';
+  if (!d) return '<h1>Hardware</h1><p class="lede">Looking...</p>';
   if (!d.gpus.length) {
-    return `<h1>Hardware</h1><p class="lede">What the models run on.</p>
-      <p class="lede">No devices -- install a runtime first, or everything runs on the processor.</p>
-      <button class="action" data-act="settings-page" data-page="runtimes">Go to Runtimes</button>`;
+    return `<h1>Hardware</h1><p class="lede">No GPUs found.</p>
+      <button class="action" data-act="settings-page" data-page="runtimes">Runtimes</button>`;
   }
   const mode = at(c, 'gpu.mode') || 'auto';
   const order = gpuOrder();
@@ -477,16 +427,16 @@ function pageHardware(c) {
       </div>`;
   }).join('');
 
-  return `<h1>Hardware</h1><p class="lede">What the models run on.</p>
-    <h2>HOW A MODEL IS SPREAD</h2>
+  return `<h1>Hardware</h1>
+    <h2>SPLIT ACROSS CARDS</h2>
     ${unsplit ? `<p class="lede bad" style="margin-bottom:.8rem">${escape(unsplit)}</p>` : ''}
     <div class="radios">${GPU_MODES.map(([value, label, gloss]) => `
       <label class="radio${mode === value ? ' on' : ''}">
         <input type="radio" name="gpu-mode" value="${value}" data-change="set" data-path="gpu.mode"${
           mode === value ? ' checked' : ''}${unsplit && value !== 'auto' && value !== 'single' ? ' disabled' : ''}>
-        <span><strong>${label}</strong><span class="hint">${gloss}</span></span></label>`).join('')}</div>
+        <span><strong>${label}</strong>${gloss ? `<span class="hint">${gloss}</span>` : ''}</span></label>`).join('')}</div>
 
-    <h2 style="margin-top:1.6rem">${mode === 'priority' ? 'PRIORITY ORDER  --  FILLED TOP FIRST' : 'CARDS'}</h2>
+    <h2 style="margin-top:1.6rem">${mode === 'priority' ? 'ORDER' : 'CARDS'}</h2>
     <div class="order">${cards}</div>
     ${mode === 'single' ? `<div class="field" style="margin-top:1rem">
       <label for="main-gpu">The card</label>
@@ -496,14 +446,10 @@ function pageHardware(c) {
 
     <h2 style="margin-top:1.6rem">MEMORY</h2>
     ${setting('gpu.gpu_only', 'Keep every layer on the GPU', 'bool',
-      d.support.gpu_only ? `<span class="bad">${escape(d.support.gpu_only)}</span>`
-        : `A model 90% offloaded runs at roughly the speed of one not offloaded at all, so a
-           load that would leave layers on the processor is refused instead.`,
+      d.support.gpu_only ? `<span class="bad">${escape(d.support.gpu_only)}</span>` : 'Refuse a partial load.',
       { disabled: !!d.support.gpu_only })}
     ${setting('gpu.vram_only', 'Use dedicated VRAM only', 'bool',
-      d.support.vram_only ? `<span class="bad">${escape(d.support.vram_only)}</span>`
-        : `Refuse a model that will not fit in dedicated video memory. Otherwise the driver
-           spills into system memory, which is far slower.`,
+      d.support.vram_only ? `<span class="bad">${escape(d.support.vram_only)}</span>` : 'No spilling into system RAM.',
       { disabled: !!d.support.vram_only })}`;
 }
 
@@ -522,14 +468,13 @@ function pageRuntimes() {
   const data = state.runtimes;
   if (!data) return '<h1>Runtimes</h1><p class="lede">Looking...</p>';
   if (!data.loadable) {
-    return `<h1>Runtimes</h1><p class="lede">This build has its backend compiled in, so runtimes
-      cannot be installed or removed: what it runs on was decided when it was built.</p>`;
+    return '<h1>Runtimes</h1><p class="lede">Built into this build.</p>';
   }
   const building = state.build && state.build.running;
   const cards = data.runtimes.map((r) => {
     const facts = [];
     if (r.installed) {
-      facts.push(r.active ? count(r.devices, 'device') : 'installed, found nothing to drive');
+      facts.push(r.active ? count(r.devices, 'device') : 'no devices');
       facts.push(bytes(r.bytes));
       if (r.source) facts.push(r.source);
       if (r.built_at) facts.push(`built ${r.built_at}`);
@@ -545,10 +490,8 @@ function pageRuntimes() {
           <button class="link right" data-act="runtime-open" data-id="${r.id}">${open ? 'Less' : 'More'}</button></div>
         <div class="hint">${escape(r.blurb)}</div>
         <div class="hint">${facts.map(escape).join('  ·  ')}</div>
-        ${r.missing ? `<div class="hint bad">Installed, but it cannot start: it needs ${escape(r.missing)}.
-          Reinstall fetches them from NVIDIA.</div>` : ''}
-        ${!r.installed && !r.buildable && r.blocker ? `<div class="hint">A download is tried first. If
-          there is none for this machine it would have to be compiled here, and: ${escape(r.blocker)}</div>` : ''}
+        ${r.missing ? `<div class="hint bad">Missing ${escape(r.missing)}. Reinstall.</div>` : ''}
+        ${!r.installed && !r.buildable && r.blocker ? `<div class="hint">${escape(r.blocker)}</div>` : ''}
         ${open ? `<div class="runtime-detail">
             <div><span>llama.cpp it was built for</span>${escape(r.llama_tag || 'unknown')}</div>
             <div><span>llama.cpp this build needs</span>${escape(r.needs_tag)}</div>
@@ -563,8 +506,6 @@ function pageRuntimes() {
       </div>`;
   }).join('');
   return `<h1>Runtimes</h1>
-    <p class="lede">What Crucible can run a model on. Downloaded where one is published, compiled
-      here where not. A provider's models need none of them.</p>
     ${progressView(state.build, 'Installing ' + ((state.build && state.build.backend) || ''),
                    'runtime-cancel', 'runtime-dismiss')}
     ${cards}
@@ -583,7 +524,7 @@ actions['runtime-cancel'] = () => guard(() => call('runtime.cancel'));
 actions['runtime-dismiss'] = () => guard(async () => { await call('runtime.dismiss'); state.build = null; });
 actions['runtime-remove'] = async (e) => {
   const sure = await confirmIt({ title: `Remove ${e.dataset.name}?`,
-    body: 'Its files are deleted. It can be installed again from here.', yes: 'Remove', no: 'Keep' });
+    body: 'Its files are deleted.', yes: 'Remove', no: 'Keep' });
   if (sure) await guard(async () => { await call('runtime.remove', { backend: e.dataset.id }); refreshRuntimes(); });
 };
 
@@ -592,7 +533,7 @@ actions['runtime-remove'] = async (e) => {
 function pageTraining() {
   const t = state.trainer;
   const flavors = state.flavors || [];
-  if (!t) return '<h1>Training</h1><p class="lede">Asking Python what it has...</p>';
+  if (!t) return '<h1>Training</h1><p class="lede">Looking...</p>';
   const installing = state.install && state.install.running;
   const facts = !t.present ? '' : `<div class="runtime-detail" style="border:0;padding:0">
       <div><span>Built for</span>${escape(t.flavor)}</div>
@@ -602,14 +543,13 @@ function pageTraining() {
       ${t.installed_at ? `<div><span>Installed</span>${escape(t.installed_at)}</div>` : ''}
       ${t.usable_gpus.length ? `<div><span>Cards it can train on</span>${escape(t.usable_gpus.join(', '))}</div>` : ''}
       ${t.unusable_gpus.length ? `<div><span class="bad">Cards it cannot</span>${
-        escape(t.unusable_gpus.join(', '))} -- this PyTorch has no kernels for them</div>` : ''}
+        escape(t.unusable_gpus.join(', '))}</div>` : ''}
     </div>`;
   return `<h1>Training</h1>
-    <p class="lede">What fine-tuning runs in. Crucible's own Python, in its own folder.</p>
     ${progressView(state.install, 'Installing the trainer', 'trainer-cancel', 'trainer-dismiss')}
     <div class="card">
       <div class="title"><strong>${t.ready ? 'Ready' : t.present ? 'Installed, but not working' : 'Not installed'}</strong>
-        <span class="tag ${t.ready ? 'ok' : t.present ? 'bad' : ''}">${escape(t.note || '')}</span></div>
+        ${t.present ? `<span class="tag ${t.ready ? 'ok' : 'bad'}">${escape(t.note || '')}</span>` : ''}</div>
       ${facts}
       <div class="row" style="margin-top:.8rem; flex-wrap:wrap">
         ${flavors.map((f) => `<button class="action${f.suggested ? ' toggle' : ''}" data-act="trainer-install"
@@ -618,17 +558,15 @@ function pageTraining() {
             t.present && t.flavor === f.id ? (t.ready ? 'Reinstall' : 'Repair') : 'Install'} ${f.id}</button>`).join('')}
         ${t.present ? `<button class="action" data-act="trainer-remove" ${installing ? 'disabled' : ''}>Remove</button>` : ''}
       </div>
-      <div class="hint" style="margin-top:.6rem">The highlighted one is what this machine wants.</div>
+      <div class="hint" style="margin-top:.6rem">Highlighted: recommended.</div>
     </div>
     <details class="work"><summary>What goes in it</summary>
       ${flavors.map((f) => `<div class="act"><strong>${escape(f.id)}</strong>  ·  ${
         bytes(f.download)} to download, ${bytes(f.installed)} on disk<br>${
         f.steps.map(escape).join(', ')}</div>`).join('')}
-      <div class="act">Nothing is installed outside ${escape(t.directory)}. About three fifths of the
-        cuda build is NVIDIA's own libraries, which are proprietary and under NVIDIA's license
-        rather than an open one. The cpu and mlx builds pull in nothing proprietary.</div>
+      <div class="act">All in ${escape(t.directory)}. cuda includes NVIDIA's proprietary libraries.</div>
     </details>
-    <p class="lede" style="margin-top:1.2rem">The same thing from a terminal: <code>crucible --install-trainer</code></p>`;
+    <p class="lede" style="margin-top:1.2rem"><code>crucible --install-trainer</code></p>`;
 }
 
 actions['trainer-install'] = (e) => guard(async () => {
@@ -639,8 +577,7 @@ actions['trainer-cancel'] = () => guard(() => call('trainer.cancel'));
 actions['trainer-dismiss'] = () => guard(async () => { await call('trainer.dismiss'); state.install = null; });
 actions['trainer-remove'] = async () => {
   const sure = await confirmIt({ title: 'Remove the training environment?',
-    body: 'The folder goes, and with it the base models it downloaded while training. '
-        + 'Experts you have already made are files somewhere else and are not touched.',
+    body: 'Downloaded base models go too. Your experts stay.',
     yes: 'Remove', no: 'Keep' });
   if (sure) await guard(async () => { await call('trainer.remove'); need('trainer', 'trainer', true); });
 };
@@ -651,34 +588,23 @@ function pageTools(c) {
   const project = state.snapshot.project || {};
   const searching = !!at(c, 'tools.web_search');
   const provider = at(c, 'tools.search_provider');
-  return `<h1>Tools</h1><p class="lede">What an expert can touch besides the conversation.</p>
+  return `<h1>Tools</h1>
     <h2>PROJECT</h2>
-    <p class="lede">${project.open
-      ? `${escape(project.root)}<br>Trusted. Paths outside it are refused.` : 'No project open.'}</p>
-    ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider',
-      'A build is minutes; a command still going after this has hung, and is stopped.',
+    <p class="lede">${project.open ? escape(project.root) : 'None open.'}</p>
+    ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider', '',
       { min: 5, max: 900, step: 5 })}
 
     <h2 style="margin-top:1.8rem">THE WEB</h2>
-    ${setting('tools.web_search', 'Let experts look things up', 'bool',
-      'Off by default. With it on, the search terms an expert chooses are sent to the service below.')}
+    ${setting('tools.web_search', 'Web search', 'bool', 'Sends search terms out.')}
     ${searching ? `
-      ${setting('tools.search_provider', 'Search with', 'choice',
-        'Wikipedia needs nothing. searxng is your own instance. Brave needs a key.',
+      ${setting('tools.search_provider', 'Search with', 'choice', '',
         [['wikipedia', 'Wikipedia'], ['searxng', 'searxng'], ['brave', 'Brave']])}
-      ${setting('tools.search_endpoint', 'Endpoint', 'string',
-        provider === 'searxng' ? 'The address of your searxng instance.'
-                               : 'Only searxng uses this. Empty is the provider\'s own address.',
+      ${setting('tools.search_endpoint', 'Endpoint', 'string', provider === 'searxng' ? '' : 'searxng only.',
         { placeholder: 'http://localhost:8888' })}
-      ${provider === 'brave' ? setting('tools.search_api_key', 'API key', 'secret',
-        'Written to config.json as typed. Anyone who can read that file can read the key.') : ''}
-      ${setting('tools.search_results', 'Results to hand over', 'slider',
-        'How many hits are handed to the expert.', { min: 1, max: 20, step: 1 })}
+      ${provider === 'brave' ? setting('tools.search_api_key', 'API key', 'secret', 'Stored in config.json.') : ''}
+      ${setting('tools.search_results', 'Results', 'slider', '', { min: 1, max: 20, step: 1 })}
       ${setting('tools.search_timeout', 'Search timeout (seconds)', 'slider', '', { min: 2, max: 60, step: 1 })}
-      ${setting('tools.search_rounds', 'Searches per prompt', 'slider',
-        `How many times one prompt may search before it has to answer. A model that searches,
-         reads, and searches again is usually being useful; one that does it eight times is stuck.`,
-        { min: 1, max: 10, step: 1 })}` : ''}`;
+      ${setting('tools.search_rounds', 'Searches per prompt', 'slider', '', { min: 1, max: 10, step: 1 })}` : ''}`;
 }
 
 // --- About -----------------------------------------------------------------------------------------------
@@ -689,10 +615,9 @@ function pageAbout() {
   const u = a.update;
   const status = u.available
     ? `<p class="ok">Crucible ${escape(u.latest)} is available.</p>
-       <p class="lede">Run this, or download it again. Your data stays.<br><code>${escape(u.command)}</code><br>${
-         escape(u.page)}</p>`
-    : u.latest ? `<p class="lede">This is the newest release (${escape(u.latest)}).</p>`
-               : '<p class="lede">No release has been checked for yet.</p>';
+       <p class="lede"><code>${escape(u.command)}</code><br>${escape(u.page)}</p>`
+    : u.latest ? `<p class="lede">Up to date.</p>`
+               : '<p class="lede">Not checked yet.</p>';
   const files = [['Configuration', a.files.config], ['Models', a.files.models],
                  ['Runtimes', a.files.runtimes], ['Python', a.files.python],
                  ['Projects and history', a.files.projects], ['Everything else', a.files.data],
@@ -703,22 +628,16 @@ function pageAbout() {
       ${status}
       <div class="row"><button class="action" data-act="update-check">${
         state.open.checking ? 'Asking...' : 'Check now'}</button></div></div>
-    ${setting('ui.check_updates', 'Check for new versions', 'bool',
-      `Asks GitHub once a day for the newest version number. Nothing about you or your work is
-       sent: it is one request for one public page.`)}
+    ${setting('ui.check_updates', 'Check for new versions', 'bool', 'Daily, from GitHub.')}
     <h2 style="margin-top:1.8rem">WHAT LEAVES THIS MACHINE</h2>
-    <p class="lede">That version check. A web search, when you have turned searching on. What
-      Crucible fetches for itself on its first start -- its Python, the runtimes this machine
-      can use, the training environment -- and downloads you start, like a base model from
-      Huggingface for a fine-tune. And a prompt, when it is routed to an expert you have pointed
-      at a provider. That is the whole list.</p>
+    <p class="lede">The version check, web searches, first-start downloads, base models for
+      training, and prompts to providers.</p>
     <h2 style="margin-top:1.8rem">FILES</h2>
     <div class="runtime-detail" style="border:0;padding:0">${files.map(([label, path]) =>
       `<div><span>${label}</span>${escape(path)}</div>`).join('')}</div>
     <h2 style="margin-top:1.8rem">TRUSTED FOLDERS</h2>
-    <p class="lede">Asked once per folder.</p>
     ${a.trusted.length ? a.trusted.map((f) => `<div class="hint">${escape(f)}</div>`).join('')
-                       : '<p class="lede">None yet.</p>'}`;
+                       : '<p class="lede">None.</p>'}`;
 }
 
 actions['update-check'] = () => guard(async () => {
@@ -731,7 +650,7 @@ actions['update-check'] = () => guard(async () => {
 
 views.settings = () => {
   const c = state.config;
-  const page = !c ? '<p class="lede">Reading the configuration...</p>' : ({
+  const page = !c ? '<p class="lede">Reading...</p>' : ({
     general: pageGeneral, experts: pageExperts, providers: pageProviders,
     generation: pageGeneration, hardware: pageHardware, runtimes: pageRuntimes,
     training: pageTraining, tools: pageTools, about: pageAbout,

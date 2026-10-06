@@ -74,13 +74,18 @@ function turnControls(turn, index, busy) {
     : busy ? ''
     : `<button class="icon" data-act="turn-retry" data-index="${index}" title="Ask again"
                aria-label="Ask again">${ICONS.retry}</button>
-       <button class="icon" data-act="turn-delete" data-index="${index}" title="Delete this exchange"
-               aria-label="Delete this exchange">${ICONS.trash}</button>`;
+       <button class="icon" data-act="turn-delete" data-index="${index}" title="Delete"
+               aria-label="Delete">${ICONS.trash}</button>`;
   return buttons ? `<div class="turn-controls">${buttons}</div>` : '';
 }
 
+/// Which turns have their thinking open, by conversation and place. Each
+/// starts closed, and opening one opens that one.
+const thoughtsOpen = new Set();
+const thoughtKey = (index) => `${state.snapshot.session || ''}|${index}`;
+
 /// One exchange, as markup.
-function turnView(turn, index, busy, showThinking) {
+function turnView(turn, index, busy) {
   let reply;
   if (turn.failed) {
     reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
@@ -91,10 +96,10 @@ function turnView(turn, index, busy, showThinking) {
   }
   // Reasoning is kept apart from the answer rather than above it as prose:
   // it is not the answer, and running the two together makes a reasoning
-  // model look like it has started rambling. Whether it starts open is a
-  // setting, and opening or closing one is how the setting is changed.
+  // model look like it has started rambling.
   const thought = turn.reasoning
-    ? `<details class="work thought" data-toggle="thinking"${showThinking ? ' open' : ''}>
+    ? `<details class="work thought" data-toggle="thinking" data-index="${index}"${
+        thoughtsOpen.has(thoughtKey(index)) ? ' open' : ''}>
          <summary>thinking</summary><div class="md">${markdown(turn.reasoning)}</div></details>`
     : '';
   return `${turnControls(turn, index, busy)}
@@ -113,22 +118,21 @@ function turnView(turn, index, busy, showThinking) {
 const turnCache = new Map();
 function turnsView(turns, from) {
   const busy = !!state.snapshot.busy;
-  const showThinking = !!state.snapshot.show_reasoning;
   const out = [];
   for (let index = from; index < turns.length; index += 1) {
     const turn = turns[index];
     if (turn.streaming) {
       // Changing with every push, so not worth remembering.
       out.push(`<div class="turn" data-key="t${index}">${
-        turnView(turn, index, busy, showThinking)}</div>`);
+        turnView(turn, index, busy)}</div>`);
       continue;
     }
-    const signature = `${index}|${busy}|${showThinking}|${(turn.attachments || []).length}|${turn.prompt.length}|${
+    const signature = `${thoughtKey(index)}|${busy}|${thoughtsOpen.has(thoughtKey(index))}|${(turn.attachments || []).length}|${turn.prompt.length}|${
       turn.reply.length}|${(turn.reasoning || '').length}|${(turn.actions || []).length}|${
       turn.failed}|${turn.canceled}|${turn.output_tokens}`;
     let html = turnCache.get(signature);
     if (html === undefined) {
-      html = turnView(turn, index, busy, showThinking);
+      html = turnView(turn, index, busy);
       if (turnCache.size > 400) turnCache.clear();
       turnCache.set(signature, html);
     }
@@ -169,8 +173,7 @@ function setupView() {
       </div>`;
   }).join('');
   return `<div class="setup">
-      <div class="setup-head">${setup.running ? 'Getting Crucible ready'
-                                               : 'Some of what Crucible needs did not install'}</div>
+      <div class="setup-head">${setup.running ? 'Setting up' : 'Setup failed'}</div>
       ${rows}
       ${!setup.running && failed.length
         ? '<button class="action" data-act="setup-retry">Try again</button>' : ''}
@@ -225,7 +228,7 @@ function tallyView() {
   const tip = `This conversation: ${usage.input_tokens || 0} tokens read, ${
     usage.output_tokens || 0} written.\nThis project, ever: ${project.input_tokens || 0} read, ${
     project.output_tokens || 0} written.\nContext: ${s.context_used || 0} of ${
-    s.context_size || 0} tokens. Near the top, the oldest exchanges start to be dropped.`;
+    s.context_size || 0} tokens.`;
   return `<div class="tally${used >= 75 ? ' warm' : ''}" title="${escape(tip)}">${
     compact(usage.input_tokens)} in  ·  ${compact(usage.output_tokens)} out  ·  ${
     used}% context used</div>`;
@@ -293,11 +296,10 @@ function routePicker(mode, disabled) {
       <div class="mi-caption">EXPERTS</div>
       ${experts.length ? experts.map((e) => menuItem('route-pick', e.id, e.name, '', target === e.id,
           `<span class="mi-seat">${e.provider ? ICONS.cloud : PICK.seat}</span>`)).join('')
-        : '<div class="mi-empty">No expert has a model yet.</div>'}
+        : '<div class="mi-empty">None with a model.</div>'}
     </div>` : '';
   return `<div class="menu-wrap">${pickerButton('route', mode, target ? PICK.seat : PICK.route, label,
-      target ? `Every prompt goes to ${label}, without the delegator. Change it here.`
-             : 'The delegator picks an expert for each prompt. Choose one to send them all to it.',
+      target ? `Everything goes to ${label}` : 'The delegator picks the expert',
       disabled)}${menu}</div>`;
 }
 
@@ -308,7 +310,7 @@ function effortPicker(mode, disabled) {
   const menu = open ? `<div class="popmenu picks" role="menu">
       <div class="mi-caption">REASONING EFFORT</div>
       ${EFFORTS.map(([value, label]) => menuItem('effort-pick', value, label, '', value === current)).join('')}
-      <div class="mi-note">Only works with models that support this setting</div>
+      <div class="mi-note">Reasoning models only</div>
     </div>` : '';
   return `<div class="menu-wrap">${pickerButton('effort', mode, PICK.effort, `${chosen[1]} effort`,
       '', disabled)}${menu}</div>`;
@@ -359,13 +361,11 @@ function composerView(options) {
     // finishing pass so the project is left in a state that runs; the second
     // is a cancel and leaves it wherever it got to.
     const finishing = cook.state === 'finishing';
-    buttons = `${finishing ? `<span class="status composer-note">wrapping up -- finishing
-        touches, then it will stop</span>` : ''}
+    buttons = `${finishing ? '<span class="status composer-note">finishing up</span>' : ''}
       ${autoButton}
       <button type="button" class="action" data-act="cook-stop" ${finishing ? 'disabled' : ''}
-              title="Stop taking new work, and leave the project in a state that runs">Stop and finish</button>
-      <button type="button" class="action" data-act="stop"
-              title="Stops immediately, without the finishing pass">Stop now</button>`;
+              title="Finish cleanly, then stop">Stop and finish</button>
+      <button type="button" class="action" data-act="stop" title="Stop at once">Stop now</button>`;
     disabled = true;
     hint = finishing ? 'finishing up' : 'cooking';
   } else {
@@ -382,7 +382,7 @@ function composerView(options) {
   // be typed with tiles in it; they go with whatever is.
   const mode = options.cook ? 'cook' : 'chat';
   return `<div class="foot">
-      <div class="splitter-y" id="composer-splitter" title="Drag to make the box taller"></div>
+      <div class="splitter-y" id="composer-splitter" title="Drag to resize"></div>
       <form class="composer" data-submit="send" data-mode="${mode}">
         <div class="box${disabled ? ' shut' : ''}">
           ${disabled ? '' : attachTiles(mode)}
@@ -529,12 +529,12 @@ actions['edit-allow']  = () => guard(() => call('edit.approve', { approved: true
 actions['edit-deny']   = () => guard(() => call('edit.approve', { approved: false }));
 actions['auto-edits']  = () => configure({ tools: { auto_edits: !state.snapshot.auto_edits } });
 
-/// Opening or closing one "thinking" disclosure is how the preference is set
-/// for all of them, so the next reply arrives the way this one was left.
+/// Opening or closing a turn's thinking, remembered so a redraw leaves it so.
 actions.thinking = (details) => {
-  if (details.open === !!state.snapshot.show_reasoning) return;
-  state.snapshot.show_reasoning = details.open;
-  configure({ ui: { show_reasoning: details.open } });
+  const key = thoughtKey(Number(details.dataset.index));
+  if (details.open === thoughtsOpen.has(key)) return;
+  if (details.open) thoughtsOpen.add(key); else thoughtsOpen.delete(key);
+  render();
 };
 
 /// Copy a code block. The text is read back out of the document rather than
@@ -551,10 +551,14 @@ actions.copy = (button) => {
   }
 };
 
-actions.jump = () => {
+actions.jump = () => { keepAtBottom('transcript', true); showJump(); };
+
+/// The way back down, offered to somebody who has scrolled up away from it.
+function showJump() {
   const transcript = document.getElementById('transcript');
-  if (transcript) transcript.scrollTop = transcript.scrollHeight;
-};
+  const jump = document.getElementById('jump');
+  if (transcript && jump) jump.hidden = following.transcript || fromBottom(transcript) < 40;
+}
 
 // --- after each draw -------------------------------------------------------------------------
 
@@ -563,25 +567,15 @@ actions.jump = () => {
 /// Scrolling up to read something is a decision, and a reply that is still
 /// arriving should not undo it. So the view stays where it was put, and a
 /// button offers the way back down instead.
-afterDraw.push(({ pinned }) => {
-  const transcript = document.getElementById('transcript');
-  const jump = document.getElementById('jump');
+const jumpWatched = new WeakSet();
+afterDraw.push(() => {
+  const transcript = keepAtBottom('transcript', state.follow);
+  state.follow = false;
   if (!transcript) return;
-  if (pinned || state.follow) {
-    transcript.scrollTop = transcript.scrollHeight;
-    state.follow = false;
-  }
-  if (jump) {
-    jump.hidden = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 240;
-  }
-  if (!transcript.dataset.watching) {
-    transcript.dataset.watching = '1';
-    transcript.addEventListener('scroll', () => {
-      const button = document.getElementById('jump');
-      if (button) {
-        button.hidden = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 240;
-      }
-    }, { passive: true });
+  showJump();
+  if (!jumpWatched.has(transcript)) {
+    jumpWatched.add(transcript);
+    transcript.addEventListener('scroll', showJump, { passive: true });
   }
 });
 

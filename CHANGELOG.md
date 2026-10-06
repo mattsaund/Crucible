@@ -6,6 +6,34 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.8.6 — 2026-10-06
+
+A hotfix for three things found in 0.8.5.
+
+**Scrolling up while a reply streams.** The chat followed the bottom for anyone
+within 80 pixels of it, measured at every redraw -- and a reply redraws up to
+thirty times a second, as does the delegator's loading ring after one. A mouse
+wheel on Windows, or a trackpad on a Mac, moves a few pixels at a time, so the
+reader was always "near the bottom" and was pulled back before getting
+anywhere. Whether to follow is now decided by what the reader does: turning the
+wheel up, or scrolling up any other way, lets go at once; coming back to the
+bottom picks it up again. The test window in Create had the same fault, worse:
+it held its transcript at the bottom on every redraw.
+
+**Delete chats, and take projects off the list.** A bin shows on a recent
+chat or project when the pointer is over it, and asks first. A chat is deleted
+for good, and a chat with a scratch folder of its own takes the folder with it.
+A project is only taken off the list: its folder is not touched, and opening it
+again puts it back.
+
+**Less text.** Settings, Create and the dialogs said a paragraph where a few
+words do, and now say the few words or nothing. Messages that point at a
+setting call it by the name it has on screen -- "Longest reply", not "Max
+tokens", which no screen said. On **General** the models folder comes first. **Generation** no longer has *Show a reasoning model's
+working*: each reply's thinking starts shut, and opening one keeps that one
+open. A reply's thinking is saved with the conversation now, so a chat opened
+again has it to open; it is still never sent back to the model.
+
 ## 0.8.5 — 2026-10-05
 
 **Crucible fetches everything it needs.** A download carries the program and

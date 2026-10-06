@@ -272,9 +272,8 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
         }
         const std::string where = gpu->description.empty() ? gpu->name : gpu->description;
         return "would put " + format::bytes(wants) + " on " + where + ", which has "
-             + format::bytes(gpu->memory_free) + " free -- lower the context size, "
-               "close whatever else is using that card, or turn off \"Dedicated VRAM "
-               "only\" in settings to let the rest run on the processor";
+             + format::bytes(gpu->memory_free) + " free -- lower \"Context\", or turn "
+               "off \"Use dedicated VRAM only\"";
     }
 
     if (needed <= available) {
@@ -299,12 +298,10 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
         where += (gpu->description.empty() ? gpu->name : gpu->description);
     }
 
-    std::string advice = " -- close something using the GPU, lower the context size, "
-                         "or turn off \"Dedicated VRAM only\" in settings";
+    std::string advice = " -- lower \"Context\", or turn off \"Use dedicated VRAM only\"";
     if (held > 0 && !holder.empty()) {
-        advice = " -- " + holder + " is holding " + format::bytes(held) + " of that. "
-                 "Lower the context size, use a smaller " + holder + ", or turn off "
-                 "\"Dedicated VRAM only\" in settings";
+        advice = " -- " + holder + " holds " + format::bytes(held) + " of it. Lower "
+                 "\"Context\", or turn off \"Use dedicated VRAM only\"";
     }
 
     return "needs about " + format::bytes(needed) + " of video memory" + detail +
@@ -547,9 +544,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         // running part of itself on the processor -- which is the whole point
         // of the setting, but is worth saying when it is what just happened.
         if (params.gpu_only) {
-            error += ". If it is too large for the card, turn off "
-                     "\"GPU-only compute\" in settings to let it use the "
-                     "processor for the rest";
+            error += ". Too large for the card? Turn off \"Keep every layer on the GPU\"";
         }
         return nullptr;
     }

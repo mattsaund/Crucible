@@ -279,18 +279,65 @@ function render() {
 
 function draw() {
   drawQueued = false;
-  const transcript = document.getElementById('transcript');
-  // Measured before the markup changes: whether the reader was at the bottom
-  // is a fact about the screen they were looking at, not the one they are
-  // about to be given.
-  const pinned = !transcript
-      || transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
-
   paint('top', topView());
   paint('main', (views[state.view] || views.chat)());
   paint('layer', state.modal ? modalView(state.modal) : '');
 
-  for (const job of afterDraw) job({ pinned });
+  for (const job of afterDraw) job();
+}
+
+// --- following the bottom of a transcript -------------------------------------
+
+/// Whether each scrolling transcript keeps up with new text, by element id.
+///
+/// Decided by what the reader does rather than measured at each draw. A
+/// draw lands up to thirty times a second while a reply streams in, and a
+/// wheel notch on Windows or a trackpad on a Mac moves a few pixels at a
+/// time: measured then, the reader was always "near the bottom" and was
+/// pulled back down before getting anywhere.
+const following = {};
+const watchedScrollers = new WeakSet();
+
+const fromBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight;
+const overflowing = (box) => box.scrollHeight > box.clientHeight + 2;
+
+function watchScroller(box) {
+  if (watchedScrollers.has(box)) return;
+  watchedScrollers.add(box);
+  // A transcript just put on screen starts at its newest.
+  following[box.id] = true;
+  let top = box.scrollTop;
+  let height = box.scrollHeight;
+  // The wheel turned up lets go at once, before the scroll it starts has
+  // moved anything a draw could undo -- unless it is turning something
+  // inside, a diff, that can still go up itself.
+  box.addEventListener('wheel', (event) => {
+    if (event.deltaY >= 0 || !overflowing(box)) return;
+    for (let node = event.target; node && node !== box; node = node.parentElement) {
+      if (node.scrollTop > 0 && node.scrollHeight > node.clientHeight) return;
+    }
+    following[box.id] = false;
+  }, { passive: true });
+  box.addEventListener('scroll', () => {
+    // Up by keys, the scroll bar or a finger lets go too -- but not the
+    // bottom moving up because what was above it got shorter.
+    const up = box.scrollTop < top && box.scrollHeight >= height;
+    if (up) following[box.id] = false;
+    else if (fromBottom(box) <= 2) following[box.id] = true;
+    top = box.scrollTop;
+    height = box.scrollHeight;
+  }, { passive: true });
+}
+
+/// After a draw: hold the transcript `id` at its bottom while its reader is
+/// there. `force` puts them there. Returns the element, if it is on screen.
+function keepAtBottom(id, force) {
+  const box = document.getElementById(id);
+  if (!box) return null;
+  watchScroller(box);
+  if (force || !overflowing(box)) following[id] = true;
+  if (following[id]) box.scrollTop = box.scrollHeight;
+  return box;
 }
 
 /// Run `work`, and say so if it fails.

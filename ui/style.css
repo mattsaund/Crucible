@@ -116,6 +116,16 @@ button.recent .r-title, button.recent .r-meta {
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 button.recent .r-meta { color: var(--faint); font-size: .85em; margin-top: .1rem; }
+/* The bin sits over the row's right end, and only shows on hover. */
+.r-row { position: relative; }
+.r-row:hover button.recent { background: var(--hover); padding-right: 2.2rem; }
+.r-row:hover button.recent.here { background: var(--raised); }
+button.r-trash {
+  position: absolute; top: 50%; right: .5rem; transform: translateY(-50%);
+  border-radius: 4px; opacity: 0; transition: opacity .12s ease;
+}
+.r-row:hover button.r-trash, button.r-trash:focus-visible { opacity: 1; }
+button.r-trash:hover { color: var(--error); background: var(--raised); }
 .r-empty { padding: .2rem .9rem; }
 
 button.icon {

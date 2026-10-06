@@ -468,6 +468,37 @@ std::string App::open_session(const std::string& id) {
     return {};
 }
 
+std::string App::delete_session(const std::string& id, const std::filesystem::path& root) {
+    if (engine_->is_busy() || engine_->cooking()) {
+        return "finish what is running first";
+    }
+    const Project project = Project::at(root);
+    // The one on screen is put away first, as New chat does: left open, it
+    // would be written straight back by the next save.
+    if (store_ && store_->project().root == project.root && store_->session_id() == id) {
+        close_project();
+    }
+    std::string error;
+    if (!SessionStore(project).remove(id, error)) {
+        return error;
+    }
+    // A chat's scratch folder is that chat's, and is what it made: with its
+    // last conversation gone, it goes too, and its history with it. Never
+    // the Scratchpad itself, and never a project somebody opened.
+    std::error_code ec;
+    const std::filesystem::path scratchpad =
+        std::filesystem::weakly_canonical(paths::scratchpad_dir(), ec);
+    if (is_scratch(project.root) && project.root.parent_path() == scratchpad
+        && SessionStore(project).list(1).empty()) {
+        if (store_ && store_->project().root == project.root) {
+            close_project();
+        }
+        std::filesystem::remove_all(project.root, ec);
+        std::filesystem::remove_all(project.dir, ec);
+    }
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // Trying a fine-tune before keeping it
 // ---------------------------------------------------------------------------

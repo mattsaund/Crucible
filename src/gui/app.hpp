@@ -82,6 +82,7 @@ private:
     void                  answer_trust(bool trusted) override;
 
     std::string open_session(const std::string& id) override;
+    std::string delete_session(const std::string& id, const std::filesystem::path& root) override;
     bool        retry_turn(std::size_t index) override;
     bool        delete_turn(std::size_t index) override;
 

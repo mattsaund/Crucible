@@ -49,6 +49,10 @@ std::vector<Project> recent_projects(std::size_t limit = 12);
 /// is_project_place.
 void remember_project(const std::filesystem::path& root);
 
+/// Take `root` off that list. The folder and its history are not touched,
+/// and opening it again puts it back.
+void forget_project(const std::filesystem::path& root);
+
 /// Whether `root` is somewhere a person keeps work, rather than a place the
 /// system or Crucible itself keeps things.
 ///

@@ -569,10 +569,8 @@ function pendingEdit(edit) {
         isNew ? 'New file' : 'Edit'}</span> ${escape(edit.path)}</div>
       ${block}
       <div class="row edit-feet">
-        <button class="action yes" id="edit-yes" data-act="edit-allow"
-                title="${isNew ? 'Create this file' : 'Make this change'}">Allow</button>
-        <button class="action no" id="edit-no" data-act="edit-deny"
-                title="Leave the project as it is, and tell the expert so">Deny</button>
+        <button class="action yes" id="edit-yes" data-act="edit-allow">Allow</button>
+        <button class="action no" id="edit-no" data-act="edit-deny">Deny</button>
       </div>
     </div>`;
 }

@@ -168,7 +168,7 @@ state.config = {
   tools: { web_search: true, search_provider: 'brave', search_endpoint: '', search_api_key: 'k',
            search_results: 5, search_timeout: 10, search_rounds: 3, auto_edits: false,
            overflow: 'rolling', workshop_timeout: 120 },
-  ui: { show_reasoning: true, check_updates: true },
+  ui: { check_updates: true },
 };
 state.snapshot = {
   mood: 'loading', status: 'swapping in Physics', busy: true, delegator_ready: false,
@@ -176,7 +176,7 @@ state.snapshot = {
   session_usage: { input_tokens: 15300, output_tokens: 920 },
   project_usage: { input_tokens: 2500000, output_tokens: 81000 },
   notices: ['opened demo', '<b>not markup</b>'],
-  linked: 'physics', resident: 'physics', version: '0.0.0', show_reasoning: true, auto_edits: false,
+  linked: 'physics', resident: 'physics', version: '0.0.0', auto_edits: false,
   update: { latest: '9.9.9', page: 'https://example.test', command: 'crucible --update' },
   project: { open: true, root: '/home/me/work/demo', display: '~/work/demo', name: 'demo' },
   delegator: { model: 'router.gguf', stays_loaded: false },
@@ -530,7 +530,7 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
         "  {id: 'trainer', label: 'Training environment (cuda)', state: 'waiting', detail: '',"
         "   download: 3000000000}]}});"
         " const out = views.chat(); state.snapshot = was; return out; })()");
-    CHECK(drawn.find("Getting Crucible ready") != std::string::npos);
+    CHECK(drawn.find("Setting up") != std::string::npos);
     CHECK(drawn.find("Python 3.12.15") != std::string::npos);
     CHECK(drawn.find("width:40%") != std::string::npos);        // measured, so a bar
     CHECK(drawn.find("Try again") == std::string::npos);        // nothing failed
@@ -571,7 +571,7 @@ TEST(a_delegator_that_would_not_load_says_so_on_its_own_row) {
         " const out = sideView(); delete state.snapshot.delegator_problem; return out; })()");
     CHECK(side.find("data-phase=\"missing\"") != std::string::npos);
     CHECK(side.find("would put 11.8 GB on the 3060") != std::string::npos);
-    CHECK(side.find("routed on keywords until it is") != std::string::npos);
+    CHECK(side.find("Routing on keywords") != std::string::npos);
     const std::string chat = page().eval("views.chat()");
     CHECK(chat.substr(chat.find("id=\"transcript\"")).find("11.8 GB") == std::string::npos);
 }
@@ -593,7 +593,7 @@ TEST(the_provider_dialog_asks_for_an_address_a_key_and_a_model) {
     const std::string modal = page().eval(
         "modalView({ kind: 'provider', id: '', name: '', preset: '', base_url: '', api_key: '',"
         " model: '', listed: [] })");
-    CHECK(modal.find("Endpoint address") != std::string::npos);
+    CHECK(modal.find(">Address<") != std::string::npos);
     CHECK(modal.find("API key") != std::string::npos);
     CHECK(modal.find("id=\"pv-model\"") != std::string::npos);
     // A template is a dropdown now, and the wire format is not asked at all.
@@ -852,6 +852,49 @@ TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
     CHECK(page().eval("topView()").find("data-act=\"fold-right\"") != std::string::npos);
 }
 
+TEST(each_recent_chat_and_project_has_a_bin_but_not_while_something_runs) {
+    const char* const draw =
+        "(function (busy) { var w = state.recentsWidth, r = state.recents, b = state.snapshot.busy;"
+        " state.recentsWidth = 16; state.snapshot.busy = busy;"
+        " state.recents = { chats: ["
+        "   { id: '20261005-101500', title: 'orbits', when: '1 hour ago', turns: 3,"
+        "     project: '/home/me/orbit', project_name: 'orbit' },"
+        "   { id: '20261004-090000', title: 'a note', when: 'yesterday', turns: 1, scratch: true,"
+        "     project: '/home/me/Crucible/Scratchpad/20261004-090000', project_name: 'Scratchpad' }],"
+        "   projects: [{ root: '/home/me/orbit', name: 'orbit', display: '~/orbit' }] };"
+        " var out = recentsView();"
+        " state.recentsWidth = w; state.recents = r; state.snapshot.busy = b; return out; })";
+    const std::string idle = page().eval(std::string(draw) + "(false)");
+    CHECK(idle.find("data-act=\"chat-delete\" data-id=\"20261005-101500\"") != std::string::npos);
+    CHECK(idle.find("data-scratch=\"1\"") != std::string::npos);    // its folder goes too
+    CHECK(idle.find("data-act=\"project-forget\" data-path=\"/home/me/orbit\"") != std::string::npos);
+    CHECK(idle.find("class=\"r-row\"") != std::string::npos);
+    const std::string busy = page().eval(std::string(draw) + "(true)");
+    CHECK(busy.find("r-trash") == std::string::npos);
+    CHECK(busy.find("data-act=\"recent-chat\"") != std::string::npos);
+}
+
+TEST(a_turns_thinking_starts_shut_and_stays_the_way_it_was_left) {
+    const char* const thought =
+        "(function () { var t = turnsView(state.snapshot.turns, 0);"
+        " return t.slice(t.indexOf('<details class=\"work thought\"'), t.indexOf('<summary>thinking')); })()";
+    CHECK(page().eval(thought).find(" open") == std::string::npos);
+    page().eval("thoughtsOpen.add(thoughtKey(0))");
+    CHECK(page().eval(thought).find(" open") != std::string::npos);
+    page().eval("thoughtsOpen.clear()");
+    // And there is no setting for it any more.
+    CHECK(page().eval("(function () { state.settingsPage = 'generation'; return views.settings(); })()")
+              .find("show_reasoning") == std::string::npos);
+}
+
+TEST(general_settings_start_with_the_models_folder) {
+    const std::string drawn =
+        page().eval("(function () { state.settingsPage = 'general'; return views.settings(); })()");
+    const std::string general = drawn.substr(drawn.find("class=\"settings-page\""));
+    CHECK(general.find("<h2>MODELS</h2>") != std::string::npos);
+    CHECK(general.find("<h2>MODELS</h2>") < general.find("DELEGATOR</h2>"));
+}
+
 TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     const char* const with_models =
         "(function (what) { var m = state.models; state.models = { directory: '/m', display: '/m',"
@@ -912,7 +955,7 @@ TEST(the_box_has_who_answers_how_hard_it_thinks_auto_and_an_arrow) {
     CHECK(route.find("data-value=\"physics\"") != std::string::npos);
     const std::string effort = page().eval(std::string(open_box) + "('effort:chat')");
     CHECK(effort.find("REASONING EFFORT") != std::string::npos);
-    CHECK(effort.find("Only works with models that support this setting") != std::string::npos);
+    CHECK(effort.find("Reasoning models only") != std::string::npos);
     CHECK(effort.find("mi-hint") == std::string::npos);
     CHECK(effort.find("data-act=\"effort-pick\"") != std::string::npos);
     CHECK(effort.find("data-value=\"low\"") != std::string::npos);

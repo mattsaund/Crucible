@@ -363,14 +363,6 @@ Overflow         overflow_from_id(std::string_view id);
 
 /// How the window behaves, as opposed to how the models do.
 struct UiConfig {
-    /// Whether a reply's "thinking" section starts unfolded.
-    ///
-    /// Not a switch on the settings screen: it is set by using it. Every turn
-    /// with reasoning has a disclosure triangle, and folding or unfolding one
-    /// is what changes this -- so the next reply opens the way the last one
-    /// was left.
-    bool show_reasoning = false;
-
     /// Ask GitHub, once a day, whether there is a newer Crucible.
     ///
     /// On by default, and it is the one thing in this program that reaches the

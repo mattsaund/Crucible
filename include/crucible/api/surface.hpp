@@ -141,6 +141,13 @@ public:
         return "conversations cannot be reopened from here";
     }
 
+    /// Delete a stored conversation of the project at `root`, for good. A
+    /// chat's own scratch folder goes with its last conversation. Returns a
+    /// reason it could not, or empty.
+    virtual std::string delete_session(const std::string&, const std::filesystem::path&) {
+        return "conversations cannot be deleted from here";
+    }
+
     /// Ask a turn again, or take it off the transcript.
     ///
     /// Both rewrite what the expert can see as well as what is on screen, and

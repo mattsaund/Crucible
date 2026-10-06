@@ -207,28 +207,35 @@ function recentsView() {
   const r = state.recents;
   const here = state.snapshot.session || '';
   const project = state.snapshot.project || {};
+  const busy = !!state.snapshot.busy;
+  // The bin shows on hover. Not while something runs: the chat being
+  // deleted could be the one being written to.
+  const bin = (act, data, label) => busy ? '' : `<button class="icon r-trash" data-act="${act}" ${data}
+      title="${label}" aria-label="${label}">${ICONS.trash}</button>`;
   const chats = !r ? '<div class="status r-empty">Reading...</div>'
-    : r.chats.length ? r.chats.map((c) => `<button class="recent${c.id === here ? ' here' : ''}"
+    : r.chats.length ? r.chats.map((c) => `<div class="r-row"><button class="recent${c.id === here ? ' here' : ''}"
           data-act="recent-chat" data-id="${escape(c.id)}" data-project="${escape(c.project)}"
           title="${escape(`${c.title}\n${c.project_name}  ·  ${c.when}  ·  ${count(c.turns, 'turn')}`)}">
           <span class="r-title">${escape(c.title || '(untitled)')}</span>
-          <span class="r-meta">${escape(c.scratch ? c.when : `${c.project_name}  ·  ${c.when}`)}</span></button>`).join('')
-    : '<div class="status r-empty">No conversations yet.</div>';
+          <span class="r-meta">${escape(c.scratch ? c.when : `${c.project_name}  ·  ${c.when}`)}</span></button>${
+          bin('chat-delete', `data-id="${escape(c.id)}" data-project="${escape(c.project)}"
+              data-title="${escape(c.title || '(untitled)')}" data-scratch="${c.scratch ? 1 : ''}"`, 'Delete')}</div>`).join('')
+    : '<div class="status r-empty">No chats.</div>';
   const projects = !r ? ''
-    : r.projects.length ? r.projects.map((p) => `<button class="recent${p.current ? ' here' : ''}"
+    : r.projects.length ? r.projects.map((p) => `<div class="r-row"><button class="recent${p.current ? ' here' : ''}"
         data-act="recent-project" data-path="${escape(p.root)}" title="${escape(p.root)}">
-        <span class="r-title">${escape(p.name)}</span><span class="r-meta">${escape(p.display)}</span></button>`).join('')
-    : '<div class="status r-empty">No projects opened yet.</div>';
-  const busy = !!state.snapshot.busy;
-  return `<div class="splitter" id="splitter-r" title="Drag to resize. Drag to the edge to close."></div>
+        <span class="r-title">${escape(p.name)}</span><span class="r-meta">${escape(p.display)}</span></button>${
+        bin('project-forget', `data-path="${escape(p.root)}" data-name="${escape(p.name)}"`, 'Remove')}</div>`).join('')
+    : '<div class="status r-empty">No projects.</div>';
+  return `<div class="splitter" id="splitter-r" title="Drag to resize"></div>
     <aside class="recents" style="width:${recentsWidth()}rem">
       <div class="roster-scroll">
         <div class="r-head"><h2>RECENT CHATS</h2>
-          <button class="action small" data-act="new-chat" title="Start a new chat, with a scratch folder of its own"
+          <button class="action small" data-act="new-chat"
                   ${busy ? 'disabled' : ''}>New chat</button></div>
         ${chats}
         <div class="r-head r-projects"><h2>PROJECTS</h2>
-          <button class="action small" data-act="open-project" title="Choose a folder to work in"
+          <button class="action small" data-act="open-project"
                   ${busy ? 'disabled' : ''}>Open project</button></div>
         ${projects}
       </div>
@@ -248,6 +255,21 @@ actions['recent-project'] = (row) => guard(async () => {
   await call('project.open', { path: row.dataset.path });
   need('recents', 'recents', true);
 });
+actions['chat-delete'] = async (button) => {
+  const { id, project, title, scratch } = button.dataset;
+  const sure = await confirmIt({ title: `Delete "${title}"?`,
+    body: scratch ? 'The chat and its files. No undo.' : 'No undo.', yes: 'Delete', no: 'Cancel' });
+  if (!sure) return;
+  await guard(() => call('session.delete', { id, project }));
+  need('recents', 'recents', true);
+};
+actions['project-forget'] = async (button) => {
+  const sure = await confirmIt({ title: `Remove ${button.dataset.name}?`,
+    body: 'From this list only. The folder stays.', yes: 'Remove', no: 'Cancel' });
+  if (!sure) return;
+  await guard(() => call('project.forget', { path: button.dataset.path }));
+  need('recents', 'recents', true);
+};
 actions['new-chat'] = () => guard(async () => {
   await call('session.new');
   if (state.view !== 'chat') enter('chat');
@@ -338,9 +360,9 @@ function sideView() {
         <button class="seat${routing ? ' linked' : ''}${linked >= 0 ? ' trunk-start' : ''}"
                 data-act="settings-page" data-page="general" data-phase="${delegatorPhase}"
                 title="${escape(problem
-                  ? `${delegator.model} could not be loaded: ${problem}.\nPrompts are routed on keywords until it is.`
-                  : delegator.model ? 'Reads the prompt, names the expert.\n' + delegator.model
-                  : 'No delegator: prompts are routed on keywords.')}">
+                  ? `${delegator.model}: ${problem}\nRouting on keywords`
+                  : delegator.model ? delegator.model
+                  : 'No delegator. Routing on keywords')}">
           <span class="dot"></span><span class="name">${escape(delegator.model || '(none)')}</span>
           ${loading ? ring(s.delegator_progress) : ''}
         </button>
@@ -352,7 +374,7 @@ function sideView() {
                 title="${loaded ? 'Unload every model' : 'Nothing is loaded'}">Eject</button>
       </div>
     </aside>
-    <div class="splitter" id="splitter" title="Drag to resize. Drag to the edge to close."></div>`;
+    <div class="splitter" id="splitter" title="Drag to resize"></div>`;
 }
 
 actions.fold = () => setSidebar(sidebarOpen() ? 0 : Math.max(remember.get('sidebar-open', 15), SIDEBAR_MIN));
@@ -486,8 +508,7 @@ modals.trust = (m) => `<div class="modal">
     <div class="head"><strong>Trust this folder?</strong></div>
     <div class="body-pad">
       <div class="crumbs">${escape(m.path)}</div>
-      <div class="status">Experts may read, write and run commands here. Paths
-        outside it are refused &mdash; a command they run is not.</div>
+      <div class="status">Experts can read, write and run commands here.</div>
     </div>
     <div class="feet">
       <button class="action" data-act="trust-yes" data-focus>Trust and open</button>
@@ -502,21 +523,18 @@ actions['trust-no']  = () => guard(() => call('trust.answer', { trusted: false }
 /// already exists -- a file here, or one at a provider. Fine-tuning one from
 /// scratch is the Create tab, and this dialog says so.
 modals['new-expert'] = (m) => `<div class="modal">
-    <div class="head"><strong>New expert</strong>
-      <div class="status">A seat the delegator can route to, answered by a model you already have.</div></div>
+    <div class="head"><strong>New expert</strong></div>
     <div class="body-pad">
-      <div class="field"><label for="ne-name">Expert name</label>
+      <div class="field"><label for="ne-name">Name</label>
         <input id="ne-name" data-input="ne-field" data-field="name" data-draft data-focus
                placeholder="Rust Async, Tax Law, Kubernetes" value="${escape(m.name)}"></div>
-      <div class="field"><label for="ne-what">Describe what the expert is trained in</label>
+      <div class="field"><label for="ne-what">Description</label>
         <textarea id="ne-what" rows="4" data-input="ne-field" data-field="description" data-draft>${
           escape(m.description)}</textarea>
-        <div class="hint">The delegator routes on this, so name the things it should take.</div></div>
+        <div class="hint">Used for routing.</div></div>
       <div class="field"><label for="ne-model">Model</label>
         ${modelSelect(m.model, m.provider, { id: 'ne-model', 'data-change': 'ne-model' })}
-        <div class="hint">From the models folder${state.models ? `, ${escape(state.models.display)}` : ''},
-          or a provider you have added. A fine-tune made in Create lands in that folder too.
-          It can be left empty and chosen later.</div></div>
+        <div class="hint">Optional.</div></div>
       ${m.error ? `<div class="bad">${escape(m.error)}</div>` : ''}
     </div>
     <div class="feet">

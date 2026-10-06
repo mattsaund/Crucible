@@ -217,7 +217,6 @@ std::string Surface::snapshot() {
         {"model", std::filesystem::path(config.router.model).filename().string()},
         {"stays_loaded", config.routing.keep_delegator_loaded},
     };
-    out["show_reasoning"] = config.ui.show_reasoning;
     out["auto_edits"]     = config.tools.auto_edits;
     out["reasoning_effort"] = config.reasoning_effort;
     out["session"]          = host_.session_id();

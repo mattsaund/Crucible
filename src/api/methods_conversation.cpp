@@ -344,6 +344,17 @@ Reply history_open(const json& params, Host& host) {
     return error.empty() ? good() : bad(error);
 }
 
+/// Delete a conversation for good: `id` in the project at `project`.
+Reply session_delete(const json& params, Host& host) {
+    const auto what  = params.value("id", std::string{});
+    const auto where = params.value("project", std::string{});
+    if (what.empty() || where.empty()) {
+        return bad("session.delete needs an id and a project");
+    }
+    const std::string error = host.delete_session(what, where);
+    return error.empty() ? good() : bad(error);
+}
+
 Reply session_new(const json&, Host& host) {
     const std::string error = host.new_session();
     return error.empty() ? good() : bad(error);
@@ -404,6 +415,7 @@ void conversation_methods(std::vector<Method>& table) {
     table.push_back({"history.cook", history_cook, nullptr});
     table.push_back({"history.open", nullptr, history_open});
     table.push_back({"session.new",  nullptr, session_new});
+    table.push_back({"session.delete", nullptr, session_delete});
     table.push_back({"recents",      recents, nullptr});
 }
 

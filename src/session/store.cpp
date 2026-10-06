@@ -123,6 +123,11 @@ json turn_to_json(const Turn& turn) {
         {"canceled", turn.canceled},
         {"failed", turn.failed},
     };
+    // Kept for the transcript, so a reopened conversation's thinking can be
+    // opened again. Never sent back to the model: see Turn::reasoning.
+    if (!turn.reasoning.empty()) {
+        entry["reasoning"] = turn.reasoning;
+    }
     if (!turn.attachments.empty()) {
         json attachments = json::array();
         for (const TurnAttachment& one : turn.attachments) {
@@ -146,6 +151,7 @@ Turn turn_from_json(const json& entry) {
     Turn turn;
     turn.prompt            = entry.value("prompt", "");
     turn.reply             = entry.value("reply", "");
+    turn.reasoning         = entry.value("reasoning", "");
     turn.output_tokens     = entry.value("output_tokens", 0);
     turn.tokens_per_second = entry.value("tokens_per_second", 0.0);
     turn.load_ms           = entry.value("load_ms", 0L);
@@ -407,6 +413,33 @@ void remember_project(const std::filesystem::path& root) {
     std::ofstream out(recent_file());
     if (out) {
         out << json(paths).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
+    }
+}
+
+void forget_project(const std::filesystem::path& root) {
+    json doc;
+    try {
+        std::ifstream in(recent_file());
+        if (!in) {
+            return;
+        }
+        in >> doc;
+    } catch (const json::exception&) {
+        return;
+    }
+    if (!doc.is_array()) {
+        return;
+    }
+    const std::filesystem::path gone = canonical_or_as_is(root);
+    json kept = json::array();
+    for (const json& entry : doc) {
+        if (entry.is_string() && !same_place(canonical_or_as_is(entry.get<std::string>()), gone)) {
+            kept.push_back(entry);
+        }
+    }
+    std::ofstream out(recent_file());
+    if (out) {
+        out << kept.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     }
 }
 
@@ -720,6 +753,15 @@ std::vector<SessionSummary> recent_chats(std::size_t limit) {
 }
 
 bool SessionStore::remove(const std::string& id, std::string& error) const {
+    // An id is a timestamp, and it becomes a file name: nothing in it may
+    // reach outside the sessions folder.
+    const bool plain = !id.empty() && std::all_of(id.begin(), id.end(), [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_';
+    });
+    if (!plain) {
+        error = "no session called " + id;
+        return false;
+    }
     std::error_code ec;
     if (!std::filesystem::remove(session_file(id), ec) || ec) {
         error = "could not delete session " + id;

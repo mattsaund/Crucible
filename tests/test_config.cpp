@@ -328,7 +328,6 @@ TEST(saving_then_loading_round_trips_every_setting) {
     original.defaults.temperature = 0.33F;
     original.defaults.n_gpu_layers = 42;
     original.defaults.split_mode  = "row";
-    original.ui.show_reasoning    = true;
     original.ui.check_updates     = false;
     original.tools.auto_edits     = true;
     original.experts["physics"].model = "phys.gguf";
@@ -348,7 +347,6 @@ TEST(saving_then_loading_round_trips_every_setting) {
     CHECK(reloaded.defaults.temperature == 0.33F);
     CHECK_EQ(reloaded.defaults.n_gpu_layers, 42);
     CHECK_EQ(reloaded.defaults.split_mode, std::string("row"));
-    CHECK(reloaded.ui.show_reasoning);
     CHECK(!reloaded.ui.check_updates);
     // A safety switch that silently forgets itself is worse than not having
     // one: the user turns auto mode on, restarts, and is asked about every

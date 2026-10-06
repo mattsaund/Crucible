@@ -57,14 +57,14 @@ function cookBody(cook, live) {
     : files.length
       ? `<div class="changed"><span class="status">changed</span> ${
           files.map((f) => `<span class="ok-file">${escape(f)}</span>`).join('  ')}</div>`
-      : '<div class="changed bad">changed no files -- whatever it says, nothing on disk moved</div>';
+      : '<div class="changed bad">no files changed</div>';
 
   return `<div class="goal-card">
         <div class="caption">GOAL</div>
         <div class="goal">${escape(cook.goal)}</div>
         ${attachedChips(cook.attachments)}
         ${running ? `<button class="icon goal-stop" data-act="stop"
-            title="Stop now, without the finishing pass" aria-label="Stop now">${ICONS.stop}</button>` : ''}
+            title="Stop now" aria-label="Stop now">${ICONS.stop}</button>` : ''}
       </div>
       <div class="cook-state seat" data-phase="${dot}">
         <span class="dot"></span><strong>${escape(cook.state)}</strong>
@@ -74,7 +74,7 @@ function cookBody(cook, live) {
       ${cookChain(cook)}
       ${cook.state === 'asking' ? `<div class="asking"><div class="caption">IT IS ASKING</div>
           <div>${escape(cook.question)}</div>
-          <div class="status" style="margin-top:.5rem">answer in the box below and press enter</div></div>` : ''}
+          <div class="status" style="margin-top:.5rem">answer below</div></div>` : ''}
       ${cookSteps(cook.steps, cook.shown_from || 0)}
       ${cook.outcome ? `<hr class="rule"><div class="md outcome">${markdown(cook.outcome)}</div>` : ''}
       ${changed}`;
@@ -86,7 +86,7 @@ views.cook = () => {
   // a runtime and a model exactly as a question does.
   const body = cook ? cookBody(cook, true)
     : readiness(`<div class="empty"><div class="empty-label quiet">Give it a goal</div>
-        <div class="status">It works in passes, improving each one, until you stop it.</div></div>`);
+        <div class="status">Improves each pass until stopped.</div></div>`);
   // A write waiting for a yes, when Auto is off. Drawn where the journal
   // ends, which is where the cook is.
   const edit = state.snapshot.pending_edit ? pendingEdit(state.snapshot.pending_edit) : '';

@@ -16,15 +16,14 @@ namespace {
 // CPU comes first because every other one needs it.
 constexpr std::array<BackendInfo, kBackendCount> kBackends{{
     {BackendKind::Cpu, "cpu", "CPU", /*reg=*/"CPU",
-     "Runs on the processor. Needs no drivers, works everywhere, and is the "
-     "slowest option by a wide margin. Every other runtime needs it as well.",
+     "The processor. Slowest; the others need it.",
      "GGML_CPU", "ggml-cpu",
      /*required_tool=*/"",
      /*apt=*/"build-essential", /*dnf=*/"gcc-c++ make", /*pacman=*/"base-devel",
      /*brew=*/"", /*multi_device=*/false, /*required=*/true},
 
     {BackendKind::Cuda, "cuda", "CUDA", /*reg=*/"CUDA",
-     "NVIDIA cards, using the CUDA toolkit. The fastest option on NVIDIA hardware.",
+     "NVIDIA cards. Fastest there.",
      "GGML_CUDA", "ggml-cuda",
      /*required_tool=*/"nvcc",
      /*apt=*/"nvidia-cuda-toolkit",
@@ -36,8 +35,7 @@ constexpr std::array<BackendInfo, kBackendCount> kBackends{{
      /*multi_device=*/true, /*required=*/false},
 
     {BackendKind::Vulkan, "vulkan", "Vulkan", /*reg=*/"Vulkan",
-     "Any GPU with a Vulkan driver -- NVIDIA, AMD or Intel. Slower than CUDA, "
-     "but needs only the graphics driver you already have.",
+     "Any GPU with a Vulkan driver.",
      "GGML_VULKAN", "ggml-vulkan",
      /*required_tool=*/"glslc",
      // spirv-headers is easy to miss and the build fails at configure time
@@ -53,9 +51,7 @@ constexpr std::array<BackendInfo, kBackendCount> kBackends{{
      /*multi_device=*/true, /*required=*/false},
 
     {BackendKind::Metal, "metal", "Metal", /*reg=*/"MTL",
-     "Apple GPUs. The only GPU runtime that exists on macOS, and on Apple "
-     "silicon it shares one pool of memory with the processor -- so a model "
-     "far larger than any discrete card holds will still load.",
+     "Apple GPUs.",
      "GGML_METAL", "ggml-metal",
      // Not the compiler but the tool that finds it. ggml compiles the Metal
      // shaders through `xcrun -sdk macosx metal`, and xcrun is what reports a

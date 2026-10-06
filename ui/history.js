@@ -6,8 +6,7 @@ views.history = () => {
   const project = state.snapshot.project || {};
   if (!project.open) {
     return sideView() + `<div class="pane"><div class="empty">
-        <div class="empty-label">No project open.</div>
-        <div class="status">Open one to see its history.</div></div></div>`;
+        <div class="empty-label">No project open.</div></div></div>`;
   }
   if (state.open.cook) {
     return sideView() + `<div class="pane"><div id="transcript">
@@ -26,14 +25,13 @@ views.history = () => {
     </button>`).join('') : '<p class="lede">No cooks yet.</p>';
 
   const sessions = h.sessions.length ? h.sessions.map((c) => `
-    <button class="card pick" data-act="history-session" data-id="${escape(c.id)}"
-            title="Open this conversation and carry on with it">
+    <button class="card pick" data-act="history-session" data-id="${escape(c.id)}">
       <div class="title"><strong>${escape(c.title || '(no title)')}</strong></div>
       <div class="hint">${escape(c.when)}  ·  ${count(c.turns, 'turn')}</div>
     </button>`).join('') : '<p class="lede">No conversations yet.</p>';
 
   return sideView() + `<div class="pane"><div class="settings-page">
-      <h1>History</h1><p class="lede">Every cook and conversation this project has had.</p>
+      <h1>History</h1>
       <h2>COOKS</h2>${cooks}
       <h2 style="margin-top:1.8rem">CONVERSATIONS</h2>${sessions}
     </div></div>`;

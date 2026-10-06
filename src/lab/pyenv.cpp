@@ -206,13 +206,13 @@ Flavor flavor_here() {
 std::string_view flavor_note(Flavor flavor) {
     switch (flavor) {
         case Flavor::Cuda:
-            return "QLoRA and LoRA on the card, which is the fast one";
+            return "QLoRA and LoRA on NVIDIA";
         case Flavor::Mlx:
-            return "LoRA on Apple Silicon through MLX";
+            return "LoRA on Apple silicon";
         case Flavor::Cpu:
             break;
     }
-    return "LoRA on the processor -- it works, and it is slow enough to plan around";
+    return "LoRA on the processor. Slow";
 }
 
 /// Measured from the wheels these resolve to, rounded to something honest.

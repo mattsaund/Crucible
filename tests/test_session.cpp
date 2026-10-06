@@ -344,6 +344,30 @@ TEST(a_session_round_trips_through_disk) {
     CHECK_EQ(loaded_usage.output_tokens, std::uint64_t{100});
 }
 
+TEST(a_turns_thinking_is_kept_so_a_reopened_conversation_can_show_it) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    SessionStore store(Project::current());
+    std::vector<Turn> turns{finished_turn("is 391 prime?", "No: 17 x 23.", 20),
+                            finished_turn("and 2?", "Yes.", 2)};
+    turns[0].reasoning = "Try 17: 17 * 23 = 391.";
+    std::string error;
+    CHECK(store.save(turns, TokenUsage{}, error));
+
+    std::vector<Turn> loaded;
+    TokenUsage usage;
+    CHECK(store.load(store.session_id(), loaded, usage, error));
+    CHECK_EQ(loaded.size(), std::size_t{2});
+    CHECK_EQ(loaded[0].reasoning, std::string("Try 17: 17 * 23 = 391."));
+    CHECK_EQ(loaded[0].reply, std::string("No: 17 x 23."));
+    CHECK(loaded[1].reasoning.empty());
+    // A turn with none writes nothing for it.
+    std::ifstream in(store.project().dir / "sessions" / (store.session_id() + ".json"));
+    const nlohmann::json saved = nlohmann::json::parse(in);
+    CHECK(saved["turns"][0].contains("reasoning"));
+    CHECK(!saved["turns"][1].contains("reasoning"));
+}
+
 TEST(every_route_source_survives_a_round_trip_through_its_name) {
     for (const RouteSource source : {RouteSource::Model, RouteSource::Keyword,
                                      RouteSource::Forced, RouteSource::Fallback}) {
@@ -638,6 +662,46 @@ TEST(an_old_versions_system32_is_never_remembered_or_listed) {
     }
 }
 
+
+TEST(a_forgotten_project_leaves_the_list_and_keeps_its_folder) {
+    TempDir dir;
+    ScopedDataHome data(dir.path() / "data");
+    const std::filesystem::path orbit = dir.path() / "work" / "orbit";
+    const std::filesystem::path tides = dir.path() / "work" / "tides";
+    std::filesystem::create_directories(orbit);
+    std::filesystem::create_directories(tides);
+    remember_project(orbit);
+    remember_project(tides);
+    CHECK_EQ(recent_projects().size(), std::size_t{2});
+
+    forget_project(orbit / ".");    // however the path is spelled
+    const std::vector<Project> listed = recent_projects();
+    CHECK_EQ(listed.size(), std::size_t{1});
+    if (!listed.empty()) {
+        CHECK_EQ(listed.front().name, std::string("tides"));
+    }
+    CHECK(std::filesystem::is_directory(orbit));
+    remember_project(orbit);        // and opening it again brings it back
+    CHECK_EQ(recent_projects().size(), std::size_t{2});
+}
+
+TEST(a_deleted_session_is_gone_and_an_id_cannot_reach_outside_its_folder) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    SessionStore store(Project::current());
+    std::string error;
+    CHECK(store.save({finished_turn("hello", "Hi.", 3)}, TokenUsage{}, error));
+    const std::string id = store.session_id();
+    CHECK_EQ(store.list().size(), std::size_t{1});
+
+    CHECK(store.remove(id, error));
+    CHECK(store.list().empty());
+    CHECK(!store.remove(id, error));    // already gone
+
+    std::ofstream(store.project().dir / "keep.json") << "{}";
+    CHECK(!store.remove("../keep", error));
+    CHECK(std::filesystem::exists(store.project().dir / "keep.json"));
+}
 
 TEST(a_turn_holding_bytes_that_are_not_utf8_still_saves) {
     // What a command prints on Windows is in the console's code page, not

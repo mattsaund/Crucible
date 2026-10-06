@@ -36,6 +36,17 @@ Reply project_open(const json& params, Host& host) {
     return error.empty() ? good() : bad(error);
 }
 
+/// Off the recent projects. The folder is left exactly as it is. An action,
+/// not a lookup: opening a project writes the same list, on this thread.
+Reply project_forget(const json& params, Host&) {
+    const auto path = params.value("path", std::string{});
+    if (path.empty()) {
+        return bad("project.forget needs a path");
+    }
+    forget_project(paths::expand_user(path));
+    return good();
+}
+
 Reply trust_answer(const json& params, Host& host) {
     host.answer_trust(params.value("trusted", false));
     return good();
@@ -115,6 +126,7 @@ Reply browse(const json& params, const Scene&) {
 void project_methods(std::vector<Method>& table) {
     table.push_back({"project",      nullptr, project});
     table.push_back({"project.open", nullptr, project_open});
+    table.push_back({"project.forget", nullptr, project_forget});
     table.push_back({"trust.answer", nullptr, trust_answer});
     table.push_back({"projects",     projects, nullptr});
     table.push_back({"browse",       browse, nullptr});

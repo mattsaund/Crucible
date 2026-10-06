@@ -462,8 +462,8 @@ async function keepDropped(mode, tops) {
   if (kept.length) await inspectTiles(mode, kept);
   // Said after the tiles are filled in, which clears what was said before.
   if (budget.left.length) {
-    failed = `Left out, too large to drop: ${budget.left.slice(0, 3).join(', ')}${
-      budget.left.length > 3 ? ` and ${budget.left.length - 3} more` : ''} -- the plus attaches a file of any size.`;
+    failed = `Too large to drop: ${budget.left.slice(0, 3).join(', ')}${
+      budget.left.length > 3 ? ` and ${budget.left.length - 3} more` : ''}. Use the plus.`;
   }
   if (failed) state.error = failed;
   render();

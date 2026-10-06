@@ -154,7 +154,7 @@ std::string Provider::endpoint() const {
 const std::vector<KnownService>& known_services() {
     static const std::vector<KnownService> services = {
         {"Anthropic", "anthropic", "", "anthropic.com", "ANTHROPIC_API_KEY",
-         "Claude, through its own API."},
+         ""},
         {"OpenAI", "openai", "https://api.openai.com/v1", "openai.com", "OPENAI_API_KEY", ""},
         {"Google Gemini", "openai",
          "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -166,20 +166,20 @@ const std::vector<KnownService>& known_services() {
         {"Cloudflare Workers AI", "openai",
          "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
          "cloudflare.com", "CLOUDFLARE_API_TOKEN",
-         "Put your account id in the address where it says YOUR_ACCOUNT_ID."},
+         "Replace YOUR_ACCOUNT_ID."},
         {"OpenRouter", "openai", "https://openrouter.ai/api/v1", "openrouter.ai",
-         "OPENROUTER_API_KEY", "One key for most of the hosted models there are."},
+         "OPENROUTER_API_KEY", ""},
         {"Groq", "openai", "https://api.groq.com/openai/v1", "groq.com", "GROQ_API_KEY", ""},
         {"Mistral", "openai", "https://api.mistral.ai/v1", "mistral.ai", "MISTRAL_API_KEY", ""},
         {"xAI", "openai", "https://api.x.ai/v1", "x.ai", "XAI_API_KEY", ""},
         {"Together", "openai", "https://api.together.xyz/v1", "together.",
          "TOGETHER_API_KEY", ""},
         {"Ollama", "openai", "http://localhost:11434/v1", "localhost:11434", "",
-         "A server on this machine or your network. It wants no key."},
+         "No key needed."},
         {"LM Studio", "openai", "http://localhost:1234/v1", "localhost:1234", "",
-         "A server on this machine or your network. It wants no key."},
+         "No key needed."},
         {"llama.cpp server", "openai", "http://localhost:8080/v1", "localhost:8080", "",
-         "A server on this machine or your network. It wants no key."},
+         "No key needed."},
     };
     return services;
 }

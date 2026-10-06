@@ -246,7 +246,6 @@ json config_to_json(const Config& config) {
             {"workshop_timeout", config.tools.workshop_timeout},
         }},
         {"ui", json{
-            {"show_reasoning", config.ui.show_reasoning},
             {"check_updates",  config.ui.check_updates},
         }},
     };
@@ -368,7 +367,6 @@ void write_default_config(const std::filesystem::path& file) {
             {"workshop_timeout", defaults.tools.workshop_timeout},
         }},
         {"ui", json{
-            {"show_reasoning", defaults.ui.show_reasoning},
             {"check_updates",  defaults.ui.check_updates},
         }},
     };
@@ -542,13 +540,12 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
     }
 
-    // Three keys an older file may still carry -- animation_ms, show_experts,
-    // unicode -- belonged to the terminal interface and are read by nothing.
-    // They are passed over rather than warned about, and the next save drops
-    // them.
+    // Keys an older file may still carry -- animation_ms, show_experts and
+    // unicode from the terminal interface, show_reasoning from before each
+    // turn's thinking opened on its own -- are read by nothing. They are
+    // passed over rather than warned about, and the next save drops them.
     if (const auto ui = doc.find("ui"); ui != doc.end() && ui->is_object()) {
-        read_field(*ui, "show_reasoning", config.ui.show_reasoning, "ui", warnings);
-        read_field(*ui, "check_updates",  config.ui.check_updates,  "ui", warnings);
+        read_field(*ui, "check_updates", config.ui.check_updates, "ui", warnings);
     }
 
     if (const auto providers = doc.find("providers");

@@ -221,7 +221,7 @@ std::string since_last_start(const std::filesystem::path& log) {
         return {};
     }
     std::ofstream(seen) << "seen\n";
-    return "Crucible closed unexpectedly last time -- what it was doing is in " + log.string();
+    return "Crucible crashed last time. Details: " + log.string();
 }
 
 }  // namespace crucible::gui::crash
