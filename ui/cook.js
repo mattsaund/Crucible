@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 //
-// Cook: one goal, worked in passes, each improving on the last, until you stop it.
+// A journal, drawn: the steps a build or a cook took, and a whole one as
+// History shows it.
 //
-// A prompt is one question and one answer; a cook is a goal and however long
-// it takes. The view is the journal as it happens, because a cook that only
-// reported at the end would be an hour of wondering.
+// There was a Cook tab beside Build -- one goal worked in passes until it
+// was stopped -- and it is folded into Build, which does the same work with
+// a plan on top. The journal it kept is the journal a build keeps, so what
+// draws one draws the other, and a cook from before opens from History as it
+// always did. Chat shows the tail of whichever is running.
 
 /// The steps of a journal. Shared with Chat, which shows the tail of a cook
 /// that is running, and with History, which shows a finished one whole.
@@ -20,7 +23,7 @@ function cookSteps(steps, from) {
   return skipped + steps.map((step) => {
     const head = `<span class="kind kind-${escape(step.kind)}${step.ok === false ? ' kind-failed' : ''}">${
         escape(step.kind)}</span>
-      <span class="${step.ok === false ? 'bad' : ''}">${escape(step.summary)}</span>
+      <span class="${step.ok === false ? 'bad' : ''}">${escape(step.summary)}${pictureChip(step.picture)}</span>
       <span class="tag">${escape(expertName(step.expert))}</span>`;
     if (!step.detail) return `<div class="step"><div class="step-head">${head}</div></div>`;
     const file = (step.changed || [])[0] || '';
@@ -43,6 +46,19 @@ function cookChain(cook) {
 
 /// One cook, running or finished: the goal, where it is, and what it did.
 function cookBody(cook, live) {
+  // A build, opened from History: the plan and its agents, as the Build
+  // view draws them, over the same journal.
+  if (cook.kind === 'build' && cook.tasks) {
+    const chosen = openTask(cook);
+    return `<div class="goal-card"><div class="caption">DIRECTIVE</div><div class="goal">${escape(cook.goal)}</div>
+        ${attachedChips(cook.attachments)}</div>
+      <div class="cook-state seat" data-phase="${cook.state === 'failed' ? 'missing' : 'dormant'}">
+        <span class="dot"></span><strong>${escape(cook.state)}</strong>
+        <span class="status">${count((cook.tasks || []).length, 'task')}  ·  ${span(cook.seconds)}  ·  ${
+          count(cook.total !== undefined ? cook.total : (cook.steps || []).length, 'step')}</span></div>
+      <div class="build-split">${agentsList(cook, chosen)}${agentWork(cook, chosen)}</div>
+      ${cook.outcome ? `<hr class="rule"><div class="md outcome">${markdown(cook.outcome)}</div>` : ''}`;
+  }
   const failed = cook.state === 'failed';
   const running = live && cook.running;
   const dot = failed ? 'missing' : running ? 'active' : 'dormant';
@@ -79,22 +95,5 @@ function cookBody(cook, live) {
       ${cook.outcome ? `<hr class="rule"><div class="md outcome">${markdown(cook.outcome)}</div>` : ''}
       ${changed}`;
 }
-
-views.cook = () => {
-  const cook = state.snapshot.cook;
-  // With nothing cooking, the same check Chat makes: a cook needs a project,
-  // a runtime and a model exactly as a question does.
-  const body = cook ? cookBody(cook, true)
-    : readiness(`<div class="empty"><div class="empty-label quiet">Give it a goal</div>
-        <div class="status">Improves each pass until stopped.</div></div>`);
-  // A write waiting for a yes, when Auto is off. Drawn where the journal
-  // ends, which is where the cook is.
-  const edit = state.snapshot.pending_edit ? pendingEdit(state.snapshot.pending_edit) : '';
-  return sideView() + `<div class="pane">
-      <div class="scroller"><div id="transcript">${body}${edit}</div>
-        <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
-      ${composerView({ cook: true, hint: 'what should it work on?', send: 'Cook' })}
-    </div>` + recentsView();
-};
 
 actions['cook-stop'] = () => guard(() => call('cook.stop'));

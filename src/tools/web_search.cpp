@@ -130,6 +130,83 @@ std::vector<SearchResult> parse_searxng(const json& body, int max_results) {
     return results;
 }
 
+/// The results off DuckDuckGo's HTML page.
+///
+/// Each result is an anchor of class "result__a" with the page's address in
+/// its href -- through a redirect of theirs, carrying the real address in a
+/// "uddg" parameter -- and a sibling of class "result__snippet". Read with
+/// string searches rather than an HTML parser, because there is none here
+/// and the page's shape is three class names.
+std::vector<SearchResult> parse_duckduckgo(std::string_view body, int max_results) {
+    std::vector<SearchResult> results;
+    std::size_t at = 0;
+    while (results.size() < static_cast<std::size_t>(std::max(1, max_results))) {
+        const std::size_t anchor = body.find("class=\"result__a\"", at);
+        if (anchor == std::string_view::npos) {
+            break;
+        }
+        const std::size_t open  = body.rfind("<a", anchor);
+        const std::size_t close = body.find("</a>", anchor);
+        const std::size_t tag_end = body.find('>', anchor);
+        if (open == std::string_view::npos || close == std::string_view::npos
+            || tag_end == std::string_view::npos || tag_end > close) {
+            break;
+        }
+        // The whole opening tag: the href may sit before or after the class.
+        const std::string_view tag  = body.substr(open, tag_end - open);
+        const std::string_view href_at = [&]() -> std::string_view {
+            const std::size_t h = tag.find("href=\"");
+            if (h == std::string_view::npos) {
+                return {};
+            }
+            const std::size_t end = tag.find('"', h + 6);
+            return end == std::string_view::npos ? std::string_view{} : tag.substr(h + 6, end - h - 6);
+        }();
+        std::string url(href_at);
+        // "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=..." -- the
+        // real address is the uddg parameter, percent-encoded.
+        if (const std::size_t uddg = url.find("uddg="); uddg != std::string::npos) {
+            std::string encoded = url.substr(uddg + 5);
+            if (const std::size_t amp = encoded.find('&'); amp != std::string::npos) {
+                encoded.resize(amp);
+            }
+            std::string decoded;
+            for (std::size_t i = 0; i < encoded.size(); ++i) {
+                if (encoded[i] == '%' && i + 2 < encoded.size()) {
+                    decoded += static_cast<char>(std::stoi(encoded.substr(i + 1, 2), nullptr, 16));
+                    i += 2;
+                } else {
+                    decoded += encoded[i] == '+' ? ' ' : encoded[i];
+                }
+            }
+            url = decoded;
+        } else if (url.rfind("//", 0) == 0) {
+            url = "https:" + url;
+        }
+        const std::string title = plain_text(std::string(body.substr(tag_end + 1, close - tag_end - 1)));
+        std::string snippet;
+        const std::size_t snippet_at = body.find("result__snippet", close);
+        if (snippet_at != std::string_view::npos) {
+            const std::size_t next = body.find("class=\"result__a\"", close);
+            if (next == std::string_view::npos || snippet_at < next) {
+                const std::size_t s_open  = body.find('>', snippet_at);
+                const std::size_t s_close = body.find("</a>", snippet_at);
+                const std::size_t d_close = body.find("</div>", snippet_at);
+                const std::size_t s_end   = std::min(s_close, d_close);
+                if (s_open != std::string_view::npos && s_end != std::string_view::npos && s_open < s_end) {
+                    snippet = plain_text(std::string(body.substr(s_open + 1, s_end - s_open - 1)));
+                }
+            }
+        }
+        at = close + 4;
+        if (url.empty() || url.rfind("http", 0) != 0) {
+            continue;
+        }
+        results.push_back({title.empty() ? url : title, url, snippet});
+    }
+    return results;
+}
+
 std::vector<SearchResult> parse_brave(const json& body, int max_results) {
     std::vector<SearchResult> results;
     const auto web = body.find("web");
@@ -248,6 +325,9 @@ std::string request_url(const std::string& query, const SearchSettings& settings
     const std::string encoded = percent_encode(query);
     const std::string limit   = std::to_string(std::clamp(settings.max_results, 1, 20));
 
+    if (settings.provider == "duckduckgo") {
+        return "https://html.duckduckgo.com/html/?q=" + encoded;
+    }
     if (settings.provider == "wikipedia") {
         return "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json"
                "&srlimit=" + limit + "&srsearch=" + encoded;
@@ -267,6 +347,9 @@ std::string request_url(const std::string& query, const SearchSettings& settings
 
 std::vector<SearchResult> parse_results(std::string_view provider, std::string_view body,
                                         int max_results) {
+    if (provider == "duckduckgo") {
+        return parse_duckduckgo(body, max_results);
+    }
     const json parsed = json::parse(body, nullptr, /*allow_exceptions=*/false);
     if (parsed.is_discarded() || !parsed.is_object()) {
         return {};
@@ -294,6 +377,13 @@ std::vector<SearchResult> search(const std::string& query, const SearchSettings&
     util::http::Request request;
     request.url             = url;
     request.timeout_seconds = std::clamp(settings.timeout_seconds, 1, 120);
+    if (settings.provider == "duckduckgo") {
+        // The HTML page is served to browsers; curl's own name gets a page
+        // that asks to prove you are not a robot.
+        request.headers = {{"User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"},
+                           {"Accept", "text/html"}};
+    }
     if (settings.provider == "brave") {
         if (settings.api_key.empty()) {
             error = "the brave provider needs an API key in settings";

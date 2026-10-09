@@ -26,6 +26,8 @@ extern const unsigned char kOrchestratorCook[];
 extern const unsigned int  kOrchestratorCook_size;
 extern const unsigned char kOrchestratorNaming[];
 extern const unsigned int  kOrchestratorNaming_size;
+extern const unsigned char kOrchestratorBuild[];
+extern const unsigned int  kOrchestratorBuild_size;
 }  // namespace embedded
 
 namespace {
@@ -44,6 +46,7 @@ const File kFiles[] = {
     {"routing.py", embedded::kOrchestratorRouting, &embedded::kOrchestratorRouting_size},
     {"cook.py", embedded::kOrchestratorCook, &embedded::kOrchestratorCook_size},
     {"naming.py", embedded::kOrchestratorNaming, &embedded::kOrchestratorNaming_size},
+    {"build.py", embedded::kOrchestratorBuild, &embedded::kOrchestratorBuild_size},
 };
 
 }  // namespace

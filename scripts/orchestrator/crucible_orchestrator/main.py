@@ -4,7 +4,7 @@
 import platform
 import sys
 
-from . import PROTOCOL, cook, naming, routing
+from . import PROTOCOL, build, cook, naming, routing
 from .rpc import Channel
 
 
@@ -15,6 +15,7 @@ def handlers(channel):
         "route": lambda params: routing.route(channel, params).to_json(),
         "route.explain": lambda params: routing.explain(channel, params),
         "cook.run": lambda params: cook.run(core, params),
+        "build.run": lambda params: build.run(core, params),
         "name.session": lambda params: naming.name_session(channel, params),
         "examples.write": lambda params: naming.write_examples(channel, params),
     }

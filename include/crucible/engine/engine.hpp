@@ -27,6 +27,7 @@
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/tools/attachments.hpp"
+#include "crucible/tools/processes.hpp"
 #include "crucible/tools/workshop.hpp"
 
 namespace crucible {
@@ -114,9 +115,32 @@ public:
     /// `pinned` starts it with that expert rather than whoever the goal routes
     /// to. A HANDOFF still goes through the delegator: the pin is where the
     /// work begins, not who must do all of it.
+    ///
+    /// `kind` is "cook" or "build". A build is a cook with a plan: the
+    /// orchestrator's build loop rather than its cook loop, on the same
+    /// journal and the same tools. See scripts/orchestrator's build.py.
     void start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
                     std::vector<attach::Attachment> attachments = {},
-                    std::optional<ExpertId> pinned = std::nullopt);
+                    std::optional<ExpertId> pinned = std::nullopt,
+                    std::string kind = "cook");
+
+    /// A seat a build made for itself: see take_made_seats.
+    struct MadeSeat {
+        Expert      expert;
+        ModelParams params;
+    };
+
+    /// Seats builds have made since this was last called, and clears them.
+    ///
+    /// An outbox like take_written_examples, for the same reason: the build
+    /// runs on the worker and the seat is already on the engine's own roster
+    /// so the next task can use it, but the config file and the settings
+    /// screen are the session's, and it folds these in when it is woken.
+    std::vector<MadeSeat> take_made_seats();
+
+    /// Programs experts have left running: START's processes. The window
+    /// lists them and can stop one.
+    tools::Processes& processes() { return processes_; }
 
     /// Ask the running cook to wrap up.
     ///
@@ -207,6 +231,7 @@ private:
         // for Cook
         int                   budget_seconds = 0;
         std::filesystem::path root;
+        std::string           cook_kind = "cook";   ///< "cook" or "build"
 
         // for Prompt and Cook
         std::vector<attach::Attachment> attachments;
@@ -274,7 +299,7 @@ private:
     void do_cook(const std::string& goal, int budget_seconds,
                  const std::filesystem::path& root,
                  std::vector<attach::Attachment> attachments,
-                 std::optional<ExpertId> pinned);
+                 std::optional<ExpertId> pinned, const std::string& kind);
 
     /// Attachments as a message's text and pictures, sized to `model`:
     /// `share` of its context, less what `messages` already take.
@@ -324,6 +349,22 @@ private:
     std::vector<ChatImage>          cook_images_;
     tools::WorkshopSettings         cook_workshop_;
     tools::SearchSettings           cook_search_;
+
+    /// Pictures the last tool call produced -- a screenshot, a picture read
+    /// -- for the round that follows it and no other: a screenshot sent
+    /// again with every later round would cost the context more than it
+    /// says. Cleared when that round has been asked.
+    std::vector<ChatImage>          cook_tool_images_;
+
+    /// The seats a build has made, waiting for the session. See take_made_seats.
+    std::vector<MadeSeat>           made_seats_;   ///< under written_mutex_
+
+    /// Programs experts have started and left running. Stopped with the engine.
+    tools::Processes                processes_;
+
+    /// The project's history folder, for what a build records of its agents'
+    /// work. Empty when no project is open.
+    std::filesystem::path           project_dir_;
 
     /// The cook's half of serve(): the seat, the tools, the journal.
     nlohmann::json serve_cook(const std::string& method, const nlohmann::json& params);

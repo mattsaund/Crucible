@@ -131,9 +131,9 @@ function splitModel(value) {
 
 const TABS = [
   ['chat',    'Chat',    'Ask one question'],
-  ['cook',    'Cook',    'Work one goal in passes'],
+  ['build',   'Build',   'Give it a directive: it plans, delegates, builds and ships'],
   ['create',  'Create',  'Fine-tune an expert'],
-  ['history', 'History', 'Past cooks and conversations'],
+  ['history', 'History', 'Past builds and conversations'],
 ];
 
 function topView() {
@@ -330,7 +330,9 @@ function sideView() {
       </aside>`;
   }
 
-  const seats = experts.map((e, i) => {
+  // The line from the delegator runs down the whole list, so a seat's place
+  // in it is its index in the roster whichever heading it is drawn under.
+  const seatRow = (e, i) => {
     const classes = ['seat'];
     if (linked >= 0 && i < linked) classes.push('on-trunk');
     if (i === linked) classes.push('elbow', 'linked');
@@ -341,7 +343,16 @@ function sideView() {
       ${e.provider ? `<span class="cloud" title="Answered by ${escape(e.provider)}">${ICONS.cloud}</span>` : ''}
       ${e.phase === 'loading' ? ring(e.progress) : ''}
     </button>`;
-  }).join('') || '<div class="status">None yet.</div>';
+  };
+  const people = experts.map((e, i) => (e.made ? '' : seatRow(e, i))).join('') || '<div class="status">None yet.</div>';
+  // The agents: seats builds made for tasks nobody on the roster fitted.
+  // Under a heading of their own, so the roster a person wrote stays the
+  // roster a person wrote, and what a build added is plain to see.
+  const agents = experts.map((e, i) => (e.made ? seatRow(e, i) : '')).join('');
+  const seats = people + (agents
+    ? `<h2 class="experts-head agents-head${linked >= 0 ? ' on-trunk' : ''}"
+          title="Experts a build made for itself. Ejected and edited like any other.">AGENTS</h2>${agents}`
+    : '');
 
   // What the program last said stays on the line until something else is:
   // an idle engine says nothing, which would otherwise wipe it the moment it
@@ -470,13 +481,13 @@ actions.gear = () => enter(state.view === 'settings' ? (state.lastView || 'chat'
 
 function shortcuts(event) {
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-  const tab = { 1: 'chat', 2: 'cook', 3: 'create', 4: 'history' }[event.key];
+  const tab = { 1: 'chat', 2: 'build', 3: 'create', 4: 'history' }[event.key];
   if (tab) { event.preventDefault(); enter(tab); }
   if (event.key === ',') { event.preventDefault(); actions.gear(); }
   // Attach, from wherever the box is. Not over a dialog: the box is not
   // what that is about.
   if ((event.key === 'u' || event.key === 'U') && !state.modal
-      && (state.view === 'chat' || state.view === 'cook')) {
+      && (state.view === 'chat' || state.view === 'build')) {
     event.preventDefault();
     attachPick(false);
   }

@@ -74,6 +74,49 @@ struct CookStep {
     long        ms = 0;
     /// Paths this step changed, relative to the project root.
     std::vector<std::string> changed;
+
+    /// Which task of a build this step belongs to, by index, or -1 for a
+    /// step of the build itself -- the plan, the check, the review -- and for
+    /// every step of a cook, which has no tasks.
+    int         task = -1;
+
+    /// Where a picture this step produced was written -- a screenshot, a
+    /// picture it looked at -- so the window can show it. The journal keeps
+    /// the path and not the bytes: it is saved after every step and sent to
+    /// the window many times a second, and a screenshot is most of a megabyte.
+    std::string picture;
+};
+
+/// One piece of a build's plan, and what became of it.
+///
+/// A build is a directive cut into tasks by an architect, each given to the
+/// expert that fits it. The window draws these as the agents: who has the
+/// work, what each has done, which are still waiting.
+struct CookTask {
+    int         index = 0;
+    std::string title;
+    std::string detail;
+    std::string needs;              ///< the expertise, in the architect's words
+    std::vector<std::string> files; ///< what the plan said it would touch
+    std::vector<int> after;         ///< tasks that must finish first
+
+    ExpertId    expert;             ///< who had it; empty until it started
+    /// waiting | working | done | incomplete | failed | skipped | stopped
+    std::string state = "waiting";
+    std::string outcome;            ///< what the agent said it made, or why it did not
+    std::int64_t started_unix = 0;
+    std::int64_t ended_unix   = 0;
+};
+
+/// What the architect said about the whole: the summary, and the commands
+/// that run, check and package it.
+struct CookPlan {
+    std::string summary;
+    std::string run;
+    std::string check;
+    std::string ship;
+
+    bool empty() const { return summary.empty() && run.empty() && check.empty() && ship.empty(); }
 };
 
 /// A whole cook, running or finished.
@@ -83,6 +126,14 @@ struct Cook {
     std::string id;
     std::string goal;
     CookState   state = CookState::Idle;
+
+    /// "cook" or "build". A build is a cook with a plan: the same loop of
+    /// actions and the same journal, with the plan and its tasks on top.
+    std::string kind = "cook";
+    CookPlan    plan;
+    std::vector<CookTask> tasks;
+
+    bool is_build() const { return kind == "build"; }
 
     /// What was attached to the goal. Read once when the cook starts and put
     /// in front of every round, so it is not trimmed away like the rest.
@@ -125,7 +176,9 @@ struct Cook {
 struct CookSummary {
     std::string  id;
     std::string  goal;
+    std::string  kind = "cook";
     CookState    state = CookState::Done;
+    int          tasks = 0;   ///< a build's, so a list can say "4 tasks" beside it
     std::int64_t started_unix = 0;
     int          iterations = 0;
     int          steps = 0;

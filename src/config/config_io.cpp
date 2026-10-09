@@ -84,6 +84,10 @@ void write_expert_identity(json& entry, const Expert& expert) {
     entry["blurb"]    = expert.blurb;
     entry["examples"] = expert.examples;
     entry["keywords"] = expert.keywords;
+    // Only for a seat a build made. A person's seat has no line to say so.
+    if (!expert.origin.empty()) {
+        entry["origin"] = expert.origin;
+    }
 }
 
 /// Rebuild one seat from its entry. Returns false when there is not enough to
@@ -98,6 +102,7 @@ bool read_expert_identity(const json& entry, const ExpertId& id, Expert& expert,
     read_field(entry, "blurb",    expert.blurb,    id, warnings);
     read_field(entry, "examples", expert.examples, id, warnings);
     read_field(entry, "keywords", expert.keywords, id, warnings);
+    read_field(entry, "origin",   expert.origin,   id, warnings);
 
     if (expert.name.empty()) {
         expert.name = id;
@@ -244,6 +249,15 @@ json config_to_json(const Config& config) {
             {"auto_edits",       config.tools.auto_edits},
             {"overflow",         config.tools.overflow},
             {"workshop_timeout", config.tools.workshop_timeout},
+            {"computer_control", config.tools.computer_control},
+        }},
+        {"build", json{
+            {"architect",       config.build.architect},
+            {"worker_model",    config.build.worker_model},
+            {"worker_provider", config.build.worker_provider},
+            {"auto_commit",     config.build.auto_commit},
+            {"confirm_plan",    config.build.confirm_plan},
+            {"rounds_per_task", config.build.rounds_per_task},
         }},
         {"ui", json{
             {"check_updates",  config.ui.check_updates},
@@ -365,6 +379,15 @@ void write_default_config(const std::filesystem::path& file) {
             {"auto_edits",       defaults.tools.auto_edits},
             {"overflow",         defaults.tools.overflow},
             {"workshop_timeout", defaults.tools.workshop_timeout},
+            {"computer_control", defaults.tools.computer_control},
+        }},
+        {"build", json{
+            {"architect",       defaults.build.architect},
+            {"worker_model",    defaults.build.worker_model},
+            {"worker_provider", defaults.build.worker_provider},
+            {"auto_commit",     defaults.build.auto_commit},
+            {"confirm_plan",    defaults.build.confirm_plan},
+            {"rounds_per_task", defaults.build.rounds_per_task},
         }},
         {"ui", json{
             {"check_updates",  defaults.ui.check_updates},
@@ -538,6 +561,21 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*tools, "auto_edits",       config.tools.auto_edits,       "tools", warnings);
         read_field(*tools, "overflow",         config.tools.overflow,         "tools", warnings);
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
+        read_field(*tools, "computer_control", config.tools.computer_control, "tools", warnings);
+    }
+
+    if (const auto build = doc.find("build"); build != doc.end() && build->is_object()) {
+        read_field(*build, "architect",       config.build.architect,       "build", warnings);
+        read_field(*build, "worker_model",    config.build.worker_model,    "build", warnings);
+        read_field(*build, "worker_provider", config.build.worker_provider, "build", warnings);
+        read_field(*build, "auto_commit",     config.build.auto_commit,     "build", warnings);
+        read_field(*build, "confirm_plan",    config.build.confirm_plan,    "build", warnings);
+        read_field(*build, "rounds_per_task", config.build.rounds_per_task, "build", warnings);
+        if (config.build.rounds_per_task < 4 || config.build.rounds_per_task > 400) {
+            warnings.emplace_back("build.rounds_per_task: " + std::to_string(config.build.rounds_per_task)
+                                  + " is outside 4..400 (keeping the default)");
+            config.build.rounds_per_task = BuildConfig{}.rounds_per_task;
+        }
     }
 
     // Keys an older file may still carry -- animation_ms, show_experts and

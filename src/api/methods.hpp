@@ -69,14 +69,16 @@ void roster_methods(std::vector<Method>& table);        ///< experts and where t
 void settings_methods(std::vector<Method>& table);      ///< the configuration and the machine
 void install_methods(std::vector<Method>& table);       ///< runtimes and the trainer
 void lab_methods(std::vector<Method>& table);           ///< making an expert
+void source_methods(std::vector<Method>& table);        ///< the project's files, git, a preview, a build
 
 // --- shapes more than one file draws ----------------------------------------
 
 /// The engine's state. In wire.cpp.
 json snapshot_to_json(const Snapshot& snapshot);
 
-/// One step of a cook's journal.
+/// One step of a cook's journal, and one task of a build's plan.
 json cook_step_json(const CookStep& step);
+json cook_task_json(const CookTask& task);
 
 /// What was attached to a turn or a cook, for the tiles above it.
 json attachments_json(const std::vector<attach::Tile>& attachments);

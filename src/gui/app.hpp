@@ -127,6 +127,10 @@ private:
     /// Fold in the worked examples the delegator wrote for new seats.
     void absorb_written_examples();
 
+    /// Keep the seats a build made for itself: into the config file, with
+    /// examples asked for, like a seat added by hand.
+    void absorb_made_seats();
+
     /// Ask for the conversation on screen to be named, once it has had an
     /// exchange and has no name; and file the names that have come back.
     void name_sessions();

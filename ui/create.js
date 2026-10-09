@@ -292,6 +292,25 @@ function localPicker(slot, label, filter, extensions, verb) {
       <button type="button" class="action" data-act="wz-local" data-slot="${slot}">${verb}</button></div>`;
 }
 
+/// What builds in the open project recorded of their agents' work, per
+/// expert: the tasks a provider's model was given and what it made, as
+/// chats. Offered first, because it is the data that teaches a local expert
+/// this project, and it is already on the disk.
+function teachPicker(r) {
+  const records = state.teach || [];
+  if (!records.length) return '';
+  return `<h2>FROM BUILDS IN THIS PROJECT</h2>
+    <div class="order">${records.map((t) => `<div class="order-row">
+        <span class="order-name">${escape(t.name)}
+          <span class="status">${count(t.records, 'record')}  ·  ${bytes(t.bytes)}</span></span>
+        <button class="action" data-act="wz-teach" data-path="${escape(t.path)}" data-name="${escape(t.name)}"
+                ${r.data.some((d) => d.id === t.path) ? 'disabled' : ''}>Add</button>
+      </div>`).join('')}</div>
+    <div class="hint" style="margin-top:.4rem">What a provider's model did here, as question-and-answer records with the files it wrote.</div>`;
+}
+actions['wz-teach'] = (e) => wizardTake('data',
+  { source: 'local', id: e.dataset.path, path: e.dataset.path, label: `${e.dataset.name} (from builds)` }, 0);
+
 function chosenList(list, slot) {
   if (!list.length) return '<div class="status">None.</div>';
   return `<div class="order">${list.map((a, i) => `<div class="order-row">
@@ -330,7 +349,8 @@ function wizardStep(m) {
                 : ''}</div></div>`
         : '<div class="status">None.</div>'}`;
     case 2: return `
-      <h2>FROM HUGGINGFACE</h2>${hubPicker(m, 'dataHub', 'dataset')}
+      ${teachPicker(r)}
+      <h2${state.teach && state.teach.length ? ' style="margin-top:1.4rem"' : ''}>FROM HUGGINGFACE</h2>${hubPicker(m, 'dataHub', 'dataset')}
       <h2 style="margin-top:1.4rem">OR LOCAL FILES</h2>
       ${localPicker('data', '.jsonl, .json, .csv or .parquet', 'Datasets',
                     ['.jsonl', '.json', '.csv', '.parquet', '.txt'], 'Add')}
@@ -437,6 +457,13 @@ function openWizard(recipe, step) {
               recipe: JSON.parse(JSON.stringify(recipe)),
               hub: blankHub(), dataHub: blankHub(), toolHub: blankHub(), fit: null });
   refit();
+  // What builds recorded here, for the Data step. Asked each time: a build
+  // may have finished since the wizard was last open.
+  if ((state.snapshot.project || {}).open) {
+    call('teach.list').then((got) => { state.teach = got.experts || []; render(); }).catch(() => {});
+  } else {
+    state.teach = [];
+  }
 }
 
 /// Ask what the recipe being edited would need, whenever its size changes.

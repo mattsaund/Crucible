@@ -18,6 +18,13 @@ routes each prompt to the right one, and lets you build the missing ones
 yourself. Ten specialists beat one generalist of the same size, and only one is
 in memory at a time.
 
+And it builds software. Give it a directive -- what you want, in a sentence or
+a page -- and an architect plans it, the plan is cut into tasks, each task
+goes to the expert that fits it (a frontier model for the heavy lifting, a
+local one for the rest), the tasks are built, checked, committed and written
+up, and the result is previewed, tuned, version-controlled and shipped from
+the same window. You bring the idea, the design and the vision.
+
 Website: https://msaunders.dev/crucible/
 
 ![Crucible routing a question to one of its experts](docs/images/chat.png)
@@ -47,7 +54,8 @@ click:
   routing and cooks run on — no Python on your machine is needed or touched;
 - the compute runtimes this machine can use: the CPU always, CUDA with
   NVIDIA's libraries where there is an NVIDIA driver, Metal on a Mac, Vulkan
-  elsewhere;
+  elsewhere (a Mac can add Vulkan from Settings, Runtimes, but is not asked
+  to compile it on its first start);
 - the training environment for Create, built from that Python — a few
   gigabytes with CUDA, and on a Mac also what runs MLX models.
 
@@ -89,7 +97,7 @@ history stay where they are — an update replaces the program and nothing else.
 The check is one request for a public version number, it says nothing about the
 machine, and the checkbox beside it turns it off.
 
-Versions are `MAJOR.MINOR.PATCH`, tagged `v0.8.6` on GitHub, and the release a
+Versions are `MAJOR.MINOR.PATCH`, tagged `v0.9.0` on GitHub, and the release a
 tag builds carries the installers for all three platforms. What changed in each
 is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -132,14 +140,70 @@ ___
 
 ![The roster: five seats, each with a description and a model](docs/images/experts.png)
 
-### Cook
+### Build
 
-- Give it a goal; it works in passes — read, change, run, judge, go round
-  again — improving on the last pass each time, until you stop it. DONE
-  closes one piece of the work, not the cook.
-- Every step is journaled and folds open to the diff or command output it made.
-- It can stop to ask you a question, and hand work to a different expert
-  mid-cook.
+- Type a directive into the **Build** tab — "a command-line todo app in
+  Python, with tests" — and an **architect** (the seat Settings, Build names,
+  or the one the delegator picks) writes a plan: tasks, what each needs, which
+  must come first, and the commands that run, check and package the result.
+  The plan is shown before the first task starts; type *go*, or what to change.
+- Each task is routed the way a HANDOFF is: the delegator is shown what it
+  needs and picks the seat. Tasks run one after another, each with the full
+  workshop below, each ending with DONE and an account the next agent reads.
+  A task that stalls or runs out of rounds is left incomplete and the build
+  moves on; one whose dependency failed is skipped and says so.
+- **Agents** is the view: down one side the architect and a row per task with
+  the expert that has it and where it got to; on the other, the one you click
+  — what it was asked, every step, the files it changed, which open in the
+  code pane. A build can ask you things on the way, and **Stop and finish**
+  leaves the project running.
+- **The experts it needs.** When nobody on the roster fits a task and
+  Settings, Build names a model for new agents, the build adds a seat for the
+  expertise — "CSS Layout", "SQL Schema" — and keeps it, with its routing
+  examples written by the delegator. The side menu lists those under
+  **Agents**, below the experts you added yourself; an agent is routed to,
+  edited and ejected like any seat. And every task a provider's
+  model did is recorded, with the files it made, in the project's history
+  folder, as data a local expert can be fine-tuned on in Create: the frontier
+  model teaches the local one the project.
+- After each finished task the build **commits** what changed, starting a
+  repository when there is none, so a bad task is one revert. When the plan
+  named a check, it is run at the end; if it fails, one more task makes it
+  pass. Then the architect writes up what was built, how to run it, and what
+  is left.
+- **Tasks run one at a time.** The engine has one worker and one local model
+  resident, and a build that pretended otherwise would be queueing behind
+  itself. Chat and Cook wait for a build the way they wait for each other.
+
+### Code, Source, Preview
+
+- Three panes beside the agents, for any project whether a build is running
+  or not. **Code** is the project's files: a tree, a file opened to read, or
+  to edit and save with Ctrl+S, or a picture looked at.
+- **Source** is version control: the branch and remote, what changed since
+  the last commit with the diff of any file, a commit box, Pull and Push, a
+  box for any git command, and the history. With `gh` installed, **Publish
+  to GitHub** makes a repository for the project and pushes it. **Ship**
+  runs the command that packages it — the plan's, or yours — and tags a
+  GitHub release.
+- **Preview** shows an HTML page of the project in a frame, its stylesheets,
+  scripts and pictures put inside it by Crucible, or a page by address — the
+  server a build left running with START. **Pick an element** and a dashboard
+  beside the frame shows what it is and the things most worth changing by
+  eye: padding, margin, gap, font size, font, weight, color, background,
+  rounding, alignment, width — applied to the page as you change them, with
+  a plus and a minus to nudge the lengths. **Apply to source** hands the set
+  to an expert as a Chat prompt to make in the stylesheet.
+- Crucible runs the `git` and `gh` the machine has, in the project folder,
+  and ships neither.
+
+- A build is also how a thing is made better: a directive about a project
+  that exists — "make the failing tests pass", "add dark mode" — is planned
+  and worked the same way. Every step is journaled and folds open to the diff
+  or command output it made, and a build can stop to ask you a question or
+  hand a task to a different expert. (There was a Cook tab for this, one goal
+  worked in passes until stopped; it is folded into Build, and a cook from
+  before still opens from History.)
 
 ### Attach
 
@@ -195,17 +259,42 @@ ___
 
 ![The training environment: what each build can do, and what it costs to install](docs/images/training.png)
 
-### Act on a project
+### Act on a project, and beyond it
 
 - Trust a folder once and experts can read, write and run things in it — in
-  Chat as well as in Cook.
-- Every path is resolved inside the project root; absolute paths, `..` and
-  symlinks that escape it are refused.
-- `RUN` is the exception and is worth being exact about: a command starts in the
-  project root and is otherwise a command. Real confinement means a sandbox,
-  which is not here yet.
-- Auto off (the default) shows you each edit before it lands, in Chat and in
-  Cook alike, and the switch sits beside the box on both screens.
+  Chat and in Build alike. Every model gets the same tools, local or
+  at a provider, in a text protocol every model can follow: one verb on a line
+  of its own, and the result comes back.
+- **In the folder:** LIST, READ and WRITE. READ reads a PDF, a Word file or a
+  spreadsheet as its text, a web page as its source, and a picture as a
+  picture to a model that sees one. Every path is resolved inside the project root; absolute paths, `..`
+  and symlinks that escape it are refused.
+- **Commands:** RUN, in the platform's shell or one it names — `RUN zsh:`,
+  `RUN powershell:`, `RUN cmd:`, `RUN fish:`. PYTHON, with a block of code run
+  on Crucible's own Python in the project. GIT, and GH when GitHub's command
+  line is installed: `GIT: log --oneline -5`, `GH: pr list`. START leaves a
+  program running — a development server — and LOGS and STOP read and end
+  it; what is running is listed in Settings, Tools and stopped when Crucible
+  closes.
+- `RUN` is worth being exact about: a command starts in the project root and
+  is otherwise a command, and GIT, GH, PYTHON and START are commands by other
+  names. Real confinement means a sandbox, which is not here yet.
+- **The web**, with the switch on: SEARCH, through DuckDuckGo with no key,
+  or Wikipedia, searxng or Brave; and FETCH, which reads a page as its text,
+  rendered in a headless Chrome, Chromium or Edge when the machine has one
+  and through curl when it does not.
+- **This computer**, with its own switch, off by default: SCREENSHOT, CLICK,
+  MOVE, TYPE, KEY and SCROLL, done with `screencapture` and `osascript` on a
+  Mac, `xdotool` and a screenshot tool on Linux, PowerShell on Windows. A
+  screenshot goes to a model that sees pictures as a picture; with
+  `tesseract` installed, a local model that reads text only gets the words
+  off it. Nothing bounds a click the way a folder bounds a file, which is why
+  it is a switch of its own. On a Mac the first screenshot and the first
+  click ask for Screen Recording and Accessibility.
+- A picture an expert took or looked at is in the transcript and the journal
+  as something to open.
+- Auto off (the default) shows you each edit before it lands, in Chat and
+  Build alike, and the switch sits beside the box on both screens.
 
 ![The question Crucible asks once per folder](docs/images/trust.png)
 
@@ -270,8 +359,13 @@ ___
 
 Everything is editable from the settings screen, and every change applies as
 it is made: models directory, a model for each seat, providers, sampling,
-hardware, runtimes. The file behind it is
-`~/.config/crucible/config.json`, and it can be edited by hand.
+hardware, runtimes, tools, and how a build is run — who plans it, the model
+for new agents, whether to show the plan first, commits, rounds per task. The
+file behind it is `~/.config/crucible/config.json`, and it can be edited by
+hand.
+
+Ctrl+1 to 4 switch between Chat, Build, Create and History; Ctrl+, opens
+Settings; Ctrl+U attaches files.
 
 ___
 ## Build from source

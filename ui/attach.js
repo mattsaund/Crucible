@@ -11,8 +11,8 @@
 // which are shrunk to what a provider takes before they are sent, because a
 // canvas is the one image codec this program has.
 //
-// Chat and Cook each keep their own: a file attached to a question is not
-// meant for the goal on the other tab.
+// Chat and Build each keep their own: a file attached to a question is not
+// meant for the directive on the other tab.
 
 const CLIP = {
   plus: `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor"
@@ -33,14 +33,14 @@ const CLIP = {
 const PICTURE_SIDE = 1568;
 const PICTURE_BYTES = 3.5 * 1024 * 1024;
 
-state.attached = { chat: [], cook: [] };
+state.attached = { chat: [], build: [] };
 // The one small menu open over the box, as "<which>:<mode>" -- "attach:chat",
 // "route:cook" -- or null. One at a time, and any click outside it shuts it.
 state.menu = null;
 
 /// Which box the menu and the tiles belong to: the view's.
 function attachMode() {
-  return state.view === 'cook' ? 'cook' : 'chat';
+  return state.view === 'build' ? 'build' : 'chat';
 }
 
 /// The tiles, in the order they were added. Nothing when there are none, so
@@ -264,7 +264,7 @@ document.addEventListener('keydown', (event) => {
 //
 // Anything dragged over the window is offered the box: the window goes soft
 // behind an outline in the flame, and what is let go of is attached as if it
-// had been chosen with the plus. On Chat or Cook it goes in that box; from
+// had been chosen with the plus. On Chat or Build it goes in that box; from
 // any other view, in Chat's, which the drop then opens.
 //
 // A page is handed a dropped file's contents and never its path -- and on
@@ -297,10 +297,10 @@ function dropTarget() {
   if (state.modal) return { why: 'Close the dialog first' };
   const cook = s.cook && s.cook.running ? s.cook : null;
   if (cook) {
-    return { why: cook.state === 'asking' ? 'Answer the cook\'s question first'
-                                          : 'A cook is running -- it has the experts' };
+    return { why: cook.state === 'asking' ? 'Answer the build\'s question first'
+                                          : 'A build is running -- it has the experts' };
   }
-  return { mode: state.view === 'cook' ? 'cook' : 'chat' };
+  return { mode: state.view === 'build' ? 'build' : 'chat' };
 }
 
 /// The middle of the overlay: what a drop will do, or why it will not.

@@ -3,9 +3,12 @@
 // The workshop: what an expert can do to a project rather than say about it.
 //
 // Reading a file, writing one, listing a directory, running a command, looking
-// something up, and asking the user a question. Together with the cook loop
-// these are what make Crucible able to work on a project over an hour instead of
-// answering one question about it.
+// something up, and asking the user a question -- and, beyond the folder, the
+// things a person at this machine can do that an expert building software
+// needs too: read a page off the web, use git and GitHub, run Python, leave a
+// server running, and see and work the screen. Together with the cook and
+// build loops these are what make Crucible able to work on a project over an
+// hour instead of answering one question about it.
 //
 // Three things are load-bearing here and none of them is the tool list.
 //
@@ -30,7 +33,10 @@
 // second switch, off-able on its own, and the interface says what it does:
 // letting a model edit a project you already trusted and letting it run
 // commands as you are different decisions, and only one of them is bounded by
-// a directory.
+// a directory. GIT, GH, PYTHON and START are RUN by other names, bounded the
+// same way, and are offered under the same switch; FETCH leaves the machine
+// and is under the web switch; the screen verbs are under a switch of their
+// own, because they are bounded by nothing at all.
 //
 // The second is that all of this is off until it is switched on, and the folder
 // has to have been trusted. `crucible` is meant to be run by cd-ing into a
@@ -52,6 +58,8 @@
 #include <vector>
 
 #include "crucible/llm/model_host.hpp"
+#include "crucible/tools/attachments.hpp"
+#include "crucible/tools/processes.hpp"
 #include "crucible/tools/web_search.hpp"
 
 namespace crucible::tools {
@@ -60,9 +68,10 @@ namespace crucible::tools {
 enum class ToolKind {
     None,
     List,    ///< LIST: <dir>
-    Read,    ///< READ: <file>
+    Read,    ///< READ: <file>   -- text, a document's text, or a picture
     Write,   ///< WRITE: <file>, followed by a block
-    Run,     ///< RUN: <command>, in the project root but not confined to it
+    Run,     ///< RUN: <command>, in the project root but not confined to it;
+             ///< RUN bash: / RUN powershell: and so on name the shell
     Search,  ///< SEARCH: <query>
     Ask,     ///< ASK: <question>   -- pauses the cook for an answer
     Note,    ///< NOTE: <what it is doing>, journalled and shown, no effect
@@ -72,6 +81,21 @@ enum class ToolKind {
     /// seat. How a programming expert that has finished the code says the next
     /// thing needed is documentation.
     Handoff,
+
+    Fetch,      ///< FETCH: <url>        -- a page off the web, as its text
+    Git,        ///< GIT: <arguments>    -- git, in the project
+    Gh,         ///< GH: <arguments>     -- GitHub's command line, in the project
+    Python,     ///< PYTHON:  then a fenced block, run on Crucible's own Python
+    Start,      ///< START: <command>    -- run it and leave it running
+    Stop,       ///< STOP: <name>        -- a process START began
+    Logs,       ///< LOGS: <name>        -- what it has printed; no name lists them
+
+    Screenshot, ///< SCREENSHOT:         -- a picture of the screen
+    Click,      ///< CLICK: <x> <y> [right|middle] [double]
+    Move,       ///< MOVE: <x> <y>
+    Type,       ///< TYPE: <text>, or a fenced block of it
+    Key,        ///< KEY: <combination>  -- enter, ctrl+c, cmd+shift+s
+    Scroll,     ///< SCROLL: up|down|left|right [notches]
 };
 
 std::string_view tool_kind_name(ToolKind kind);
@@ -80,8 +104,11 @@ struct ToolCall {
     ToolKind    kind = ToolKind::None;
     /// The path, command, query, question or summary on the verb's line.
     std::string argument;
-    /// The body of a WRITE. Empty for every other verb.
+    /// The body of a WRITE, a PYTHON or a fenced TYPE. Empty for every other verb.
     std::string content;
+    /// The shell a RUN named -- "bash", "powershell" -- or empty for the
+    /// platform's own.
+    std::string shell;
 };
 
 /// What happened, in the two registers it has to be reported in: `output` goes
@@ -100,6 +127,16 @@ struct ToolResult {
     /// Paths this call changed, relative to the root. The journal's record of
     /// what a cook actually did to the project.
     std::vector<std::string> changed;
+
+    /// Pictures the call produced -- a screenshot, a READ of a picture -- for
+    /// a model that can see one. `output` carries the words read off each for
+    /// a model that cannot, when tesseract is here to read them.
+    std::vector<attach::Image> pictures;
+
+    /// Where the picture was written, when it was: what a journal keeps of a
+    /// screenshot, so the window can show it without the journal carrying
+    /// the bytes.
+    std::string picture_path;
 };
 
 struct WorkshopSettings {
@@ -110,7 +147,8 @@ struct WorkshopSettings {
     /// Normally the project directory the user started Crucible in.
     std::filesystem::path root;
 
-    /// Whether RUN is available.
+    /// Whether RUN is available -- and with it GIT, GH, PYTHON, START, STOP and
+    /// LOGS, which are commands by other names.
     ///
     /// Reading and writing a project you already trusted is one decision;
     /// executing arbitrary commands as you is another, and some people will
@@ -118,6 +156,25 @@ struct WorkshopSettings {
     /// command is not bounded by the root the way a path is -- see the note at
     /// the top of this file.
     bool allow_run = true;
+
+    /// Whether FETCH is available. The same switch as web search: both leave
+    /// the machine.
+    bool web = false;
+
+    /// Whether the screen verbs are available. See tools/computer.hpp, and
+    /// ToolsConfig::computer_control for why this is a switch of its own.
+    bool computer_control = false;
+
+    /// Crucible's own Python, for PYTHON. Empty when it is not installed,
+    /// which the verb then says.
+    std::filesystem::path python;
+
+    /// Where a screenshot or a snippet is written. paths::scratch_dir().
+    std::filesystem::path scratch;
+
+    /// The session's running programs, for START, STOP and LOGS. Null refuses
+    /// them -- a workshop with nowhere to keep a process.
+    Processes* processes = nullptr;
 
     /// How long a single command may take before it is killed. A build is
     /// minutes; a command that has not finished in this long is stuck, and a
@@ -134,6 +191,9 @@ struct WorkshopSettings {
 
     /// How much of a file a READ returns, for the same reason.
     std::size_t max_read_bytes = 32000;
+
+    /// How much of a page a FETCH returns.
+    std::size_t max_fetch_chars = 12000;
 
     /// How many entries a LIST returns.
     std::size_t max_entries = 200;
@@ -203,5 +263,10 @@ enum class ToolAudience {
 /// Lists only the verbs the settings and the audience actually allow.
 std::string workshop_instructions(const WorkshopSettings& settings,
                                   ToolAudience audience);
+
+/// The shells RUN may name, and the argv that runs `command` in `shell`.
+/// Empty when `shell` is not one of them.
+bool known_shell(std::string_view shell);
+std::vector<std::string> shell_argv(std::string_view shell, const std::string& command);
 
 }  // namespace crucible::tools

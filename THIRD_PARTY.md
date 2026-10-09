@@ -71,6 +71,30 @@ reader finds nothing in -- `textutil`, part of macOS, does that job there.
 Each is run as a separate program, the way `curl` is; none is distributed
 with Crucible or linked into it.
 
+## What an expert's tools run
+
+The tools an expert reaches for beyond the project folder are programs the
+machine has or does not, run the way `curl` is -- started as a separate
+process in the project folder, their output read -- and none is distributed
+with Crucible or linked into it. Each tool says which program it wanted when
+the program is not there.
+
+| tool | program | license | where it comes from |
+|---|---|---|---|
+| `GIT:`, commits after a build's tasks, the Source panel | [git](https://git-scm.com) | GPL-2.0 | your package manager, Xcode's tools, Git for Windows |
+| `GH:`, Publish to GitHub, Release | [gh](https://cli.github.com) | MIT | GitHub's command line, installed separately |
+| `FETCH:` rendered as a browser shows it | Chrome, Chromium or Edge, run headless | Chromium is BSD-3-Clause; the browsers are their makers' | whichever is installed; without one, curl reads the page as served |
+| `PYTHON:` | Crucible's own Python | PSF | see above |
+| `SCREENSHOT:` on macOS | `screencapture` and `sips` | Apple's | part of macOS |
+| the mouse and keyboard on macOS | `osascript` | Apple's | part of macOS |
+| the screen on Windows | PowerShell with the .NET classes Windows ships | Microsoft's | part of Windows |
+| the screen on Linux | `xdotool` or `ydotool`; `grim`, `gnome-screenshot`, `spectacle`, `scrot` or ImageMagick's `import` | BSD, MIT, GPL and LGPL variously | your package manager |
+| the words in a screenshot or a picture | [tesseract](https://github.com/tesseract-ocr/tesseract) | Apache-2.0 | your package manager; optional, for a model that reads text only |
+
+The DuckDuckGo search provider reads DuckDuckGo's own HTML results page over
+HTTPS; nothing of theirs is carried here, and using it is between you and
+them under their terms.
+
 ## NVIDIA's CUDA libraries
 
 A CUDA runtime downloaded from **Settings → Runtimes** needs two libraries

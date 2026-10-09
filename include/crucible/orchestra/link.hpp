@@ -39,7 +39,7 @@ namespace crucible::orchestra {
 
 /// The protocol this build speaks. The package says which it speaks in its
 /// hello, and one that disagrees is refused rather than half understood.
-inline constexpr int kProtocol = 1;
+inline constexpr int kProtocol = 2;
 
 /// What the core does when the orchestrator asks it something: the answer, or
 /// a std::exception whose message goes back as the error.

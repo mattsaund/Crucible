@@ -19,10 +19,16 @@
 #include <stdexcept>
 #include <utility>
 
+#include <fstream>
+#include <iterator>
+
 #include "crucible/config/paths.hpp"
+#include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
+#include "crucible/tools/git.hpp"
 #include "crucible/tools/workshop.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/text.hpp"
 
 namespace crucible {
 namespace {
@@ -39,7 +45,10 @@ tools::ToolKind tool_kind_from_name(const std::string& name) {
     for (const tools::ToolKind kind :
          {tools::ToolKind::List, tools::ToolKind::Read, tools::ToolKind::Write, tools::ToolKind::Run,
           tools::ToolKind::Search, tools::ToolKind::Ask, tools::ToolKind::Note, tools::ToolKind::Done,
-          tools::ToolKind::Handoff}) {
+          tools::ToolKind::Handoff, tools::ToolKind::Fetch, tools::ToolKind::Git, tools::ToolKind::Gh,
+          tools::ToolKind::Python, tools::ToolKind::Start, tools::ToolKind::Stop, tools::ToolKind::Logs,
+          tools::ToolKind::Screenshot, tools::ToolKind::Click, tools::ToolKind::Move,
+          tools::ToolKind::Type, tools::ToolKind::Key, tools::ToolKind::Scroll}) {
         if (tools::tool_kind_name(kind) == name) {
             return kind;
         }
@@ -52,7 +61,23 @@ tools::ToolCall call_from(const json& params) {
     call.kind     = tool_kind_from_name(params.value("kind", ""));
     call.argument = params.value("argument", "");
     call.content  = params.value("content", "");
+    call.shell    = params.value("shell", "");
     return call;
+}
+
+/// A seat's parameters for a model named the way a seat names one: a file
+/// in the models folder, or a provider's model.
+ModelParams params_for(const Config& config, const std::string& model, const std::string& provider) {
+    ModelParams params = config.defaults;
+    params.model       = model;
+    params.provider    = model.empty() ? std::string() : provider;
+    if (params.remote()) {
+        // The cap is sized for a card; a provider counts its thinking against
+        // it. The same rule the settings screen applies when a seat is pointed
+        // at a provider.
+        params.max_tokens = -1;
+    }
+    return params;
 }
 
 }  // namespace
@@ -63,6 +88,7 @@ tools::ToolCall call_from(const json& params) {
 
 void Engine::set_project(std::filesystem::path root, std::filesystem::path project_dir) {
     project_root_ = std::move(root);
+    project_dir_  = project_dir;
     cook_log_     = std::make_unique<CookLog>(std::move(project_dir));
 }
 
@@ -75,12 +101,19 @@ tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) 
     workshop.root                = root;
     workshop.allow_run           = !root.empty();
     workshop.run_timeout_seconds = config_.tools.workshop_timeout;
+    // The rest of what an expert can reach, each behind its own switch.
+    workshop.web              = config_.tools.web_search;
+    workshop.computer_control = config_.tools.computer_control;
+    workshop.python           = lab::python::installed() ? lab::python::interpreter()
+                                                         : std::filesystem::path();
+    workshop.scratch          = paths::scratch_dir();
+    workshop.processes        = const_cast<tools::Processes*>(&processes_);
     return workshop;
 }
 
 void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
                         std::vector<attach::Attachment> attachments,
-                        std::optional<ExpertId> pinned) {
+                        std::optional<ExpertId> pinned, std::string kind) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -90,6 +123,7 @@ void Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::p
         request.root           = std::move(root);
         request.attachments    = std::move(attachments);
         request.pinned         = std::move(pinned);
+        request.cook_kind      = std::move(kind);
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
@@ -223,9 +257,16 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
             if (one.value("attached", false)) {
                 message.images = cook_images_;
             }
+            // The pictures the last tool produced, for the round after it
+            // and to a model that sees them. See cook_tool_images_.
+            if (one.value("tool_pictures", false) && !cook_tool_images_.empty()
+                && cook_seat_.model->sees_images()) {
+                message.images = cook_tool_images_;
+            }
             messages.push_back(std::move(message));
         }
         const CookRound round = cook_round(*cook_seat_.model, cook_seat_.params, messages);
+        cook_tool_images_.clear();
         return json{{"answer", round.answer}, {"reasoning", round.reasoning},
                     {"error", round.error}, {"ms", round.ms}};
     }
@@ -267,8 +308,174 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         }
         const tools::ToolResult result = tools::run_tool(call, cook_workshop_, cook_search_,
             [this] { return cancel_.load(std::memory_order_relaxed); });
-        return json{{"ok", result.ok}, {"output", result.output}, {"summary", result.summary},
-                    {"detail", result.detail}, {"changed", result.changed}};
+        cook_tool_images_.clear();
+        std::string output = result.output;
+        if (!result.pictures.empty()) {
+            if (cook_seat_.model != nullptr && cook_seat_.model->sees_images()) {
+                for (const attach::Image& image : result.pictures) {
+                    cook_tool_images_.push_back({image.mime, image.data});
+                }
+            } else {
+                output += "\n(This model reads text only and cannot see the picture itself.)";
+            }
+        }
+        return json{{"ok", result.ok}, {"output", output}, {"summary", result.summary},
+                    {"detail", result.detail}, {"changed", result.changed},
+                    {"pictures", cook_tool_images_.size()}, {"picture", result.picture_path}};
+    }
+    if (method == "roster.make") {
+        // A seat a build makes for a task nobody on the roster fits, on the
+        // model set aside for that. Onto the engine's own roster now, so the
+        // task can use it; the session is handed a copy to keep.
+        const std::string name  = format::trim(params.value("name", ""));
+        const std::string blurb = format::trim(params.value("blurb", ""));
+        if (config_.build.worker_model.empty()) {
+            return json{{"ok", false}, {"error", "no model is set for new agents -- Settings, Build"}};
+        }
+        if (name.empty()) {
+            return json{{"ok", false}, {"error", "a seat needs a name"}};
+        }
+        if (const std::optional<std::size_t> at = config_.roster.find(name)) {
+            // Already there, by that name: it is the seat, when it can answer.
+            const Expert& seat = config_.roster.at(*at);
+            const bool    able = config_.has_expert(seat.id);
+            return json{{"ok", able}, {"id", seat.id}, {"name", seat.name}, {"tag", seat.tag},
+                        {"keywords", seat.keywords}, {"remote", config_.expert(seat.id).remote()},
+                        {"error", able ? std::string() : seat.name + " is on the roster with no model"}};
+        }
+        Expert expert;
+        expert.name   = name;
+        expert.blurb  = blurb.empty() ? name : blurb;
+        expert.origin = "build";
+        Config edited;
+        {
+            const std::lock_guard<std::mutex> lock(config_mutex_);
+            edited = config_;
+        }
+        std::string error;
+        if (!edited.roster.add(expert, error)) {
+            return json{{"ok", false}, {"error", error}};
+        }
+        const ExpertId    id     = make_expert_id(name);
+        const ModelParams seated = params_for(edited, edited.build.worker_model, edited.build.worker_provider);
+        edited.experts[id] = seated;
+        edited.resolve_models();
+        const Expert made = edited.roster.at(*edited.roster.find(id));
+        {
+            const std::lock_guard<std::mutex> lock(config_mutex_);
+            config_ = std::move(edited);
+            hub_.adopt(config_);
+        }
+        state_.configure_seats(config_);
+        {
+            const std::lock_guard<std::mutex> lock(written_mutex_);
+            made_seats_.push_back({made, seated});
+        }
+        if (wake_) {
+            wake_();
+        }
+        return json{{"ok", true}, {"id", id}, {"name", made.name}, {"tag", made.tag},
+                    {"keywords", made.keywords}, {"remote", seated.remote()}};
+    }
+
+    // --- what this machine has -------------------------------------------------
+    if (method == "machine.facts") {
+        // Which of the programs a build reaches for are on PATH, so the
+        // architect plans with `python3` on a Mac that has no `python` and
+        // an agent does not spend rounds finding that out. Presence only:
+        // asking each for its version is a subprocess apiece.
+        json present = json::array();
+        for (const char* program : {"python3", "python", "pip3", "pip", "pytest", "node", "npm", "npx",
+                                    "yarn", "pnpm", "deno", "bun", "git", "gh", "cargo", "rustc", "go",
+                                    "java", "javac", "mvn", "gradle", "dotnet", "ruby", "gem", "php",
+                                    "composer", "swift", "make", "cmake", "ninja", "gcc", "clang", "cc",
+                                    "docker", "sqlite3", "psql", "mysql", "curl", "wget", "zip", "tar"}) {
+            if (util::on_path(program)) {
+                present.push_back(program);
+            }
+        }
+#if defined(_WIN32)
+        const char* os = "Windows";
+        const char* shell = "cmd (RUN powershell: for PowerShell)";
+#elif defined(__APPLE__)
+        const char* os = "macOS";
+        const char* shell = "/bin/sh (zsh and bash are there too)";
+#else
+        const char* os = "Linux";
+        const char* shell = "/bin/sh (bash is there too)";
+#endif
+        return json{{"os", os}, {"shell", shell}, {"programs", present}};
+    }
+
+    // --- version control, for a build's commits ------------------------------
+    if (method == "git.ready") {
+        return json{{"git", tools::git::available()}, {"gh", tools::git::gh_available()},
+                    {"repo", tools::git::is_repo(cook_workshop_.root)}};
+    }
+    if (method == "git.init") {
+        const std::string error = tools::git::init(cook_workshop_.root);
+        return json{{"ok", error.empty()}, {"error", error}};
+    }
+    if (method == "git.commit") {
+        std::string summary;
+        const std::string error = tools::git::commit(cook_workshop_.root, params.value("message", ""), summary);
+        return json{{"ok", error.empty()}, {"summary", summary}, {"error", error}};
+    }
+
+    // --- what a build's agents did, kept for teaching ------------------------
+    if (method == "teach.record") {
+        // One line of JSON per record, per expert, in the project's own
+        // history folder: the task an agent was given and what it made, with
+        // the files as they are now. What a local expert could be fine-tuned
+        // on so that the next build needs the provider less. Nothing leaves
+        // the machine; nothing is read back here.
+        if (project_dir_.empty()) {
+            return json::object();
+        }
+        const std::string expert = params.value("expert", "");
+        if (expert.empty()) {
+            return json::object();
+        }
+        // As a conversation: the task as the question, and the answer as what
+        // the agent said with the files it made written out as fenced blocks
+        // -- which is the record the trainer reads through the base model's
+        // own chat template, so a local expert taught on it answers a task
+        // the way the provider's model did, files and all.
+        std::string answer = params.value("completion", "");
+        json files = json::array();
+        for (const json& path : params.value("files", json::array())) {
+            if (!path.is_string()) {
+                continue;
+            }
+            const std::optional<std::filesystem::path> file =
+                tools::resolve_in_root(cook_workshop_.root, path.get<std::string>());
+            std::ifstream in(file ? *file : std::filesystem::path(), std::ios::binary);
+            if (!file || !in) {
+                continue;
+            }
+            std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (content.size() > 16000) {
+                content.resize(16000);
+            }
+            content = crucible::detail::scrub_utf8(content);
+            files.push_back(path.get<std::string>());
+            answer += "\n\nWRITE: " + path.get<std::string>() + "\n```\n" + content + "\n```";
+        }
+        json record{{"expert", expert},
+                    {"when", static_cast<std::int64_t>(std::time(nullptr))},
+                    {"files", std::move(files)},
+                    {"messages", json::array({
+                        json{{"role", "user"}, {"content", params.value("prompt", "")}},
+                        json{{"role", "assistant"}, {"content", crucible::detail::scrub_utf8(answer)}},
+                    })}};
+        std::error_code ec;
+        const std::filesystem::path dir = project_dir_ / "teach";
+        std::filesystem::create_directories(dir, ec);
+        std::ofstream out(dir / (expert + ".jsonl"), std::ios::app);
+        if (out) {
+            out << record.dump(-1, ' ', false, json::error_handler_t::replace) << '\n';
+        }
+        return json::object();
     }
     if (method == "edit.ask") {
         tools::ToolCall call = call_from(params);
@@ -281,7 +488,11 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
     if (method == "cook.publish") {
         // The orchestrator owns the cook as it runs; this is where the window
         // and History see it. Saved after every step rather than at the end.
+        const std::string kind = cook_.kind;
         cook_ = cook_from_json(params.value("cook", json::object()), cook_.id);
+        if (!params.value("cook", json::object()).contains("kind")) {
+            cook_.kind = kind;   // a cook's journal does not say; the engine knows
+        }
         publish_cook();
         if (cook_log_) {
             std::string error;
@@ -304,7 +515,7 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
 void Engine::do_cook(const std::string& goal, int budget_seconds,
                      const std::filesystem::path& root,
                      std::vector<attach::Attachment> attachments,
-                     std::optional<ExpertId> pinned) {
+                     std::optional<ExpertId> pinned, const std::string& kind) {
     cooking_.store(true, std::memory_order_relaxed);
     cook_stop_.store(false, std::memory_order_relaxed);
     cancel_.store(false, std::memory_order_relaxed);
@@ -316,6 +527,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     cook_                = Cook{};
     cook_.id             = CookLog::new_id();
     cook_.goal           = goal;
+    cook_.kind           = kind;
     cook_.state          = CookState::Working;
     cook_.budget_seconds = budget_seconds;
     cook_.started_unix   = static_cast<std::int64_t>(std::time(nullptr));
@@ -334,6 +546,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     cook_search_.timeout_seconds = config_.tools.search_timeout;
     cook_attachments_ = std::move(attachments);
     cook_images_.clear();
+    cook_tool_images_.clear();
     cook_seat_ = CookSeat{};
 
     json request = routing_request(goal, pinned);
@@ -346,11 +559,20 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     request["has_attachments"] = !cook_attachments_.empty();
     request["system_prompt"]   = config_.system_prompt;
     request["tools"]           = tools::workshop_instructions(cook_workshop_, tools::ToolAudience::Cook);
+    const bool building = kind == "build";
+    if (building) {
+        request["directive"] = goal;
+        request["settings"]  = json{{"architect", config_.build.architect},
+                                    {"can_make", !config_.build.worker_model.empty()},
+                                    {"auto_commit", config_.build.auto_commit},
+                                    {"confirm_plan", config_.build.confirm_plan},
+                                    {"rounds_per_task", config_.build.rounds_per_task}};
+    }
 
     std::string error;
     if (wait_for_python(error)) {
         try {
-            orchestra_.call("cook.run", request,
+            orchestra_.call(building ? "build.run" : "cook.run", request,
                             [this](const std::string& method, const json& params) {
                                 return serve(method, params);
                             });
@@ -387,6 +609,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     }
     cook_seat_ = CookSeat{};
     cook_images_.clear();
+    cook_tool_images_.clear();
     cook_attachments_.clear();
     cooking_.store(false, std::memory_order_relaxed);
     cook_stop_.store(false, std::memory_order_relaxed);

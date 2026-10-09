@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.8.6
+    VERSION     0.9.0
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -168,6 +168,13 @@ add_library(crucible_core STATIC
     src/tools/pdf_text.cpp
     src/tools/office_binary.cpp
     src/tools/workshop.cpp
+    # tools, beyond the folder: version control, the web, the screen, programs
+    # left running, and a page of the project made showable
+    src/tools/git.cpp
+    src/tools/fetch.cpp
+    src/tools/computer.cpp
+    src/tools/processes.cpp
+    src/tools/preview.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
     src/llm/remote_model.cpp
@@ -190,6 +197,7 @@ add_library(crucible_core STATIC
     src/api/methods_settings.cpp
     src/api/methods_install.cpp
     src/api/methods_lab.cpp
+    src/api/methods_source.cpp
 
     src/app/cli.cpp
     src/app/uninstall.cpp
@@ -342,7 +350,9 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_update.cpp
         tests/test_attachments.cpp
         tests/test_spelling.cpp
-        tests/test_orchestra.cpp)
+        tests/test_orchestra.cpp
+        tests/test_build.cpp
+        tests/test_source.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
     # They are tested by running ui/render.js in JavaScriptCore -- the same

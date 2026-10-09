@@ -80,6 +80,7 @@ std::filesystem::path runtime_src_dir()   { return data_dir() / "runtime-src"; }
 std::filesystem::path runtime_build_dir() { return data_dir() / "runtime-build"; }
 std::filesystem::path projects_dir()      { return data_dir() / "projects"; }
 std::filesystem::path dropped_dir()       { return data_dir() / "dropped"; }
+std::filesystem::path scratch_dir()       { return data_dir() / "scratch"; }
 std::filesystem::path scratchpad_dir()    { return home_dir() / "Crucible" / "Scratchpad"; }
 
 std::filesystem::path expand_user(std::string_view raw) {

@@ -75,6 +75,10 @@ struct TurnAction {
     /// What `body` should be colored as: a file name for a write, a fence
     /// language otherwise. Empty lets the renderer work it out from the text.
     std::string language;
+
+    /// A picture the action produced, by path: a screenshot it took, a
+    /// picture it looked at. The window asks for the bytes when it draws it.
+    std::string picture;
 };
 
 /// One exchange. Kept as a unit so the transcript can show which expert

@@ -45,8 +45,32 @@ function turnMeta(turn) {
 /// follows it.
 function turnActions(turn) {
   return (turn.actions || []).map((a) => `<div class="act"><span class="act-dot">·</span> ${
-    escape(a.summary)}${actionBody(a)}</div>`).join('');
+    escape(a.summary)}${pictureChip(a.picture)}${actionBody(a)}</div>`).join('');
 }
+
+/// A picture an action or a step produced -- a screenshot, a picture it
+/// looked at -- as a chip that opens it. The bytes are fetched when it is
+/// opened; a journal carries the path.
+function pictureChip(path) {
+  if (!path) return '';
+  return ` <button class="link picture-chip" data-act="picture-open" data-path="${escape(path)}"
+      title="${escape(path)}">picture</button>`;
+}
+
+modals.picture = (m) => `<div class="modal wide">
+    <div class="head"><strong>${escape(fileName(m.path))}</strong><div class="status">${escape(m.path)}</div></div>
+    <div class="body-pad" style="text-align:center">${m.error ? `<div class="bad">${escape(m.error)}</div>`
+      : m.src ? `<img class="picture-full" src="${m.src}" alt="${escape(fileName(m.path))}">` : '<div class="status">Loading...</div>'}</div>
+    <div class="feet"><button class="action" data-act="modal-close">Close</button></div></div>`;
+
+actions['picture-open'] = (button) => {
+  const modal = { kind: 'picture', path: button.dataset.path, src: '', error: '' };
+  openModal(modal);
+  call('attach.image', { path: modal.path })
+    .then((got) => { modal.src = `data:${got.mime};base64,${got.data}`; })
+    .catch((error) => { modal.error = error.message; })
+    .finally(render);
+};
 
 /// What an action left to look at. A write names the file it wrote, and is
 /// drawn as the block that was allowed; anything else is its output.
@@ -342,10 +366,17 @@ function composerView(options) {
   const asking = cook && cook.state === 'asking';
   const auto_ = !!s.auto_edits;
 
+  // The box belongs to the build that is running, on the Build view;
+  // elsewhere it is shut, and says why. A cook started through the API is
+  // a build without a plan, and the Build view owns it the same way.
+  const owns = cook && options.build;
   let hint = options.hint;
   let disabled = false;
   if (asking) hint = 'answer the question above';
-  else if (cook && !options.cook) { hint = 'a cook is running -- it has the experts'; disabled = true; }
+  else if (cook && !owns) {
+    hint = 'a build is running -- it has the experts';
+    disabled = true;
+  }
 
   // Auto sits beside the box rather than in Settings because whether you are
   // watching an expert edit your files is a decision that changes between one
@@ -356,7 +387,7 @@ function composerView(options) {
       aria-pressed="${auto_}">${auto_ ? 'Auto on' : 'Auto off'}</button>`;
 
   let buttons;
-  if (cook && options.cook && !asking) {
+  if (owns && !asking) {
     // Two stops, because they are different things. The first makes a
     // finishing pass so the project is left in a state that runs; the second
     // is a cancel and leaves it wherever it got to.
@@ -367,7 +398,7 @@ function composerView(options) {
               title="Finish cleanly, then stop">Stop and finish</button>
       <button type="button" class="action" data-act="stop" title="Stop at once">Stop now</button>`;
     disabled = true;
-    hint = finishing ? 'finishing up' : 'cooking';
+    hint = finishing ? 'finishing up' : 'building';
   } else {
     const send = asking ? 'Answer' : options.send;
     buttons = `${autoButton}
@@ -380,7 +411,7 @@ function composerView(options) {
   // One rounded box: what is attached, then the text, then a row along the
   // bottom with the plus at one end and the buttons at the other. More can
   // be typed with tiles in it; they go with whatever is.
-  const mode = options.cook ? 'cook' : 'chat';
+  const mode = options.build ? 'build' : 'chat';
   return `<div class="foot">
       <div class="splitter-y" id="composer-splitter" title="Drag to resize"></div>
       <form class="composer" data-submit="send" data-mode="${mode}">
@@ -415,10 +446,10 @@ views.chat = () => {
   // of one that is running is drawn here too rather than only on its own tab:
   // somebody watching Chat should not have to guess why the box is shut.
   const cooking = s.cook && s.cook.running
-    ? `<div class="turn cook-here"><div class="who"><span class="seat">◆ cooking</span>
+    ? `<div class="turn cook-here"><div class="who"><span class="seat">◆ building</span>
          <span class="sep">·</span><span>${escape(s.cook.goal)}</span></div>
          ${cookSteps(s.cook.steps.slice(-6))}
-         <button class="link" data-act="view" data-view="cook">Open the cook</button></div>`
+         <button class="link" data-act="view" data-view="build">Open the build</button></div>`
     : '';
   const body = turns.length || cooking ? turnsView(turns, 0) + cooking : readiness();
   return sideView() + `<div class="pane">
@@ -450,7 +481,7 @@ actions.send = (form) => {
   const files = state.attached[mode] || [];
   // A question can be only its attachments -- "here" and a PDF says enough
   // -- but a goal has to say what it is.
-  if (!text && (mode === 'cook' || !files.length)) return;
+  if (!text && (mode === 'build' || !files.length)) return;
   const attachments = attachmentsFor(mode);
   if (!attachments) {
     state.error = 'still reading what is attached -- a moment';
@@ -458,10 +489,12 @@ actions.send = (form) => {
   }
   box.value = '';
   growComposer(box);
-  if (mode === 'cook') {
+  if (mode === 'build') {
     return guard(async () => {
-      await call('cook.start', { goal: text, attachments, expert: routeTarget() });
-      state.attached.cook = [];
+      await call('build.start', { directive: text, attachments, expert: routeTarget() });
+      state.attached.build = [];
+      state.buildPane = 'agents';
+      state.open.task = null;
     });
   }
   state.follow = true;

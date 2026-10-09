@@ -36,11 +36,15 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 #include <system_error>
 #include <thread>
 
+#include "crucible/tools/computer.hpp"
+#include "crucible/tools/fetch.hpp"
+#include "crucible/tools/git.hpp"
 #include "crucible/util/diff.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
@@ -57,16 +61,33 @@ struct Verb {
 // Upper case, followed by a colon. Upper case because it is what a model
 // reliably reproduces from an instruction and what almost never occurs by
 // accident in prose, and a colon because it makes the argument obvious.
-constexpr std::array<Verb, 9> kVerbs{{
-    {"LIST",   ToolKind::List},
-    {"READ",   ToolKind::Read},
-    {"WRITE",  ToolKind::Write},
-    {"RUN",    ToolKind::Run},
-    {"SEARCH", ToolKind::Search},
-    {"ASK",    ToolKind::Ask},
-    {"NOTE",   ToolKind::Note},
-    {"DONE",   ToolKind::Done},
-    {"HANDOFF", ToolKind::Handoff},
+//
+// Longer words before shorter ones that share a start, so SCREENSHOT is
+// tried before SCROLL and neither is mistaken for the other.
+constexpr std::array<Verb, 23> kVerbs{{
+    {"LIST",       ToolKind::List},
+    {"READ",       ToolKind::Read},
+    {"WRITE",      ToolKind::Write},
+    {"RUN",        ToolKind::Run},
+    {"SEARCH",     ToolKind::Search},
+    {"ASK",        ToolKind::Ask},
+    {"NOTE",       ToolKind::Note},
+    {"DONE",       ToolKind::Done},
+    {"HANDOFF",    ToolKind::Handoff},
+    {"FETCH",      ToolKind::Fetch},
+    {"GIT",        ToolKind::Git},
+    {"GH",         ToolKind::Gh},
+    {"PYTHON",     ToolKind::Python},
+    {"START",      ToolKind::Start},
+    {"STOP",       ToolKind::Stop},
+    {"LOGS",       ToolKind::Logs},
+    {"SCREENSHOT", ToolKind::Screenshot},
+    {"CLICK",      ToolKind::Click},
+    {"MOVE",       ToolKind::Move},
+    {"TYPE",       ToolKind::Type},
+    {"KEY",        ToolKind::Key},
+    {"SCROLL",     ToolKind::Scroll},
+    {"LOOK",       ToolKind::Screenshot},   // what a model writes when it means a screenshot
 }};
 
 std::string trim(std::string_view text) {
@@ -122,29 +143,51 @@ bool colon_optional(ToolKind kind) {
     return kind == ToolKind::List || kind == ToolKind::Read;
 }
 
+/// Whether the verb's argument is a name or a command line: names are
+/// unquoted, commands are kept as written, because quoting means something to
+/// a shell, to git and to a keyboard.
+bool keeps_argument_verbatim(ToolKind kind) {
+    return kind == ToolKind::Run || kind == ToolKind::Git || kind == ToolKind::Gh
+        || kind == ToolKind::Start || kind == ToolKind::Type || kind == ToolKind::Python;
+}
+
 /// The verb a line opens with, or None.
 ///
 /// The line must *begin* with it, ignoring indentation. A sentence that happens
 /// to contain "RUN:" halfway through is prose, and treating it as a call is how
 /// an expert explaining a command ends up executing it.
-ToolKind verb_of(std::string_view line, std::string& argument) {
+///
+/// `RUN bash: ...` names a shell: the verb, a space, a known shell's name and
+/// the colon. A RUN followed by a space and anything else is still prose.
+ToolKind verb_of(std::string_view line, std::string& argument, std::string& shell) {
     const std::string trimmed = trim(line);
+    shell.clear();
     for (const Verb& verb : kVerbs) {
         if (trimmed.size() <= verb.word.size() ||
             trimmed.compare(0, verb.word.size(), verb.word) != 0) {
             continue;
         }
         const char after = trimmed[verb.word.size()];
-        const bool separated = after == ':'
-                            || (colon_optional(verb.kind) && (after == ' ' || after == '\t'));
+        std::size_t rest = verb.word.size() + 1;
+        bool separated = after == ':'
+                      || (colon_optional(verb.kind) && (after == ' ' || after == '\t'));
+        if (!separated && verb.kind == ToolKind::Run && after == ' ') {
+            // "RUN zsh: ls": the word between the verb and the colon is the shell.
+            const std::size_t colon = trimmed.find(':', rest);
+            if (colon != std::string::npos) {
+                const std::string named = format::to_lower(trim(trimmed.substr(rest, colon - rest)));
+                if (known_shell(named)) {
+                    shell     = named;
+                    rest      = colon + 1;
+                    separated = true;
+                }
+            }
+        }
         if (!separated) {
             continue;
         }
-        argument = trim(std::string_view(trimmed).substr(verb.word.size() + 1));
-        // Everything but RUN names a thing rather than a command line, and a
-        // quoted name is the same name. RUN keeps its argument verbatim:
-        // quoting is meaningful to a shell.
-        if (verb.kind != ToolKind::Run) {
+        argument = trim(std::string_view(trimmed).substr(rest));
+        if (!keeps_argument_verbatim(verb.kind)) {
             argument = unquote(argument);
         }
         return verb.kind;
@@ -170,7 +213,7 @@ bool is_fence(const std::string& line) {
     return trimmed.rfind("```", 0) == 0 || trimmed.rfind("~~~", 0) == 0;
 }
 
-/// Collect a WRITE body, starting at `index` (the line after the verb).
+/// Collect a verb's body, starting at `index` (the line after the verb).
 ///
 /// Three shapes are accepted, because models produce all three whatever they
 /// are told: a ``` fence, an explicit `<<<`/`>>>` pair, and -- when neither is
@@ -217,7 +260,8 @@ std::string collect_body(const std::vector<std::string>& lines, std::size_t& ind
     }
 
     std::string ignored;
-    while (index < lines.size() && verb_of(lines[index], ignored) == ToolKind::None) {
+    std::string shell;
+    while (index < lines.size() && verb_of(lines[index], ignored, shell) == ToolKind::None) {
         append(lines[index]);
         ++index;
     }
@@ -318,6 +362,126 @@ ToolResult failure(std::string message) {
     return result;
 }
 
+/// Run `argv` in `cwd` and keep what it printed, with a deadline and a Stop.
+///
+/// A watchdog rather than a poll: read_line blocks, which is what keeps the
+/// output in order and the loop simple, so the deadline has to be enforced
+/// from outside it. `timed_out` and `stopped` say which of the two ended it.
+struct Captured {
+    bool        started   = false;
+    bool        timed_out = false;
+    bool        stopped   = false;
+    int         status    = -1;
+    std::string output;
+    std::string error;
+};
+
+Captured capture(const std::vector<std::string>& argv, const std::filesystem::path& cwd,
+                 int timeout_seconds, const CancelCallback& cancel) {
+    Captured captured;
+    util::Subprocess child;
+    if (!child.start(argv, cwd, {}, captured.error)) {
+        return captured;
+    }
+    captured.started = true;
+
+    std::atomic<bool> finished{false};
+    std::atomic<bool> timed_out{false};
+    std::atomic<bool> stopped{false};
+    std::thread watchdog([&] {
+        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::seconds(timeout_seconds);
+        while (!finished.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (cancel && cancel()) {
+                stopped.store(true, std::memory_order_relaxed);
+                child.terminate();
+                return;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                timed_out.store(true, std::memory_order_relaxed);
+                child.terminate();
+                return;
+            }
+        }
+    });
+
+    std::string line;
+    while (child.read_line(line)) {
+        captured.output += line;
+        captured.output += '\n';
+    }
+    captured.status = child.wait();
+    finished.store(true, std::memory_order_relaxed);
+    watchdog.join();
+    // In the console's code page on Windows, not UTF-8. See console_to_utf8.
+    captured.output    = crucible::detail::console_to_utf8(captured.output);
+    captured.timed_out = timed_out.load(std::memory_order_relaxed);
+    captured.stopped   = stopped.load(std::memory_order_relaxed);
+    return captured;
+}
+
+/// A command's result, as every verb that runs one reports it.
+ToolResult command_result(const std::string& shown, const Captured& captured,
+                          const WorkshopSettings& settings) {
+    if (!captured.started) {
+        return failure("could not run: " + captured.error);
+    }
+    ToolResult result;
+    result.ok = captured.status == 0 && !captured.timed_out && !captured.stopped;
+    result.summary = shown
+                   + (captured.timed_out ? "  -- timed out"
+                      : captured.stopped ? "  -- stopped"
+                                         : "  -- exit " + std::to_string(captured.status));
+    result.detail = clamp_output(captured.output, settings.max_output_bytes);
+    result.output = shown + "\n" + result.detail;
+    if (captured.timed_out) {
+        result.output += "\n(killed after " + std::to_string(settings.run_timeout_seconds)
+                       + " seconds -- a program that should keep running wants START, not RUN)";
+    } else {
+        result.output += "\n(exit status " + std::to_string(captured.status) + ")";
+    }
+    return result;
+}
+
+/// A fresh file name in the scratch folder, for a screenshot or a snippet.
+std::filesystem::path scratch_file(const WorkshopSettings& settings, const char* stem,
+                                   const char* extension) {
+    std::error_code ec;
+    std::filesystem::path dir = settings.scratch;
+    if (dir.empty()) {
+        dir = std::filesystem::temp_directory_path(ec) / "crucible-scratch";
+    }
+    std::filesystem::create_directories(dir, ec);
+    const std::time_t now = std::time(nullptr);
+    std::tm parts = util::local_time(now);
+    char when[32] = {};
+    std::strftime(when, sizeof(when), "%Y%m%d-%H%M%S", &parts);
+    static std::atomic<int> counter{0};
+    return dir / (std::string(stem) + "-" + when + "-" + std::to_string(++counter) + extension);
+}
+
+/// A picture, as a tool hands it on: the bytes for a model that sees, the
+/// words off it for one that does not, and where it is for the journal.
+void attach_picture(ToolResult& result, const std::filesystem::path& file, const std::string& what) {
+    const attach::Image image = attach::picture(file, 24ULL << 20);
+    if (image.data.empty()) {
+        result.output += "\n(" + what + " could not be read back as a picture)";
+        return;
+    }
+    result.pictures.push_back(image);
+    result.picture_path = file.string();
+    std::string why;
+    const std::string words = computer::read_text(file, why);
+    if (!words.empty()) {
+        result.output += "\nThe words in " + what + ", read off it:\n" + clamp_output(words, 6000);
+    } else if (!why.empty()) {
+        result.output += "\n(" + why + ")";
+    }
+}
+
+// --- the verbs ---------------------------------------------------------------
+
 /// LIST
 ToolResult do_list(const ToolCall& call, const WorkshopSettings& settings) {
     std::string target = call.argument.empty() ? "." : call.argument;
@@ -369,12 +533,48 @@ ToolResult do_list(const ToolCall& call, const WorkshopSettings& settings) {
 }
 
 /// READ
+///
+/// Text as it is, numbered. A document -- a PDF, a Word file, a spreadsheet
+/// -- as the text inside it, read by the same readers an attachment is. A
+/// picture as a picture, for a model that sees one, and as the words on it
+/// for one that does not.
 ToolResult do_read(const ToolCall& call, const WorkshopSettings& settings) {
     std::string target = call.argument;
     const std::optional<std::filesystem::path> file =
         resolve_argument(settings.root, target, target);
     if (!file) {
         return failure(target + " is outside the project");
+    }
+    std::error_code ec;
+    if (std::filesystem::is_directory(*file, ec)) {
+        return failure(target + " is a directory -- use LIST: " + target);
+    }
+    if (!std::filesystem::exists(*file, ec)) {
+        return failure(target + " does not exist");
+    }
+
+    const attach::Kind kind = attach::kind_of(*file);
+    if (kind == attach::Kind::Image) {
+        ToolResult result;
+        result.ok      = true;
+        result.summary = "looked at " + target;
+        result.output  = "[picture: " + target + ", " + format::bytes(std::filesystem::file_size(*file, ec)) + "]";
+        attach_picture(result, *file, target);
+        return result;
+    }
+    if (kind == attach::Kind::Document && !attach::is_markup_source(*file)) {
+        const attach::Text text = attach::read(*file, settings.max_read_bytes);
+        ToolResult result;
+        result.ok      = true;
+        result.summary = "read " + target;
+        result.output  = target + " (" + attach::label_for(*file) + "):\n" + text.body;
+        if (text.body.empty()) {
+            result.output += "(" + (text.note.empty() ? std::string("nothing in it could be read") : text.note) + ")";
+        } else if (text.cut) {
+            result.output += "\n[cut: the first " + std::to_string(text.body.size()) + " of "
+                           + std::to_string(text.total) + " characters]";
+        }
+        return result;
     }
 
     std::ifstream in(*file, std::ios::binary);
@@ -471,9 +671,6 @@ ToolResult do_run(const ToolCall& call, const WorkshopSettings& settings,
     if (call.argument.empty()) {
         return failure("RUN needs a command");
     }
-
-    util::Subprocess child;
-    std::string      error;
     // Through a shell, because that is what the command was written for: pipes,
     // redirections and `&&` are how anyone describes running a project, and an
     // argv split would break all three.
@@ -482,63 +679,259 @@ ToolResult do_run(const ToolCall& call, const WorkshopSettings& settings,
     // containment -- a shell can cd out of it, and one has, in testing. The
     // file verbs above are confined; this is not, which is why it is a separate
     // switch and why the interface says so. See workshop.hpp.
-    if (!child.start(util::shell_command(call.argument), settings.root, {}, error)) {
-        return failure("could not run: " + error);
-    }
-
-    // A watchdog rather than a poll: read_line blocks, which is what keeps the
-    // output in order and the loop simple, so the deadline has to be enforced
-    // from outside it.
-    std::atomic<bool> finished{false};
-    std::atomic<bool> timed_out{false};
-    std::atomic<bool> stopped{false};
-    std::thread watchdog([&] {
-        const auto deadline = std::chrono::steady_clock::now()
-                            + std::chrono::seconds(settings.run_timeout_seconds);
-        while (!finished.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            if (cancel && cancel()) {
-                stopped.store(true, std::memory_order_relaxed);
-                child.terminate();
-                return;
-            }
-            if (std::chrono::steady_clock::now() >= deadline) {
-                timed_out.store(true, std::memory_order_relaxed);
-                child.terminate();
-                return;
-            }
-        }
-    });
-
-    std::string output;
-    std::string line;
-    while (child.read_line(line)) {
-        output += line;
-        output += '\n';
-    }
-    const int status = child.wait();
-    finished.store(true, std::memory_order_relaxed);
-    watchdog.join();
-    // In the console's code page on Windows, not UTF-8. See console_to_utf8.
-    output = detail::console_to_utf8(output);
-
-    ToolResult result;
-    result.ok = status == 0 && !timed_out.load(std::memory_order_relaxed);
-    result.summary = "$ " + call.argument
-                   + (timed_out.load(std::memory_order_relaxed)
-                          ? "  -- timed out"
-                          : stopped.load(std::memory_order_relaxed)
-                                ? "  -- stopped"
-                                : "  -- exit " + std::to_string(status));
-
-    result.detail = clamp_output(output, settings.max_output_bytes);
-    result.output = "$ " + call.argument + "\n" + result.detail;
-    if (timed_out.load(std::memory_order_relaxed)) {
-        result.output += "\n(killed after " + std::to_string(settings.run_timeout_seconds)
-                       + " seconds)";
+    std::vector<std::string> argv;
+    if (call.shell.empty()) {
+        argv = util::shell_command(call.argument);
     } else {
-        result.output += "\n(exit status " + std::to_string(status) + ")";
+        argv = shell_argv(call.shell, call.argument);
+        if (argv.empty() || !util::on_path(argv.front())) {
+            return failure(call.shell + " is not installed on this machine");
+        }
     }
+    const Captured captured = capture(argv, settings.root, settings.run_timeout_seconds, cancel);
+    const std::string shown = (call.shell.empty() ? "$ " : call.shell + "$ ") + call.argument;
+    return command_result(shown, captured, settings);
+}
+
+/// PYTHON
+ToolResult do_python(const ToolCall& call, const WorkshopSettings& settings,
+                     const CancelCallback& cancel) {
+    if (!settings.allow_run) {
+        return failure("running commands is switched off");
+    }
+    if (settings.python.empty()) {
+        return failure("Crucible's Python is not installed yet, so PYTHON cannot run -- it is "
+                       "fetched when Crucible starts, or by crucible --install-python");
+    }
+    const std::string code = call.content.empty() ? call.argument : call.content;
+    if (trim(code).empty()) {
+        return failure("PYTHON needs the code in a fenced block on the lines after it");
+    }
+    const std::filesystem::path file = scratch_file(settings, "snippet", ".py");
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return failure("could not write the snippet to " + file.string());
+        }
+        out << code << '\n';
+    }
+    // -I: isolated, so a planted module in the project cannot be what
+    // `import json` finds. The project is still the working directory, which
+    // is what the snippet is for.
+    const Captured captured = capture({settings.python.string(), "-I", file.string()}, settings.root,
+                                      settings.run_timeout_seconds, cancel);
+    std::string first = code.substr(0, code.find('\n'));
+    if (first.size() > 60) {
+        first.resize(60);
+        first += "…";
+    }
+    return command_result("python: " + first, captured, settings);
+}
+
+/// GIT and GH
+ToolResult do_git(const ToolCall& call, const WorkshopSettings& settings, bool github) {
+    if (!settings.allow_run) {
+        return failure("running commands is switched off");
+    }
+    const std::vector<std::string> args = git::split_arguments(call.argument);
+    if (args.empty()) {
+        return failure(std::string(github ? "GH" : "GIT") + " needs arguments, like `status` or "
+                       + (github ? "`pr list`" : "`log --oneline -5`"));
+    }
+    const git::Output out = github ? git::run_gh(settings.root, args, settings.run_timeout_seconds)
+                                   : git::run(settings.root, args, settings.run_timeout_seconds);
+    const std::string shown = std::string(github ? "gh " : "git ") + call.argument;
+    if (!out.error.empty()) {
+        return failure(shown + ": " + out.error);
+    }
+    ToolResult result;
+    result.ok      = out.ok;
+    result.summary = shown + "  -- exit " + std::to_string(out.status);
+    result.detail  = clamp_output(out.text, settings.max_output_bytes);
+    result.output  = shown + "\n" + result.detail + "\n(exit status " + std::to_string(out.status) + ")";
+    return result;
+}
+
+/// FETCH
+ToolResult do_fetch(const ToolCall& call, const WorkshopSettings& settings) {
+    if (!settings.web) {
+        return failure("the web is switched off -- Settings, Tools, Web search");
+    }
+    if (call.argument.empty()) {
+        return failure("FETCH needs an address");
+    }
+    const Page page = fetch(call.argument, settings.max_fetch_chars, 45);
+    if (!page.ok) {
+        return failure("could not fetch " + call.argument + ": " + page.error);
+    }
+    ToolResult result;
+    result.ok      = true;
+    result.summary = "fetched " + call.argument + (page.title.empty() ? "" : "  ·  " + page.title)
+                   + "  ·  " + (page.how == "browser" ? "rendered in a browser" : "as served");
+    result.output  = (page.title.empty() ? "" : page.title + "\n") + page.url + "\n\n" + page.text;
+    result.detail  = clamp_output(page.text, settings.max_output_bytes);
+    return result;
+}
+
+/// START, STOP and LOGS
+ToolResult do_processes(const ToolCall& call, const WorkshopSettings& settings) {
+    if (!settings.allow_run) {
+        return failure("running commands is switched off");
+    }
+    if (settings.processes == nullptr) {
+        return failure("nothing can be left running from here");
+    }
+    Processes& processes = *settings.processes;
+    ToolResult result;
+    result.ok = true;
+    if (call.kind == ToolKind::Start) {
+        std::string error;
+        const std::string name = processes.start(call.argument, settings.root, error);
+        if (name.empty()) {
+            return failure("could not start it: " + error);
+        }
+        // A moment, so a program that dies at once is reported as dead now
+        // rather than on the next LOGS.
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        std::string logs;
+        bool running = true;
+        int status = -1;
+        processes.logs(name, 2000, logs, running, status);
+        result.summary = "started " + name + ": " + call.argument + (running ? "" : "  -- it exited at once");
+        result.output  = "started " + name + " (" + call.argument + ")" + (running ? ", running" : ", which exited with status " + std::to_string(status))
+                       + ".\nRead what it prints with LOGS: " + name + " and stop it with STOP: " + name + "."
+                       + (logs.empty() ? "" : "\nSo far:\n" + logs);
+        result.ok      = running;
+        return result;
+    }
+    // The name is the first word. A model echoes what it was last told --
+    // `LOGS: p4 exited with status 127` -- and the name was right.
+    std::string name = call.argument;
+    if (const std::size_t space = name.find_first_of(" \t"); space != std::string::npos) {
+        name.resize(space);
+    }
+    if (call.kind == ToolKind::Stop) {
+        std::string error;
+        if (!processes.stop(name, error)) {
+            return failure(error);
+        }
+        result.summary = "stopped " + name;
+        result.output  = "stopped " + name;
+        return result;
+    }
+    if (name.empty()) {
+        const std::vector<ProcessInfo> all = processes.list();
+        result.summary = all.empty() ? "nothing is running" : std::to_string(all.size()) + " running";
+        result.output  = all.empty() ? "Nothing was started with START." : "Processes:\n";
+        for (const ProcessInfo& one : all) {
+            result.output += "  " + one.name + "  " + (one.running ? "running" : "exited " + std::to_string(one.status))
+                           + "  " + std::to_string(one.seconds) + "s  " + one.command + "\n";
+        }
+        return result;
+    }
+    std::string logs;
+    bool running = false;
+    int status = -1;
+    if (!processes.logs(name, settings.max_output_bytes, logs, running, status)) {
+        return failure("there is no process called " + name);
+    }
+    result.summary = "read the output of " + name + (running ? "" : " (exited)");
+    result.output  = name + (running ? " is running" : " exited with status " + std::to_string(status))
+                   + ". Its output so far:\n" + (logs.empty() ? "(nothing yet)" : logs);
+    result.detail  = logs;
+    return result;
+}
+
+/// The screen
+ToolResult do_computer(const ToolCall& call, const WorkshopSettings& settings) {
+    if (!settings.computer_control) {
+        return failure("using the screen, mouse and keyboard is switched off -- "
+                       "Settings, Tools, Let experts use this computer");
+    }
+    std::istringstream words(call.argument);
+    const auto number = [&words](int& out) {
+        std::string word;
+        if (!(words >> word)) {
+            return false;
+        }
+        try {
+            out = std::stoi(word);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    };
+    computer::Outcome outcome;
+    ToolResult result;
+    switch (call.kind) {
+        case ToolKind::Screenshot: {
+            const std::filesystem::path file = scratch_file(settings, "screenshot", ".png");
+            outcome = computer::screenshot(file);
+            if (!outcome.ok) {
+                return failure(outcome.error);
+            }
+            result.ok      = true;
+            result.summary = outcome.summary;
+            const std::string size = computer::screen_size();
+            result.output = "[screenshot of the screen" + (size.empty() ? "" : ", " + size + " pixels") + "]";
+            attach_picture(result, file, "the screenshot");
+            result.output += "\nCoordinates for CLICK and MOVE are screen pixels from the top left.";
+            return result;
+        }
+        case ToolKind::Click:
+        case ToolKind::Move: {
+            int x = 0, y = 0;
+            if (!number(x) || !number(y)) {
+                return failure(std::string(call.kind == ToolKind::Click ? "CLICK" : "MOVE")
+                               + " takes two numbers: the x and y of a screen pixel");
+            }
+            if (call.kind == ToolKind::Move) {
+                outcome = computer::move(x, y);
+                break;
+            }
+            std::string button = "left";
+            int count = 1;
+            std::string word;
+            while (words >> word) {
+                word = format::to_lower(word);
+                if (word == "right" || word == "middle" || word == "left") { button = word; }
+                else if (word == "double") { count = 2; }
+                else if (word == "triple") { count = 3; }
+            }
+            outcome = computer::click(x, y, button, count);
+            break;
+        }
+        case ToolKind::Type: {
+            const std::string text = call.content.empty() ? call.argument : call.content;
+            outcome = computer::type_text(text);
+            break;
+        }
+        case ToolKind::Key:
+            outcome = computer::press(call.argument);
+            break;
+        case ToolKind::Scroll: {
+            std::string direction;
+            words >> direction;
+            direction = format::to_lower(direction);
+            int notches = 3;
+            number(notches);
+            const int dy = direction == "up" ? -notches : direction == "down" ? notches : 0;
+            const int dx = direction == "left" ? -notches : direction == "right" ? notches : 0;
+            if (dx == 0 && dy == 0) {
+                return failure("SCROLL takes up, down, left or right, and a number of notches");
+            }
+            outcome = computer::scroll(dx, dy);
+            break;
+        }
+        default:
+            return failure("nothing to do");
+    }
+    if (!outcome.ok) {
+        return failure(outcome.error);
+    }
+    result.ok      = true;
+    result.summary = outcome.summary;
+    result.output  = outcome.summary + ". Take a SCREENSHOT: to see what happened.";
     return result;
 }
 
@@ -564,18 +957,54 @@ ToolResult do_search(const ToolCall& call, const SearchSettings& search) {
 
 std::string_view tool_kind_name(ToolKind kind) {
     switch (kind) {
-        case ToolKind::List:   return "list";
-        case ToolKind::Read:   return "read";
-        case ToolKind::Write:  return "write";
-        case ToolKind::Run:    return "run";
-        case ToolKind::Search: return "search";
-        case ToolKind::Ask:    return "ask";
-        case ToolKind::Note:   return "note";
-        case ToolKind::Done:    return "done";
-        case ToolKind::Handoff: return "handoff";
-        case ToolKind::None:   break;
+        case ToolKind::List:       return "list";
+        case ToolKind::Read:       return "read";
+        case ToolKind::Write:      return "write";
+        case ToolKind::Run:        return "run";
+        case ToolKind::Search:     return "search";
+        case ToolKind::Ask:        return "ask";
+        case ToolKind::Note:       return "note";
+        case ToolKind::Done:       return "done";
+        case ToolKind::Handoff:    return "handoff";
+        case ToolKind::Fetch:      return "fetch";
+        case ToolKind::Git:        return "git";
+        case ToolKind::Gh:         return "gh";
+        case ToolKind::Python:     return "python";
+        case ToolKind::Start:      return "start";
+        case ToolKind::Stop:       return "stop";
+        case ToolKind::Logs:       return "logs";
+        case ToolKind::Screenshot: return "screenshot";
+        case ToolKind::Click:      return "click";
+        case ToolKind::Move:       return "move";
+        case ToolKind::Type:       return "type";
+        case ToolKind::Key:        return "key";
+        case ToolKind::Scroll:     return "scroll";
+        case ToolKind::None:       break;
     }
     return "none";
+}
+
+bool known_shell(std::string_view shell) {
+    for (const char* name : {"sh", "bash", "zsh", "fish", "dash", "ksh", "cmd", "powershell", "pwsh"}) {
+        if (shell == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> shell_argv(std::string_view shell, const std::string& command) {
+    const std::string name(shell);
+    if (!known_shell(shell)) {
+        return {};
+    }
+    if (name == "cmd") {
+        return {"cmd", "/c", command};
+    }
+    if (name == "powershell" || name == "pwsh") {
+        return {name, "-NoProfile", "-NonInteractive", "-Command", command};
+    }
+    return {name, "-c", command};
 }
 
 std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_view reasoning) {
@@ -583,11 +1012,12 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
         const std::vector<std::string> lines = split_lines(text);
         for (std::size_t i = 0; i < lines.size(); ++i) {
             ToolCall call;
-            call.kind = verb_of(lines[i], call.argument);
+            call.kind = verb_of(lines[i], call.argument, call.shell);
             if (call.kind == ToolKind::None) {
                 continue;
             }
-            if (call.kind == ToolKind::Write) {
+            if (call.kind == ToolKind::Write || call.kind == ToolKind::Python
+                || (call.kind == ToolKind::Type && call.argument.empty())) {
                 std::size_t body = i + 1;
                 call.content = collect_body(lines, body);
             }
@@ -618,7 +1048,10 @@ ToolKind attempted_tool_call(std::string_view answer, std::string_view reasoning
                 }
                 if (trimmed.size() > verb.word.size() &&
                     trimmed.compare(0, verb.word.size(), verb.word) == 0 &&
-                    trimmed[verb.word.size()] != ':') {
+                    trimmed[verb.word.size()] != ':' &&
+                    // A word that merely begins with a verb -- "STOPPING the
+                    // server" -- is prose, and GH alone would match "GHOST".
+                    !(std::isalpha(static_cast<unsigned char>(trimmed[verb.word.size()])) != 0)) {
                     return verb.kind;
                 }
                 // A bare verb on a line of its own -- "DONE" -- is the same
@@ -701,11 +1134,11 @@ ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
     // leaves here as UTF-8, because it is about to be kept as JSON: in the
     // session, in a cook's journal, and in what the window is sent.
     ToolResult result = run_tool_as_is(call, settings, search, cancel);
-    result.output  = detail::scrub_utf8(result.output);
-    result.summary = detail::scrub_utf8(result.summary);
-    result.detail  = detail::scrub_utf8(result.detail);
+    result.output  = crucible::detail::scrub_utf8(result.output);
+    result.summary = crucible::detail::scrub_utf8(result.summary);
+    result.detail  = crucible::detail::scrub_utf8(result.detail);
     for (std::string& path : result.changed) {
-        path = detail::scrub_utf8(path);
+        path = crucible::detail::scrub_utf8(path);
     }
     return result;
 }
@@ -723,6 +1156,19 @@ ToolResult run_tool_as_is(const ToolCall& call, const WorkshopSettings& settings
         case ToolKind::Write:  return do_write(call, settings);
         case ToolKind::Run:    return do_run(call, settings, cancel);
         case ToolKind::Search: return do_search(call, search);
+        case ToolKind::Fetch:  return do_fetch(call, settings);
+        case ToolKind::Git:    return do_git(call, settings, false);
+        case ToolKind::Gh:     return do_git(call, settings, true);
+        case ToolKind::Python: return do_python(call, settings, cancel);
+        case ToolKind::Start:
+        case ToolKind::Stop:
+        case ToolKind::Logs:   return do_processes(call, settings);
+        case ToolKind::Screenshot:
+        case ToolKind::Click:
+        case ToolKind::Move:
+        case ToolKind::Type:
+        case ToolKind::Key:
+        case ToolKind::Scroll: return do_computer(call, settings);
         case ToolKind::Note: {
             ToolResult result;
             result.ok      = true;
@@ -753,10 +1199,36 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         "of these on a line of its own and then stop -- you will be given the result "
         "and can continue:\n"
         "LIST: <directory>          what is in it (\".\" is the project root)\n"
-        "READ: <file>               its contents, with line numbers\n"
+        "READ: <file>               its contents, with line numbers; a PDF or Office file as "
+        "its text; a picture as itself\n"
         "WRITE: <file>              then the whole new contents in a ``` block\n";
     if (settings.allow_run) {
-        text += "RUN: <command>             run it in the project root and see the output\n";
+        text += "RUN: <command>             run it in the project root and see the output; "
+                "RUN bash: or RUN powershell: picks the shell\n"
+                "PYTHON:                    then Python code in a ``` block, run in the project root\n"
+                "GIT: <arguments>           git, in the project: GIT: status, GIT: log --oneline -5, "
+                "GIT: commit -am \"message\"\n";
+        if (git::gh_available()) {
+            text += "GH: <arguments>            GitHub's command line: GH: pr list, GH: repo create, "
+                    "GH: release create v1.0\n";
+        }
+        if (settings.processes != nullptr) {
+            text += "START: <command>           run it and leave it running (a server), named p1, p2...\n"
+                    "LOGS: <name>               what it has printed so far; LOGS: alone lists them\n"
+                    "STOP: <name>               stop it\n";
+        }
+    }
+    if (settings.web) {
+        text += "SEARCH: <query>            search the web; the results come back to you\n"
+                "FETCH: <url>               read a web page as text\n";
+    }
+    if (settings.computer_control) {
+        text += "SCREENSHOT:                a picture of the screen, with its text read off it\n"
+                "CLICK: <x> <y>             click a screen pixel; add right, middle or double\n"
+                "MOVE: <x> <y>              move the mouse\n"
+                "TYPE: <text>               type it into whatever has the focus\n"
+                "KEY: <keys>                press enter, tab, escape, ctrl+c, cmd+s, alt+f4...\n"
+                "SCROLL: up|down <notches>  scroll at the mouse\n";
     }
     text += "NOTE: <what you are doing>  recorded in the log, no other effect\n";
     if (audience == ToolAudience::Cook) {
@@ -809,6 +1281,11 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         "    return a + b\n"
         "```\n"
         "\nRead a file before rewriting it, unless you are creating it.\n";
+    if (settings.computer_control) {
+        text += "\nTo use the screen: SCREENSHOT: first, find what you want in the picture, "
+                "then CLICK: its pixel, then SCREENSHOT: again to see the result. One "
+                "action at a time.\n";
+    }
     return text;
 }
 

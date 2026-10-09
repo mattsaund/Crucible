@@ -10,7 +10,7 @@
 const SETTINGS_PAGES = [
   ['general', 'General'], ['experts', 'Experts'], ['providers', 'Providers'],
   ['generation', 'Generation'], ['hardware', 'Hardware'], ['runtimes', 'Runtimes'],
-  ['training', 'Training'], ['tools', 'Tools'], ['about', 'About'],
+  ['training', 'Training'], ['tools', 'Tools'], ['build', 'Build'], ['about', 'About'],
 ];
 
 // --- one setting -------------------------------------------------------------------
@@ -588,24 +588,78 @@ function pageTools(c) {
   const project = state.snapshot.project || {};
   const searching = !!at(c, 'tools.web_search');
   const provider = at(c, 'tools.search_provider');
+  const processes = state.processes || [];
   return `<h1>Tools</h1>
     <h2>PROJECT</h2>
     <p class="lede">${project.open ? escape(project.root) : 'None open.'}</p>
+    <div class="hint" style="margin-bottom:1rem">In a trusted folder an expert can list, read and write files, run
+      commands in any shell, run Python, use git${state.source && state.source.gh ? ' and gh' : ''}, and leave a
+      server running.</div>
     ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider', '',
       { min: 5, max: 900, step: 5 })}
+    ${processes.length ? `<div class="field"><label>Running now</label>${processes.map((p) => `<div class="order-row">
+        <span class="order-name"><code>${escape(p.name)}</code> ${escape(p.command)}
+          <span class="status">${p.running ? `${span(p.seconds)}` : `exited ${p.status}`}</span></span>
+        <button class="action" data-act="process-stop" data-name="${escape(p.name)}">Stop</button></div>`).join('')}</div>` : ''}
 
     <h2 style="margin-top:1.8rem">THE WEB</h2>
-    ${setting('tools.web_search', 'Web search', 'bool', 'Sends search terms out.')}
+    ${setting('tools.web_search', 'Web search and pages', 'bool', 'Lets experts search and read pages. Sends what they ask for out.')}
     ${searching ? `
-      ${setting('tools.search_provider', 'Search with', 'choice', '',
-        [['wikipedia', 'Wikipedia'], ['searxng', 'searxng'], ['brave', 'Brave']])}
+      ${setting('tools.search_provider', 'Search with', 'choice', provider === 'duckduckgo' ? 'No key needed.' : '',
+        [['duckduckgo', 'DuckDuckGo'], ['wikipedia', 'Wikipedia'], ['searxng', 'searxng'], ['brave', 'Brave']])}
       ${setting('tools.search_endpoint', 'Endpoint', 'string', provider === 'searxng' ? '' : 'searxng only.',
         { placeholder: 'http://localhost:8888' })}
       ${provider === 'brave' ? setting('tools.search_api_key', 'API key', 'secret', 'Stored in config.json.') : ''}
       ${setting('tools.search_results', 'Results', 'slider', '', { min: 1, max: 20, step: 1 })}
       ${setting('tools.search_timeout', 'Search timeout (seconds)', 'slider', '', { min: 2, max: 60, step: 1 })}
-      ${setting('tools.search_rounds', 'Searches per prompt', 'slider', '', { min: 1, max: 10, step: 1 })}` : ''}`;
+      ${setting('tools.search_rounds', 'Searches per prompt', 'slider', '', { min: 1, max: 10, step: 1 })}` : ''}
+
+    <h2 style="margin-top:1.8rem">THIS COMPUTER</h2>
+    ${setting('tools.computer_control', 'Let experts use this computer', 'bool',
+      'Screenshots, the mouse and the keyboard, as you. Nothing bounds a click the way a folder bounds a file.')}
+    ${at(c, 'tools.computer_control') ? `<div class="hint" style="margin-top:-.8rem;margin-bottom:1.4rem">
+      On a Mac the first screenshot and the first click ask for Screen Recording and Accessibility under
+      System Settings, Privacy &amp; Security. On Linux, xdotool and a screenshot tool are needed. With tesseract
+      installed, a model that reads text only gets the words off each screenshot.</div>` : ''}`;
 }
+
+actions['process-stop'] = (button) => guard(async () => {
+  await call('process.stop', { name: button.dataset.name });
+  state.processes = (await call('processes')).processes;
+});
+
+// --- Build ---------------------------------------------------------------------------------------
+
+function pageBuild(c) {
+  const roster = state.snapshot.experts || [];
+  const seated = roster.filter((e) => e.phase !== 'unconfigured');
+  return `<h1>Build</h1>
+    <h2>WHO PLANS IT</h2>
+    <div class="field">
+      <select data-change="set" data-path="build.architect" aria-label="Architect">
+        <option value=""${!at(c, 'build.architect') ? ' selected' : ''}>The delegator picks</option>
+        ${seated.map((e) => `<option value="${escape(e.id)}"${at(c, 'build.architect') === e.id ? ' selected' : ''}>${
+          escape(e.name)}${e.provider ? '  ·  ' + escape(e.provider) : ''}</option>`).join('')}
+      </select>
+      <div class="hint">Writes the plan and the write-up. A frontier model does this best.</div></div>
+    ${setting('build.confirm_plan', 'Show me the plan before it starts', 'bool', '')}
+
+    <h2 style="margin-top:1.8rem">NEW AGENTS</h2>
+    <div class="field"><label for="worker-model">Model for a seat a build makes</label>
+      ${modelSelect(at(c, 'build.worker_model') || '', at(c, 'build.worker_provider') || '',
+        { id: 'worker-model', 'data-change': 'worker-model' })}
+      <div class="hint">When no expert fits a task, the build adds one on this model and keeps it. None: use the experts there are.</div></div>
+
+    <h2 style="margin-top:1.8rem">THE RUN</h2>
+    ${setting('build.auto_commit', 'Commit after each task', 'bool', 'Starts a repository when there is none.')}
+    ${setting('build.rounds_per_task', 'Rounds per task', 'slider', 'Before the build moves on without it.',
+      { min: 4, max: 200, step: 1 })}`;
+}
+
+actions['worker-model'] = (e) => {
+  const chosen = splitModel(e.value);
+  configure({ build: { worker_model: chosen.model, worker_provider: chosen.provider } });
+};
 
 // --- About -----------------------------------------------------------------------------------------------
 
@@ -653,7 +707,7 @@ views.settings = () => {
   const page = !c ? '<p class="lede">Reading...</p>' : ({
     general: pageGeneral, experts: pageExperts, providers: pageProviders,
     generation: pageGeneration, hardware: pageHardware, runtimes: pageRuntimes,
-    training: pageTraining, tools: pageTools, about: pageAbout,
+    training: pageTraining, tools: pageTools, build: pageBuild, about: pageAbout,
   }[state.settingsPage] || pageGeneral)(c);
   return sideView() + `<div class="settings">
       <div class="settings-nav">${SETTINGS_PAGES.map(([id, label]) =>
@@ -678,6 +732,7 @@ entering.settings = () => {
   need('about', 'about', true);
   need('build', 'runtime.progress', true);
   need('install', 'trainer.progress', true);
+  call('processes').then((got) => { state.processes = got.processes; render(); }).catch(() => {});
 };
 
 /// Follow a long install while one is running.

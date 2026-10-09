@@ -105,6 +105,19 @@ bool is_project_verb(tools::ToolKind kind) {
         case tools::ToolKind::Write:
         case tools::ToolKind::Run:
         case tools::ToolKind::Note:
+        case tools::ToolKind::Fetch:
+        case tools::ToolKind::Git:
+        case tools::ToolKind::Gh:
+        case tools::ToolKind::Python:
+        case tools::ToolKind::Start:
+        case tools::ToolKind::Stop:
+        case tools::ToolKind::Logs:
+        case tools::ToolKind::Screenshot:
+        case tools::ToolKind::Click:
+        case tools::ToolKind::Move:
+        case tools::ToolKind::Type:
+        case tools::ToolKind::Key:
+        case tools::ToolKind::Scroll:
             return true;
         case tools::ToolKind::None:
         case tools::ToolKind::Search:
@@ -172,6 +185,13 @@ void Engine::stop() {
     if (worker_.joinable()) {
         worker_.join();
     }
+    // Nothing is left running behind a window that is gone.
+    processes_.stop_all();
+}
+
+std::vector<Engine::MadeSeat> Engine::take_made_seats() {
+    const std::lock_guard<std::mutex> lock(written_mutex_);
+    return std::exchange(made_seats_, {});
 }
 
 void Engine::submit(std::string prompt, std::optional<ExpertId> pinned,
@@ -555,7 +575,7 @@ void Engine::run() {
             // take the process, and the window with it, down mid-edit.
             try {
                 do_cook(request.prompt, request.budget_seconds, request.root, request.attachments,
-                        request.pinned);
+                        request.pinned, request.cook_kind);
             } catch (const std::exception& e) {
                 state_.set_mood(Mood::Error, e.what());
                 state_.add_notice(std::string("cook failed: ") + e.what());
@@ -1568,15 +1588,23 @@ void Engine::handle(const Request& request) {
                 continue;
             }
 
+            tools::SearchSettings searching;
+            searching.enabled         = config_.tools.web_search;
+            searching.provider        = config_.tools.search_provider;
+            searching.endpoint        = config_.tools.search_endpoint;
+            searching.api_key         = config_.tools.search_api_key;
+            searching.max_results     = config_.tools.search_results;
+            searching.timeout_seconds = config_.tools.search_timeout;
             const tools::ToolResult result = tools::run_tool(
-                *call, workshop, tools::SearchSettings{},
+                *call, workshop, searching,
                 [this] { return cancel_.load(std::memory_order_relaxed); });
             // The diff a write made, or the output a command printed, kept for
             // the transcript rather than only handed to the model.
             state_.add_action(turn, TurnAction{result.summary, result.detail,
                                                call->kind == tools::ToolKind::Write
                                                    ? call->argument
-                                                   : std::string()});
+                                                   : std::string(),
+                                               result.picture_path});
 
             // The protocol line goes and the prose around it stays.
             //
@@ -1589,11 +1617,25 @@ void Engine::handle(const Request& request) {
             messages.push_back({"assistant", answer});
 
             std::string handback = result.output;
+            // A picture the tool produced goes to a model that can see one,
+            // as a picture; one that cannot is told so, beside whatever words
+            // were read off it.
+            ChatMessage back{"user", {}};
+            if (!result.pictures.empty()) {
+                if (expert->sees_images()) {
+                    for (const attach::Image& image : result.pictures) {
+                        back.images.push_back({image.mime, image.data});
+                    }
+                } else {
+                    handback += "\n(This model reads text only and cannot see the picture itself.)";
+                }
+            }
             if (round + 2 >= rounds) {
                 handback += "\n\nThat was the last action available this turn. Write "
                             "the answer now from what you have.";
             }
-            messages.push_back({"user", std::move(handback)});
+            back.content = std::move(handback);
+            messages.push_back(std::move(back));
             if (wake_) {
                 wake_();
             }

@@ -19,10 +19,10 @@ views.history = () => {
 
   const cooks = h.cooks.length ? h.cooks.map((c) => `
     <button class="card pick" data-act="history-cook" data-id="${escape(c.id)}">
-      <div class="title"><strong>${escape(c.goal)}</strong></div>
-      <div class="hint">${escape(c.when)}  ·  ${count(c.files, 'file')}  ·  ${
-        count(c.steps, 'step')}  ·  ${span(c.seconds)}  ·  ${escape(c.state)}</div>
-    </button>`).join('') : '<p class="lede">No cooks yet.</p>';
+      <div class="title"><strong>${escape(c.goal)}</strong><span class="tag">${c.kind === 'build' ? 'build' : 'cook'}</span></div>
+      <div class="hint">${escape(c.when)}  ·  ${c.kind === 'build' ? count(c.tasks || 0, 'task') + '  ·  ' : ''}${
+        count(c.files, 'file')}  ·  ${count(c.steps, 'step')}  ·  ${span(c.seconds)}  ·  ${escape(c.state)}</div>
+    </button>`).join('') : '<p class="lede">No builds yet.</p>';
 
   const sessions = h.sessions.length ? h.sessions.map((c) => `
     <button class="card pick" data-act="history-session" data-id="${escape(c.id)}">
@@ -32,7 +32,7 @@ views.history = () => {
 
   return sideView() + `<div class="pane"><div class="settings-page">
       <h1>History</h1>
-      <h2>COOKS</h2>${cooks}
+      <h2>BUILDS</h2>${cooks}
       <h2 style="margin-top:1.8rem">CONVERSATIONS</h2>${sessions}
     </div></div>`;
 };

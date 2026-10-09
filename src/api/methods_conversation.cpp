@@ -245,8 +245,23 @@ Reply cook_start(const json& params, Host& host) {
     // delegator choose.
     const auto expert = params.value("expert", std::string{});
     host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments),
-                              expert.empty() ? std::nullopt : std::optional<ExpertId>(expert));
+                              expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
+                              params.value("kind", std::string("cook")) == "build" ? "build" : "cook");
     return good();
+}
+
+/// A build: a directive the architect plans and the agents carry out. The
+/// same door as a cook with the kind set, so the two cannot drift apart.
+Reply build_start(const json& params, Host& host) {
+    json as_cook = params;
+    if (params.contains("directive") && !params.contains("goal")) {
+        as_cook["goal"] = params["directive"];
+    }
+    as_cook["kind"] = "build";
+    if (as_cook.value("goal", std::string{}).empty()) {
+        return bad("build.start needs a directive");
+    }
+    return cook_start(as_cook, host);
 }
 
 Reply cook_stop(const json&, Host& host) {
@@ -284,7 +299,8 @@ Reply history(const json&, const Scene& scene) {
     }
     json cooks = json::array();
     for (const CookSummary& one : CookLog(project.dir).list()) {
-        cooks.push_back(json{{"id", one.id}, {"goal", one.goal},
+        cooks.push_back(json{{"id", one.id}, {"goal", one.goal}, {"kind", one.kind},
+                             {"tasks", one.tasks},
                              {"state", std::string(cook_state_name(one.state))},
                              {"when", one.when()},
                              {"files", one.files},
@@ -312,7 +328,15 @@ Reply history_cook(const json& params, const Scene& scene) {
     for (const CookStep& step : cook->steps) {
         steps.push_back(cook_step_json(step));
     }
+    json tasks = json::array();
+    for (const CookTask& task : cook->tasks) {
+        tasks.push_back(cook_task_json(task));
+    }
     return good(json{{"goal", cook->goal}, {"outcome", cook->outcome},
+                     {"kind", cook->kind},
+                     {"plan", json{{"summary", cook->plan.summary}, {"run", cook->plan.run},
+                                   {"check", cook->plan.check}, {"ship", cook->plan.ship}}},
+                     {"tasks", std::move(tasks)},
                      {"attachments", attachments_json(cook->attachments)},
                      {"state", std::string(cook_state_name(cook->state))},
                      {"headline", cook->headline()},
@@ -409,6 +433,7 @@ void conversation_methods(std::vector<Method>& table) {
     table.push_back({"turn.delete",  nullptr, turn_delete});
     table.push_back({"edit.approve", nullptr, edit_approve});
     table.push_back({"cook.start",   nullptr, cook_start});
+    table.push_back({"build.start",  nullptr, build_start});
     table.push_back({"cook.stop",    nullptr, cook_stop});
     table.push_back({"cook.answer",  nullptr, cook_answer});
     table.push_back({"history",      history, nullptr});

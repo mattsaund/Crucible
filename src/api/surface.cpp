@@ -44,6 +44,7 @@ const std::vector<Method>& table() {
         settings_methods(out);
         install_methods(out);
         lab_methods(out);
+        source_methods(out);
         return out;
     }();
     return methods;

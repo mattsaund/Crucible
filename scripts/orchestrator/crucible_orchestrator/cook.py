@@ -169,6 +169,59 @@ class Seat:
         return not self.error
 
 
+def decide(core, params, work, pinned=""):
+    """The delegator's decision for `work`, policy applied: who should have it."""
+    return routing.route(core, {
+        "prompt": work,
+        "pinned": pinned,
+        "roster": params.get("roster"),
+        "seats": params.get("seats"),
+        "routing": params.get("routing"),
+    })
+
+
+def seat_decision(core, params, roster, decision):
+    """Make the expert a decision named resident, or say why it cannot be."""
+    name = roster.label(decision.expert)
+    has_model = bool((params.get("seats") or {}).get(decision.expert, {}).get("model"))
+    if not decision.expert or not has_model:
+        return Seat(decision.expert, name,
+                    "no expert model is configured to cook with" if not name
+                    else name + " has no model, and nothing else is configured either")
+    taken = core.call("seat.take", {"expert": decision.expert, "name": name}) or {}
+    return Seat(decision.expert, name, "" if taken.get("ok") else taken.get("error", "could not load"))
+
+
+def take_seat(core, params, roster, work, pinned=""):
+    """Route `work` and make the winner resident. Shared with the build loop,
+    which assigns a seat per task the same way a cook assigns one per piece
+    of work."""
+    return seat_decision(core, params, roster, decide(core, params, work, pinned))
+
+
+def nudge_for(parsed):
+    """What to say to a reply that called nothing, from what it nearly did.
+
+    "Did not try" is not "tried and got the syntax wrong": a model writing
+    `WRITE /path "fixed it"` is failing on one character, and is told which.
+    """
+    attempted = parsed.get("attempted", "none")
+    if attempted == "write":
+        return ("That was nearly right, but it cannot be run. WRITE needs a colon "
+                "after it, and the new contents of the file go in a fenced block "
+                "on the following lines -- never on the same line, and never as a "
+                "description of the change. Exactly this shape:\n\n"
+                "WRITE: path/to/file\n```\n<the complete new contents>\n```\n\n"
+                "Try that again.")
+    if attempted and attempted != "none":
+        verb = attempted.upper()
+        return ("That was nearly right, but it cannot be run: %s needs a colon "
+                "after it, like `%s: ...`. Write it again with the colon."
+                % (verb, verb))
+    return ("Take one action now, using exactly one of the commands you "
+            "were given, on a line of its own, with its colon.")
+
+
 class Cook:
     def __init__(self, core, params):
         self.core = core
@@ -198,7 +251,7 @@ class Cook:
     def publish(self):
         self.core.call("cook.publish", {"cook": self.journal})
 
-    def note(self, kind, summary, ok=True, detail="", ms=0, changed=None, expert=None):
+    def note(self, kind, summary, ok=True, detail="", ms=0, changed=None, expert=None, picture=""):
         self.journal["steps"].append({
             "iteration": self.journal["iterations"],
             "expert": self.seat.id if expert is None else expert,
@@ -208,6 +261,7 @@ class Cook:
             "ok": ok,
             "ms": int(ms),
             "changed": list(changed or []),
+            "picture": picture or "",
         })
         self.publish()
 
@@ -230,21 +284,7 @@ class Cook:
         picks an expert for a question picks the expert for the next piece of
         work, from the same roster with the same measured prompt.
         """
-        decision = routing.route(self.core, {
-            "prompt": work,
-            "pinned": pinned,
-            "roster": self.params.get("roster"),
-            "seats": self.params.get("seats"),
-            "routing": self.params.get("routing"),
-        })
-        name = self.roster.label(decision.expert)
-        has_model = bool((self.params.get("seats") or {}).get(decision.expert, {}).get("model"))
-        if not decision.expert or not has_model:
-            return Seat(decision.expert, name,
-                        "no expert model is configured to cook with" if not name
-                        else name + " has no model, and nothing else is configured either")
-        taken = self.core.call("seat.take", {"expert": decision.expert, "name": name}) or {}
-        return Seat(decision.expert, name, "" if taken.get("ok") else taken.get("error", "could not load"))
+        return take_seat(self.core, self.params, self.roster, work, pinned)
 
     def read_for_seat(self, system):
         """What the goal came with, read for whoever holds the seat.
@@ -360,25 +400,7 @@ class Cook:
                     looping = stalled = True
                     break
 
-                # "Did not try" is not "tried and got the syntax wrong": a model
-                # writing `WRITE /path "fixed it"` is failing on one character.
-                attempted = parsed.get("attempted", "none")
-                if attempted == "write":
-                    instruction = (
-                        "That was nearly right, but it cannot be run. WRITE needs a colon "
-                        "after it, and the new contents of the file go in a fenced block "
-                        "on the following lines -- never on the same line, and never as a "
-                        "description of the change. Exactly this shape:\n\n"
-                        "WRITE: path/to/file\n```\n<the complete new contents>\n```\n\n"
-                        "Try that again.")
-                elif attempted and attempted != "none":
-                    verb = attempted.upper()
-                    instruction = ("That was nearly right, but it cannot be run: %s needs a colon "
-                                   "after it, like `%s: ...`. Write it again with the colon."
-                                   % (verb, verb))
-                else:
-                    instruction = ("Take one action now, using exactly one of the commands you "
-                                   "were given, on a line of its own, with its colon.")
+                instruction = nudge_for(parsed)
                 continue
 
             idle = 0
@@ -463,8 +485,11 @@ class Cook:
             changed = result.get("changed") or []
             self.note(kind, result.get("summary", ""), ok=result.get("ok", False),
                       detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
-                      changed=changed)
-            recent.append({"role": "user", "content": result.get("output", "")})
+                      changed=changed, picture=result.get("picture", ""))
+            # A picture the tool made goes with the next round, to a seat
+            # that can see one; the core attaches it to this message.
+            recent.append({"role": "user", "content": result.get("output", ""),
+                           "tool_pictures": bool(result.get("pictures"))})
             instruction = "Continue."
 
             # Has anyone else a better claim on this? Asked on a schedule, so a

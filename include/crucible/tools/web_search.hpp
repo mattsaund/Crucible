@@ -6,10 +6,13 @@
 // until it is switched on, why the query is shown in the transcript, and why
 // this file is the only place that talks to a network.
 //
-// Three providers, all returning JSON, all reached by handing a URL to `curl`.
-// JSON rather than scraping a results page: a search engine's HTML is a moving
-// target and its JSON is a contract, and the difference is whether this still
-// works in six months. `curl` rather than libcurl: Crucible deliberately builds
+// Four providers, reached by handing a URL to `curl`. Three return JSON, and
+// JSON is preferred over scraping: a search engine's HTML is a moving target
+// and its JSON is a contract, and the difference is whether this still works
+// in six months. The fourth, DuckDuckGo, is the exception, read from its
+// HTML results page, because it is the one real web index that asks for no
+// key -- and an expert that cannot search until somebody signs up for one is
+// an expert that does not search. `curl` rather than libcurl: Crucible deliberately builds
 // without it -- the installer would otherwise need the development headers on
 // every platform -- and a subprocess is the same way the runtime builder
 // reaches git and cmake.
@@ -33,17 +36,19 @@ struct SearchSettings {
     /// Off until switched on. Nothing here runs otherwise.
     bool enabled = false;
 
-    /// wikipedia | searxng | brave
+    /// duckduckgo | wikipedia | searxng | brave
     ///
-    /// `wikipedia` is the default because it is the only one of the three that
-    /// needs neither a key nor a server of your own, and it answers the kind of
-    /// question an expert asks. It is an encyclopedia, not a web index, and
-    /// pretending otherwise would be the wrong kind of convenient.
+    /// `duckduckgo` is the default: a real web index that needs neither a key
+    /// nor a server, reached through its plain HTML results page -- which is
+    /// the one provider here that is read by scraping rather than through a
+    /// JSON contract, and so the one that may need its parser touched when the
+    /// page changes. `wikipedia` is an encyclopedia, not a web index, and
+    /// answers the kind of question an expert asks.
     ///
     /// `searxng` is a metasearch engine you run yourself -- point `endpoint` at
-    /// it and this becomes real web search without anyone learning what was
-    /// asked. `brave` is a real web index that wants an API key.
-    std::string provider = "wikipedia";
+    /// it and this becomes web search without anyone learning what was asked.
+    /// `brave` is a web index that wants an API key.
+    std::string provider = "duckduckgo";
 
     /// Base URL for `searxng`, e.g. "http://localhost:8888". Unused otherwise.
     std::string endpoint;

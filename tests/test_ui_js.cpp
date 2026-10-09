@@ -394,9 +394,9 @@ TEST(every_script_in_the_page_parses) {
     // error in one of the page's files reaches the user as a window with
     // nothing in it and nothing in the log.
     const std::vector<std::string> scripts = page_scripts();
-    // The error handler, render.js, base.js, the shell, five views, and the
-    // line that starts them.
-    CHECK(scripts.size() >= 10);
+    // The error handler, render.js, base.js, the shell, the attachments, the
+    // views and the preview, and the line that starts them.
+    CHECK(scripts.size() >= 12);
     for (const std::string& script : scripts) {
         const std::string expression =
             "(function(){ try { new Function(" + lit(script) + "); return 'parsed'; }"
@@ -420,9 +420,12 @@ TEST(the_page_loads_with_no_browser_under_it) {
     if (!page().load_error().empty()) {
         std::printf("      %s\n", page().load_error().c_str());
     }
-    for (const char* view : {"chat", "cook", "create", "history", "settings"}) {
+    for (const char* view : {"chat", "build", "create", "history", "settings"}) {
         CHECK_EQ(page().eval(std::string("typeof views.") + view), "function");
     }
+    // Cook is folded into Build: there is no view for it, and a cook's
+    // journal is drawn by what draws a build's.
+    CHECK_EQ(page().eval("typeof views.cook"), "undefined");
 }
 
 TEST(every_view_draws_before_anything_has_been_fetched) {
@@ -430,9 +433,12 @@ TEST(every_view_draws_before_anything_has_been_fetched) {
     // name, no config, nothing fetched. Every view has to have something to
     // say in it, because every view can be the first one drawn.
     CHECK_EQ(drawn("topView()"), "ok");
-    for (const char* view : {"chat", "cook", "create", "history", "settings"}) {
+    for (const char* view : {"chat", "build", "create", "history", "settings"}) {
         const std::string result = drawn(std::string("views.") + view + "()");
         CHECK_EQ(result, "ok");
+    }
+    for (const char* pane : {"agents", "code", "source", "preview"}) {
+        CHECK_EQ(drawn(std::string("(state.buildPane = '") + pane + "', views.build())"), "ok");
     }
     // No project is no longer a wall: the box is open, because a conversation
     // with none open gets a scratch folder of its own -- and opening a project
@@ -449,12 +455,12 @@ TEST(every_view_draws_a_session_with_everything_in_it) {
     }
     CHECK_EQ(drawn("topView()"), "ok");
     CHECK_EQ(drawn("sideView()"), "ok");
-    for (const char* view : {"chat", "cook", "create", "history"}) {
+    for (const char* view : {"chat", "build", "create", "history"}) {
         const std::string result = drawn(std::string("views.") + view + "()");
         CHECK_EQ(result, "ok");
     }
     for (const char* settings_page : {"general", "experts", "providers", "generation", "hardware",
-                                      "runtimes", "training", "tools", "about"}) {
+                                      "runtimes", "training", "tools", "build", "about"}) {
         const std::string result = drawn(std::string("(state.settingsPage = '") + settings_page
                                          + "', views.settings())");
         CHECK_EQ(result, "ok");
@@ -607,8 +613,8 @@ TEST(hardware_has_no_output_card_choice_and_tools_no_edit_checkbox) {
               .find("holds the output") == std::string::npos);
     CHECK(page().eval("(state.settingsPage = 'tools', views.settings())")
               .find("Apply edits without asking") == std::string::npos);
-    // And the cook's box has the same Auto button the chat's has.
-    CHECK(page().eval("views.cook()").find("data-act=\"auto-edits\"") != std::string::npos);
+    // And the build's box has the same Auto button the chat's has.
+    CHECK(page().eval("(state.buildPane = 'agents', views.build())").find("data-act=\"auto-edits\"") != std::string::npos);
 }
 
 TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
@@ -656,8 +662,8 @@ TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
              "[{\"path\":\"/p/Resume.docx\"},{\"path\":\"/p/sky.png\",\"image\":{\"mime\":\"image/png\",\"data\":\"AAAA\"}}]");
     page().eval("(state.attached.chat = [], state.menu = null)");
 
-    // The cook keeps its own: what is in Chat's box is not in Cook's.
-    CHECK(page().eval("views.cook()").find("class=\"tiles\"") == std::string::npos);
+    // The build keeps its own: what is in Chat's box is not in Build's.
+    CHECK(page().eval("(state.buildPane = 'agents', views.build())").find("class=\"tiles\"") == std::string::npos);
 }
 
 TEST(a_sent_prompt_and_a_goal_show_what_was_attached) {
@@ -670,18 +676,18 @@ TEST(a_sent_prompt_and_a_goal_show_what_was_attached) {
     const std::string cook = page().eval(
         "(function () { var c = state.snapshot.cook; c.attachments = ["
         " { path: '/p/src', name: 'src', label: 'FOLDER', kind: 'folder' }];"
-        " var out = views.cook(); delete c.attachments; return out; })()");
+        " state.buildPane = 'agents'; var out = views.build(); delete c.attachments; return out; })()");
     CHECK(cook.find(">FOLDER<") != std::string::npos);
 }
 
 TEST(the_drop_overlay_says_where_a_drop_goes_or_why_it_cannot) {
     // The busy state has a cook running and asking, which shuts both boxes
     // -- the answer goes in, and nothing else.
-    CHECK_EQ(page().eval("dropTarget().why"), "Answer the cook's question first");
-    CHECK(page().eval("dropView(dropTarget())").find("Answer the cook&#39;s question first") != std::string::npos);
+    CHECK_EQ(page().eval("dropTarget().why"), "Answer the build's question first");
+    CHECK(page().eval("dropView(dropTarget())").find("Answer the build&#39;s question first") != std::string::npos);
     CHECK_EQ(page().eval("(function () { var s = state.snapshot.cook.state; state.snapshot.cook.state = 'working';"
                          " var why = dropTarget().why; state.snapshot.cook.state = s; return why; })()"),
-             "A cook is running -- it has the experts");
+             "A build is running -- it has the experts");
     const char* const without_cook =
         "(function (what) { var cook = state.snapshot.cook, view = state.view;"
         " state.snapshot.cook = null; var out = what();"
@@ -1361,4 +1367,131 @@ TEST(the_diff_keeps_every_line_of_both_texts) {
 TEST(a_file_too_large_to_diff_says_so_instead_of_hanging) {
     CHECK_EQ(js().eval("diffLines(Array(3000).fill('x').join('\\n'), "
                     "Array(3000).fill('y').join('\\n'))[0].kind"), "note");
+}
+
+// --- a build -------------------------------------------------------------
+//
+// A directive, a plan, an agent per task: the Build view draws the agents
+// down one side and the chosen one's work on the other, and the code,
+// source and preview panes beside them. Set up last, over the busy state,
+// and put back afterwards so that nothing above sees it.
+
+const char* const kBuildState = R"JS(
+window.__cookWas = state.snapshot.cook;
+state.snapshot.cook = {
+  running: true, id: 'b1', kind: 'build', goal: 'a todo CLI in Python', state: 'working', question: '',
+  outcome: '', headline: '', iterations: 2, started: 1, ended: 0, seconds: 340, experts: ['physics'],
+  files: ['todo.py'], total: 4, shown_from: 0,
+  plan: { summary: 'A **Python** CLI.', run: 'python todo.py', check: 'pytest -q', ship: 'make dist' },
+  tasks: [
+    { index: 0, title: 'Write todo.py', detail: 'adds and lists', needs: 'Python back end', files: ['todo.py'],
+      after: [], expert: 'physics', state: 'done', outcome: 'wrote it', started: 1, ended: 2 },
+    { index: 1, title: 'Tests', detail: 'pytest', needs: 'testing', files: ['test_todo.py'], after: [0],
+      expert: 'math', state: 'working', outcome: '', started: 2, ended: 0 },
+    { index: 2, title: 'README', detail: 'how to run it', needs: 'technical writing', files: [], after: [0, 1],
+      expert: '', state: 'waiting', outcome: '', started: 0, ended: 0 },
+  ],
+  steps: [
+    { iteration: 1, task: -1, expert: 'claude', kind: 'plan', summary: 'planned 3 tasks', ok: true, ms: 4, detail: '{}' },
+    { iteration: 1, task: 0, expert: 'physics', kind: 'write', summary: 'created todo.py', ok: true, ms: 9,
+      detail: '@@ line 1 @@\n+print(1)', changed: ['todo.py'] },
+    { iteration: 1, task: 0, expert: 'physics', kind: 'screenshot', summary: 'took a screenshot', ok: true, ms: 9,
+      picture: '/tmp/shot.png' },
+    { iteration: 2, task: 1, expert: 'math', kind: 'run', summary: 'pytest failed', ok: false, ms: 900, detail: 'E' },
+  ],
+};
+state.tree = { root: '~/demo', cut: false, entries: [
+  { path: 'src', name: 'src', dir: true, depth: 0, bytes: 0 },
+  { path: 'src/todo.py', name: 'todo.py', dir: false, depth: 1, bytes: 120 } ] };
+state.open.file = { path: 'src/todo.py', content: 'print(1)\n', language: 'py', bytes: 120, cut: false };
+state.source = { git: true, repo: true, branch: 'main', remote: '', ahead: 0, behind: 0, gh: true,
+  changes: [{ path: 'src/todo.py', status: 'M', staged: false }] };
+state.log = [{ hash: 'abc1234', subject: 'First', author: 'Me', when: '2 hours ago' }];
+state.diff = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n';
+state.open.diff = 'src/todo.py';
+state.preview = { pages: ['index.html'], page: 'index.html', url: '', html: '<html><body><h1 id="t">Hi</h1></body></html>',
+  inlined: ['site.css'], skipped: [], picking: true, loading: false, error: '',
+  picked: { selector: '#t', tag: 'h1', text: 'Hi', styles: { padding: '8px', color: 'rgb(255, 135, 0)' }, box: { w: 100, h: 40 } },
+  changes: [{ selector: '#t', prop: 'padding', value: '12px' }] };
+state.processes = [{ name: 'p1', command: 'npm run dev', running: true, status: -1, seconds: 42 }];
+'ok';
+)JS";
+
+TEST(the_build_view_draws_the_agents_and_the_chosen_ones_work) {
+    CHECK_EQ(page().eval(kBuildState), "ok");
+    CHECK_EQ(drawn("(state.buildPane = 'agents', state.open.task = null, views.build())"), "ok");
+    const std::string agents = page().eval("views.build()");
+    // One row per task, after the architect's, each saying who has it.
+    CHECK(agents.find("1. Write todo.py") != std::string::npos);
+    CHECK(agents.find("3. README") != std::string::npos);
+    CHECK(agents.find("Architect") != std::string::npos);
+    // The working task is the one opened when none was chosen, and its
+    // steps are the ones shown: the failed run, not the first task's write.
+    CHECK(agents.find("TASK 2") != std::string::npos);
+    CHECK(agents.find("pytest failed") != std::string::npos);
+    CHECK(agents.find("created todo.py") == std::string::npos);
+    // The first task, chosen, shows its file as something to open, and its
+    // screenshot as a picture to look at.
+    const std::string first = page().eval("(state.open.task = 0, views.build())");
+    CHECK(first.find("data-act=\"file-open\" data-path=\"todo.py\"") != std::string::npos);
+    CHECK(first.find("data-act=\"picture-open\"") != std::string::npos);
+    // The architect's row shows the plan with the commands it named.
+    const std::string plan = page().eval("(state.open.task = -1, views.build())");
+    CHECK(plan.find("THE PLAN") != std::string::npos);
+    CHECK(plan.find("pytest -q") != std::string::npos);
+    // The box belongs to the build: Stop and finish, not Send.
+    CHECK(plan.find("Stop and finish") != std::string::npos);
+    CHECK(page().eval("views.chat()").find("a build is running") != std::string::npos);
+}
+
+TEST(the_code_source_and_preview_panes_draw_what_was_read) {
+    CHECK_EQ(drawn("(state.buildPane = 'code', views.build())"), "ok");
+    const std::string code = page().eval("views.build()");
+    CHECK(code.find("todo.py") != std::string::npos);
+    CHECK(code.find("data-act=\"editor-edit\"") != std::string::npos);
+
+    CHECK_EQ(drawn("(state.buildPane = 'source', views.build())"), "ok");
+    const std::string source = page().eval("views.build()");
+    CHECK(source.find("data-submit=\"git-commit\"") != std::string::npos);
+    CHECK(source.find("Publish to GitHub") != std::string::npos);   // gh is there and there is no remote
+    CHECK(source.find("abc1234") != std::string::npos);
+    CHECK(source.find("make dist") != std::string::npos);           // the plan's ship command, offered
+
+    CHECK_EQ(drawn("(state.buildPane = 'preview', views.build())"), "ok");
+    const std::string preview = page().eval("views.build()");
+    CHECK(preview.find("<iframe") != std::string::npos);
+    CHECK(preview.find("sandbox=\"allow-scripts") != std::string::npos);
+    // The picked element and its dials, and the change waiting to be applied.
+    CHECK(preview.find("#t") != std::string::npos);
+    CHECK(preview.find("id=\"tune-padding\"") != std::string::npos);
+    CHECK(preview.find("data-act=\"tune-apply\"") != std::string::npos);
+    CHECK(preview.find("padding: 12px") != std::string::npos);
+    // What goes to the expert names the page, the element and the change.
+    const std::string prompt = page().eval("tunePrompt()");
+    CHECK(prompt.find("index.html") != std::string::npos);
+    CHECK(prompt.find("`#t`") != std::string::npos);
+    CHECK(prompt.find("padding: 12px") != std::string::npos);
+}
+
+TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
+    CHECK_EQ(drawn("(state.open.cook = state.snapshot.cook, views.history())"), "ok");
+    const std::string opened = page().eval("views.history()");
+    CHECK(opened.find("DIRECTIVE") != std::string::npos);
+    CHECK(opened.find("1. Write todo.py") != std::string::npos);
+    page().eval("state.history.cooks.push({ id: 'b0', kind: 'build', tasks: 3, goal: 'a build', state: 'done', when: 'today', files: 2, steps: 9, seconds: 100 })");
+    const std::string listed = page().eval("(state.open.cook = null, views.history())");
+    CHECK(listed.find("3 tasks") != std::string::npos);
+    CHECK(listed.find("BUILDS AND COOKS") != std::string::npos);
+
+    const std::string tools = page().eval("(state.settingsPage = 'tools', views.settings())");
+    CHECK(tools.find("tools-computer_control") != std::string::npos);
+    CHECK(tools.find("DuckDuckGo") != std::string::npos);
+    CHECK(tools.find("data-act=\"process-stop\"") != std::string::npos);
+    const std::string build = page().eval("(state.settingsPage = 'build', views.settings())");
+    CHECK(build.find("build.architect") != std::string::npos);
+    CHECK(build.find("id=\"worker-model\"") != std::string::npos);
+    CHECK(build.find("build-rounds_per_task") != std::string::npos);
+
+    // Put back, for anything that runs after.
+    page().eval("state.snapshot.cook = window.__cookWas; state.open.task = null;");
 }

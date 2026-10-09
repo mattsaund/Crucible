@@ -59,6 +59,15 @@ struct Expert {
     /// Whole words that mark this expert's territory, for the model-free
     /// router. Derived from the name and the blurb for a user-made expert.
     std::vector<std::string> keywords;
+
+    /// Who made the seat: "build" for one a build added for a task nobody
+    /// fitted, empty for one a person added. The side menu lists the two
+    /// apart -- the experts, and the agents builds have made -- and nothing
+    /// else turns on it: an agent is routed to, ejected and edited like any
+    /// seat.
+    std::string origin;
+
+    bool made_by_build() const { return origin == "build"; }
 };
 
 /// The live roster, in the order the seats are drawn.

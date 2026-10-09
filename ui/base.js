@@ -40,7 +40,7 @@ const state = {
 
   // Fetched, and null until it has been.
   config: null, models: null, providers: null, runtimes: null, devices: null, recents: null,
-  trainer: null, flavors: null, about: null, history: null, recipes: null,
+  trainer: null, flavors: null, about: null, history: null, recipes: null, teach: null,
 
   // Long jobs, as last reported.
   build: null, install: null, run: null,

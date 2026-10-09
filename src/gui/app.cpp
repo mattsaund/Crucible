@@ -111,6 +111,7 @@ std::string App::apply_config(Config edited) {
 void App::housekeeping() {
     persist_session();
     name_sessions();
+    absorb_made_seats();
     absorb_written_examples();
     absorb_finished_run();
     absorb_finished_build();
@@ -215,6 +216,29 @@ void App::absorb_written_examples() {
     for (const auto& [id, examples] : written) {
         say(expert_label(config_.roster, id) + ": the delegator wrote "
             + std::to_string(examples.size()) + " example questions to route on");
+    }
+}
+
+void App::absorb_made_seats() {
+    const std::vector<Engine::MadeSeat> made = engine_->take_made_seats();
+    if (made.empty()) {
+        return;
+    }
+    update_config([&made](Config& config) {
+        for (const Engine::MadeSeat& seat : made) {
+            if (config.roster.find(seat.expert.id)) {
+                continue;   // kept already, or added by hand meanwhile
+            }
+            std::string error;
+            config.roster.add(seat.expert, error);
+            config.experts[seat.expert.id] = seat.params;
+        }
+    });
+    for (const Engine::MadeSeat& seat : made) {
+        // So the delegator can route to it by more than its name, for the
+        // tasks and questions that come after this build.
+        engine_->write_examples(seat.expert.id);
+        say(seat.expert.name + " has joined the experts -- a build made it");
     }
 }
 

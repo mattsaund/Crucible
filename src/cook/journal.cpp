@@ -230,6 +230,25 @@ json cook_to_json(const Cook& cook) {
             {"ok",        step.ok},
             {"ms",        step.ms},
             {"changed",   step.changed},
+            {"task",      step.task},
+            {"picture",   step.picture},
+        });
+    }
+
+    json tasks = json::array();
+    for (const CookTask& task : cook.tasks) {
+        tasks.push_back(json{
+            {"index",        task.index},
+            {"title",        task.title},
+            {"detail",       task.detail},
+            {"needs",        task.needs},
+            {"files",        task.files},
+            {"after",        task.after},
+            {"expert",       task.expert},
+            {"state",        task.state},
+            {"outcome",      task.outcome},
+            {"started_unix", task.started_unix},
+            {"ended_unix",   task.ended_unix},
         });
     }
 
@@ -250,6 +269,10 @@ json cook_to_json(const Cook& cook) {
         {"iterations",     cook.iterations},
         {"outcome",        cook.outcome},
         {"question",       cook.question},
+        {"kind",           cook.kind},
+        {"plan", json{{"summary", cook.plan.summary}, {"run", cook.plan.run},
+                      {"check", cook.plan.check}, {"ship", cook.plan.ship}}},
+        {"tasks",          tasks},
         {"steps",          steps},
     };
 }
@@ -272,6 +295,49 @@ Cook cook_from_json(const json& doc, const std::string& fallback_id) {
     cook.iterations     = doc.value("iterations", 0);
     cook.outcome        = doc.value("outcome", "");
     cook.question       = doc.value("question", "");
+    // A journal from before builds existed has no kind, and was a cook.
+    cook.kind           = doc.value("kind", "cook");
+    if (cook.kind != "build") {
+        cook.kind = "cook";
+    }
+    if (const auto plan = doc.find("plan"); plan != doc.end() && plan->is_object()) {
+        cook.plan.summary = plan->value("summary", "");
+        cook.plan.run     = plan->value("run", "");
+        cook.plan.check   = plan->value("check", "");
+        cook.plan.ship    = plan->value("ship", "");
+    }
+    if (const auto tasks = doc.find("tasks"); tasks != doc.end() && tasks->is_array()) {
+        for (const json& entry : *tasks) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            CookTask task;
+            task.index        = entry.value("index", static_cast<int>(cook.tasks.size()));
+            task.title        = entry.value("title", "");
+            task.detail       = entry.value("detail", "");
+            task.needs        = entry.value("needs", "");
+            task.expert       = entry.value("expert", "");
+            task.state        = entry.value("state", "waiting");
+            task.outcome      = entry.value("outcome", "");
+            task.started_unix = entry.value("started_unix", std::int64_t{0});
+            task.ended_unix   = entry.value("ended_unix", std::int64_t{0});
+            if (const auto files = entry.find("files"); files != entry.end() && files->is_array()) {
+                for (const json& one : *files) {
+                    if (one.is_string()) {
+                        task.files.push_back(one.get<std::string>());
+                    }
+                }
+            }
+            if (const auto after = entry.find("after"); after != entry.end() && after->is_array()) {
+                for (const json& one : *after) {
+                    if (one.is_number_integer()) {
+                        task.after.push_back(one.get<int>());
+                    }
+                }
+            }
+            cook.tasks.push_back(std::move(task));
+        }
+    }
 
     if (const auto attachments = doc.find("attachments");
         attachments != doc.end() && attachments->is_array()) {
@@ -296,6 +362,8 @@ Cook cook_from_json(const json& doc, const std::string& fallback_id) {
             step.detail    = entry.value("detail", "");
             step.ok        = entry.value("ok", true);
             step.ms        = entry.value("ms", 0L);
+            step.task      = entry.value("task", -1);
+            step.picture   = entry.value("picture", "");
             if (const auto changed = entry.find("changed");
                 changed != entry.end() && changed->is_array()) {
                 for (const json& path : *changed) {
@@ -360,7 +428,11 @@ std::vector<CookSummary> CookLog::list(std::size_t limit) const {
         summary.id           = doc.value("id", entry.path().stem().string());
         summary.goal         = doc.value("goal", "");
         summary.state        = cook_state_from_name(doc.value("state", "done"));
+        summary.kind         = doc.value("kind", "cook") == "build" ? "build" : "cook";
         summary.started_unix = doc.value("started_unix", std::int64_t{0});
+        if (const auto tasks = doc.find("tasks"); tasks != doc.end() && tasks->is_array()) {
+            summary.tasks = static_cast<int>(tasks->size());
+        }
         summary.iterations   = doc.value("iterations", 0);
         summary.file         = entry.path();
 

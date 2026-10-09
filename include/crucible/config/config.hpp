@@ -271,8 +271,8 @@ struct ToolsConfig {
     /// Let experts look things up. See tools/web_search.hpp.
     bool web_search = false;
 
-    /// wikipedia | searxng | brave
-    std::string search_provider = "wikipedia";
+    /// duckduckgo | wikipedia | searxng | brave
+    std::string search_provider = "duckduckgo";
 
     /// The address of your own searxng instance, for that provider.
     std::string search_endpoint;
@@ -328,6 +328,45 @@ struct ToolsConfig {
     /// the decision now, asked once per folder and asked in the terms it is
     /// actually about. See tools/workshop.hpp.
     int workshop_timeout = 120;
+
+    /// Let experts see and work the screen: take screenshots, move and click
+    /// the mouse, type, press keys, scroll. See tools/computer.hpp.
+    ///
+    /// Off by default, and the one switch here that is worth reading twice.
+    /// Trusting a folder lets an expert change what is in it; this lets one
+    /// act as you, on everything on the screen, with no folder around it. A
+    /// model that mis-reads a screenshot will click on the wrong thing, and
+    /// the wrong thing can be anything. Where a platform asks for a
+    /// permission first -- macOS asks for Accessibility and Screen Recording
+    /// -- the first attempt says so.
+    bool computer_control = false;
+};
+
+/// How a build is run: who plans it, what a seat made for it runs on, and
+/// what is done between its tasks. See scripts/orchestrator's build.py.
+struct BuildConfig {
+    /// The seat that writes the plan and the write-up. Empty lets the
+    /// delegator pick for the directive, which is right until a roster has a
+    /// seat that is plainly the architect -- a frontier model, usually.
+    ExpertId architect;
+
+    /// The model a seat the build makes for itself runs on -- "CSS layout",
+    /// "SQL schema" -- when nobody on the roster fits a task. A file in the
+    /// models folder or a provider's model, as a seat's. Empty makes none:
+    /// every task then goes to whoever fits best among the seats there are.
+    std::string worker_model;
+    std::string worker_provider;
+
+    /// Commit after each task that finishes, starting a repository when the
+    /// project has none. The record of a build in the project's own history,
+    /// a task at a time, which is also what makes a bad task undoable.
+    bool auto_commit = true;
+
+    /// Put the plan to the person before the first task starts.
+    bool confirm_plan = true;
+
+    /// Rounds a task may take before the build moves on without it.
+    int rounds_per_task = 40;
 };
 
 /// What to do when a conversation no longer fits in the context.
@@ -410,6 +449,7 @@ struct Config {
     RoutingConfig routing;
     GpuConfig     gpu;
     ToolsConfig   tools;
+    BuildConfig   build;
     UiConfig      ui;
 
     /// How hard a reasoning model should think: low | medium | high.

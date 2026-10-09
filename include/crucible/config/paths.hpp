@@ -57,6 +57,11 @@ std::filesystem::path home_dir();
 /// ui/attach.js.
 std::filesystem::path dropped_dir();
 
+/// data_dir()/scratch -- what the tools make on the way: a screenshot an
+/// expert took, a Python snippet it ran. Kept so a journal can point at a
+/// picture by its path; safe to empty at any time.
+std::filesystem::path scratch_dir();
+
 /// Expand a leading `~` and resolve to an absolute path. Does not require the
 /// path to exist, so it is safe to call on a model path the user has not
 /// downloaded yet.

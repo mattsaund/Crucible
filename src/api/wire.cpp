@@ -100,6 +100,7 @@ json turn_json(const Turn& turn) {
             json one{{"summary", action.summary}};
             if (!action.body.empty())     { one["body"]     = action.body; }
             if (!action.language.empty()) { one["language"] = action.language; }
+            if (!action.picture.empty())  { one["picture"]  = action.picture; }
             actions.push_back(std::move(one));
         }
         out["actions"] = std::move(actions);
@@ -126,7 +127,16 @@ json cook_step_json(const CookStep& step) {
              {"ms",        step.ms}};
     if (!step.detail.empty())  { one["detail"]  = step.detail; }
     if (!step.changed.empty()) { one["changed"] = step.changed; }
+    if (!step.picture.empty()) { one["picture"] = step.picture; }
+    if (step.task >= 0)        { one["task"]    = step.task; }
     return one;
+}
+
+json cook_task_json(const CookTask& task) {
+    return json{{"index",   task.index},   {"title", task.title},     {"detail", task.detail},
+                {"needs",   task.needs},   {"files", task.files},     {"after", task.after},
+                {"expert",  task.expert},  {"state", task.state},     {"outcome", task.outcome},
+                {"started", task.started_unix}, {"ended", task.ended_unix}};
 }
 
 /// The whole drawable state.
@@ -182,6 +192,11 @@ json snapshot_to_json(const Snapshot& snapshot) {
             if (seated && !snapshot.seats[i].provider.empty()) {
                 one["provider"] = snapshot.seats[i].provider;
             }
+            // A seat a build made, so the side menu can list the agents
+            // apart from the experts.
+            if (list[i].made_by_build()) {
+                one["made"] = true;
+            }
             experts.push_back(std::move(one));
         }
     }
@@ -205,11 +220,19 @@ json snapshot_to_json(const Snapshot& snapshot) {
         for (std::size_t i = from; i < cook.steps.size(); ++i) {
             steps.push_back(cook_step_json(cook.steps[i]));
         }
+        json tasks = json::array();
+        for (const CookTask& task : cook.tasks) {
+            tasks.push_back(cook_task_json(task));
+        }
         out["cook"] = json{
             {"running",  cook.state == CookState::Working || cook.state == CookState::Asking
                              || cook.state == CookState::Finishing},
             {"id",       cook.id},
+            {"kind",     cook.kind},
             {"goal",     cook.goal},
+            {"plan",     json{{"summary", cook.plan.summary}, {"run", cook.plan.run},
+                              {"check", cook.plan.check}, {"ship", cook.plan.ship}}},
+            {"tasks",    std::move(tasks)},
             {"attachments", attachments_json(cook.attachments)},
             {"state",    std::string(cook_state_name(cook.state))},
             {"question", cook.question},

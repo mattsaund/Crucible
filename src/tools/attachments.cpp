@@ -2,6 +2,7 @@
 //
 // See attachments.hpp for what this is for. The PDF reader is pdf_text.cpp.
 #include "crucible/tools/attachments.hpp"
+#include "crucible/tools/computer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1063,6 +1064,11 @@ std::string label_for(const std::filesystem::path& path) {
     return ext.empty() ? "FILE" : ext;
 }
 
+bool is_markup_source(const std::filesystem::path& path) {
+    const std::string ext = lower_extension(path);
+    return ext == "html" || ext == "htm" || ext == "xhtml" || ext == "svg" || ext == "xml";
+}
+
 Kind kind_of(const std::filesystem::path& path) {
     std::error_code ec;
     if (std::filesystem::is_directory(path, ec)) {
@@ -1298,8 +1304,20 @@ Composed compose(const std::vector<Attachment>& attachments, std::size_t budget,
                                                   : one.name;
         if (one.kind == Kind::Image) {
             if (!sees_images) {
-                out.text += "[A picture was attached: " + name + ". This model reads text only and "
-                            "cannot see it -- say so if the question depends on it.]\n\n";
+                // The words off it, when tesseract is here to read them: a
+                // screenshot of an error, a photograph of a page. Otherwise
+                // said plainly, so the answer does not pretend to have looked.
+                std::string why;
+                const std::string words = one.path.empty() ? std::string()
+                                                           : tools::computer::read_text(one.path, why);
+                if (!words.empty()) {
+                    out.text += "[A picture was attached: " + name + ". This model reads text only; "
+                                "these are the words read off it, in reading order:]\n" + words
+                              + "\n[end of the picture's words]\n\n";
+                } else {
+                    out.text += "[A picture was attached: " + name + ". This model reads text only and "
+                                "cannot see it -- say so if the question depends on it.]\n\n";
+                }
                 continue;
             }
             Image image = one.image.data.empty() ? picture(one.path, kMaxImage) : one.image;

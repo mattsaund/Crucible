@@ -59,6 +59,12 @@ Info inspect(const std::filesystem::path& path);
 /// nothing, so it is fit for the thread a click arrives on.
 Kind kind_of(const std::filesystem::path& path);
 
+/// Whether `path` is markup somebody edits -- HTML, SVG, XML -- rather than
+/// a document to take the words out of. Attached to a prompt, a web page is
+/// read as its text; opened by an expert that is building it, or in the code
+/// pane, it is its source, tags and all.
+bool is_markup_source(const std::filesystem::path& path);
+
 
 /// The readable text of `path`, at most `max_chars` of it.
 struct Text {

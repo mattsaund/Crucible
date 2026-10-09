@@ -70,6 +70,19 @@ std::vector<BackendKind> wanted_here() {
         // offered: it is the backend that covers AMD and Intel, and it is a
         // second way to reach an NVIDIA card when a driver update breaks the
         // first.
+        //
+        // Not Vulkan on a Mac. It is offered there through MoltenVK, which
+        // needs glslc and the Vulkan headers from Homebrew to compile and has
+        // no prebuilt module, so every first start fetched Metal and then
+        // reported Vulkan as a failure beside it -- a red card about a
+        // runtime the machine does not need, on every start, until somebody
+        // installed a toolchain to make it go away. Metal is the GPU on a
+        // Mac; Vulkan stays on the Runtimes page for anyone who wants it.
+#if defined(__APPLE__)
+        if (info.kind == BackendKind::Vulkan) {
+            continue;
+        }
+#endif
         wanted.push_back(info.kind);
     }
     return wanted;

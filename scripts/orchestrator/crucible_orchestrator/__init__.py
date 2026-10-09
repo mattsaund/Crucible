@@ -8,4 +8,4 @@ so the Python Crucible downloads is all it needs.
 
 # Bumped whenever a message changes shape. The core refuses a package that
 # speaks another version rather than finding out halfway through a cook.
-PROTOCOL = 1
+PROTOCOL = 2
