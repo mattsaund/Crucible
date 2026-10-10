@@ -329,7 +329,8 @@ std::vector<Commit> log(const std::filesystem::path& root, int limit) {
     return out.ok ? detail::parse_log(out.text) : std::vector<Commit>{};
 }
 
-std::string commit(const std::filesystem::path& root, std::string_view message, std::string& summary) {
+std::string commit(const std::filesystem::path& root, std::string_view message, std::string& summary,
+                   const std::vector<std::string>& paths) {
     summary.clear();
     if (trimmed(std::string(message)).empty()) {
         return "a commit needs a message";
@@ -337,11 +338,34 @@ std::string commit(const std::filesystem::path& root, std::string_view message, 
     if (!is_repo(root)) {
         return "this folder is not a git repository";
     }
-    const Output added = run(root, {"add", "-A"}, 120);
+
+    // Which paths: all of them, or the ones named that git can see -- on
+    // disk, or tracked and since deleted.
+    std::vector<std::string> named;
+    for (const std::string& path : paths) {
+        std::error_code ec;
+        const bool on_disk = std::filesystem::exists(root / path, ec);
+        if (on_disk || run(root, {"ls-files", "--error-unmatch", "--", path}, 20).ok) {
+            named.push_back(path);
+        }
+    }
+    if (!paths.empty() && named.empty()) {
+        summary = "nothing to commit";
+        return {};
+    }
+    std::vector<std::string> add{"add", "-A"};
+    std::vector<std::string> quiet{"diff", "--cached", "--quiet"};
+    if (!named.empty()) {
+        add.push_back("--");
+        add.insert(add.end(), named.begin(), named.end());
+        quiet.push_back("--");
+        quiet.insert(quiet.end(), named.begin(), named.end());
+    }
+    const Output added = run(root, add, 120);
     if (!added.ok) {
         return said(added);
     }
-    const Output staged = run(root, {"diff", "--cached", "--quiet"}, 60);
+    const Output staged = run(root, quiet, 60);
     if (staged.ok) {
         summary = "nothing to commit";
         return {};
@@ -352,6 +376,12 @@ std::string commit(const std::filesystem::path& root, std::string_view message, 
         args = {"-c", "user.name=Crucible", "-c", "user.email=crucible@localhost"};
     }
     args.insert(args.end(), {"commit", "-q", "-m", std::string(message)});
+    if (!named.empty()) {
+        // Only these, whatever else is staged: another agent's half-written
+        // file is not part of this commit.
+        args.push_back("--");
+        args.insert(args.end(), named.begin(), named.end());
+    }
     const Output made = run(root, args, 120);
     if (!made.ok) {
         return said(made);
@@ -374,10 +404,10 @@ std::string commit(const std::filesystem::path& root, std::string_view message, 
     }
     summary = "committed " + hash + " " + subject;
     if (!stat.empty()) {
-        summary += "  ·  " + stat;
+        summary += " (" + stat + ")";
     }
     if (anonymous) {
-        summary += "  ·  as Crucible <crucible@localhost>, since git has no name for you yet";
+        summary += ", as Crucible <crucible@localhost>, since git has no name for you yet";
     }
     return {};
 }

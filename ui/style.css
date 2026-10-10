@@ -116,6 +116,24 @@ button.recent .r-title, button.recent .r-meta {
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 button.recent .r-meta { color: var(--faint); font-size: .85em; margin-top: .1rem; }
+
+/* The models at work, at the panel's foot: local above, frontier below. */
+.usage { border-top: 1px solid var(--panel-edge); padding: .9rem .9rem 0; }
+.usage h2 { margin: 0 0 .4rem; padding-left: 0; }
+.usage h2.u-frontier { margin-top: .9rem; }
+.u-row { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.u-row.seat { align-items: center; padding: 0; }
+.u-row.seat .dot { margin-right: .45rem; }
+.u-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-num { flex: none; color: var(--dim); font-size: .88em; }
+.u-meta { color: var(--faint); font-size: .85em; margin: .15rem 0 .35rem;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-small { color: var(--faint); font-size: .82em; }
+.u-other { margin-top: .35rem; }
+.u-none { color: var(--faint); font-size: .9em; }
+.u-meter { height: 4px; border-radius: 2px; background: var(--raised); overflow: hidden; margin: .2rem 0 .45rem; }
+.u-meter span { display: block; height: 100%; background: var(--flame); transition: width .3s ease; }
+.u-meter.full span { background: var(--error); }
 /* The bin sits over the row's right end, and only shows on hover. */
 .r-row { position: relative; }
 .r-row:hover button.recent { background: var(--hover); padding-right: 2.2rem; }
@@ -173,10 +191,11 @@ h2 {
 }
 
 /* Who answered, and how the delegator got there. */
-.who { display: flex; align-items: baseline; gap: .55rem; margin: 0 0 1.1rem; }
+.who { display: flex; align-items: baseline; gap: 1rem; margin: 0 0 1.1rem; }
 .who .seat { color: var(--flame-lit); font-weight: 500; }
 .who span:not(.seat) { color: var(--faint); font-size: .92em; }
-.who .sep { color: var(--panel-edge); }
+/* The parts of a line, set apart by space where a dot used to go. */
+.part + .part { margin-left: 1.1em; }
 
 .body { white-space: pre-wrap; }
 .body.md { white-space: normal; }
@@ -552,7 +571,7 @@ button.seat:hover { background: var(--raised); }
 aside.rail button.seat { width: auto; padding: .35rem .4rem; height: auto; }
 aside h2 { position: relative; padding-left: .9rem; }
 aside h2.experts-head { margin: 0; padding-top: 1.6rem; padding-bottom: .7rem; }
-aside h2.agents-head { padding-top: 1.1rem; }
+aside h2.agents-head { padding-top: 1.4rem; }
 
 /* The load, as a ring with the figure in the middle of it. */
 .ring { flex: none; margin-left: auto; }
@@ -852,8 +871,10 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .build-nav button:hover { color: var(--dim); }
 .build-nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
 /* The agents down one side, the work on the other. The work takes what is
-   left, and the list keeps its width however long a title is. */
+   left, and the list keeps its width however long a title is. With the side
+   menu open the agents are in it, and the work has the whole width. */
 .build-split { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1.4rem; margin-top: .6rem; }
+.build-split.solo { grid-template-columns: minmax(0, 1fr); }
 .agents { min-width: 0; }
 button.agent { height: auto; padding: .45rem .6rem .45rem .9rem; align-items: flex-start; }
 button.agent.here { background: var(--raised); }
@@ -883,10 +904,23 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
 .code-view { min-width: 0; }
 .code-head-row { margin-bottom: .6rem; gap: .6rem; }
 .code-head-row .file-name { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.code-editor {
-  width: 100%; min-height: 60vh; resize: vertical; white-space: pre; overflow: auto;
-  font: inherit; line-height: 1.5; tab-size: 4; background: var(--ink);
+/* The editor: a textarea with clear letters over the same text colored.
+   Both are laid out alike to the pixel -- font, padding, border, wrapping --
+   or the caret would sit beside the letter it is in. */
+.code-editor-wrap { position: relative; border-radius: 5px; background: var(--ink); }
+.code-editor-wrap .code-editor, .code-editor-under {
+  font: inherit; line-height: 1.5; tab-size: 4; white-space: pre; overflow: auto;
+  padding: .7rem .9rem; margin: 0; border: 1px solid var(--panel-edge); border-radius: 5px;
+  letter-spacing: normal; word-spacing: normal;
 }
+.code-editor-under { position: absolute; inset: 0; pointer-events: none; overflow: hidden; color: var(--text); }
+.code-editor-under code { font: inherit; background: none; padding: 0; white-space: pre; }
+.code-editor-wrap .code-editor {
+  position: relative; display: block; width: 100%; min-height: 60vh; resize: vertical;
+  background: transparent; color: transparent; caret-color: var(--text);
+}
+.code-editor-wrap .code-editor:focus { border-color: var(--flame); }
+.code-editor-wrap .code-editor::selection { background: rgba(255, 135, 0, .28); color: transparent; }
 .code-picture { max-width: 100%; border-radius: 6px; border: 1px solid var(--panel-edge); }
 
 /* --- version control ----------------------------------------------------------------- */
@@ -918,6 +952,12 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
 .tune-changes .row { flex-wrap: wrap; }
 .tune-changes .action { white-space: nowrap; }
 .tune-what { margin-bottom: .8rem; overflow-wrap: anywhere; }
+.preview-bar .spacer { flex: 1; }
+.app-strip { gap: .6rem; padding: .5rem .7rem; border: 1px solid var(--panel-edge); border-radius: 8px;
+             background: var(--panel); flex-wrap: wrap; }
+.app-strip input { width: 14rem; }
+.app-strip label { color: var(--dim); }
+.app-strip.made { border-color: var(--flame); }
 .tune-row { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr) auto auto; gap: .3rem; align-items: center; margin: .3rem 0; }
 .tune-row label { color: var(--dim); font-size: .9em; }
 .tune-row input { width: 100%; padding: .3rem .45rem; min-width: 0; }
@@ -926,3 +966,8 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
 .tune-row button.icon { padding: .15rem .35rem; border: 1px solid var(--panel-edge); border-radius: 4px; }
 .tune-changes { flex: none; margin-top: .8rem; padding-top: .6rem; border-top: 1px solid var(--panel-edge); }
 .tune-changes code { color: var(--flame-lit); background: none; padding: 0; }
+
+/* --- CI runs, in the Source pane --------------------------------------------------- */
+.ci-run .ci-mark { display: inline-block; min-width: 6.5rem; color: var(--dim); }
+.ci-run[data-conclusion="success"] .ci-mark { color: var(--text); }
+.ci-run[data-conclusion="failure"] .ci-mark { color: var(--error); }

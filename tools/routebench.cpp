@@ -187,6 +187,7 @@ int main(int argc, char** argv) {
     };
 
     orchestra::Link orchestrator;
+    orchestrator.set_handler(serve);
     std::string started;
     if (!orchestrator.start(started)) {
         std::printf("the orchestrator would not start: %s\n", started.c_str());
@@ -194,7 +195,7 @@ int main(int argc, char** argv) {
     }
 
     if (!explain.empty()) {
-        const json out = orchestrator.call("route.explain", request(explain), serve);
+        const json out = orchestrator.call("route.explain", request(explain));
         std::printf("%-14s %9s %9s %9s\n", "expert", "raw", "bias", "calibrated");
         for (std::size_t i = 0; i < out["labels"].size(); ++i) {
             std::printf("%-14s %9.2f %9.2f %9.2f\n", out["labels"][i].get<std::string>().c_str(),
@@ -218,7 +219,7 @@ int main(int argc, char** argv) {
 
     for (const auto& [expect, prompt] : cases) {
         const auto start = std::chrono::steady_clock::now();
-        const json answer = orchestrator.call("route", request(prompt), serve);
+        const json answer = orchestrator.call("route", request(prompt));
         RouteDecision decision;
         decision.expert     = answer.value("expert", "");
         decision.confidence = answer.value("confidence", 0.0F);

@@ -146,6 +146,11 @@ class Core:
     def call(self, method, params=None):
         return self.channel.call(method, params)
 
+    def spawn(self, target, *args):
+        """Run `target` on a thread of its own that speaks for the same work --
+        a build's agent, whose calls the core must know are the build's."""
+        return self.channel.spawn(target, *args)
+
     def flags(self):
         return self.call("engine.flags") or {}
 
@@ -157,16 +162,29 @@ class Core:
 
 
 class Seat:
-    __slots__ = ("id", "name", "error")
+    """An expert holding a seat in the core: who, and the handle the core
+    knows the seat by. Every round, tool and attachment read names the seat,
+    so agents working side by side are each asking of their own."""
 
-    def __init__(self, expert_id="", name="", error=""):
+    __slots__ = ("id", "name", "error", "handle", "remote", "local")
+
+    def __init__(self, expert_id="", name="", error="", handle="", remote=False, local=""):
         self.id = expert_id
         self.name = name
         self.error = error
+        self.handle = handle
+        self.remote = remote
+        self.local = local
 
     @property
     def ok(self):
         return not self.error
+
+    def release(self, core):
+        """Hand the seat back, and with it the hold on its model."""
+        if self.handle:
+            core.call("seat.release", {"seat": self.handle})
+            self.handle = ""
 
 
 def decide(core, params, work, pinned=""):
@@ -181,15 +199,20 @@ def decide(core, params, work, pinned=""):
 
 
 def seat_decision(core, params, roster, decision):
-    """Make the expert a decision named resident, or say why it cannot be."""
+    """Seat the expert a decision named, or say why it cannot be."""
     name = roster.label(decision.expert)
-    has_model = bool((params.get("seats") or {}).get(decision.expert, {}).get("model"))
+    seats = params.get("seats") or {}
+    has_model = bool(seats.get(decision.expert, {}).get("model"))
     if not decision.expert or not has_model:
         return Seat(decision.expert, name,
                     "no expert model is configured to cook with" if not name
                     else name + " has no model, and nothing else is configured either")
     taken = core.call("seat.take", {"expert": decision.expert, "name": name}) or {}
-    return Seat(decision.expert, name, "" if taken.get("ok") else taken.get("error", "could not load"))
+    if not taken.get("ok"):
+        return Seat(decision.expert, name, taken.get("error", "could not load"))
+    return Seat(decision.expert, name, handle=taken.get("seat", ""),
+                remote=bool(taken.get("remote")),
+                local=(seats.get(decision.expert) or {}).get("local", ""))
 
 
 def take_seat(core, params, roster, work, pinned=""):
@@ -278,7 +301,7 @@ class Cook:
     # --- who is in the seat -------------------------------------------------------
 
     def take_the_seat(self, work, pinned=""):
-        """Route `work` and make the winner resident.
+        """Route `work` and seat the winner.
 
         Routed like any other prompt, which is the point: the delegator that
         picks an expert for a question picks the expert for the next piece of
@@ -297,14 +320,20 @@ class Cook:
         if not self.params.get("has_attachments") or self.attached_for == self.seat.id:
             return
         composed = self.core.call("seat.attachments",
-                                  {"system": system, "share": ATTACHED_SHARE}) or {}
+                                  {"seat": self.seat.handle, "system": system,
+                                   "share": ATTACHED_SHARE}) or {}
         self.attached = {"role": "user",
                          "content": "The goal comes with these attached:\n\n" + composed.get("text", ""),
                          "attached": True}
         self.attached_for = self.seat.id
 
     def round(self, messages):
-        return self.core.call("seat.chat", {"messages": messages}) or {}
+        return self.core.call("seat.chat", {"seat": self.seat.handle, "messages": messages}) or {}
+
+    def run_tool(self, call):
+        asked = dict(call)
+        asked["seat"] = self.seat.handle
+        return self.core.call("tools.run", asked) or {}
 
     # --- the loop -----------------------------------------------------------------
 
@@ -333,7 +362,7 @@ class Cook:
         # The first thing the expert sees is what is actually in the project.
         # Left to "look first", experts invented plausible file names and spent
         # twenty steps failing to open them; one listing removes all of that.
-        listing = core.call("tools.run", {"kind": "list", "argument": ".", "content": ""}) or {}
+        listing = self.run_tool({"kind": "list", "argument": ".", "content": ""})
         listed = listing.get("output", "")
         instruction = ("Here is what is in the project:\n\n" + listed
                        + "\nStart by reading whichever of these files the goal is about, then "
@@ -403,9 +432,21 @@ class Cook:
                 instruction = nudge_for(parsed)
                 continue
 
-            idle = 0
             kind = call.get("kind", "")
             argument = call.get("argument", "")
+
+            if kind == "note":
+                # Recorded, and not progress: see build.py's NOTE_PUSH.
+                self.note("note", argument, ms=reply.get("ms", 0))
+                idle += 1
+                if idle >= IDLE_LIMIT:
+                    self.note("note", "stopped: %s wrote notes and took no action" % self.seat.name, ok=False)
+                    looping = stalled = True
+                    break
+                instruction = ("Noted. A NOTE does nothing on its own -- take the next action now, "
+                               "in the same reply as any note.")
+                continue
+            idle = 0
 
             if kind == "ask":
                 journal["state"] = "asking"
@@ -426,18 +467,20 @@ class Cook:
                 work = argument or self.goal
                 self.note("handoff", work, ms=reply.get("ms", 0))
                 before = self.seat
+                # Let go of the model first: the next expert's may need its room.
+                before.release(core)
                 after = self.take_the_seat(work)
                 if not after.ok:
                     # Nobody could take it: the expert that had it carries on --
-                    # a worse specialist finishing the job beats no job. Asked
-                    # for again, because a local expert is freed before the next
-                    # one is loaded, so the one it had may be gone by now.
+                    # a worse specialist finishing the job beats no job. Seated
+                    # again, since its model may have been freed for the other.
                     self.note("note", after.error + " -- carrying on with " + before.name, ok=False)
-                    again = core.call("seat.take", {"expert": before.id, "name": before.name}) or {}
-                    if not again.get("ok"):
-                        unreachable = again.get("error") or before.name + " could not be loaded again"
+                    again = seat_decision(core, self.params, self.roster,
+                                          routing.Decision(before.id, 1.0, routing.PINNED, "carrying on"))
+                    if not again.ok:
+                        unreachable = again.error or before.name + " could not be loaded again"
                         break
-                    self.seat = before
+                    self.seat = again
                 else:
                     if after.id != before.id:
                         self.note("note", before.name + " handed over to " + after.name,
@@ -466,7 +509,7 @@ class Cook:
             # A write waits for a yes when Auto is off, exactly as in a chat
             # turn -- read at the moment of asking, so the button pressed halfway
             # through a cook takes effect from the next write.
-            if kind == "write" and not core.flags().get("auto_edits"):
+            if kind in ("write", "edit") and not core.flags().get("auto_edits"):
                 approved = (core.call("edit.ask", call) or {}).get("approved", False)
                 if self.canceled():
                     break
@@ -481,7 +524,7 @@ class Cook:
                 core.mood("thinking", self.seat.name + " is working")
 
             started = time.monotonic()
-            result = core.call("tools.run", call) or {}
+            result = self.run_tool(call)
             changed = result.get("changed") or []
             self.note(kind, result.get("summary", ""), ok=result.get("ok", False),
                       detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
@@ -574,7 +617,7 @@ class Cook:
                     break
 
                 started = time.monotonic()
-                result = core.call("tools.run", call) or {}
+                result = self.run_tool(call)
                 self.note(call.get("kind", ""), result.get("summary", ""),
                           ok=result.get("ok", False), detail=result.get("detail", ""),
                           ms=(time.monotonic() - started) * 1000,
@@ -605,6 +648,7 @@ class Cook:
                 else "finished")
         journal["ended_unix"] = int(time.time())
         self.publish()
+        self.seat.release(core)
 
 
 def run(core, params):

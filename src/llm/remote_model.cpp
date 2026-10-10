@@ -317,9 +317,9 @@ Event parse_anthropic(std::string_view data) {
             // What was read, wherever it was read from. The three are reported
             // apart because they are billed apart; the transcript wants the
             // size of the prompt.
-            event.input_tokens = int_at(usage, "input_tokens", 0)
-                               + int_at(usage, "cache_read_input_tokens", 0)
-                               + int_at(usage, "cache_creation_input_tokens", 0);
+            event.cache_read   = int_at(usage, "cache_read_input_tokens", 0);
+            event.cache_write  = int_at(usage, "cache_creation_input_tokens", 0);
+            event.input_tokens = int_at(usage, "input_tokens", 0) + event.cache_read + event.cache_write;
         }
     } else if (type == "message_delta") {
         const json& delta = child(node, "delta");
@@ -385,6 +385,8 @@ Event parse_openai(std::string_view data) {
     if (const json& usage = child(node, "usage"); usage.is_object()) {
         event.input_tokens  = int_at(usage, "prompt_tokens", -1);
         event.output_tokens = int_at(usage, "completion_tokens", -1);
+        // Part of prompt_tokens, not beside it, and billed for less.
+        event.cache_read    = int_at(child(usage, "prompt_tokens_details"), "cached_tokens", -1);
     }
     return event;
 }
@@ -546,9 +548,41 @@ int estimate_tokens(const std::vector<ChatMessage>& messages) {
 namespace {
 
 /// The request in flight, so that it can be stopped from another thread.
+/// The requests in flight, so Stop reaches the ones it means.
+///
+/// Several at once: a build's agents ask their providers side by side, and a
+/// chat turn may be asking another while they do. Each request is entered
+/// with the cancel switch of whoever made it, and interrupt() aborts the ones
+/// whose switch is now on -- Stop in the chat does not cut an agent off
+/// halfway through a file, and stopping a build leaves the chat alone. A
+/// request entered with no switch is aborted by any interrupt, which is what
+/// shutting down wants.
 struct Flight {
-    std::mutex    mutex;
-    http::Stream* stream = nullptr;
+    struct Entry {
+        http::Stream*  stream = nullptr;
+        CancelCallback cancel;
+    };
+    std::mutex         mutex;
+    std::vector<Entry> entries;
+
+    void enter(http::Stream* stream, CancelCallback cancel) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        entries.push_back({stream, std::move(cancel)});
+    }
+    void leave(http::Stream* stream) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [stream](const Entry& e) { return e.stream == stream; }),
+                      entries.end());
+    }
+    void interrupt() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (const Entry& entry : entries) {
+            if (!entry.cancel || entry.cancel()) {
+                entry.stream->abort();
+            }
+        }
+    }
 };
 
 std::vector<http::Header> headers_for(const Provider& provider, bool with_fallback_beta,
@@ -593,16 +627,29 @@ std::string describe_failure(const Provider& provider, int status, const std::st
     return out;
 }
 
+/// One model at one provider.
+///
+/// Asked from more than one thread at a time -- a build's agents share a
+/// provider's model -- so what it learns as it goes, the facts and the
+/// quirks, is kept under a lock and copied out for each request. A request
+/// itself holds no lock: two agents asking Claude at once is the point.
+///
+/// Except for a server on this machine, which answers one request at a time
+/// and is asked one at a time: two requests to MLX's server at once is two
+/// generations fighting over one model's memory.
 class Client final : public ChatModel {
 public:
-    Client(Provider provider, std::string model, Flight& flight)
-        : provider_(std::move(provider)), model_(std::move(model)), flight_(flight) {}
+    /// `ledger` counts what is asked of it; see spend.hpp.
+    Client(Provider provider, std::string model, Flight& flight, spend::Ledger& ledger)
+        : provider_(std::move(provider)), model_(std::move(model)), flight_(flight), ledger_(&ledger) {}
 
     /// One whose facts and quirks are known before it is asked anything: a
-    /// server on this machine, which publishes neither.
-    Client(Provider provider, std::string model, Flight& flight, ModelFacts facts, Quirks quirks)
+    /// server on this machine, which publishes neither -- and costs nothing,
+    /// so is not counted.
+    Client(Provider provider, std::string model, Flight& flight, ModelFacts facts, Quirks quirks,
+           bool serial)
         : provider_(std::move(provider)), model_(std::move(model)), flight_(flight),
-          facts_(facts), facts_known_(true), quirks_(quirks) {}
+          facts_(facts), facts_known_(true), quirks_(quirks), serial_(serial) {}
 
     ChatResult chat(const ChatRequest& request, const ChatSink& sink) override {
         ChatResult result;
@@ -610,6 +657,10 @@ public:
             result.error = provider_.label() + " has no API key -- add one in Settings, "
                            "Providers, or set ANTHROPIC_API_KEY";
             return result;
+        }
+        std::unique_lock<std::mutex> turn(turn_, std::defer_lock);
+        if (serial_) {
+            turn.lock();
         }
         learn_facts();
 
@@ -631,6 +682,7 @@ public:
 
     int context_size() const override {
         const_cast<Client*>(this)->learn_facts();
+        const std::lock_guard<std::mutex> lock(learned_);
         return facts_.context_tokens > 0 ? facts_.context_tokens : detail::kAssumedContext;
     }
 
@@ -644,11 +696,15 @@ public:
     /// Until the provider refuses one. The refusal is a 400 that names the
     /// picture, which adapt() learns from, and the request goes again with
     /// the pictures left out -- the text still says what they were.
-    bool sees_images() const override { return !quirks_.no_images; }
+    bool sees_images() const override {
+        const std::lock_guard<std::mutex> lock(learned_);
+        return !quirks_.no_images;
+    }
 
     /// Claude's that say so in the Models API. Nobody else is sent one.
     bool takes_effort() const override {
         const_cast<Client*>(this)->learn_facts();
+        const std::lock_guard<std::mutex> lock(learned_);
         return provider_.kind == "anthropic" && facts_.effort && !quirks_.no_effort;
     }
 
@@ -661,15 +717,22 @@ private:
     /// Ask Anthropic what this model takes. Once, and only of Anthropic:
     /// nobody else publishes it.
     void learn_facts() {
-        if (facts_known_ || provider_.kind != "anthropic") {
-            return;
+        {
+            const std::lock_guard<std::mutex> lock(learned_);
+            if (facts_known_ || provider_.kind != "anthropic") {
+                return;
+            }
         }
+        // Asked without the lock held: two agents starting at once may both
+        // ask, which costs a second listing, where holding the lock across a
+        // request would make every other caller wait on the network.
         http::Request request;
         request.url             = provider_.endpoint() + "/v1/models/" + model_;
         request.timeout_seconds = 15;
         request.headers         = headers_for(provider_, official_anthropic(),
                                               kFallbackListingBeta);
         const http::Response response = http::send(request);
+        const std::lock_guard<std::mutex> lock(learned_);
         if (response.ok()) {
             facts_ = detail::facts_from_model(response.body);
             // Only against Anthropic itself. A gateway may pass the listing
@@ -689,7 +752,14 @@ private:
     /// One attempt. True when it should be made again with what was learned.
     bool run(const ChatRequest& request, const ChatSink& sink, ChatResult& result) {
         const bool anthropic = provider_.kind == "anthropic";
-        const bool fallback  = anthropic && facts_.server_fallback && !quirks_.no_fallbacks;
+        ModelFacts facts;
+        Quirks     quirks;
+        {
+            const std::lock_guard<std::mutex> lock(learned_);
+            facts  = facts_;
+            quirks = quirks_;
+        }
+        const bool fallback = anthropic && facts.server_fallback && !quirks.no_fallbacks;
 
         http::Request outgoing;
         outgoing.method          = "POST";
@@ -698,10 +768,10 @@ private:
         outgoing.headers         = headers_for(provider_, fallback, kFallbackBeta);
         if (anthropic) {
             outgoing.url  = provider_.endpoint() + "/v1/messages";
-            outgoing.body = detail::anthropic_body(model_, request, facts_, quirks_);
+            outgoing.body = detail::anthropic_body(model_, request, facts, quirks);
         } else {
             outgoing.url  = provider_.endpoint() + "/chat/completions";
-            outgoing.body = detail::openai_body(model_, request, quirks_);
+            outgoing.body = detail::openai_body(model_, request, quirks);
         }
 
         http::Stream stream;
@@ -710,10 +780,7 @@ private:
             result.error = provider_.label() + " could not be asked: " + open_error;
             return false;
         }
-        {
-            const std::lock_guard<std::mutex> lock(flight_.mutex);
-            flight_.stream = &stream;
-        }
+        flight_.enter(&stream, sink.cancel);
 
         const Clock::time_point started = Clock::now();
         Clock::time_point       first_piece{};
@@ -721,6 +788,8 @@ private:
         bool        canceled     = false;
         int         input_tokens = -1;
         int         output_tokens = -1;
+        int         cache_read   = 0;
+        int         cache_write  = 0;
         std::size_t answer_bytes = 0;
         std::string stop;
         std::string stop_detail;
@@ -773,11 +842,10 @@ private:
             if (!event.error.empty())     { stream_error = event.error; }
             if (event.input_tokens >= 0)  { input_tokens = event.input_tokens; }
             if (event.output_tokens >= 0) { output_tokens = event.output_tokens; }
+            if (event.cache_read >= 0)    { cache_read = event.cache_read; }
+            if (event.cache_write >= 0)   { cache_write = event.cache_write; }
         }
-        {
-            const std::lock_guard<std::mutex> lock(flight_.mutex);
-            flight_.stream = nullptr;
-        }
+        flight_.leave(&stream);
         const http::Response response = stream.finish();
         const Clock::time_point ended = Clock::now();
 
@@ -793,6 +861,8 @@ private:
         // prompt did, the other way up: four bytes a token for prose.
         stats.output_tokens += output_tokens >= 0 ? output_tokens
                                                   : static_cast<int>(answer_bytes / 4);
+        count(response, input_tokens >= 0 ? input_tokens : stats.prompt_tokens, cache_read, cache_write,
+              output_tokens >= 0 ? output_tokens : static_cast<int>(answer_bytes / 4), any_piece, facts);
 
         if (canceled || response.error == "stopped") {
             stats.canceled = true;
@@ -808,9 +878,11 @@ private:
             // Only a 400, and only before anything was shown. A reshaped
             // request after half an answer would start the answer again
             // underneath the half already on screen.
-            if (response.status == 400 && !any_piece
-                && detail::adapt(quirks_, provider_.kind, said)) {
-                return true;
+            if (response.status == 400 && !any_piece) {
+                const std::lock_guard<std::mutex> lock(learned_);
+                if (detail::adapt(quirks_, provider_.kind, said)) {
+                    return true;
+                }
             }
             result.error = describe_failure(provider_, response.status, said);
             return false;
@@ -831,13 +903,40 @@ private:
         return false;
     }
 
-    Provider    provider_;
-    std::string model_;
-    Flight&     flight_;
+    /// Put one request in the ledger: whatever the provider answered, it is
+    /// what it bills for, a stopped answer's part included. A request that
+    /// was refused before a word came back costs nothing, and only tells
+    /// what is left of the rate limits.
+    void count(const http::Response& response, int prompt, int cache_read, int cache_write, int output,
+               bool answered, const ModelFacts& facts) {
+        if (ledger_ == nullptr || response.status == 0) {
+            return;
+        }
+        spend::Tokens used;
+        if (response.status < 400 || answered) {
+            const int fresh = std::max(0, prompt - cache_read - cache_write);
+            used.input       = static_cast<std::uint64_t>(fresh);
+            used.cache_read  = static_cast<std::uint64_t>(std::max(0, cache_read));
+            used.cache_write = static_cast<std::uint64_t>(std::max(0, cache_write));
+            used.output      = static_cast<std::uint64_t>(std::max(0, output));
+            used.requests    = 1;
+        }
+        ledger_->record(provider_, model_, used, prompt,
+                        facts.context_tokens > 0 ? facts.context_tokens : 0, response.headers);
+    }
 
-    ModelFacts facts_;
-    bool       facts_known_ = false;
-    Quirks     quirks_;
+    Provider       provider_;
+    std::string    model_;
+    Flight&        flight_;
+    spend::Ledger* ledger_ = nullptr;   ///< null for a server on this machine
+
+    mutable std::mutex learned_;   ///< guards the three below
+    ModelFacts         facts_;
+    bool               facts_known_ = false;
+    Quirks             quirks_;
+
+    bool       serial_ = false;   ///< one request at a time; see the class comment
+    std::mutex turn_;
 };
 
 /// The parts of a provider that decide whether what was learned still holds.
@@ -856,17 +955,33 @@ std::string fingerprint(const std::vector<Provider>& providers) {
 // Hub
 // ---------------------------------------------------------------------------
 
+/// Under one lock, because the build's agents and the chat ask for models
+/// from their own threads.
+///
+/// A client is never destroyed while Crucible runs, only retired: adopt()
+/// is a settings change, and an agent may be halfway through a request on
+/// the client the change replaces. A retired client finishes its request
+/// and is never handed out again; there are as many of them as there were
+/// provider changes, which is a handful.
 struct Hub::Impl {
+    explicit Impl(std::filesystem::path spend_file) : ledger(std::move(spend_file)) {}
+
+    std::mutex                                     mutex;
     std::vector<Provider>                          providers;
     std::string                                    fingerprint;
     std::map<std::string, std::unique_ptr<Client>> clients;
+    std::vector<std::unique_ptr<Client>>           retired;
     Flight                                         flight;
+    spend::Ledger                                  ledger;
 };
 
-Hub::Hub() : impl_(std::make_unique<Impl>()) {}
+Hub::Hub(std::filesystem::path spend_file) : impl_(std::make_unique<Impl>(std::move(spend_file))) {}
 Hub::~Hub() = default;
 
+std::vector<spend::Model> Hub::spending() const { return impl_->ledger.models(); }
+
 void Hub::adopt(const Config& config) {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
     std::string now = fingerprint(config.providers);
     if (now == impl_->fingerprint) {
         // The list of models a provider offers can change without anything
@@ -875,12 +990,16 @@ void Hub::adopt(const Config& config) {
         impl_->providers = config.providers;
         return;
     }
+    for (auto& [key, client] : impl_->clients) {
+        impl_->retired.push_back(std::move(client));
+    }
     impl_->clients.clear();
     impl_->providers   = config.providers;
     impl_->fingerprint = std::move(now);
 }
 
 ChatModel* Hub::model(const ModelParams& params, std::string& error) {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
     const Provider* provider = nullptr;
     for (const Provider& one : impl_->providers) {
         if (one.id == params.provider) {
@@ -897,13 +1016,14 @@ ChatModel* Hub::model(const ModelParams& params, std::string& error) {
     if (found == impl_->clients.end()) {
         found = impl_->clients
                     .emplace(key, std::make_unique<Client>(*provider, params.model,
-                                                           impl_->flight))
+                                                           impl_->flight, impl_->ledger))
                     .first;
     }
     return found->second.get();
 }
 
 ChatModel* Hub::local_server(const std::string& base_url, int context_tokens) {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
     const std::string key = "local\n" + base_url;
     auto found = impl_->clients.find(key);
     if (found == impl_->clients.end()) {
@@ -919,18 +1039,13 @@ ChatModel* Hub::local_server(const std::string& base_url, int context_tokens) {
         quirks.always_max_tokens = true;
         found = impl_->clients
                     .emplace(key, std::make_unique<Client>(provider, "default_model", impl_->flight,
-                                                           facts, quirks))
+                                                           facts, quirks, true))
                     .first;
     }
     return found->second.get();
 }
 
-void Hub::interrupt() {
-    const std::lock_guard<std::mutex> lock(impl_->flight.mutex);
-    if (impl_->flight.stream != nullptr) {
-        impl_->flight.stream->abort();
-    }
-}
+void Hub::interrupt() { impl_->flight.interrupt(); }
 
 // ---------------------------------------------------------------------------
 // Listing

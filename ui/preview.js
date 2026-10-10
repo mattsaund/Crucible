@@ -17,7 +17,43 @@
 // changes, and nothing it is sent is anything but a style value.
 
 state.preview = { pages: null, page: '', url: '', html: '', inlined: [], skipped: [], picking: false,
-                  picked: null, changes: [], error: '', loading: false };
+                  picked: null, changes: [], error: '', loading: false, stale: false,
+                  making: null, made: null };
+
+/// What pages in the preview have saved, by project and page, for as long
+/// as the window is open. See DATA_SCRIPT.
+const previewData = {};
+
+/// What a page of the project is given to keep its data with: the same
+/// window.crucible.load() and save(data) the program it is packaged as
+/// answers (see tools/app_runner.cpp), answered here by the window that
+/// shows it. A frame with scripts and nothing else allowed has no storage of
+/// its own, and an app that saved nothing would lose every figure typed into
+/// it at the next reload of the preview.
+///
+/// Put at the very start of the page, before any of its own scripts run.
+const DATA_SCRIPT = `
+(function () {
+  if (window.crucible) return;
+  var waiting = {}, next = 0;
+  function ask(what, data) {
+    return new Promise(function (resolve) {
+      var id = ++next;
+      waiting[id] = resolve;
+      parent.postMessage({ crucible: 'data', what: what, id: id, data: data }, '*');
+    });
+  }
+  window.addEventListener('message', function (e) {
+    var m = e.data || {};
+    if (m.crucible === 'data-answer' && waiting[m.id]) { waiting[m.id](m.data); delete waiting[m.id]; }
+  });
+  window.crucible = {
+    preview: true,
+    load: function () { return ask('load'); },
+    save: function (data) { return ask('save', data == null ? null : data); }
+  };
+})();
+`;
 
 /// What goes into the previewed page, as text: the picker and the applier.
 ///
@@ -106,12 +142,24 @@ const TUNE_PROPS = [
 
 /// The page with the picker inside it, for the frame's srcdoc.
 function tunedDocument(html) {
-  // The closing tag is split, because this file is itself inside a script
+  // The closing tags are split, because this file is itself inside a script
   // element of the bundled page, and the HTML parser would end that
   // element at the first closing script tag it saw, whatever string it was in.
   const script = `<script>${TUNE_SCRIPT}<\/script>`;
-  const at = html.lastIndexOf('</body>');
-  return at >= 0 ? html.slice(0, at) + script + html.slice(at) : html + script;
+  const data = `<script>${DATA_SCRIPT}<\/script>`;
+  // The data calls first of all, so the page's own scripts find them; the
+  // picker last, once there is a page to pick from.
+  const head = /<head[^>]*>/i.exec(html);
+  let out = head ? html.slice(0, head.index + head[0].length) + data + html.slice(head.index + head[0].length)
+                 : data + html;
+  const at = out.lastIndexOf('</body>');
+  out = at >= 0 ? out.slice(0, at) + script + out.slice(at) : out + script;
+  return out;
+}
+
+/// The key a page's preview data is remembered under, per project and page.
+function previewDataKey() {
+  return 'preview-data:' + ((state.snapshot.project || {}).root || '') + ':' + state.preview.page;
 }
 
 /// "rgb(255, 135, 0)" as "#ff8700", for a color input; anything else as is.
@@ -142,9 +190,12 @@ function previewView() {
       <button class="action toggle" data-act="preview-pick" aria-pressed="${p.picking}" ${p.html && !p.url ? '' : 'disabled'}
               title="${p.url ? 'A page by address cannot be picked at' : 'Pick an element to tune'}">${
         p.picking ? 'Picking' : 'Pick an element'}</button>
-      <span class="status">${p.loading ? 'Reading...' : p.url ? '' : p.inlined.length ? `${count(p.inlined.length, 'file')} inlined` : ''}${
-        !p.url && p.skipped.length ? `  ·  ${count(p.skipped.length, 'file')} left out` : ''}</span>
-    </div>`;
+      <span class="status">${p.loading ? 'Reading...' : apart(!p.url && p.inlined.length ? `${count(p.inlined.length, 'file')} inlined` : '',
+        !p.url && p.skipped.length ? `${count(p.skipped.length, 'file')} left out` : '')}</span>
+      <span class="spacer"></span>
+      <button class="action" data-act="app-make" ${p.html && !p.url && !p.making ? '' : 'disabled'}
+              title="Make this page a program you open like any other">Make it an app</button>
+    </div>${appStrip()}`;
   const frame = p.url
     ? `<iframe id="preview-frame" class="preview-frame" sandbox="allow-scripts allow-forms allow-modals allow-same-origin allow-popups"
          title="Preview of ${escape(p.url)}" src="${escape(p.url)}"></iframe>`
@@ -153,6 +204,40 @@ function previewView() {
          title="Preview of ${escape(p.page)}" srcdoc="${escape(tunedDocument(p.html))}"></iframe>`
     : `<div class="preview-empty status">${p.error ? escape(p.error) : 'Choose a page, or give an address.'}</div>`;
   return `<div class="preview">${picker}<div class="preview-body">${frame}${p.url ? '' : tuneView()}</div></div>`;
+}
+
+/// Under the bar: the name the app will have while it is being made, what
+/// was made and how to open it, or that a build has changed the page since
+/// it was shown.
+function appStrip() {
+  const p = state.preview;
+  const where = (state.snapshot.platform || '') === 'windows' ? 'the Start menu'
+              : (state.snapshot.platform || '') === 'linux' ? 'your applications menu' : 'Applications';
+  if (p.making) {
+    return `<form class="row app-strip" data-submit="app-package">
+        <label for="app-name">Name</label>
+        <input id="app-name" data-draft value="${escape(p.making.name)}" autocomplete="off" spellcheck="false"
+               ${p.making.busy ? 'disabled' : ''}>
+        <button class="action" type="submit" ${p.making.busy || !p.making.can ? 'disabled' : ''}>${
+          p.making.busy ? 'Making it...' : 'Make it'}</button>
+        <button class="action" type="button" data-act="app-cancel" ${p.making.busy ? 'disabled' : ''}>Cancel</button>
+        <span class="status">${p.making.can ? `It goes in ${where}, and keeps its data between uses.`
+          : 'This Crucible has no app runner beside it -- reinstall Crucible to make apps.'}</span>
+      </form>`;
+  }
+  if (p.made) {
+    return `<div class="row app-strip made">
+        <span><strong>${escape(p.made.name)}</strong> is ready, ${escape(p.made.where)}.</span>
+        <button class="action" data-act="app-open">Open ${escape(p.made.name)}</button>
+      </div>`;
+  }
+  if (p.stale) {
+    return `<div class="row app-strip">
+        <span class="status">The build has changed the page since it was shown.</span>
+        <button class="action" data-act="preview-reload">Show it now</button>
+      </div>`;
+  }
+  return '';
 }
 
 /// The dashboard beside the frame: what was picked, and the dials.
@@ -232,6 +317,7 @@ async function loadPreview(page) {
   p.changes = [];
   p.picking = false;
   p.error = '';
+  p.stale = false;
   if (!page) return render();
   p.loading = true;
   render();
@@ -315,19 +401,72 @@ actions['tune-reset'] = () => {
   render();
 };
 
+/// The changes, made in the source. As a build of one task when nothing is
+/// building -- the person stays where they are, looking at the page, and it
+/// reloads with the change made -- and as a chat prompt when a build has the
+/// box already.
 actions['tune-apply'] = () => guard(async () => {
   const prompt = tunePrompt();
   if (!prompt) return;
-  await call('submit', { prompt, expert: routeTarget() });
+  const building = state.snapshot.cook && state.snapshot.cook.running;
+  if (building) {
+    await call('submit', { prompt, expert: routeTarget() });
+    state.follow = true;
+  } else {
+    await call('build.start', { directive: prompt, attachments: [], expert: routeTarget() });
+  }
   state.preview.changes = [];
   tellFrame({ crucible: 'reset' });
-  state.follow = true;
-  enter('chat');
+  if (building) enter('chat');
+  else render();
 });
 
-/// What the page says back: the element picked, or that it is ready.
-window.addEventListener('message', (event) => {
-  const m = event.data || {};
+/// Make the page a program: first the name it will have, then the program.
+actions['app-make'] = () => guard(async () => {
+  const p = state.preview;
+  const got = await call('app.name', { page: p.page || 'index.html' });
+  p.making = { name: got.name || 'App', busy: false, can: got.can !== false };
+  p.made = null;
+  render();
+  const box = document.getElementById('app-name');
+  if (box) { box.focus(); box.select(); }
+});
+actions['app-cancel'] = () => { state.preview.making = null; render(); };
+actions['app-package'] = (form) => guard(async () => {
+  const p = state.preview;
+  const name = form.querySelector('input').value.trim();
+  if (!name || !p.making || p.making.busy) return;
+  p.making.busy = true;
+  render();
+  try {
+    p.made = await call('app.package', { page: p.page || 'index.html', name });
+    p.making = null;
+  } finally {
+    if (p.making) p.making.busy = false;
+    render();
+  }
+});
+actions['app-open'] = () => guard(() => call('app.open', { launch: state.preview.made.launch }));
+
+/// What the page says back: the element picked, or its data to keep.
+function previewMessage(m) {
+  if (m.crucible === 'data') {
+    // Kept for as long as the window is open, and in this window's own
+    // storage when it has some, under the project and the page.
+    const key = previewDataKey();
+    if (m.what === 'save') {
+      previewData[key] = m.data;
+      try { localStorage.setItem(key, JSON.stringify(m.data)); } catch (e) { /* no storage: memory will do */ }
+      tellFrame({ crucible: 'data-answer', id: m.id, data: true });
+    } else {
+      let saved = key in previewData ? previewData[key] : null;
+      if (saved === null) {
+        try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { saved = null; }
+      }
+      tellFrame({ crucible: 'data-answer', id: m.id, data: saved });
+    }
+    return;
+  }
   if (m.crucible === 'picked') {
     state.preview.picked = m.selector ? { selector: m.selector, tag: m.tag, text: m.text, styles: m.styles, box: m.box } : null;
     // One pick ends the picking, the way a browser's inspector does, so the
@@ -338,7 +477,8 @@ window.addEventListener('message', (event) => {
     }
     render();
   }
-});
+}
+window.addEventListener('message', (event) => previewMessage(event.data || {}));
 
 /// What the preview fetches when its pane opens: the pages there are.
 function enterPreview() {

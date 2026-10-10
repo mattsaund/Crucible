@@ -40,7 +40,7 @@ const state = {
 
   // Fetched, and null until it has been.
   config: null, models: null, providers: null, runtimes: null, devices: null, recents: null,
-  trainer: null, flavors: null, about: null, history: null, recipes: null, teach: null,
+  trainer: null, flavors: null, about: null, history: null, recipes: null, teach: null, kit: null, ci: null, mcp: null, self: null,
 
   // Long jobs, as last reported.
   build: null, install: null, run: null,
@@ -362,8 +362,9 @@ async function guard(work) {
 
 // --- what a person can do ------------------------------------------------------
 
-/// The actions, by name: what data-act, data-change, data-input, data-submit
-/// and data-key refer to. Each is called with the element and the event.
+/// The actions, by name: what data-act, data-change, data-input, data-submit,
+/// data-key and data-scroll refer to. Each is called with the element and the
+/// event.
 const actions = {};
 
 function dispatch(kind, event) {
@@ -385,8 +386,10 @@ function listen() {
     dispatch('key', event);
     shortcuts(event);
   });
-  // `toggle` does not bubble, so it is caught on the way down instead.
+  // `toggle` and `scroll` do not bubble, so they are caught on the way down
+  // instead.
   document.addEventListener('toggle', (event) => dispatch('toggle', event), true);
+  document.addEventListener('scroll', (event) => dispatch('scroll', event), true);
 }
 
 /// The value an input holds, as the type its data-kind says it is.

@@ -17,6 +17,7 @@
 // below it.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -25,8 +26,9 @@
 #include <string>
 #include <vector>
 
-#include "crucible/app/setup.hpp"
 #include "crucible/api/surface.hpp"
+#include "crucible/app/self_source.hpp"
+#include "crucible/app/setup.hpp"
 #include "crucible/app/update.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/config/trust.hpp"
@@ -68,6 +70,8 @@ private:
     RuntimeBuilder*        runtime_builder() override { return &runtime_builder_; }
     lab::pyenv::Installer* trainer_installer() override { return &pyenv_installer_; }
     Setup*                 setup() override { return &setup_; }
+    self::Rebuild*         rebuild() override { return &rebuild_; }
+    void                   quit() override;
 
     Config      config() const override { return config_; }
     std::string apply_config(Config edited) override;
@@ -130,6 +134,7 @@ private:
     /// Keep the seats a build made for itself: into the config file, with
     /// examples asked for, like a seat added by hand.
     void absorb_made_seats();
+    void absorb_starter_model();
 
     /// Ask for the conversation on screen to be named, once it has had an
     /// exchange and has no name; and file the names that have come back.
@@ -184,6 +189,10 @@ private:
     void begin_update_check();
     void collect_update_check();
 
+    /// The frontier models' list prices, fetched on a worker when a provider
+    /// is added and the list is missing or a day old. See llm/prices.hpp.
+    void refresh_prices();
+
     struct UpdateCheck {
         std::mutex    mutex;
         update::State state;
@@ -232,6 +241,14 @@ private:
                                  [this] { if (engine_) { engine_->reload_models(); } }};
 
     std::size_t persisted_turns_ = 0;
+
+    /// A rebuild of Crucible's own source, when somebody asks for one. See
+    /// app/self_source.hpp.
+    self::Rebuild         rebuild_;
+
+    /// The window while it is open, for quit(): a webview, held as void so
+    /// this header does not need webview's. Set and cleared by run().
+    std::atomic<void*>    view_{nullptr};
 
     /// Threads for the errands that are slow and touch nothing here: the
     /// lookups the surface marks as such, and the daily version check.

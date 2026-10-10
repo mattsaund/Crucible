@@ -29,6 +29,48 @@ namespace {
 
 using json = nlohmann::json;
 
+/// MCP servers as the file keeps them.
+json mcp_json(const std::vector<McpServer>& servers) {
+    json out = json::array();
+    for (const McpServer& server : servers) {
+        out.push_back(json{{"name", server.name}, {"command", server.command}, {"args", server.args},
+                           {"env", server.env}, {"enabled", server.enabled}});
+    }
+    return out;
+}
+
+std::vector<McpServer> mcp_from_json(const json& doc, std::vector<std::string>& warnings) {
+    std::vector<McpServer> out;
+    if (!doc.is_array()) {
+        warnings.emplace_back("tools.mcp: not a list of servers (ignored)");
+        return out;
+    }
+    for (const json& one : doc) {
+        if (!one.is_object() || one.value("name", std::string()).empty()
+            || one.value("command", std::string()).empty()) {
+            warnings.emplace_back("tools.mcp: a server with no name or no command (skipped)");
+            continue;
+        }
+        McpServer server;
+        server.name    = one.value("name", std::string());
+        server.command = one.value("command", std::string());
+        server.enabled = one.value("enabled", true);
+        for (const json& arg : one.value("args", json::array())) {
+            if (arg.is_string()) {
+                server.args.push_back(arg.get<std::string>());
+            }
+        }
+        const json env = one.value("env", json::object());
+        for (auto it = env.begin(); it != env.end(); ++it) {
+            if (it.value().is_string()) {
+                server.env[it.key()] = it.value().get<std::string>();
+            }
+        }
+        out.push_back(std::move(server));
+    }
+    return out;
+}
+
 /// Read one optional field, leaving the destination untouched when the key is
 /// absent or holds the wrong type. A malformed entry is reported and skipped
 /// rather than aborting the load -- a typo in one expert should not stop the
@@ -250,6 +292,7 @@ json config_to_json(const Config& config) {
             {"overflow",         config.tools.overflow},
             {"workshop_timeout", config.tools.workshop_timeout},
             {"computer_control", config.tools.computer_control},
+            {"mcp",              mcp_json(config.tools.mcp)},
         }},
         {"build", json{
             {"architect",       config.build.architect},
@@ -258,9 +301,12 @@ json config_to_json(const Config& config) {
             {"auto_commit",     config.build.auto_commit},
             {"confirm_plan",    config.build.confirm_plan},
             {"rounds_per_task", config.build.rounds_per_task},
+            {"agents",          config.build.agents},
+            {"split",           config.build.split},
         }},
         {"ui", json{
             {"check_updates",  config.ui.check_updates},
+            {"source_dir",     config.ui.source_dir},
         }},
     };
     return doc;
@@ -388,9 +434,12 @@ void write_default_config(const std::filesystem::path& file) {
             {"auto_commit",     defaults.build.auto_commit},
             {"confirm_plan",    defaults.build.confirm_plan},
             {"rounds_per_task", defaults.build.rounds_per_task},
+            {"agents",          defaults.build.agents},
+            {"split",           defaults.build.split},
         }},
         {"ui", json{
             {"check_updates",  defaults.ui.check_updates},
+            {"source_dir",     defaults.ui.source_dir},
         }},
     };
 
@@ -562,6 +611,9 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*tools, "overflow",         config.tools.overflow,         "tools", warnings);
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
         read_field(*tools, "computer_control", config.tools.computer_control, "tools", warnings);
+        if (const auto mcp = tools->find("mcp"); mcp != tools->end()) {
+            config.tools.mcp = mcp_from_json(*mcp, warnings);
+        }
     }
 
     if (const auto build = doc.find("build"); build != doc.end() && build->is_object()) {
@@ -576,6 +628,13 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
                                   + " is outside 4..400 (keeping the default)");
             config.build.rounds_per_task = BuildConfig{}.rounds_per_task;
         }
+        read_field(*build, "split", config.build.split, "build", warnings);
+        read_field(*build, "agents", config.build.agents, "build", warnings);
+        if (config.build.agents < 1 || config.build.agents > 8) {
+            warnings.emplace_back("build.agents: " + std::to_string(config.build.agents)
+                                  + " is outside 1..8 (keeping the default)");
+            config.build.agents = BuildConfig{}.agents;
+        }
     }
 
     // Keys an older file may still carry -- animation_ms, show_experts and
@@ -584,6 +643,7 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
     // passed over rather than warned about, and the next save drops them.
     if (const auto ui = doc.find("ui"); ui != doc.end() && ui->is_object()) {
         read_field(*ui, "check_updates", config.ui.check_updates, "ui", warnings);
+        read_field(*ui, "source_dir", config.ui.source_dir, "ui", warnings);
     }
 
     if (const auto providers = doc.find("providers");

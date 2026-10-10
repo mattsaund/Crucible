@@ -22,17 +22,26 @@ for new agents is configured, the build makes a seat for it -- "CSS layout",
 of "train the experts it needs": the expensive half, fine-tuning one on what
 the build's experts did, starts from the records the build keeps.
 
-Tasks run one at a time. The core has one worker and one local model
-resident, and a build that pretended otherwise would be queueing behind
-itself. What the window shows is which agent has the work and what each has
-done; the journal keeps the whole of it.
+Tasks run side by side when they can. A task waits for the tasks the plan
+says it comes after, and for any running task that touches one of its files;
+past that, as many agents work at once as Settings, Build allows. A provider's
+model answers any number of them at a time. A model on this machine has one
+agent at a time -- two agents on one model take turns at it and throw away
+each other's cache, which is slower than one after the other -- so a task
+whose expert is a model another agent is using waits for it, and two
+different models on this machine run together when the memory holds both.
+Each agent's calls carry its seat, so the core answers each of its own.
+What the window shows is which agents have work and what each has done; the
+journal keeps the whole of it.
 
 Everything is journalled as it happens, like a cook: the plan, every task's
 state, every step with the task it belongs to.
 """
 
 import json
+import queue
 import re
+import threading
 import time
 
 from . import cook, routing
@@ -69,6 +78,47 @@ MANIFESTS = ("README.md", "README", "package.json", "pyproject.toml", "Cargo.tom
              "CMakeLists.txt", "go.mod", "Makefile", "requirements.txt")
 MANIFEST_CHARS = 2500
 
+# How many agents work at once when the settings do not say. One is what a
+# build was before agents could work side by side, and what a script that
+# drives the orchestrator by hand gets unless it asks for more.
+AGENTS = 1
+MAX_AGENTS = 8
+
+# Task states that are over, one way or another.
+FINISHED = ("done", "incomplete", "failed", "skipped", "stopped")
+
+# What the architect and the agents are told about the kind of program a person
+# most often asks Crucible for: one they use on their own computer. A page of
+# plain HTML, CSS and JavaScript is the one thing that every machine can run
+# with nothing installed, that Crucible can show as it is built, and that it
+# can package as a program -- see the app runner, crucible-app. The data
+# calls are Crucible's own, because a page shown in the preview has no
+# storage of its own and a packaged program needs its data kept somewhere a
+# reinstall does not wipe.
+APP_GUIDE = (
+    "If what is asked for is a program a person uses on their own computer -- a budget, a "
+    "tracker, a calculator, anything with buttons, forms and charts -- make it a desktop web "
+    "app: index.html, style.css and app.js at the top of the project folder, in plain HTML, CSS "
+    "and JavaScript, with no build step, no packages and nothing fetched from the internet. "
+    "Draw charts in your own code with <canvas> or inline SVG. Keep the person's data with "
+    "`await window.crucible.load()` -- the saved object, or null the first time -- and `await "
+    "window.crucible.save(data)` after every change; Crucible provides both, in its preview and "
+    "in the finished program. Make it look finished: a clear layout, comfortable spacing, "
+    "readable type. Crucible shows the page as it is built and packages it as a program the "
+    "person opens like any other, so the plan needs no packaging task and its \"ship\" is \"\".")
+
+APP_NOTE = ("If this is a desktop web app (index.html, style.css, app.js): plain HTML, CSS and "
+            "JavaScript, no packages, and nothing from the internet -- no <script> or <link> with "
+            "an http address, no CDN, no Chart.js: draw charts yourself with <canvas> or SVG. Keep "
+            "the person's data with `await window.crucible.load()` and `await "
+            "window.crucible.save(data)` -- Crucible provides both, so use them without asking. "
+            "To see the page, RENDER: index.html to a PNG and look at it; it needs no server.")
+
+# What an agent is told after a NOTE with nothing else: a note changes nothing,
+# and a model that writes one round after round is not working.
+NOTE_PUSH = ("Noted. A NOTE does nothing on its own -- take the next action now: READ a "
+             "file, WRITE or EDIT one, or RUN a command, in the same reply as any note.")
+
 # What a person types to start the plan as it is.
 GO_WORDS = ("", "go", "yes", "y", "ok", "okay", "start", "build", "run", "do it", "proceed",
             "looks good", "fine", "sure", "yep")
@@ -80,7 +130,7 @@ PLAN_SHAPE = ('{"summary": "<one paragraph: what will be built and how>",\n'
               ' "tasks": [\n'
               '   {"title": "<a few words>", "detail": "<exactly what to make, and how to tell it is done>",\n'
               '    "files": ["<paths it will create or change>"], "needs": "<the expertise, two to four words>",\n'
-              '    "after": [<indices of tasks that must finish first>]}\n'
+              '    "size": "<large or small>", "after": [<indices of tasks that must finish first>]}\n'
               ' ]}')
 
 
@@ -135,11 +185,13 @@ def read_plan(text):
             continue
         files = entry.get("files") or []
         after = entry.get("after") or []
+        size = str(entry.get("size") or "").strip().lower()
         plan["tasks"].append({
             "title": title or cook.clip(detail, 60),
             "detail": detail or title,
             "files": [str(f) for f in files if isinstance(f, (str, int, float))][:12],
             "needs": str(entry.get("needs") or "").strip(),
+            "size": size if size in ("large", "small") else "",
             "after": [int(a) for a in after if isinstance(a, (int, float)) and not isinstance(a, bool)],
         })
     if not plan["tasks"]:
@@ -210,15 +262,23 @@ def plan_prompt(directive, root, survey, feedback="", machine=""):
             + "\n\nThe project folder is " + root + ". " + survey
             + ("\n\n" + machine if machine else "")
             + "\n\nWrite a plan as JSON and nothing else, in exactly this shape:\n\n" + PLAN_SHAPE
-            + "\n\nRules. Three to twelve tasks, each one piece of work one person could finish "
-              "in an hour, in the order they should happen. The task that makes the project "
-              "run at all comes first; one that writes the README or the documentation comes "
-              "last. \"detail\" says exactly what to make and how to tell it is done. "
+            + "\n\nRules. When the project already exists and the directive is a change to it "
+              "-- a color, a size, a label, a button moved, a field added -- the plan is ONE "
+              "task that makes exactly that change, with \"files\" naming the file it is in; "
+              "never a rewrite for a small change. For something new, three to twelve tasks, "
+              "each one piece of work one person could finish in an hour, in the order they "
+              "should happen. The task that makes the project run at all comes first; one "
+              "that writes the README or the documentation comes last. Tasks that do not "
+              "depend on each other leave \"after\" empty, so they can be worked at the same "
+              "time. \"detail\" says exactly what to make and how to tell it is done. "
               "\"needs\" names the kind of expertise in two to four words -- \"Python back "
               "end\", \"CSS layout\", \"SQL schema\", \"technical writing\". \"after\" lists "
               "the 0-based indices of the tasks that must finish first, and is usually empty "
-              "or the previous task. \"check\" is one command, run from the project folder, "
-              "that proves the whole thing works. Prefer tools the project already uses.")
+              "or the previous task. \"size\" is large for the heart of the program or a hard "
+              "problem, and small for a change to one file, a test, or the documentation. "
+              "\"check\" is one command, run from the project folder, "
+              "that proves the whole thing works, or \"\" when there is none to run. Prefer "
+              "tools the project already uses.\n\n" + APP_GUIDE)
     if feedback:
         text += "\n\nThe person asked for this change to the plan:\n\n" + feedback
     return text
@@ -236,10 +296,11 @@ def task_system_prompt(base, directive, plan, task, index, count, root, account,
             + "\nThe project is at " + root
             + ("\n" + machine if machine else "")
             + ("\n\n" + account if account else "")
-            + "\n\nWork in small steps. Read a file before rewriting it, run things to find out "
-              "whether they work rather than assuming, and do only this task -- the others "
-              "have their own agents. When it is finished, say DONE: and what you made, with "
-              "anything the next agent must know."
+            + "\n\nWork in small steps. Read a file before changing it, change part of a file "
+              "with EDIT rather than writing it all again, run things to find out whether they "
+              "work rather than assuming, and do only this task -- the others have their own "
+              "agents, some of them working at the same time as you. When it is finished, say "
+              "DONE: and what you made, with anything the next agent must know.\n\n" + APP_NOTE
             + tools)
 
 
@@ -255,6 +316,7 @@ class Build:
         self.roster = routing.Roster(params.get("roster"))
         self.settings = params.get("settings") or {}
         self.rounds = int(self.settings.get("rounds_per_task") or ROUNDS_PER_TASK)
+        self.agents = max(1, min(MAX_AGENTS, int(self.settings.get("agents") or AGENTS)))
         self.journal = {
             "id": params.get("id", ""),
             "kind": "build",
@@ -271,34 +333,44 @@ class Build:
             "tasks": [],
             "steps": [],
         }
+        # The architect's seat, for planning, the finishing pass and the
+        # write-up. An agent's seat is its own, in run_task.
         self.seat = cook.Seat()
-        self.attached = None
-        self.attached_for = None
         self.listing = ""
         self.git_ready = None   # unknown until the first commit is wanted
         self.made = []          # seats this build added to the roster
         self.machine = ""       # what this machine has, for the prompts
+        self.decisions = {}     # task index -> who the delegator chose
+        self.was_empty = True   # whether the project had nothing in it before the build
+        self.planned_from = None   # the prompt the plan answered, and the answer
+        # The journal and everything else agents share, under one lock;
+        # questions to the person and commits, one at a time each.
+        self.lock = threading.RLock()
+        self.ask_lock = threading.Lock()
+        self.commit_lock = threading.Lock()
 
     # --- the journal -------------------------------------------------------------
 
     def publish(self):
-        self.core.call("cook.publish", {"cook": self.journal})
+        with self.lock:
+            self.core.call("cook.publish", {"cook": self.journal})
 
     def note(self, kind, summary, task=-1, ok=True, detail="", ms=0, changed=None, expert=None,
              picture=""):
-        self.journal["steps"].append({
-            "iteration": self.journal["iterations"],
-            "task": task,
-            "expert": self.seat.id if expert is None else expert,
-            "kind": kind,
-            "summary": summary,
-            "detail": detail,
-            "ok": ok,
-            "ms": int(ms),
-            "changed": list(changed or []),
-            "picture": picture or "",
-        })
-        self.publish()
+        with self.lock:
+            self.journal["steps"].append({
+                "iteration": self.journal["iterations"],
+                "task": task,
+                "expert": self.seat.id if expert is None else expert,
+                "kind": kind,
+                "summary": summary,
+                "detail": detail,
+                "ok": ok,
+                "ms": int(ms),
+                "changed": list(changed or []),
+                "picture": picture or "",
+            })
+            self.publish()
 
     def task_json(self, index, plan_task):
         return {"index": index, "title": plan_task["title"], "detail": plan_task["detail"],
@@ -328,8 +400,8 @@ class Build:
         return cook.take_seat(self.core, self.params, self.roster,
                               "Plan and oversee a software project: " + self.directive, pinned)
 
-    def seat_for_task(self, task):
-        """Who does `task`: the delegator's pick, or a seat made for it.
+    def decide_task(self, task):
+        """Who should do `task`: the delegator's pick, or a seat made for it.
 
         A task's "needs" is what is routed on, with the title and detail
         beside it: a delegator shown "CSS layout" alone leans on the word, and
@@ -345,9 +417,7 @@ class Build:
         # build a task ago.
         for expert in self.roster.experts:
             if needs and expert.get("name", "").strip().lower() == needs.strip().lower():
-                return cook.seat_decision(self.core, self.params, self.roster,
-                                          routing.Decision(expert.get("id", ""), 1.0, routing.PINNED,
-                                                           "a seat named for it"))
+                return routing.Decision(expert.get("id", ""), 1.0, routing.PINNED, "a seat named for it")
         decision = cook.decide(self.core, self.params, work)
         unsure = (decision.source == routing.FALLBACK or not decision.expert
                   or decision.detail.startswith("undecided"))
@@ -355,7 +425,53 @@ class Build:
             made = self.make_seat(needs, task)
             if made is not None:
                 decision = routing.Decision(made, 1.0, routing.PINNED, "made for this build")
-        return cook.seat_decision(self.core, self.params, self.roster, decision)
+        return self.mixed(decision, task, work)
+
+    def mixed(self, decision, task, work):
+        """Frontier models for the heavy lifting and models on this machine for
+        the small tasks, when the roster has both: a task the plan called large
+        that the delegator gave to a local seat goes to a provider's instead,
+        and a small one it gave to a provider goes to a local seat -- each
+        chosen by the delegator from among its own kind, so expertise still
+        decides which. What it saves is the provider's tokens on the work a
+        local model does as well."""
+        if not self.settings.get("split", True) or not decision.expert:
+            return decision
+        size = task.get("size") or ""
+        seats = self.params.get("seats") or {}
+        remote = {i for i, s in seats.items() if s.get("model") and s.get("remote")}
+        local = {i for i, s in seats.items() if s.get("model") and not s.get("remote")}
+        if not remote or not local:
+            return decision
+        chosen_remote = decision.expert in remote
+        if size == "large" and not chosen_remote:
+            kind, wanted = "a provider's model", remote
+        elif size == "small" and chosen_remote:
+            kind, wanted = "a model on this machine", local
+        else:
+            return decision
+        architect = self.settings.get("architect") or ""
+        if kind.startswith("a provider") and architect in wanted:
+            return routing.Decision(architect, 1.0, routing.PINNED, "a large task, for the architect")
+        # The delegator again, among those seats alone.
+        narrowed = dict(self.params)
+        narrowed["roster"] = [e for e in (self.params.get("roster") or []) if e.get("id") in wanted]
+        again = cook.decide(self.core, narrowed, work)
+        expert = again.expert if again.expert in wanted else sorted(wanted)[0]
+        return routing.Decision(expert, again.confidence, routing.PINNED,
+                                "a %s task, for %s" % (size, kind))
+
+    def decision_for(self, index):
+        """The decision for a task, made once and kept: the scheduler asks
+        each time it looks at a task it could not yet start."""
+        if index not in self.decisions:
+            self.decisions[index] = self.decide_task(self.journal["tasks"][index])
+        return self.decisions[index]
+
+    def local_of(self, expert_id):
+        """The model on this machine that answers for a seat, or "" for a
+        provider's."""
+        return ((self.params.get("seats") or {}).get(expert_id) or {}).get("local", "")
 
     def make_seat(self, needs, task):
         """Add a seat named for `needs` to the roster, on the model configured
@@ -375,32 +491,41 @@ class Build:
         expert_id = reply.get("id", "")
         entry = {"id": expert_id, "name": reply.get("name", name), "tag": reply.get("tag", ""),
                  "blurb": blurb, "keywords": reply.get("keywords") or [], "examples": []}
-        # Copies, not appends: the lists came in with the request, and a seat
-        # made for this build must not reach into whoever else holds them.
-        self.params["roster"] = list(self.params.get("roster") or []) + [entry]
-        self.params["seats"] = dict(self.params.get("seats") or {})
-        self.params["seats"][expert_id] = {"model": True, "remote": bool(reply.get("remote"))}
-        self.roster = routing.Roster(self.params.get("roster"))
-        self.made.append(expert_id)
+        with self.lock:
+            # Copies, not appends: the lists came in with the request, and a
+            # seat made for this build must not reach into whoever else holds
+            # them -- an agent reading them as they change, among others.
+            self.params["roster"] = list(self.params.get("roster") or []) + [entry]
+            seats = dict(self.params.get("seats") or {})
+            seats[expert_id] = {"model": True, "remote": bool(reply.get("remote")),
+                                "local": reply.get("local", "")}
+            self.params["seats"] = seats
+            self.roster = routing.Roster(self.params.get("roster"))
+            self.made.append(expert_id)
         self.note("note", "added " + entry["name"] + " to the experts, for " + needs,
                   expert=expert_id)
         return expert_id
 
-    def read_for_seat(self, system):
-        if not self.params.get("has_attachments") or self.attached_for == self.seat.id:
-            return
+    def attachments_for(self, seat, system):
+        """What the directive came with, read for `seat` -- its context is the
+        size the share is of, and whether it sees pictures is its own. None
+        when nothing was attached."""
+        if not self.params.get("has_attachments"):
+            return None
         composed = self.core.call("seat.attachments",
-                                  {"system": system, "share": cook.ATTACHED_SHARE}) or {}
-        self.attached = {"role": "user",
-                         "content": "The directive comes with these attached:\n\n" + composed.get("text", ""),
-                         "attached": True}
-        self.attached_for = self.seat.id
+                                  {"seat": seat.handle, "system": system,
+                                   "share": cook.ATTACHED_SHARE}) or {}
+        return {"role": "user",
+                "content": "The directive comes with these attached:\n\n" + composed.get("text", ""),
+                "attached": True}
 
-    def round(self, messages):
-        return self.core.call("seat.chat", {"messages": messages}) or {}
+    def round(self, seat, messages):
+        return self.core.call("seat.chat", {"seat": seat.handle, "messages": messages}) or {}
 
-    def run_tool(self, call):
-        return self.core.call("tools.run", call) or {}
+    def run_tool(self, call, seat=None):
+        asked = dict(call)
+        asked["seat"] = (seat or self.seat).handle
+        return self.core.call("tools.run", asked) or {}
 
     # --- before the plan --------------------------------------------------------------
 
@@ -419,6 +544,7 @@ class Build:
             if got.get("ok"):
                 read.append(manifest + ":\n" + cook.clip(got.get("output", ""), MANIFEST_CHARS))
         empty = "(empty)" in self.listing
+        self.was_empty = empty
         text = ("It is empty: everything is to be made." if empty
                 else "Here is what is in it:\n\n" + self.listing)
         if read:
@@ -442,7 +568,11 @@ class Build:
                         "tasks": [{"title": cook.clip(self.directive, 60), "detail": self.directive,
                                    "files": [], "needs": "", "after": []}]}
             self.adopt_plan(plan)
-            if not self.settings.get("confirm_plan", True) or revision == PLAN_REVISIONS:
+            # A plan of one task is a change to make, not a project to agree:
+            # "make the button blue" asked whether to make the button blue
+            # would be a question nobody wants.
+            if (not self.settings.get("confirm_plan", True) or revision == PLAN_REVISIONS
+                    or len(plan["tasks"]) == 1):
                 return True
             answer = self.ask("The plan has %d %s. Reply go to start it, or say what to change."
                               % (len(plan["tasks"]), "task" if len(plan["tasks"]) == 1 else "tasks"))
@@ -456,9 +586,9 @@ class Build:
 
     def ask_for_plan(self, survey, feedback):
         messages = [{"role": "system", "content": self.params.get("system_prompt", "")}]
-        self.read_for_seat(messages[0]["content"])
-        if self.attached is not None:
-            messages.append(self.attached)
+        attached = self.attachments_for(self.seat, messages[0]["content"])
+        if attached is not None:
+            messages.append(attached)
             messages.append({"role": "assistant", "content": "Read. I will plan from these."})
         prompt = plan_prompt(self.directive, self.root, survey, feedback, self.machine)
         messages.append({"role": "user", "content": prompt})
@@ -466,7 +596,7 @@ class Build:
         text = ""
         for attempt in range(PLAN_RETRIES + 1):
             self.core.mood("thinking", self.seat.name + " is planning")
-            reply = self.round(messages)
+            reply = self.round(self.seat, messages)
             if reply.get("error"):
                 return None, reply["error"]
             text = reply.get("answer", "") or reply.get("reasoning", "")
@@ -475,6 +605,7 @@ class Build:
                 self.note("plan", "planned %d %s" % (len(plan["tasks"]),
                                                       "task" if len(plan["tasks"]) == 1 else "tasks"),
                           detail=text, ms=reply.get("ms", 0))
+                self.planned_from = (prompt, text)
                 return plan, ""
             # What it wrote instead, kept where a person can open it: the
             # difference between a model that wrote prose and one that wrote
@@ -488,33 +619,44 @@ class Build:
         return None, why
 
     def adopt_plan(self, plan):
-        self.journal["plan"] = {k: plan[k] for k in ("summary", "run", "check", "ship")}
-        self.journal["tasks"] = [self.task_json(i, t) for i, t in enumerate(plan["tasks"])]
-        self.publish()
+        with self.lock:
+            self.journal["plan"] = {k: plan[k] for k in ("summary", "run", "check", "ship")}
+            self.journal["tasks"] = [self.task_json(i, t) for i, t in enumerate(plan["tasks"])]
+            self.decisions = {}
+            self.publish()
 
-    def ask(self, question):
-        """Put a question to the person and wait. None when the build was stopped."""
-        self.journal["state"] = "asking"
-        self.journal["question"] = question
-        self.note("ask", "asked: " + question)
-        self.core.mood("idle", "waiting for your answer")
-        answered = (self.core.call("cook.await_answer") or {}).get("answer")
-        self.journal["question"] = ""
-        self.journal["state"] = "working"
-        self.publish()
-        return answered
+    def ask(self, question, expert=None, task=-1):
+        """Put a question to the person and wait. None when the build was
+        stopped. One question at a time: the journal holds one, and the
+        answer typed is to that one."""
+        with self.ask_lock:
+            with self.lock:
+                self.journal["state"] = "asking"
+                self.journal["question"] = question
+            self.note("ask", "asked: " + question, task=task, expert=expert)
+            self.core.mood("idle", "waiting for your answer")
+            answered = (self.core.call("cook.await_answer") or {}).get("answer")
+            with self.lock:
+                self.journal["question"] = ""
+                self.journal["state"] = "working"
+                self.publish()
+            return answered
 
     # --- one task ---------------------------------------------------------------------
 
     def account(self):
         """What the other agents have done, for the top of a task's window."""
-        lines = []
-        for task in self.journal["tasks"]:
-            if task["state"] in ("done", "incomplete", "failed"):
-                lines.append("- task %d, %s (%s): %s" % (task["index"] + 1, task["title"],
-                                                          task["state"],
-                                                          cook.clip(task["outcome"] or "no account", 200)))
-        files = cook.files_touched(self.journal)
+        with self.lock:
+            lines = []
+            for task in self.journal["tasks"]:
+                if task["state"] in ("done", "incomplete", "failed"):
+                    lines.append("- task %d, %s (%s): %s" % (task["index"] + 1, task["title"],
+                                                              task["state"],
+                                                              cook.clip(task["outcome"] or "no account", 200)))
+                elif task["state"] == "working":
+                    lines.append("- task %d, %s: being worked on by another agent right now"
+                                 % (task["index"] + 1, task["title"]))
+            files = cook.files_touched(self.journal)
         text = ""
         if lines:
             text += "What the other agents have done so far:\n" + "\n".join(lines) + "\n"
@@ -522,73 +664,111 @@ class Build:
             text += "Files changed in this build so far: " + ", ".join(files) + "\n"
         return text
 
-    def run_task(self, index, rounds=None):
+    def task_files(self, index):
+        """The files task `index` changed, first-touched order."""
+        with self.lock:
+            seen, files = set(), []
+            for step in self.journal["steps"]:
+                if step.get("task") != index:
+                    continue
+                for path in step.get("changed") or []:
+                    if path not in seen:
+                        seen.add(path)
+                        files.append(path)
+            return files
+
+    def run_task(self, index, decision=None, rounds=None):
         """Work one task until it says DONE, runs out of rounds, or stalls.
 
         The loop is the cook's, for a task rather than a goal: the same tools,
         the same nudges for a nearly right command, the same noticing of a
         model going in circles. What differs is how it ends -- DONE ends the
-        task, and the build moves on -- and that HANDOFF changes who holds this
-        task rather than what the work is.
+        task -- and that HANDOFF changes who holds this task rather than what
+        the work is. It may run beside other tasks, on a thread of its own:
+        everything it shares goes through the build's lock, and its seat is
+        its own.
 
         Returns the task's final state.
         """
-        task = self.journal["tasks"][index]
-        plan = self.journal["plan"]
-        count = len(self.journal["tasks"])
+        with self.lock:
+            task = self.journal["tasks"][index]
+            plan = self.journal["plan"]
+            count = len(self.journal["tasks"])
+            task["state"] = "working"
+            task["started_unix"] = int(time.time())
+            self.journal["iterations"] += 1
+            self.publish()
         rounds = rounds or self.rounds
 
-        task["state"] = "working"
-        task["started_unix"] = int(time.time())
-        self.journal["iterations"] += 1
-        self.publish()
-
-        seat = self.seat_for_task(task)
+        if decision is None:
+            decision = self.decide_task(task)
+        seat = cook.seat_decision(self.core, self.params, self.roster, decision)
         if not seat.ok:
-            task["state"] = "failed"
-            task["outcome"] = seat.error
-            task["ended_unix"] = int(time.time())
+            with self.lock:
+                task["state"] = "failed"
+                task["outcome"] = seat.error
+                task["ended_unix"] = int(time.time())
             self.note("note", task["title"] + ": " + seat.error, task=index, ok=False, expert=seat.id)
-            return task["state"]
-        self.seat = seat
-        task["expert"] = seat.id
-        self.publish()
+            return "failed"
+        # Whoever holds the task when it ends -- a HANDOFF changes it -- hands
+        # the seat back, however it ended.
+        holder = {"seat": seat}
+        try:
+            state = self.work_on(index, task, plan, count, holder, rounds)
+        finally:
+            holder["seat"].release(self.core)
+        if state == "done":
+            self.record(task)
+            self.commit(task)
+        return state
 
-        system = task_system_prompt(self.params.get("system_prompt", ""), self.directive, plan,
-                                    task, index, count, self.root, self.account(),
-                                    self.params.get("tools", ""), self.machine)
-        listing = self.run_tool({"kind": "list", "argument": ".", "content": ""}).get("output", "")
+    def work_on(self, index, task, plan, count, holder, rounds):
+        """The rounds of one task, with holder["seat"] holding it -- kept up
+        to date through a HANDOFF, so the caller releases the right seat."""
+        seat = holder["seat"]
+        with self.lock:
+            task["expert"] = seat.id
+            self.publish()
+
+        def system_for():
+            return task_system_prompt(self.params.get("system_prompt", ""), self.directive, plan,
+                                      task, index, count, self.root, self.account(),
+                                      self.params.get("tools", ""), self.machine)
+
+        system = system_for()
+        attached = self.attachments_for(seat, system)
+        listing = self.run_tool({"kind": "list", "argument": ".", "content": ""}, seat).get("output", "")
         instruction = ("Here is what is in the project now:\n\n" + listing
                        + "\nStart on your task. Read whichever of these files it concerns "
                          "first; only these files exist.")
         recent, window = [], []
         idle = strikes = 0
-        pictures = None   # the message the last tool's pictures go with
+        pictures = None      # the message the last tool's pictures go with
         state = "incomplete"
-        wrote = False       # whether any action changed a file
-        pushed_back = False # DONE refused once, when nothing was made
+        wrote = False        # whether any action changed a file
+        pushed_back = False  # DONE refused once, when nothing was made
 
         for _ in range(rounds):
             if self.stopping():
                 state = "stopped"
                 break
             messages = [{"role": "system", "content": system}]
-            self.read_for_seat(system)
-            if self.attached is not None:
-                messages.append(self.attached)
+            if attached is not None:
+                messages.append(attached)
                 messages.append({"role": "assistant", "content": "Read. I will work from these."})
             messages.extend(recent[-RECENT_TURNS * 2:])
             messages.append({"role": "user", "content": instruction, "tool_pictures": pictures is not None})
             pictures = None
 
             self.core.mood("thinking", seat.name + " is working on task " + str(index + 1), linked=seat.id)
-            reply = self.round(messages)
+            reply = self.round(seat, messages)
             if self.canceled():
                 state = "stopped"
                 break
             if reply.get("error"):
-                self.note("note", reply["error"], task=index, ok=False, ms=reply.get("ms", 0))
-                task["outcome"] = reply["error"]
+                self.note("note", reply["error"], task=index, ok=False, ms=reply.get("ms", 0), expert=seat.id)
+                with self.lock:
+                    task["outcome"] = reply["error"]
                 state = "failed"
                 break
 
@@ -604,22 +784,37 @@ class Build:
                 said, thought = answer.strip(), reasoning.strip()
                 self.note("think", cook.clip(said, 200) if said
                           else "(only thought) " + cook.clip(thought, 180) if thought
-                          else "(said nothing)", task=index, ms=reply.get("ms", 0))
+                          else "(said nothing)", task=index, ms=reply.get("ms", 0), expert=seat.id)
                 idle += 1
                 if idle >= IDLE_LIMIT:
                     self.note("note", "stopped the task: %s answered %d times in a row without "
-                                      "taking an action" % (seat.name, IDLE_LIMIT), task=index, ok=False)
-                    task["outcome"] = "the agent kept answering without acting"
+                                      "taking an action" % (seat.name, IDLE_LIMIT), task=index, ok=False,
+                              expert=seat.id)
+                    with self.lock:
+                        task["outcome"] = "the agent kept answering without acting"
                     break
                 instruction = cook.nudge_for(parsed)
                 continue
-            idle = 0
-
             kind = call.get("kind", "")
             argument = call.get("argument", "")
 
+            if kind == "note":
+                # Recorded, and not progress: a model that narrates instead of
+                # acting is idle, and is told plainly to act.
+                self.note("note", argument, task=index, ms=reply.get("ms", 0), expert=seat.id)
+                idle += 1
+                if idle >= IDLE_LIMIT:
+                    self.note("note", "stopped the task: %s wrote notes and took no action" % seat.name,
+                              task=index, ok=False, expert=seat.id)
+                    with self.lock:
+                        task["outcome"] = "the agent kept answering without acting"
+                    break
+                instruction = NOTE_PUSH
+                continue
+            idle = 0
+
             if kind == "ask":
-                answered = self.ask(argument)
+                answered = self.ask(argument, expert=seat.id, task=index)
                 if answered is None:
                     state = "stopped"
                     break
@@ -635,13 +830,15 @@ class Build:
                 if not wrote and task.get("files") and not pushed_back:
                     pushed_back = True
                     self.note("note", "said DONE without writing anything -- asked to do the task",
-                              task=index, ok=False, ms=reply.get("ms", 0))
+                              task=index, ok=False, ms=reply.get("ms", 0), expert=seat.id)
                     instruction = ("Nothing has been written yet, and this task is expected to make "
                                    + ", ".join(task["files"]) + ". Do the work now -- WRITE the file "
                                    "with its complete contents -- and say DONE only when it exists.")
                     continue
-                task["outcome"] = argument or "finished"
-                self.note("done", argument or "finished the task", task=index, ms=reply.get("ms", 0))
+                with self.lock:
+                    task["outcome"] = argument or "finished"
+                self.note("done", argument or "finished the task", task=index, ms=reply.get("ms", 0),
+                          expert=seat.id)
                 state = "done"
                 break
 
@@ -650,36 +847,45 @@ class Build:
                 # said it needs, and the task carries on with whoever that is;
                 # the new seat starts from the account, not the old one's turns.
                 self.note("handoff", argument or "needs a different expert", task=index,
-                          ms=reply.get("ms", 0))
-                other = cook.take_seat(self.core, self.params, self.roster, argument or task["detail"])
-                if other.ok and other.id != seat.id:
-                    self.note("note", seat.name + " handed task " + str(index + 1) + " to " + other.name,
-                              task=index, expert=other.id)
-                    seat = self.seat = other
-                    task["expert"] = other.id
-                    system = task_system_prompt(self.params.get("system_prompt", ""), self.directive,
-                                                plan, task, index, count, self.root, self.account(),
-                                                self.params.get("tools", ""), self.machine)
-                    recent = []
-                    instruction = "Take over this task: " + (argument or task["detail"])
-                    self.publish()
-                else:
+                          ms=reply.get("ms", 0), expert=seat.id)
+                decision = cook.decide(self.core, self.params, argument or task["detail"])
+                if decision.expert and decision.expert != seat.id:
+                    # Let go first: the next expert's model may need the room.
+                    seat.release(self.core)
+                    other = cook.seat_decision(self.core, self.params, self.roster, decision)
                     if not other.ok:
-                        again = self.core.call("seat.take", {"expert": seat.id, "name": seat.name}) or {}
-                        if not again.get("ok"):
-                            task["outcome"] = again.get("error") or seat.name + " could not be loaded again"
+                        other = cook.seat_decision(self.core, self.params, self.roster,
+                                                   routing.Decision(seat.id, 1.0, routing.PINNED,
+                                                                    "carrying on"))
+                        if not other.ok:
+                            with self.lock:
+                                task["outcome"] = other.error or seat.name + " could not be loaded again"
                             state = "failed"
                             break
+                        instruction = "Nobody else can take it. Carry on with the task yourself."
+                    else:
+                        self.note("note", seat.name + " handed task " + str(index + 1) + " to "
+                                  + other.name, task=index, expert=other.id)
+                        instruction = "Take over this task: " + (argument or task["detail"])
+                        recent = []
+                    seat = holder["seat"] = other
+                    with self.lock:
+                        task["expert"] = seat.id
+                        self.publish()
+                    system = system_for()
+                    attached = self.attachments_for(seat, system)
+                else:
                     instruction = "Nobody else can take it. Carry on with the task yourself."
                 continue
 
-            if kind == "write" and not (self.core.flags().get("auto_edits")):
+            if kind in ("write", "edit") and not self.core.flags().get("auto_edits"):
                 approved = (self.core.call("edit.ask", call) or {}).get("approved", False)
                 if self.canceled():
                     state = "stopped"
                     break
                 if not approved:
-                    self.note("note", "you declined the edit to " + argument, task=index, ok=False)
+                    self.note("note", "you declined the edit to " + argument, task=index, ok=False,
+                              expert=seat.id)
                     recent.append({"role": "user", "content": "The user declined that edit; the file is unchanged."})
                     instruction = ("The user declined that edit, so the file is unchanged. Do not "
                                    "try the same write again: change it, or do something else.")
@@ -687,12 +893,12 @@ class Build:
                 self.core.mood("thinking", seat.name + " is working on task " + str(index + 1))
 
             started = time.monotonic()
-            result = self.run_tool(call)
+            result = self.run_tool(call, seat)
             changed = result.get("changed") or []
             wrote = wrote or bool(changed)
             self.note(kind, result.get("summary", ""), task=index, ok=result.get("ok", False),
                       detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
-                      changed=changed, picture=result.get("picture", ""))
+                      changed=changed, picture=result.get("picture", ""), expert=seat.id)
             handback = {"role": "user", "content": result.get("output", "")}
             if result.get("pictures"):
                 handback["tool_pictures"] = True
@@ -712,68 +918,173 @@ class Build:
             strikes += 1
             if strikes >= cook.RESTART_AT:
                 self.note("note", "stopped the task: going in circles with nothing changing",
-                          task=index, ok=False)
-                task["outcome"] = "the agent repeated the same actions without progress"
+                          task=index, ok=False, expert=seat.id)
+                with self.lock:
+                    task["outcome"] = "the agent repeated the same actions without progress"
                 break
             instruction = ("You are going in circles: the last several actions changed nothing "
                            "and told you nothing new. Do something different -- READ a file you "
                            "have not read, WRITE a change, or say DONE: with what stands.")
 
-        task["state"] = state
-        task["ended_unix"] = int(time.time())
-        if state == "incomplete" and not task["outcome"]:
-            task["outcome"] = "ran out of rounds before saying it was done"
-        self.publish()
-        if state == "done":
-            self.record(task)
-            self.commit(task)
+        with self.lock:
+            task["state"] = state
+            task["ended_unix"] = int(time.time())
+            if state == "incomplete" and not task["outcome"]:
+                task["outcome"] = "ran out of rounds before saying it was done"
+            self.publish()
         return state
+
+    # --- several at once -------------------------------------------------------------
+
+    def work_through(self):
+        """Work the plan's tasks, as many at once as may run together.
+
+        A task starts when the tasks it comes after are over, no running task
+        touches one of its files, no running task is on the same model on
+        this machine, and fewer agents are at work than the settings allow.
+        One that comes after a task that failed is skipped. Returns True when
+        the person stopped the build.
+        """
+        tasks = self.journal["tasks"]
+        pending = order_tasks([{"after": t["after"]} for t in tasks])
+        running = {}            # index -> (its files, its local model)
+        finished = queue.Queue()
+        stopped = False
+
+        def start(index, decision, files, local):
+            pending.remove(index)
+            running[index] = (files, local)
+            self.core.spawn(self.work, index, decision, finished)
+
+        while pending or running:
+            if not stopped and self.stopping():
+                stopped = True
+            if not stopped:
+                for index in list(pending):
+                    if len(running) >= self.agents:
+                        break
+                    task = tasks[index]
+                    blocked = [a for a in task["after"] if tasks[a]["state"] in ("failed", "skipped", "stopped")]
+                    if blocked:
+                        with self.lock:
+                            task["state"] = "skipped"
+                            task["outcome"] = "task %d did not finish" % (blocked[0] + 1)
+                        self.note("note", task["title"] + ": skipped, " + task["outcome"], task=index, ok=False)
+                        pending.remove(index)
+                        continue
+                    if any(tasks[a]["state"] not in FINISHED for a in task["after"]):
+                        continue   # waiting on a task still to finish
+                    files = set(task.get("files") or [])
+                    if any(files & theirs for theirs, _ in running.values()):
+                        continue   # another agent has one of its files
+                    decision = self.decision_for(index)
+                    local = self.local_of(decision.expert)
+                    if local and any(local == theirs for _, theirs in running.values()):
+                        continue   # its model is busy with another agent
+                    start(index, decision, files, local)
+            if not running:
+                if pending and not stopped:
+                    # Nothing could start and nothing is running: what is
+                    # left waits on itself, which read_plan should have
+                    # prevented. The first is started rather than hang.
+                    index = pending[0]
+                    start(index, self.decision_for(index), set(), "")
+                    continue
+                break
+            index, state = finished.get()
+            running.pop(index, None)
+            if state == "stopped":
+                stopped = True
+        return stopped
+
+    def work(self, index, decision, finished):
+        """One agent's thread: the task, and word to the scheduler when it is
+        over however it ended."""
+        state = "failed"
+        try:
+            state = self.run_task(index, decision)
+        except Exception as error:   # the pipe, a bug: the build goes on without the task
+            with self.lock:
+                task = self.journal["tasks"][index]
+                task["state"] = "failed"
+                task["outcome"] = "the agent's thread failed: %s" % error
+            self.note("note", "task %d failed: %s" % (index + 1, error), task=index, ok=False)
+        finally:
+            finished.put((index, state))
 
     # --- after a task ---------------------------------------------------------------
 
     def record(self, task):
         """Keep what a task's agent was asked and what it made, as a record a
-        local expert could later be taught from. The core writes it beside
-        the project's history; nothing leaves the machine."""
+        local expert could later be taught from -- and who did it, as a record
+        a delegator could. The core writes them beside the project's history;
+        nothing leaves the machine."""
         seats = self.params.get("seats") or {}
+        # Who a finished task went to: what a local delegator learns to split
+        # the work by. The task as the question, the seat's name as the answer.
+        needs = task.get("needs") or ""
+        self.core.call("teach.record", {
+            "expert": "delegator",
+            "prompt": ((needs + ": ") if needs else "") + task["title"] + "\n" + task["detail"],
+            "completion": self.roster.label(task["expert"]),
+            "files": [],
+        })
         if not (seats.get(task["expert"]) or {}).get("remote"):
             return   # a local expert teaching itself its own answers is no lesson
         self.core.call("teach.record", {
             "expert": task["expert"],
             "prompt": task["title"] + "\n" + task["detail"],
             "completion": task["outcome"],
-            "files": [f for f in cook.files_touched(self.journal)
-                      if any(s.get("task") == task["index"] and f in (s.get("changed") or [])
-                             for s in self.journal["steps"])],
+            "files": self.task_files(task["index"]),
         })
 
+    def record_plan(self):
+        """Keep the plan a provider's architect wrote, as a record a local
+        model could be taught to plan from: the directive and what the project
+        held as the question, the plan as the answer."""
+        seats = self.params.get("seats") or {}
+        if self.planned_from is None or not (seats.get(self.seat.id) or {}).get("remote"):
+            return
+        prompt, text = self.planned_from
+        self.core.call("teach.record", {"expert": "architect", "prompt": prompt, "completion": text,
+                                        "files": []})
+
     def commit(self, task):
-        """Commit what a task changed, when the build is set to and git is there."""
+        """Commit what a task changed -- its files and no other agent's --
+        when the build is set to and git is there."""
         if not self.settings.get("auto_commit"):
             return
-        if self.git_ready is None:
-            ready = self.core.call("git.ready") or {}
-            self.git_ready = bool(ready.get("git"))
-            if self.git_ready and not ready.get("repo"):
-                made = self.core.call("git.init") or {}
-                self.note("commit" if made.get("ok") else "note",
-                          "started a git repository" if made.get("ok")
-                          else "could not start a git repository: " + str(made.get("error", "")),
-                          task=task["index"], ok=bool(made.get("ok")))
-                self.git_ready = bool(made.get("ok"))
-            elif not self.git_ready:
-                self.note("note", "git is not installed, so nothing is committed", ok=False)
-        if not self.git_ready:
-            return
-        # The subject is the task's title and the body the plan's account of
-        # it, not what the agent said last: a small model's parting words can
-        # be an apology or a muddle, and a commit outlives the conversation.
-        message = task["title"]
-        if task["detail"] and task["detail"] != task["title"]:
-            message += "\n\n" + cook.clip(task["detail"], 400)
-        reply = self.core.call("git.commit", {"message": message}) or {}
-        self.note("commit", reply.get("summary") or reply.get("error") or "committed",
-                  task=task["index"], ok=bool(reply.get("ok")), detail=reply.get("detail", ""))
+        with self.commit_lock:
+            if self.git_ready is None:
+                ready = self.core.call("git.ready") or {}
+                self.git_ready = bool(ready.get("git"))
+                if self.git_ready and not ready.get("repo"):
+                    made = self.core.call("git.init") or {}
+                    self.note("commit" if made.get("ok") else "note",
+                              "started a git repository" if made.get("ok")
+                              else "could not start a git repository: " + str(made.get("error", "")),
+                              task=task["index"], ok=bool(made.get("ok")))
+                    self.git_ready = bool(made.get("ok"))
+                elif not self.git_ready:
+                    self.note("note", "git is not installed, so nothing is committed", ok=False)
+            if not self.git_ready:
+                return
+            paths = self.task_files(task["index"])
+            # The subject is the task's title and the body the plan's account
+            # of it, not what the agent said last: a small model's parting
+            # words can be an apology or a muddle, and a commit outlives the
+            # conversation.
+            message = task["title"]
+            if task["detail"] and task["detail"] != task["title"]:
+                message += "\n\n" + cook.clip(task["detail"], 400)
+            asked = {"message": message}
+            if self.agents > 1:
+                # Side by side, only its own: another agent's half-written
+                # file is not part of this task.
+                asked["paths"] = paths
+            reply = self.core.call("git.commit", asked) or {}
+            self.note("commit", reply.get("summary") or reply.get("error") or "committed",
+                      task=task["index"], ok=bool(reply.get("ok")), detail=reply.get("detail", ""))
 
     def check(self):
         """Run the plan's check command. True when it passed, or there was none."""
@@ -790,61 +1101,70 @@ class Build:
     def fix(self, output):
         """One more task: make the check pass. Routed like any other."""
         command = self.journal["plan"].get("check") or ""
-        index = len(self.journal["tasks"])
-        self.journal["tasks"].append(self.task_json(index, {
-            "title": "Make the check pass",
-            "detail": ("The check command `" + command + "` failed. Find out why from its "
-                       "output, fix the cause, and run it again until it passes.\n\nIts output:\n"
-                       + cook.clip(output, 3000)),
-            "files": [], "needs": "debugging and testing", "after": []}))
-        self.publish()
+        with self.lock:
+            index = len(self.journal["tasks"])
+            self.journal["tasks"].append(self.task_json(index, {
+                "title": "Make the check pass",
+                "detail": ("The check command `" + command + "` failed. Find out why from its "
+                           "output, fix the cause, and run it again until it passes.\n\nIts output:\n"
+                           + cook.clip(output, 3000)),
+                "files": [], "needs": "debugging and testing", "after": []}))
+            self.publish()
         return self.run_task(index, rounds=FIX_ROUNDS)
 
     def finishing_pass(self):
         """Leave the project running when the person stops a build mid-task:
-        the cook's finishing pass, with the seat that had the work."""
-        if not self.seat.ok:
+        the cook's finishing pass, by the architect, who knows the plan."""
+        seat = self.take_architect()
+        if not seat.ok:
             return
-        self.journal["state"] = "finishing"
-        self.publish()
-        self.core.mood("thinking", self.seat.name + " is finishing up")
-        instruction = ("Time is up. Do not start anything new. Make only the changes needed "
-                       "to leave the project in a working state -- finish a half-made edit, fix "
-                       "what you broke, and check it runs. When there is nothing left to repair, "
-                       "reply with DONE: and a short account of what was changed and what is left.")
-        system = (self.params.get("system_prompt", "")
-                  + "\n\nYou were working on a software build whose directive was: " + self.directive
-                  + "\n\n" + self.account() + self.params.get("tools", ""))
-        for _ in range(cook.FINISHING_ROUNDS):
-            if self.canceled():
-                return
-            reply = self.round([{"role": "system", "content": system},
-                                {"role": "user", "content": instruction}])
-            if reply.get("error"):
-                return
-            answer = reply.get("answer", "")
-            parsed = self.core.call("tools.parse",
-                                    {"answer": answer, "reasoning": reply.get("reasoning", "")}) or {}
-            call = parsed.get("call")
-            if not call or call.get("kind") in ("done", "ask"):
-                self.journal["outcome"] = (call or {}).get("argument") or answer
-                return
-            started = time.monotonic()
-            result = self.run_tool(call)
-            self.note(call.get("kind", ""), result.get("summary", ""), ok=result.get("ok", False),
-                      detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
-                      changed=result.get("changed") or [])
-            instruction = (result.get("output", "")
-                           + "\n\nAnything else that must be repaired? If not, reply DONE: and a "
-                             "short account of what was changed.")
+        self.seat = seat
+        try:
+            with self.lock:
+                self.journal["state"] = "finishing"
+                self.publish()
+            self.core.mood("thinking", seat.name + " is finishing up")
+            instruction = ("Time is up. Do not start anything new. Make only the changes needed "
+                           "to leave the project in a working state -- finish a half-made edit, fix "
+                           "what you broke, and check it runs. When there is nothing left to repair, "
+                           "reply with DONE: and a short account of what was changed and what is left.")
+            system = (self.params.get("system_prompt", "")
+                      + "\n\nYou were working on a software build whose directive was: " + self.directive
+                      + "\n\n" + self.account() + self.params.get("tools", ""))
+            for _ in range(cook.FINISHING_ROUNDS):
+                if self.canceled():
+                    return
+                reply = self.round(seat, [{"role": "system", "content": system},
+                                          {"role": "user", "content": instruction}])
+                if reply.get("error"):
+                    return
+                answer = reply.get("answer", "")
+                parsed = self.core.call("tools.parse",
+                                        {"answer": answer, "reasoning": reply.get("reasoning", "")}) or {}
+                call = parsed.get("call")
+                if not call or call.get("kind") in ("done", "ask"):
+                    with self.lock:
+                        self.journal["outcome"] = (call or {}).get("argument") or answer
+                    return
+                started = time.monotonic()
+                result = self.run_tool(call, seat)
+                self.note(call.get("kind", ""), result.get("summary", ""), ok=result.get("ok", False),
+                          detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
+                          changed=result.get("changed") or [])
+                instruction = (result.get("output", "")
+                               + "\n\nAnything else that must be repaired? If not, reply DONE: and a "
+                                 "short account of what was changed.")
+        finally:
+            seat.release(self.core)
 
     def review(self, checked, check_output):
         """The architect's account of the build, for the person who asked."""
         plan = self.journal["plan"]
-        lines = ["- task %d, %s: %s -- %s" % (t["index"] + 1, t["title"], t["state"],
-                                              cook.clip(t["outcome"] or "no account", 240))
-                 for t in self.journal["tasks"]]
-        files = cook.files_touched(self.journal)
+        with self.lock:
+            lines = ["- task %d, %s: %s -- %s" % (t["index"] + 1, t["title"], t["state"],
+                                                  cook.clip(t["outcome"] or "no account", 240))
+                     for t in self.journal["tasks"]]
+            files = cook.files_touched(self.journal)
         check = ("There was no check command." if not plan.get("check")
                  else "The check `" + plan["check"] + "` " + ("passed." if checked
                                                               else "failed:\n" + cook.clip(check_output, 1500)))
@@ -854,14 +1174,17 @@ class Build:
         if not architect.ok:
             return summary
         self.seat = architect
-        self.core.mood("thinking", architect.name + " is writing up the build")
-        prompt = ("The build is over. Here is what happened:\n\n" + summary
-                  + "\n\nWrite, for the person who asked for it, what was built, how to run it"
-                  + (" (the plan said: " + plan["run"] + ")" if plan.get("run") else "")
-                  + ", and what is left or uncertain. Plain prose, a few short paragraphs, no "
-                    "headings. Do not call any tool.")
-        reply = self.round([{"role": "system", "content": self.params.get("system_prompt", "")},
-                            {"role": "user", "content": prompt}])
+        try:
+            self.core.mood("thinking", architect.name + " is writing up the build")
+            prompt = ("The build is over. Here is what happened:\n\n" + summary
+                      + "\n\nWrite, for the person who asked for it, what was built, how to run it"
+                      + (" (the plan said: " + plan["run"] + ")" if plan.get("run") else "")
+                      + ", and what is left or uncertain. Plain prose, a few short paragraphs, no "
+                        "headings. Do not call any tool.")
+            reply = self.round(architect, [{"role": "system", "content": self.params.get("system_prompt", "")},
+                                           {"role": "user", "content": prompt}])
+        finally:
+            architect.release(self.core)
         text = (reply.get("answer") or "").strip()
         if reply.get("error") or not text:
             return summary
@@ -885,27 +1208,19 @@ class Build:
             return
 
         stopped = False
-        if not self.plan():
+        checked, output = True, ""
+        try:
+            planned = self.plan()
+            if planned:
+                self.record_plan()
+        finally:
+            # The architect lets go of its model while the agents work: one of
+            # them may need the room, and it is seated again for the write-up.
+            self.seat.release(self.core)
+        if not planned:
             stopped = True
         else:
-            order = order_tasks([{"after": t["after"]} for t in journal["tasks"]])
-            for index in order:
-                if self.stopping():
-                    stopped = True
-                    break
-                task = journal["tasks"][index]
-                waiting_on = [a for a in task["after"]
-                              if journal["tasks"][a]["state"] in ("failed", "skipped", "stopped")]
-                if waiting_on:
-                    task["state"] = "skipped"
-                    task["outcome"] = "task %d did not finish" % (waiting_on[0] + 1)
-                    self.note("note", task["title"] + ": skipped, " + task["outcome"], task=index, ok=False)
-                    continue
-                state = self.run_task(index)
-                if state == "stopped":
-                    stopped = True
-                    break
-
+            stopped = self.work_through()
             if not stopped and not self.canceled():
                 checked, output = self.check()
                 if not checked and not self.stopping():
@@ -915,24 +1230,32 @@ class Build:
                     elif state == "done":
                         checked, output = self.check()
 
-        for task in journal["tasks"]:
-            if task["state"] == "waiting":
-                task["state"] = "skipped"
-                task["outcome"] = "the build was stopped first"
+        with self.lock:
+            for task in journal["tasks"]:
+                if task["state"] == "waiting":
+                    task["state"] = "skipped"
+                    task["outcome"] = "the build was stopped first"
 
         interrupted = self.canceled()
+        tasks = journal["tasks"]
         if stopped and not interrupted:
             self.finishing_pass()
+        elif not stopped and not interrupted and len(tasks) == 1 and not self.was_empty and checked:
+            # A small change to a project that was there: what the agent said
+            # it did is the account. A write-up of one changed line is a page
+            # nobody reads, and a model call nobody needed.
+            journal["outcome"] = tasks[0]["outcome"] if tasks[0]["state"] == "done" else ""
         elif not stopped and not interrupted:
             journal["outcome"] = self.review(checked, output)
 
-        journal["state"] = ("stopped" if stopped or interrupted
-                            else "failed" if all(t["state"] != "done" for t in journal["tasks"])
-                            else "done")
-        if not journal["outcome"]:
-            journal["outcome"] = "interrupted" if interrupted else "stopped before it finished"
-        journal["ended_unix"] = int(time.time())
-        self.publish()
+        with self.lock:
+            journal["state"] = ("stopped" if stopped or interrupted
+                                else "failed" if all(t["state"] != "done" for t in journal["tasks"])
+                                else "done")
+            if not journal["outcome"]:
+                journal["outcome"] = "interrupted" if interrupted else "stopped before it finished"
+            journal["ended_unix"] = int(time.time())
+            self.publish()
 
 
 def run(core, params):

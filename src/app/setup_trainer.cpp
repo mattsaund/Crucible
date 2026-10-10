@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/app/setup_trainer.hpp"
 
+#include "crucible/kit/kit.hpp"
+
 #include <chrono>
 #include <cstdio>
 #include <iostream>
@@ -202,6 +204,41 @@ int run_python_setup(bool quiet, bool force) {
         std::cout << "    Python " << build->version << " is in " << lab::python::root().string() << "\n";
     }
     return 0;
+}
+
+int run_kit_setup(bool quiet) {
+    const std::vector<kit::Piece> wanted = kit::missing();
+    if (wanted.empty()) {
+        if (!quiet) {
+            std::cout << "  Nothing to fetch: this machine has what experts reach for.\n";
+        }
+        return 0;
+    }
+    const bool interactive = util::stdin_is_a_terminal() && !quiet;
+    int failed = 0;
+    for (const kit::Piece& piece : wanted) {
+        if (!quiet) {
+            std::cout << "  Fetching " << piece.label << ", for " << piece.why << ".\n";
+        }
+        Line line(interactive);
+        std::string error;
+        const bool ok = kit::install(
+            piece.id,
+            [&](std::uint64_t done, std::uint64_t total) {
+                if (!quiet) {
+                    line.show(total > 0 ? "downloading " + format::bytes(done) + " of about "
+                                              + format::bytes(total)
+                                        : std::string("installing"));
+                }
+            },
+            {}, error);
+        line.done();
+        if (!ok) {
+            std::cerr << "    " << piece.label << " could not be fetched: " << error << "\n";
+            ++failed;
+        }
+    }
+    return failed == 0 ? 0 : 1;
 }
 
 }  // namespace crucible

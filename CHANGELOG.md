@@ -6,24 +6,25 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
-## 0.9.0 — 2026-10-09
+## 0.8.9 — 2026-10-10
 
 **Build: give it a directive and it makes the software.** A new tab beside
-Chat. Type what you want -- "a command-line todo app in Python, with tests"
--- and an architect writes a plan of tasks, each task is given to the expert
-that fits it, the tasks are worked one after another with the same tools a
-cook has, the result is checked, and the architect writes up what was built,
-how to run it and what is left. The plan is shown before the first task
+Chat. Type what you want -- "I need a budgeting program that charts my gross
+and net revenue" -- and an architect writes a plan of tasks, each task is
+given to the expert that fits it, the tasks are worked -- several at once --
+with the same tools a chat turn has, the result is checked, and the
+architect writes up what was built, how to run it and what is left. The plan is shown before the first task
 starts, and *go*, or what to change, is typed into the box; a build can ask
 you things on the way, as a cook can, and Stop and finish leaves the project
 running.
 
-- **Agents.** The view is the work rather than a log of it: down one side,
-  the architect and a row per task with the expert that has it and where it
-  got to; on the other, whichever one you click -- what it was asked, every
-  step it took, the files it changed, which open in the code pane. The
-  journal is the same one a cook keeps, with the plan and the tasks on top,
-  so History lists builds beside cooks and opens them the same way.
+- **Agents.** The view is the work rather than a log of it. The architect
+  and a row per task, with the expert that has it and where it got to, are
+  in the side menu under the experts, in sight from every view; click one
+  and Build shows its work -- what it was asked, every step it took, the
+  files it changed, which open in the code pane. The journal is the same one
+  a cook keeps, with the plan and the tasks on top, so History lists builds
+  beside cooks and opens them the same way.
 - **The experts it needs.** A task is routed the way a HANDOFF is: the
   delegator is shown what it needs and picks the seat. When nobody on the
   roster fits and **Settings, Build** names a model for new agents, the
@@ -36,16 +37,81 @@ running.
 - **Commits as it goes.** After each task that finishes the build commits
   what changed, starting a repository when the project has none, so a bad
   task is a `git revert` rather than an archaeology. Off in Settings, Build.
-- **Tasks run one at a time.** The core has one worker and one local model
-  resident, and a build that pretended otherwise would be queueing behind
-  itself. What runs in parallel is you: Chat and Cook wait for a build the
-  way they wait for each other.
+- **Agents work side by side.** A task starts when the ones it comes after
+  are done and nothing running touches its files, up to **Agents at once**.
+  A provider's model takes any number of agents together; a model on this
+  machine takes one at a time, because two agents on one model only take
+  turns at it and throw away each other's cache, and two different local
+  models run together when the memory holds both. A build runs on a thread
+  of its own, so the chat stays open while it works, and each has its own
+  Stop. Underneath: the core and the orchestrator now have any number of
+  calls in flight on the pipe between them, each saying whether it is the
+  chat's or the build's; a model on this machine is held by a lease while a
+  seat uses it, so loading one for the chat can never free the one an agent
+  is generating with; and a provider's client takes requests from several
+  threads, with Stop cutting only the ones it is for.
+- **Frontier models for the heavy lifting, local ones for the rest.** The
+  architect marks each task large or small, and with both kinds of seat on
+  the roster a large task goes to a provider's model and a small one to a
+  model on this machine, each chosen by the delegator from its own kind.
+- **Programs for your own computer, made as pages.** Asked for something a
+  person uses on their own machine, the architect plans it as HTML, CSS and
+  JavaScript, with charts drawn in its own code and nothing from the
+  internet, keeping its data through `window.crucible.load()` and `save()`.
+  That is the one kind of program every machine runs with nothing
+  installed, the one the preview can show as it is built, and the one
+  **Make it an app** turns into a program.
+- **A change is a sentence.** "Make the button blue", to a project that
+  exists, is one task: no plan to agree to, no write-up -- what the agent
+  says it did is the account -- and the preview shows the result.
+- **What a build learns is kept** for teaching local models: every task a
+  provider's model did, with its files; every plan a provider's architect
+  wrote, in `teach/architect.jsonl`; and which seat each finished task went
+  to, in `teach/delegator.jsonl` -- what a local model would be fine-tuned
+  on to plan and to split the work.
 - **It knows the machine.** The architect and every agent are told what is
   on this machine's PATH and which shell runs commands, so a plan written on
   a Mac says `python3` rather than discovering, a task later, that there is
   no `python`. And a small model that says DONE to a task it has not started
   is sent back once, when the plan named files and none was written; the
   second DONE is taken at its word and the write-up says what was not made.
+
+**Make it an app.** The preview's page, as a program you open like any
+other: everything it uses put inside it, beside a small window program of
+Crucible's own -- `crucible-app`, which has no models and no engine in it --
+in Applications on a Mac, the Start menu and the desktop on Windows, and the
+applications menu on Linux, with no administrator asked. Its data is kept
+in your own data folder, so making it again keeps what was typed into it.
+
+**Crucible fetches what it needs.** On the first start, besides its Python
+and the runtimes: the programs experts reach for that the machine lacks --
+GitHub's command line, Node.js, Chrome's headless shell, MinGit on Windows,
+and on Linux a reader for the text in pictures -- into its own folder, put
+ahead of the machine's own on Crucible's PATH and nowhere else; and on a
+machine with nothing to build with, an open coding model sized to its
+memory, seated as Programming. `crucible --install-kit` fetches the same
+from a terminal, and Settings, Tools says what is there and fetches what is
+missing. The words in a picture are read by what the machine has --
+Vision on a Mac, Windows' own OCR engine -- so a local model that reads text
+only is given them without tesseract.
+
+**More of what an expert can do.**
+
+- **EDIT** changes part of a file with SEARCH and REPLACE blocks, matched
+  line by line when the indentation was copied wrong and refused when the
+  lines are in the file twice -- where a small model rewriting a whole file
+  to change one color was the likeliest way to break it.
+- **FIND** searches the project's files for text or a pattern, `in *.css`
+  for some of them, without what the project depends on.
+- **RENDER** draws an HTML page or an SVG into a PDF or a PNG with the
+  headless browser: how a model makes a document or a picture.
+- **TOOL** calls a tool of an MCP server added in Settings, Tools -- GitHub's,
+  a database's, any of them -- for every expert, local or not. Its tokens stay
+  in the config and are never sent to the page.
+- An action after a NOTE in the same reply is the call: a 14B coder that
+  wrote "NOTE: starting the task" above every WRITE had every WRITE thrown
+  away, eight rounds running. A reply that is only a note is idle now, and
+  the agent is told to act.
 
 **Code, Source, Preview.** Three panes beside the agents, for a project
 whether or not a build is running.
@@ -57,7 +123,8 @@ whether or not a build is running.
   box for any git command, and the history. With `gh` installed, **Publish
   to GitHub** makes a repository for the project and pushes it, and
   **Ship** runs the command that packages it -- the plan's, or yours -- and
-  tags a release.
+  tags a release. With the project on GitHub, the latest **CI** runs are
+  listed, passed or not.
 - **Preview** shows an HTML page of the project in a frame, with its
   stylesheets, scripts and pictures put inside it by Crucible, or a page by
   address -- the server a build left running. **Pick an element**, and a
@@ -65,8 +132,14 @@ whether or not a build is running.
   changing by eye: padding, margin, gap, font size, font, weight, color,
   background, rounding, alignment, width -- each applied to the page as you
   change it, with a plus and a minus to nudge the lengths. **Apply to
-  source** hands the whole set to an expert as a Chat prompt to make in the
-  stylesheet, because a change the page forgets on reload is not a change.
+  source** makes the whole set in the stylesheet as a build of one task,
+  because a change the page forgets on reload is not a change -- and the
+  page reloads with it. One pick ends the picking, as a browser's inspector
+  does. The page is given `window.crucible.load()` and `save()` before its
+  own scripts run, so an app keeps what is typed into it while it is
+  previewed. A build that finishes with a page shows it, and an open
+  preview shows a page again as an agent rewrites it -- or, in the middle of
+  tuning, says it has changed rather than throwing the tuning away.
 
 **The tools: what an expert can do, local or not.** Both the frontier
 models and the local ones now get the same set, in the same text protocol
@@ -117,11 +190,67 @@ tests pass" -- is planned and worked like any other, and a cook from before
 opens from History as it always did. `cook.start` stays on the surface for a
 caller that wants the plan-less loop.
 
-**Agents in the side menu.** A seat a build made for itself is listed under
-**Agents**, below the experts you added, so the roster you wrote stays
-plainly yours and what a build added is plain to see. An agent is routed to,
-edited and ejected like any seat; the config file marks it with
-`"origin": "build"`.
+**Agents in the side menu.** Under the experts, a build's agents: the
+architect, and one for each task, saying whose it is and how far it has got,
+each opening its work in Build. With the side menu open the Build view gives
+the work the whole width; folded, it lists them itself, and the rail keeps a
+dot for each agent at work. A seat a build made for itself is on the roster
+with the rest -- routed to, edited and ejected like any seat, and marked in
+the config file with `"origin": "build"`. A seat at work in a build is lit,
+and clicking it opens the task it has; clicking an idle one opens its
+settings as before.
+
+**The models at work, in the corner.** The foot of the right-hand panel
+shows the local models in memory -- the delegator and each expert, with its
+share of the machine's memory -- and under them the frontier model in use:
+what it has been asked this session and this month, what that cost at list
+prices, how much of each rate limit its provider says is left, and how full
+its context is. Every request to a provider is counted, the chat's and each
+agent's alike, with cached tokens counted apart because they are billed for
+less. Providers do not publish prices where a program can ask, so the list
+comes from LiteLLM's, fetched at most once a day and only once a provider
+is added; a model not on it shows its tokens and no cost rather than a guess.
+
+**The Scratchpad is out of sight.** A chat with no project keeps its folder
+in `~/.crucible/Scratchpad` now, hidden -- by its name on a Mac and Linux,
+by the folder's attribute on Windows -- rather than in a `~/Crucible` in every
+listing of the home folder. The first start moves the old one, and every
+chat, build journal, recent project and trusted folder that named a path in
+it follows; a folder an older Crucible made again while it was still
+running is merged back rather than duplicated.
+
+**Code is colored everywhere it is shown, HTML included.** HTML, XML, SVG
+and Vue are colored by tag, attribute and value, with what a `<style>` and a
+`<script>` hold colored as CSS and JavaScript; CSS by selector, property and
+value; Markdown by heading, list, code and link, a fenced block in its own
+language; and some thirty more, from PowerShell, batch files, Dockerfiles and
+Makefiles to C#, Swift, Kotlin, Elixir, Haskell, Terraform and TeX. A
+Dockerfile or a Makefile is known by its name. And the code pane's editor
+colors what is typed as it is typed: the text is edited in a textarea with
+clear letters over the same text colored, so undo and selection are still
+the textarea's own.
+
+**A local model that sees.** A GGUF with its `mmproj` projector beside it --
+the way vision models are published -- is given pictures as pictures, read
+by llama.cpp's multimodal library, instead of the words in them.
+
+**An edit a small model gets nearly right is taken.** EDIT now takes off
+READ's line numbers when a model copies them with the lines, and matches with
+blank lines set aside; when nothing matches, the nearest lines in the file are
+said back, numbered, so the next try copies the file's own text rather than
+the model's memory of it. A 14B coder that had spent eleven rounds on "those
+lines are not in the file" was the reason.
+
+**Crucible's icon, everywhere.** On Windows the icon is inside `crucible.exe`,
+so the taskbar, Explorer and the window itself show it rather than Windows'
+blank one. On Linux the window says it is `crucible`, which is how the
+desktop matches it to its menu entry, and names its themed icon for the
+window managers that draw a window's own. `packaging/macos/dmg.sh` stops at
+the bundle when asked for a `.app`, so a bundle made to look at is the one a
+release ships, icon and signature included.
+
+**Fewer dots.** The parts of a line are set apart by space now rather than by
+a dot between them.
 
 **A Mac is not asked to compile Vulkan.** The first start fetched Metal and
 then reported Vulkan as a failure beside it, on every start, because Vulkan
@@ -131,6 +260,14 @@ it, and the red card is gone.
 
 **Smaller things.**
 - Ctrl+2 is Build; Create and History are Ctrl+3 and 4.
+- Running the test suite opened a Crucible window each time: the test that
+  asks every method of a surface with nothing behind it asked `self.restart`,
+  which started the built program. A restart now needs a window to close.
+- On a Mac, `tests/test_install.sh` stopped after its first few checks and
+  reported success: bash 3.2 treats an empty array as unset. It runs all of
+  them now, and six that had gone stale were brought up to date.
+- A failed C++ test on GitHub Actions is an annotation on the commit, naming
+  the case, the file and the line, which anyone can read without signing in.
 - The settings have a **Build** page: who plans, the model for new agents,
   whether to show the plan first, commits, and rounds per task.
 - The orchestrator protocol is 2: a journal step says which task of a build

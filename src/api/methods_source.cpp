@@ -15,8 +15,11 @@
 #include <iterator>
 #include <sstream>
 
+#include "crucible/app/setup.hpp"
 #include "crucible/config/paths.hpp"
+#include "crucible/kit/kit.hpp"
 #include "crucible/session/store.hpp"
+#include "crucible/tools/apps.hpp"
 #include "crucible/tools/attachments.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/tools/preview.hpp"
@@ -231,6 +234,30 @@ Reply git_status(const json&, const Scene& scene) {
                      {"gh", tools::git::gh_available()}});
 }
 
+/// The project's latest CI runs on GitHub, when it is there and gh is here.
+Reply git_ci(const json&, const Scene& scene) {
+    std::filesystem::path root;
+    Reply refusal;
+    if (!project_of(scene, root, refusal)) {
+        return refusal;
+    }
+    if (!tools::git::gh_available()) {
+        return good(json{{"available", false}, {"why", "gh, GitHub's command line, is not installed"}});
+    }
+    const tools::git::Status status = tools::git::status(root);
+    if (status.remote.find("github.com") == std::string::npos) {
+        return good(json{{"available", false}, {"why", "the project is not on GitHub"}});
+    }
+    const tools::git::Output out = tools::git::run_gh(
+        root, {"run", "list", "--limit", "6", "--json",
+               "databaseId,name,displayTitle,status,conclusion,headBranch,event,createdAt,url"}, 30);
+    if (!out.ok) {
+        return good(json{{"available", false}, {"why", format::trim(out.text)}});
+    }
+    const json runs = json::parse(out.text, nullptr, false);
+    return good(json{{"available", true}, {"runs", runs.is_array() ? runs : json::array()}});
+}
+
 Reply git_diff(const json& params, const Scene& scene) {
     std::filesystem::path root;
     Reply refusal;
@@ -380,6 +407,107 @@ Reply preview_page(const json& params, const Scene& scene) {
 }
 
 // ---------------------------------------------------------------------------
+// Making the project's page a program
+// ---------------------------------------------------------------------------
+
+/// What the app would be called, and whether this Crucible can make one.
+Reply app_name(const json& params, const Scene& scene) {
+    std::filesystem::path root;
+    Reply refusal;
+    if (!project_of(scene, root, refusal)) {
+        return refusal;
+    }
+    const auto page = params.value("page", std::string("index.html"));
+    return good(json{{"name", tools::apps::name_for(root, page)},
+                     {"can", !tools::apps::runner().empty()}});
+}
+
+/// Package the page as a program in the person's own Applications, Start
+/// menu or launcher. Answered off the session's thread like a lookup: it
+/// copies a program and, on a Mac, signs it, which is a second the window
+/// should not spend frozen.
+Reply app_package(const json& params, const Scene& scene) {
+    std::filesystem::path root;
+    Reply refusal;
+    if (!project_of(scene, root, refusal)) {
+        return refusal;
+    }
+    const auto page = params.value("page", std::string("index.html"));
+    if (!tools::resolve_in_root(root, page)) {
+        return bad(page + " is not in the project");
+    }
+    std::string error;
+    const std::optional<tools::apps::Made> made =
+        tools::apps::package(root, page, params.value("name", std::string()), error);
+    if (!made) {
+        return bad(error);
+    }
+    return good(json{{"name", made->name}, {"program", made->program.string()},
+                     {"launch", made->launch.string()}, {"where", made->where}});
+}
+
+/// Open a program Crucible made.
+Reply app_open(const json& params, Host&) {
+    const auto launch = params.value("launch", std::string());
+    if (launch.empty()) {
+        return bad("which program?");
+    }
+    std::string error;
+    if (!tools::apps::open(launch, error)) {
+        return bad(error);
+    }
+    return good();
+}
+
+// ---------------------------------------------------------------------------
+// The kit: the programs Crucible fetches for its experts
+// ---------------------------------------------------------------------------
+
+/// Each piece, whether it is in the kit, and whether this machine wants it.
+Reply kit_status(const json&, const Scene&) {
+    std::vector<std::string> wanted;
+    for (const kit::Piece& piece : kit::missing()) {
+        wanted.push_back(piece.id);
+    }
+    json pieces = json::array();
+    for (const kit::Piece& piece : kit::pieces()) {
+        const bool missing = std::find(wanted.begin(), wanted.end(), piece.id) != wanted.end();
+        const bool fetched = kit::installed(piece.id);
+        // Not fetched and not missing: the machine has its own, or this
+        // platform has no use for it -- OCR on a Mac, MinGit off Windows.
+        pieces.push_back(json{{"id", piece.id}, {"label", piece.label}, {"why", piece.why},
+                              {"bytes", piece.bytes}, {"fetched", fetched}, {"missing", missing}});
+    }
+    return good(json{{"pieces", pieces}, {"folder", kit::dir().string()}});
+}
+
+/// Fetch what is missing, through the setup the window shows progress for.
+Reply kit_fetch(const json&, Host& host) {
+    Setup* setup = host.setup();
+    if (setup == nullptr) {
+        return bad("this Crucible has no setup to fetch with");
+    }
+    if (setup->running()) {
+        return bad("already fetching -- see the card at the top of the chat");
+    }
+    setup->start();
+    return good();
+}
+
+/// How each MCP server is doing: running, how many tools, why not.
+Reply mcp_status(const json&, Host& host) {
+    if (host.engine() == nullptr) {
+        return good(json{{"servers", json::array()}});
+    }
+    json out = json::array();
+    for (const tools::mcp::Status& one : host.engine()->mcp().status()) {
+        out.push_back(json{{"name", one.name}, {"running", one.running}, {"tools", one.tools},
+                           {"error", one.error}});
+    }
+    return good(json{{"servers", out}});
+}
+
+// ---------------------------------------------------------------------------
 // Processes, and what a build recorded
 // ---------------------------------------------------------------------------
 
@@ -459,8 +587,15 @@ void source_methods(std::vector<Method>& table) {
     table.push_back({"git.publish",        git_publish, nullptr});
     table.push_back({"git.release",        git_release, nullptr});
     table.push_back({"git.run",            git_run, nullptr});
+    table.push_back({"git.ci",             git_ci, nullptr});
     table.push_back({"preview.candidates", preview_candidates, nullptr});
     table.push_back({"preview.page",       preview_page, nullptr});
+    table.push_back({"app.name",           app_name, nullptr});
+    table.push_back({"app.package",        app_package, nullptr});
+    table.push_back({"app.open",           nullptr, app_open});
+    table.push_back({"kit.status",         kit_status, nullptr});
+    table.push_back({"kit.fetch",          nullptr, kit_fetch});
+    table.push_back({"mcp.status",         nullptr, mcp_status});
     table.push_back({"processes",          nullptr, processes});
     table.push_back({"process.stop",       nullptr, process_stop});
     table.push_back({"teach.list",         teach_list, nullptr});

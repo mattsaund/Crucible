@@ -76,16 +76,16 @@ echo "  resolve_packages"
 for manager in apt dnf pacman zypper brew; do
     PKG="$manager" resolve_packages
     check_not "$manager names no Vulkan SDK" \
-              grep -qiE "vulkan|spirv|glslc|shaderc" <<< "${PKGS_BASE[*]} ${PKGS_GUI[*]}"
+              grep -qiE "vulkan|spirv|glslc|shaderc" <<< "${PKGS_BASE[*]:-} ${PKGS_GUI[*]:-}"
     check_not "$manager names no CUDA toolkit" \
-              grep -qi "cuda" <<< "${PKGS_BASE[*]} ${PKGS_GUI[*]}"
+              grep -qi "cuda" <<< "${PKGS_BASE[*]:-} ${PKGS_GUI[*]:-}"
 done
 
 PKG=apt resolve_packages
 check     "apt base includes a compiler" \
-          grep -q "build-essential" <<< "${PKGS_BASE[*]}"
+          grep -q "build-essential" <<< "${PKGS_BASE[*]:-}"
 check     "apt names the interface's headers" \
-          grep -q "libwebkit2gtk-4.1-dev" <<< "${PKGS_GUI[*]}"
+          grep -q "libwebkit2gtk-4.1-dev" <<< "${PKGS_GUI[*]:-}"
 
 # resolve_packages ends in a `case`, and a stray non-zero exit there would
 # abort the caller under `set -e`. This is the bug that once silently killed
@@ -757,20 +757,20 @@ echo "  a cook can change hands"
 # The verb table specifically, not the instructions -- those name it too, so a
 # grep for the word alone would pass with the verb renamed out from under it.
 check     "HANDOFF is in the verb table" \
-          grep -q '"HANDOFF", ToolKind::Handoff' "$HERE/../src/tools/workshop.cpp"
+          grep -qE '"HANDOFF", +ToolKind::Handoff' "$HERE/../src/tools/workshop.cpp"
 # The loop is the orchestrator's now, in Python, and a handoff goes back
 # through the same route() a prompt does.
 check     "the cook loop re-routes on one" \
           grep -q 'after = self.take_the_seat(work)' \
           "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
 check     "and the delegator decides it, the same way it decides a prompt" \
-          grep -q 'decision = routing.route(self.core' \
+          grep -q 'return routing.route(core, {' \
           "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
-# The whole memory argument for the design: one expert resident at a time.
-# A cook takes a seat through the same door a chat turn does, and that door
-# is where the swap is.
+# The memory argument for the design: an expert is resident while something
+# holds it and no longer. A cook's seat holds its model through the same door
+# a chat turn does, and that door is where the lease and the swap are.
 check     "a cook takes its seat the way a chat turn does" \
-          grep -q 'seat_model' "$HERE/../src/engine/engine_cook.cpp"
+          grep -q 'hold_model(id, seat_params' "$HERE/../src/engine/engine_cook.cpp"
 check     "the previous expert is freed before the next is loaded" \
           grep -q 'acquire_expert' "$HERE/../src/engine/engine.cpp"
 
@@ -880,7 +880,9 @@ filed_under_crucible() {
 
 GENERATED="$HERE/../build/cmake_install.cmake"
 if [ -f "$GENERATED" ]; then
-    for _lib in libllama.so libggml.so libggml-base.so; do
+    # Named as this system names a shared library, since the tree is this one's.
+    case "$(uname -s)" in Darwin) _so=dylib ;; *) _so=so ;; esac
+    for _lib in "libllama.$_so" "libggml.$_so" "libggml-base.$_so"; do
         check "$_lib is filed under the crucible component" \
               filed_under_crucible "$GENERATED" "lib/crucible/$_lib"
     done

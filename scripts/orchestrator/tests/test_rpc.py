@@ -34,6 +34,7 @@ class Calls(unittest.TestCase):
                                     {"id": 1, "result": 7}), writer)
         channel.handlers["ping"] = lambda params: {"pong": params["say"]}
         self.assertEqual(channel.call("engine.flags"), 7)
+        channel.settle()   # answered on a thread of its own
         self.assertEqual(sent(writer)[1], {"id": 50, "result": {"pong": "hi"}})
 
     def test_an_error_comes_back_as_an_exception(self):
@@ -64,6 +65,57 @@ class Calls(unittest.TestCase):
         writer = io.BytesIO()
         rpc.Channel(lines({"id": 4, "method": "nope", "params": {}}), writer).serve()
         self.assertEqual(sent(writer), [{"id": 4, "error": "no such method: nope"}])
+
+    def test_a_request_s_context_goes_with_the_calls_it_makes(self):
+        # The core asks for a build; the build asks the core for a flag. The
+        # flag is asked in the build's context, so the core knows which Stop
+        # it is about.
+        writer = io.BytesIO()
+        channel = rpc.Channel(lines({"id": 9, "method": "build.run", "params": {"context": "build"}},
+                                    {"id": 1, "result": {"stop": False}}), writer)
+        seen = {}
+
+        def run(params):
+            seen["flags"] = channel.call("engine.flags")
+            seen["spawned"] = []
+            thread = channel.spawn(lambda: seen["spawned"].append(channel.context))
+            thread.join()
+            return {}
+        channel.handlers["build.run"] = run
+        channel.serve()
+        messages = sent(writer)
+        self.assertEqual(messages[0], {"id": 1, "method": "engine.flags", "params": {"context": "build"}})
+        self.assertEqual(seen["spawned"], ["build"])
+        self.assertEqual(messages[-1], {"id": 9, "result": {}})
+
+    def test_calls_from_several_threads_each_get_their_own_answer(self):
+        # Two agents asking at once, answered out of order: each is handed
+        # the answer with its own id, whoever reads the pipe.
+        import threading
+        reader_side, writer_side = os.pipe()
+        reader = os.fdopen(reader_side, "rb")
+        feed = os.fdopen(writer_side, "wb")
+        writer = io.BytesIO()
+        channel = rpc.Channel(reader, writer)
+        results = {}
+
+        def ask(name):
+            results[name] = channel.call("seat.chat", {"who": name})
+        first = threading.Thread(target=ask, args=("first",))
+        second = threading.Thread(target=ask, args=("second",))
+        first.start()
+        second.start()
+        while len(sent(writer)) < 2:
+            pass
+        ids = {m["params"]["who"]: m["id"] for m in sent(writer)}
+        feed.write(json.dumps({"id": ids["second"], "result": "two"}).encode() + b"\n")
+        feed.write(json.dumps({"id": ids["first"], "result": "one"}).encode() + b"\n")
+        feed.flush()
+        first.join(5)
+        second.join(5)
+        feed.close()
+        reader.close()
+        self.assertEqual(results, {"first": "one", "second": "two"})
 
     def test_text_survives_the_trip_whatever_it_is(self):
         writer = io.BytesIO()

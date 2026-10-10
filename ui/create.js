@@ -37,7 +37,7 @@ function specLine(r) {
   if (r.parameters_b > 0) parts.push(`${r.parameters_b}B`);
   parts.push(r.method === 'lora' ? 'LoRA' : 'QLoRA');
   parts.push(`${r.format === 'mlx' ? 'MLX' : 'GGUF'} ${r.quantization}`);
-  return parts.join('  ·  ');
+  return apart(...parts.map(escape));
 }
 
 // --- the list ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ function createList() {
           ${r.trained_path ? `<button class="action right" data-act="recipe-test" data-id="${escape(r.id)}"
               ${r.trained_there ? '' : 'disabled title="Trained file missing"'}>Test</button>` : ''}</div>
         <div class="hint">${escape(r.purpose || 'no description')}</div>
-        <div class="hint">${escape(specLine(r))}</div>
+        <div class="hint">${specLine(r)}</div>
       </div>`).join('');
   }).join('');
   return `<h1>Create</h1>
@@ -77,7 +77,7 @@ function lossCurve(curve) {
   return `<svg class="curve" viewBox="0 0 300 62" preserveAspectRatio="none" role="img"
       aria-label="Training loss, from ${high.toFixed(2)} to ${curve[curve.length - 1].toFixed(2)}">
     <polyline points="${points}"/></svg>
-    <div class="status">loss ${curve[curve.length - 1].toFixed(3)}  ·  started at ${curve[0].toFixed(3)}</div>`;
+    <div class="status">${apart(`loss ${curve[curve.length - 1].toFixed(3)}`, `started at ${curve[0].toFixed(3)}`)}</div>`;
 }
 
 /// What a run is doing, or how it ended.
@@ -179,13 +179,13 @@ function createDetail(r) {
       ${spec('Data', r.data.length ? r.data.map((d) => escape(d.label || d.id)).join(', ') : 'none',
              r.data.length ? '' : 'ok')}
       ${r.tools.length ? spec('Tools', r.tools.map((d) => escape(d.label || d.id)).join(', ')) : ''}
-      ${spec('Run', `${count(r.epochs, 'pass', 'passes')}  ·  ${r.context} tokens of context  ·  learning rate ${
-        rate(r.learning_rate)}`)}
+      ${spec('Run', apart(count(r.epochs, 'pass', 'passes'), `${r.context} tokens of context`,
+        `learning rate ${rate(r.learning_rate)}`))}
       ${spec('Export', `${r.format === 'mlx' ? 'MLX' : 'GGUF'} at ${escape(r.quantization)}${
         r.export_bytes ? ', about ' + bytes(r.export_bytes) : ''}`)}
       ${fits}
       ${r.trained_path ? spec('File', escape(r.trained_display || r.trained_path)
-          + (r.trained_there ? `  ·  ${bytes(r.trained_bytes)}` : '  (not there)'),
+          + (r.trained_there ? ` (${bytes(r.trained_bytes)})` : '  (not there)'),
           r.trained_there ? '' : 'bad') : ''}
       ${r.started_at ? spec('Started', ago(r.started_at)) : ''}
       ${r.finished_at ? spec('Finished', ago(r.finished_at)) : ''}
@@ -270,9 +270,8 @@ function hubPicker(m, slot, kind) {
     : hub.asked && !hub.items.length ? '<div class="status">No matches.</div>'
     : hub.items.map((item) => `<div class="order-row">
         <span class="order-name">${escape(item.id)}
-          <span class="status">${compact(item.downloads)} downloads${
-            item.parameters_b ? `  ·  ${item.parameters_b}B` : ''}${
-            item.gated ? '  ·  gated' : ''}</span></span>
+          <span class="status">${apart(`${compact(item.downloads)} downloads`,
+            item.parameters_b ? `${item.parameters_b}B` : '', item.gated ? 'gated' : '')}</span></span>
         <button class="action" data-act="wz-use" data-slot="${slot}" data-id="${escape(item.id)}"
                 data-params="${item.parameters_b || 0}">${kind === 'model' ? 'Use' : 'Add'}</button>
       </div>`).join('');
@@ -302,7 +301,7 @@ function teachPicker(r) {
   return `<h2>FROM BUILDS IN THIS PROJECT</h2>
     <div class="order">${records.map((t) => `<div class="order-row">
         <span class="order-name">${escape(t.name)}
-          <span class="status">${count(t.records, 'record')}  ·  ${bytes(t.bytes)}</span></span>
+          <span class="status">${apart(count(t.records, 'record'), bytes(t.bytes))}</span></span>
         <button class="action" data-act="wz-teach" data-path="${escape(t.path)}" data-name="${escape(t.name)}"
                 ${r.data.some((d) => d.id === t.path) ? 'disabled' : ''}>Add</button>
       </div>`).join('')}</div>
@@ -407,7 +406,7 @@ function wizardStep(m) {
                                     : '<span class="bad">none</span>')}
         ${r.tools.length ? row('Tools', r.tools.map((d) => escape(d.label || d.id)).join(', ')) : ''}
         ${row('Method', r.method === 'lora' ? 'LoRA' : 'QLoRA')}
-        ${row('Run', `${count(r.epochs, 'pass', 'passes')}  ·  ${r.context} tokens  ·  learning rate ${rate(r.learning_rate)}`)}
+        ${row('Run', apart(count(r.epochs, 'pass', 'passes'), `${r.context} tokens`, `learning rate ${rate(r.learning_rate)}`))}
         ${row('Comes out as', `${r.format === 'mlx' ? 'MLX' : 'GGUF'} at ${escape(r.quantization)}`)}
       </div>
       <h2 style="margin-top:1.4rem">STILL MISSING</h2>

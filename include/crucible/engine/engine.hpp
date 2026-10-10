@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: MIT
-// The delegation loop, running on its own thread.
+// The delegation loop, running on its own thread -- and a build, on another.
 //
 // Everything llama.cpp touches lives here. The UI hands the engine a prompt and
 // gets told, via AppState plus a wake callback, how the delegation is going.
 // The engine blocks for seconds at a time loading a 30B expert; keeping it off
 // the UI thread is what lets the window keep drawing while that happens.
+//
+// A chat turn runs on the worker. A build runs on a thread of its own, its
+// agents asking for models at the same time as each other and as the chat:
+// a provider's model is asked in parallel, a model on this machine is held
+// by a lease while a seat has it and answers one caller at a time. See
+// leases.hpp for why a model in use is never freed under its user.
 #pragma once
 
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -20,6 +27,7 @@
 
 #include "crucible/config/config.hpp"
 #include "crucible/cook/journal.hpp"
+#include "crucible/engine/leases.hpp"
 #include "crucible/llm/mlx_server.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/llm/remote_model.hpp"
@@ -27,6 +35,7 @@
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/tools/attachments.hpp"
+#include "crucible/tools/mcp.hpp"
 #include "crucible/tools/processes.hpp"
 #include "crucible/tools/workshop.hpp"
 
@@ -108,9 +117,9 @@ public:
     /// every file the cook touches must be inside -- the project the user
     /// started Crucible in, and one they have already trusted.
     ///
-    /// Queued like any other request, and once it starts it holds the worker
-    /// for its whole duration. Prompts submitted while it runs wait behind it,
-    /// which is the truthful behavior: there is one engine and it is busy.
+    /// Runs on a thread of its own, not the worker: the chat stays open while
+    /// a build works, and its turns are answered beside the build's agents.
+    /// One build at a time -- a second is refused, with the reason returned.
     ///
     /// `pinned` starts it with that expert rather than whoever the goal routes
     /// to. A HANDOFF still goes through the delegator: the pin is where the
@@ -119,10 +128,10 @@ public:
     /// `kind` is "cook" or "build". A build is a cook with a plan: the
     /// orchestrator's build loop rather than its cook loop, on the same
     /// journal and the same tools. See scripts/orchestrator's build.py.
-    void start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
-                    std::vector<attach::Attachment> attachments = {},
-                    std::optional<ExpertId> pinned = std::nullopt,
-                    std::string kind = "cook");
+    std::string start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
+                           std::vector<attach::Attachment> attachments = {},
+                           std::optional<ExpertId> pinned = std::nullopt,
+                           std::string kind = "cook");
 
     /// A seat a build made for itself: see take_made_seats.
     struct MadeSeat {
@@ -142,12 +151,23 @@ public:
     /// lists them and can stop one.
     tools::Processes& processes() { return processes_; }
 
+    /// The MCP servers whose tools experts are offered. See tools/mcp.hpp.
+    tools::mcp::Hub& mcp() { return mcp_; }
+
+    /// What each frontier model has been asked, from any thread. See spend.hpp.
+    std::vector<spend::Model> spending() const { return hub_.spending(); }
+
     /// Ask the running cook to wrap up.
     ///
     /// Not a kill: the cook stops taking new work, makes a finishing pass to
     /// leave the project in a working state, and writes what it did. That pass
-    /// is the whole reason this is different from cancel().
+    /// is the whole reason this is different from cancel_cook().
     void stop_cook();
+
+    /// Stop the running build now: every agent's generation, every request
+    /// to a provider it is waiting on, every question it is parked on. The
+    /// chat is left alone, as cancel() leaves the build alone.
+    void cancel_cook();
 
     /// Answer the question a cook is waiting on, releasing it to carry on.
     void answer_cook(std::string answer);
@@ -219,7 +239,7 @@ private:
     /// expert releases on the same queue as prompts, so they are applied in
     /// order and never race with a generation in flight.
     enum class RequestKind { Prompt, ReleaseExpert, ReleaseAll, ReloadModels,
-                             ApplyConfig, WriteExamples, Cook, NameSession };
+                             ApplyConfig, WriteExamples, NameSession };
 
     struct Request {
         RequestKind             kind = RequestKind::Prompt;
@@ -228,16 +248,12 @@ private:
         Config                  config;
         ExpertId                expert;  ///< for WriteExamples
 
-        // for Cook
-        int                   budget_seconds = 0;
-        std::filesystem::path root;
-        std::string           cook_kind = "cook";   ///< "cook" or "build"
-
-        // for Prompt and Cook
+        // for Prompt
         std::vector<attach::Attachment> attachments;
 
-        // for NameSession, with `root` and `prompt` (the excerpt)
-        std::string session;
+        // for NameSession, with `prompt` (the excerpt)
+        std::filesystem::path root;
+        std::string           session;
     };
 
     void run();
@@ -256,16 +272,19 @@ private:
     /// wait for.
     void ready_delegator();
 
-    /// Put the table back after a prompt or a cook, however it ended.
-    ///
-    /// With the delegator on demand: free the expert that answered and bring
-    /// the delegator back. Called once the request is over and the engine is
-    /// no longer busy, so the window is free to take the next prompt while it
-    /// happens -- the prompt simply waits its turn behind the load.
+    /// Put the table back after a prompt, however it ended: the chat's own
+    /// Stop is cleared, and then tidy_models.
     void settle();
 
-    /// Make sure the delegator is loaded, freeing the expert first if there is
-    /// no room for both. A no-op when it is already there, or none is set.
+    /// With the delegator on demand: free the experts nobody is using and
+    /// bring the delegator back. Called once a prompt or a build is over, so
+    /// the window is free to take the next prompt while it happens -- the
+    /// prompt simply waits its turn behind the load. Any thread.
+    void tidy_models();
+
+    /// Make sure the delegator is loaded, freeing an expert nobody is using
+    /// first if there is no room for both. A no-op when it is already there,
+    /// or none is set. Call with host_mutex_ held.
     void ensure_router();
 
     /// Drop the delegator. Only called with "keep delegator loaded" off.
@@ -282,6 +301,11 @@ private:
 
     /// Answer one of the orchestrator's requests. Throws with the reason when
     /// it cannot be answered, which goes back to the orchestrator as an error.
+    ///
+    /// Called on a thread of the link's own, one per request, so the chat's
+    /// routing and every agent of a build are answered side by side. Whose a
+    /// request is -- the chat's or the build's -- is in its "context", and it
+    /// decides which Stop the request heeds.
     nlohmann::json serve(const std::string& method, const nlohmann::json& params);
 
     /// What the orchestrator needs to route: the prompt, the roster as the
@@ -300,6 +324,10 @@ private:
                  const std::filesystem::path& root,
                  std::vector<attach::Attachment> attachments,
                  std::optional<ExpertId> pinned, const std::string& kind);
+
+    /// The Stop a request from the orchestrator heeds: the build's for one of
+    /// its agents, the chat's for a turn's routing.
+    CancelCallback cancel_for(const nlohmann::json& params) const;
 
     /// Attachments as a message's text and pictures, sized to `model`:
     /// `share` of its context, less what `messages` already take.
@@ -333,34 +361,69 @@ private:
     CookRound cook_round(ChatModel& model, const ModelParams& params,
                          const std::vector<ChatMessage>& messages);
 
-    /// Who is in the seat for a cook, and the model behind them. The
-    /// orchestrator decides who; the core keeps the model, between its calls.
-    struct CookSeat {
+    /// A model, held: the model to ask, and the lease that keeps it in
+    /// memory for as long as this is alive. A provider's model needs no
+    /// lease; a local one cannot be freed while one is held.
+    struct HeldModel {
+        ChatModel*     model = nullptr;
+        Leases::Lease  lease;
+    };
+
+    /// One agent's seat in a build: who is in it, the model they are held
+    /// on, and the pictures that go with their next round.
+    ///
+    /// A build has as many as it has agents working, each named by a handle
+    /// the orchestrator passes back with every round -- "s3" -- so two agents
+    /// asking at once are asking of two seats.
+    struct AgentSeat {
         ExpertId     id;
         std::string  name;
         ModelParams  params;
-        ChatModel*   model = nullptr;
-    };
-    CookSeat cook_seat_;
+        HeldModel    held;
 
-    /// What the cook's goal came with, and the pictures last read from it for
-    /// the seat -- sent with every round that carries the attachments.
+        /// The pictures the build's directive came with, read for this seat's
+        /// model -- sent with every round that carries the attachments.
+        std::vector<ChatImage> images;
+
+        /// Pictures the seat's last tool call produced -- a screenshot, a
+        /// picture read -- for the round that follows it and no other: a
+        /// screenshot sent again with every later round would cost the
+        /// context more than it says.
+        std::vector<ChatImage> tool_images;
+
+        /// One round at a time per seat: the pictures above are the seat's
+        /// own, and a seat is one agent.
+        std::mutex   mutex;
+    };
+    std::shared_ptr<AgentSeat> seat_named(const nlohmann::json& params);
+
+    std::mutex                                        seats_mutex_;
+    std::map<std::string, std::shared_ptr<AgentSeat>> seats_;
+    long                                              next_seat_ = 0;
+
+    /// What the cook's goal came with, and the tools and search it works
+    /// with. Set when a build starts and read by its agents; not changed
+    /// while it runs.
     std::vector<attach::Attachment> cook_attachments_;
-    std::vector<ChatImage>          cook_images_;
     tools::WorkshopSettings         cook_workshop_;
     tools::SearchSettings           cook_search_;
-
-    /// Pictures the last tool call produced -- a screenshot, a picture read
-    /// -- for the round that follows it and no other: a screenshot sent
-    /// again with every later round would cost the context more than it
-    /// says. Cleared when that round has been asked.
-    std::vector<ChatImage>          cook_tool_images_;
 
     /// The seats a build has made, waiting for the session. See take_made_seats.
     std::vector<MadeSeat>           made_seats_;   ///< under written_mutex_
 
     /// Programs experts have started and left running. Stopped with the engine.
     tools::Processes                processes_;
+
+    /// The MCP servers, and the thread that starts them: a server is a
+    /// program that may be fetched by npx on its first run, and nothing
+    /// should wait for that but the call that needs it. See warm_mcp().
+    tools::mcp::Hub                 mcp_;
+    std::thread                     mcp_thread_;
+    std::mutex                      mcp_mutex_;   ///< warm_mcp is called from two threads
+
+    /// Hand the MCP servers in `config` to the hub and start them, on
+    /// mcp_thread_. Any thread.
+    void warm_mcp(const Config& config);
 
     /// The project's history folder, for what a build records of its agents'
     /// work. Empty when no project is open.
@@ -373,20 +436,47 @@ private:
     /// cook is stopped. Returns the answer, or nothing if it was stopped.
     std::optional<std::string> await_cook_answer();
 
+    /// One question to the person at a time, whoever is asking: the window
+    /// shows one, and two agents asking at once would answer each other's.
+    std::mutex asking_mutex_;
+
     /// Pick the expert that will actually answer: the orchestrator's decision,
     /// policy included. `error` says why there is none, when routing could not
     /// be done at all.
     RouteDecision resolve(const Request& request, std::string& error);
 
-    /// The model behind `id`, ready to be asked: loaded onto the cards if it
-    /// is a file, looked up if it is a provider's. Null with `error` set when
-    /// it could not be had, and `error` is "stopped" when the user stopped a
-    /// load.
+    /// The model behind `id`, held and ready to be asked: loaded onto the
+    /// cards if it is a file, looked up if it is a provider's. No model, with
+    /// `error` set, when it could not be had; `error` is "stopped" when
+    /// `cancel` stopped a load or a wait.
     ///
-    /// The one place that knows there are two kinds. `load_ms` is how long the
-    /// swap took, and 0 when there was none.
-    ChatModel* seat_model(const ExpertId& id, const ModelParams& params,
-                          const std::string& name, long& load_ms, std::string& error);
+    /// The one place that knows there are two kinds. When a local model will
+    /// not fit beside the ones other seats are holding, this waits for one of
+    /// them to be let go, and says so on the status line. `load_ms` is how
+    /// long the swap took, and 0 when there was none.
+    HeldModel hold_model(const ExpertId& id, const ModelParams& params, const std::string& name,
+                         const CancelCallback& cancel, long& load_ms, std::string& error);
+
+    /// hold_model's two halves, with host_mutex_ held: an MLX model brought
+    /// up in its server, or a GGUF loaded onto the cards. Null with
+    /// `crowded` set when the models in use leave it no room.
+    ChatModel* serve_mlx(const ExpertId& id, const ModelParams& params, const std::string& name,
+                         const CancelCallback& cancel, long& load_ms, std::string& error,
+                         bool& crowded);
+    ChatModel* load_gguf(const ExpertId& id, const ModelParams& params, const std::string& name,
+                         const CancelCallback& cancel, long& load_ms, std::string& error,
+                         bool& crowded);
+
+    /// What the host must not free: every model somebody holds a lease on.
+    ModelHost::Keep in_use() const;
+
+    /// Guards host_ and the MLX server: a load, a free, the delegator's
+    /// scoring. Never held while an expert generates -- a lease keeps that
+    /// model in memory, and the model takes its own turns.
+    std::mutex host_mutex_;
+
+    /// Which local models are in use. See leases.hpp.
+    Leases leases_;
 
     Config                 config_;
     mutable std::mutex     config_mutex_;   ///< guards config_ against the UI thread
@@ -394,13 +484,17 @@ private:
     std::function<void()>  wake_;
 
     std::unique_ptr<ModelHost> host_;
+    /// Set once the worker has made host_: a build's thread can start before
+    /// it has, and waits.
+    std::atomic<bool>          host_ready_{false};
 
     /// The experts that are not on this machine. Nothing in it is resident in
     /// the sense `host_` means -- there are no weights -- so it sits beside
     /// the host rather than inside it: a seat is answered by one or the other,
     /// and asking a provider never evicts what is loaded here.
     ///
-    /// The worker's, except `interrupt`, which is what Stop calls.
+    /// Asked from the chat's thread and from each of a build's agents', and
+    /// counting what every one of them costs. See remote_model.hpp.
     remote::Hub                hub_;
 
     /// An MLX model's server, when the seat with the turn is one, and which
@@ -410,8 +504,14 @@ private:
     mlx::Server                mlx_;
     std::optional<ExpertId>    mlx_seat_;
 
-    /// Stop the MLX server, and put its seat back to dormant.
+    /// Stop the MLX server, and put its seat back to dormant. With
+    /// host_mutex_ held, and only when nobody holds a lease on its model.
     void stop_mlx();
+
+    /// Tell the state what is in memory now: the delegator, the resident
+    /// experts, an MLX model's server. With host_mutex_ held, after anything
+    /// that loads or lets go of one.
+    void show_loaded();
 
     /// The delegator file that last failed to load, so that ready_delegator
     /// does not try it again after every prompt. Empty when it did not fail.
@@ -423,6 +523,7 @@ private:
     /// takes. Asking a turn again sends the same picture rather than reading
     /// the original, which may be too large to send. The last few only.
     std::vector<std::pair<std::string, attach::Image>> pictures_;
+    std::mutex                                         pictures_mutex_;
 
     /// See take_written_examples. Guarded by its own mutex rather than by
     /// `mutex_`, which the worker holds while it waits for work.
@@ -438,12 +539,16 @@ private:
     /// running, which is enforced above this by refusing to open one then.
     std::filesystem::path        project_root_;
 
-    /// The cook in progress. Touched only by the worker thread, except for the
-    /// two atomics below, which the UI thread sets.
+    /// The cook in progress, on its own thread. The journal is the
+    /// orchestrator's and is published through cook_mutex_, which also
+    /// guards the log it is saved to.
     Cook                         cook_;
     std::unique_ptr<CookLog>     cook_log_;
+    std::mutex                   cook_mutex_;
+    std::thread                  cook_thread_;
     std::atomic<bool>            cooking_{false};
     std::atomic<bool>            cook_stop_{false};
+    std::atomic<bool>            cook_cancel_{false};
 
     /// Ask the user about one edit and block until they answer.
     ///
@@ -458,8 +563,10 @@ private:
                              const tools::WorkshopSettings& workshop);
 
     /// The same question without a turn to tidy: what a cook asks. True means
-    /// write it.
-    bool ask_about_edit(const tools::ToolCall& call, const tools::WorkshopSettings& workshop);
+    /// write it. `cancel` is whose Stop ends the wait -- the chat's or the
+    /// build's.
+    bool ask_about_edit(const tools::ToolCall& call, const tools::WorkshopSettings& workshop,
+                        const CancelCallback& cancel);
 
     /// The answer to an edit, handed across from the UI thread.
     std::mutex                   edit_mutex_;

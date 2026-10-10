@@ -19,9 +19,12 @@
 #include <utility>
 
 
+#include "crucible/app/starter.hpp"
 #include "crucible/config/paths.hpp"
+#include "crucible/llm/prices.hpp"
 #include "crucible/runtime/backend.hpp"
 #include "crucible/util/http.hpp"
+#include "crucible/util/platform.hpp"
 
 namespace crucible::gui {
 
@@ -111,6 +114,7 @@ std::string App::apply_config(Config edited) {
 void App::housekeeping() {
     persist_session();
     name_sessions();
+    absorb_starter_model();
     absorb_made_seats();
     absorb_written_examples();
     absorb_finished_run();
@@ -174,6 +178,16 @@ void App::update_config(const std::function<void(Config&)>& change) {
         say("could not write " + paths::config_file().string());
     }
     engine_->apply_config(config_);
+    refresh_prices();
+}
+
+void App::refresh_prices() {
+    // Only where a provider is asked anything: nowhere else has a cost to put
+    // a price on, and nothing else is a reason to reach for the list.
+    if (config_.providers.empty()) {
+        return;
+    }
+    workers_.post([] { prices::refresh(); });
 }
 
 void App::persist_session() {
@@ -217,6 +231,18 @@ void App::absorb_written_examples() {
         say(expert_label(config_.roster, id) + ": the delegator wrote "
             + std::to_string(examples.size()) + " example questions to route on");
     }
+}
+
+void App::absorb_starter_model() {
+    // The model the first start fetched for a machine with none: seated, so
+    // the first thing typed has somebody to answer it. See starter.hpp.
+    const std::optional<std::string> file = setup_.take_model();
+    if (!file) {
+        return;
+    }
+    update_config([&file](Config& config) { starter::seat(config, *file); });
+    state_.add_notice(*file + " is ready, as Programming -- the expert prompts and builds go to");
+    wake();
 }
 
 void App::absorb_made_seats() {
@@ -288,13 +314,7 @@ std::string App::open_scratchpad() {
     // A folder of its own for every new chat, named for when it began, so
     // what one conversation makes is not mixed into the next one's.
     const std::filesystem::path parent = paths::scratchpad_dir();
-    const std::time_t now = std::time(nullptr);
-    std::tm local{};
-#if defined(_WIN32)
-    localtime_s(&local, &now);
-#else
-    localtime_r(&now, &local);
-#endif
+    const std::tm local = util::local_time(std::time(nullptr));
     char stamp[32];
     std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
     std::filesystem::path root = parent / stamp;
@@ -306,6 +326,7 @@ std::string App::open_scratchpad() {
     if (ec) {
         return "could not make " + root.string() + ": " + ec.message();
     }
+    util::hide_folder(paths::home_folder());
     // Crucible's own folder: there is nobody else's say to ask for. Trusting
     // the parent covers every scratch folder under it.
     if (!trust_.is_trusted(parent)) {
@@ -675,7 +696,7 @@ void App::collect_update_check() {
     // Said once, when the answer comes back. The gear carries a dot from then
     // on, and this is the line that says what the dot means.
     if (update_available()) {
-        say("Crucible " + update_.latest + " is available  ·  "
+        say("Crucible " + update_.latest + " is available. To update: "
             + std::string(update::update_command()));
     }
 }

@@ -3,14 +3,19 @@
 // See setup.hpp.
 #include "crucible/app/setup.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 
 #include "crucible/app/setup_runtimes.hpp"
+#include "crucible/kit/kit.hpp"
 #include "crucible/lab/python.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/http.hpp"
 
 namespace crucible {
 namespace {
@@ -54,6 +59,17 @@ void Setup::stop() {
     }
 }
 
+void Setup::want_model(starter::Model model, std::filesystem::path models_dir) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    model_      = std::move(model);
+    models_dir_ = std::move(models_dir);
+}
+
+std::optional<std::string> Setup::take_model() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return std::exchange(model_ready_, std::nullopt);
+}
+
 void Setup::start() {
     if (const char* off = std::getenv("CRUCIBLE_NO_SETUP"); off != nullptr && *off != '\0'
         && std::string(off) != "0") {
@@ -85,6 +101,19 @@ void Setup::start() {
                              std::string(info.name) + " runtime", Item::State::Waiting,
                              "what models run on", -1.0F, 0});
             kinds.push_back(kind);
+        }
+    }
+    // The programs an expert reaches for that this machine lacks: see
+    // kit/kit.hpp. Before the training environment, which is the long one,
+    // so a build has what it needs while torch is still downloading.
+    for (const kit::Piece& piece : kit::missing()) {
+        items.push_back({"kit-" + piece.id, piece.label, Item::State::Waiting, piece.why, -1.0F, piece.bytes});
+    }
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (model_) {
+            items.push_back({"model", model_->label, Item::State::Waiting,
+                             "a model to build with, on this machine", -1.0F, model_->bytes});
         }
     }
     if (!lab::pyenv::looks_installed()) {
@@ -197,6 +226,75 @@ void Setup::run() {
                 }
                 breathe();
             }
+            continue;
+        }
+
+        if (id.rfind("kit-", 0) == 0) {
+            update(i, Item::State::Working, "downloading", 0.0F);
+            std::string error;
+            const bool ok = kit::install(
+                id.substr(4),
+                [&](std::uint64_t done, std::uint64_t total) {
+                    if (total > 0) {
+                        update(i, Item::State::Working,
+                               "downloading " + format::bytes(done) + " of about " + format::bytes(total),
+                               std::min(1.0F, static_cast<float>(done) / static_cast<float>(total)));
+                    } else {
+                        update(i, Item::State::Working, "installing", -1.0F);
+                    }
+                },
+                [this] { return stop_.load(); }, error);
+            update(i, ok ? Item::State::Done : Item::State::Failed, ok ? std::string() : error,
+                   ok ? 1.0F : -1.0F);
+            continue;
+        }
+
+        if (id == "model") {
+            starter::Model model;
+            std::filesystem::path folder;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                model  = *model_;
+                folder = models_dir_;
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(folder, ec);
+            const std::filesystem::path part = folder / (model.file + ".part");
+            const std::filesystem::path done = folder / model.file;
+            std::atomic<bool> finished{false};
+            bool        fetched = false;
+            std::string why;
+            std::thread fetch([&] {
+                fetched = util::http::download(model.url(), part, 7200, why);
+                finished.store(true);
+            });
+            while (!finished.load()) {
+                std::error_code size_ec;
+                const std::uintmax_t got = std::filesystem::file_size(part, size_ec);
+                const std::uint64_t  have = size_ec ? 0 : static_cast<std::uint64_t>(got);
+                update(i, Item::State::Working,
+                       "downloading " + format::bytes(have) + " of " + format::bytes(model.bytes),
+                       model.bytes > 0 ? std::min(1.0F, static_cast<float>(have) / static_cast<float>(model.bytes))
+                                       : -1.0F);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            fetch.join();
+            if (fetched) {
+                std::filesystem::rename(part, done, ec);
+                fetched = !ec;
+                if (ec) {
+                    why = ec.message();
+                }
+            } else {
+                std::filesystem::remove(part, ec);
+            }
+            if (fetched) {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                model_ready_ = model.file;
+                model_.reset();
+            }
+            update(i, fetched ? Item::State::Done : Item::State::Failed,
+                   fetched ? std::string() : "the download failed: " + why, fetched ? 1.0F : -1.0F);
             continue;
         }
 

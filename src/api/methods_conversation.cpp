@@ -244,9 +244,13 @@ Reply cook_start(const json& params, Host& host) {
     // An expert named here starts the cook, as on submit; empty lets the
     // delegator choose.
     const auto expert = params.value("expert", std::string{});
-    host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments),
-                              expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
-                              params.value("kind", std::string("cook")) == "build" ? "build" : "cook");
+    const std::string refused =
+        host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments),
+                                  expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
+                                  params.value("kind", std::string("cook")) == "build" ? "build" : "cook");
+    if (!refused.empty()) {
+        return bad(refused);
+    }
     return good();
 }
 
@@ -271,6 +275,16 @@ Reply cook_stop(const json&, Host& host) {
     // Not a cancel: the cook stops taking new work and makes a finishing
     // pass. The distinction is the whole reason stop_cook exists.
     host.engine()->stop_cook();
+    return good();
+}
+
+/// Stop now, for the build: its agents stop mid-round. The chat's Stop is
+/// `cancel`, and the two leave each other alone.
+Reply cook_cancel(const json&, Host& host) {
+    if (host.engine() == nullptr) {
+        return no_engine();
+    }
+    host.engine()->cancel_cook();
     return good();
 }
 
@@ -435,6 +449,7 @@ void conversation_methods(std::vector<Method>& table) {
     table.push_back({"cook.start",   nullptr, cook_start});
     table.push_back({"build.start",  nullptr, build_start});
     table.push_back({"cook.stop",    nullptr, cook_stop});
+    table.push_back({"cook.cancel",  nullptr, cook_cancel});
     table.push_back({"cook.answer",  nullptr, cook_answer});
     table.push_back({"history",      history, nullptr});
     table.push_back({"history.cook", history_cook, nullptr});

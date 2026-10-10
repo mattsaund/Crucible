@@ -11,11 +11,18 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <mutex>
 #include <vector>
 
 #include <llama.h>
 
+#if defined(CRUCIBLE_HAS_MTMD)
+#include <mtmd-helper.h>
+#include <mtmd.h>
+#endif
+
 #include "crucible/llm/sampling.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/text.hpp"
 
 namespace crucible {
@@ -76,6 +83,11 @@ LoadedModel::LoadedModel(llama_model* model, llama_context* ctx, std::string pat
     : model_(model), ctx_(ctx), path_(std::move(path)) {}
 
 LoadedModel::~LoadedModel() {
+#if defined(CRUCIBLE_HAS_MTMD)
+    if (vision_ != nullptr) {
+        mtmd_free(vision_);
+    }
+#endif
     if (ctx_ != nullptr) {
         llama_free(ctx_);
     }
@@ -85,6 +97,7 @@ LoadedModel::~LoadedModel() {
 }
 
 int LoadedModel::count_tokens(const std::string& text) const {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
     const llama_vocab* vocab = llama_model_get_vocab(model_);
     if (vocab == nullptr || text.empty()) {
         return 0;
@@ -92,7 +105,21 @@ int LoadedModel::count_tokens(const std::string& text) const {
     return static_cast<int>(tokenize(vocab, text, false).size());
 }
 
+bool LoadedModel::sees_images() const {
+#if defined(CRUCIBLE_HAS_MTMD)
+    return vision_ != nullptr && mtmd_support_vision(vision_);
+#else
+    return false;
+#endif
+}
+
 ChatResult LoadedModel::chat(const ChatRequest& request, const ChatSink& sink) {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
+    if (sees_images()
+        && std::any_of(request.messages.begin(), request.messages.end(),
+                       [](const ChatMessage& m) { return !m.images.empty(); })) {
+        return chat_with_pictures(request, sink);
+    }
     ChatResult result;
     result.stats = generate(format_chat(request.messages, /*add_assistant_prefix=*/true),
                             request.params, sink.on_text, sink.cancel);
@@ -100,6 +127,7 @@ ChatResult LoadedModel::chat(const ChatRequest& request, const ChatSink& sink) {
 }
 
 int LoadedModel::prompt_tokens(const std::vector<ChatMessage>& messages) const {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
     return count_tokens(format_chat(messages, /*add_assistant_prefix=*/true));
 }
 
@@ -122,6 +150,7 @@ bool LoadedModel::takes_effort() const {
 
 std::string LoadedModel::format_chat(const std::vector<ChatMessage>& messages,
                                      bool add_assistant_prefix) const {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
     std::vector<llama_chat_message> native;
     native.reserve(messages.size());
     for (const ChatMessage& message : messages) {
@@ -211,6 +240,7 @@ std::size_t LoadedModel::reuse_prefix(const std::vector<llama_token>& tokens) {
 std::vector<float> LoadedModel::score_labels(const std::string& prompt,
                                              const std::vector<std::string>& labels,
                                              const CancelCallback& cancel) {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
     std::vector<float> scores(labels.size(), kUnscored);
     if (labels.empty()) {
         return scores;
@@ -313,6 +343,7 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
                                       const TokenCallback& on_token,
                                       const CancelCallback& cancel,
                                       const std::string& grammar) {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
     GenerationStats stats;
     const llama_vocab* vocab = llama_model_get_vocab(model_);
 
@@ -337,15 +368,6 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
     // wait before the first token. See LoadedModel::cached_.
     const std::size_t reused = reuse_prefix(tokens);
     stats.prompt_reused = static_cast<int>(reused);
-
-    llama_sampler* chain = llm::build_sampler_chain(vocab, params, grammar);
-
-    // Guarded immediately: the chain must be freed on every path out of this
-    // function, including the early returns below.
-    struct ChainGuard {
-        llama_sampler* chain;
-        ~ChainGuard() { llama_sampler_free(chain); }
-    } guard{chain};
 
     // Stop asked inside a decode as well as between them. A batch of prompt is
     // one call, and on the processor one call of a large model's prompt is
@@ -388,6 +410,20 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
                        tokens.begin() + static_cast<long>(offset) + count);
     }
     stats.prompt_ms = ms_since(prompt_start);
+
+    sample(params, on_token, cancel, grammar, stats);
+    return stats;
+}
+
+void LoadedModel::sample(const ModelParams& params, const TokenCallback& on_token, const CancelCallback& cancel,
+                         const std::string& grammar, GenerationStats& stats) {
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    const int context_size = static_cast<int>(llama_n_ctx(ctx_));
+    llama_sampler* chain = llm::build_sampler_chain(vocab, params, grammar);
+    struct ChainGuard {
+        llama_sampler* chain;
+        ~ChainGuard() { llama_sampler_free(chain); }
+    } guard{chain};
 
     // --- token generation --------------------------------------------------
     const auto output_start = Clock::now();
@@ -436,7 +472,99 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
         on_token(pending);
     }
     stats.output_ms = ms_since(output_start);
-    return stats;
+}
+
+ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const ChatSink& sink) {
+    ChatResult result;
+#if defined(CRUCIBLE_HAS_MTMD)
+    // A marker where each picture goes, ahead of the words it came with --
+    // the order every vision model reads best -- and the pictures' bytes, in
+    // the same order, for the projector.
+    const std::string marker = mtmd_default_marker();
+    std::vector<ChatMessage> marked = request.messages;
+    std::vector<std::string> blobs;
+    for (ChatMessage& message : marked) {
+        std::string markers;
+        for (const ChatImage& image : message.images) {
+            std::string bytes;
+            if (format::from_base64(image.data, bytes) && !bytes.empty()) {
+                blobs.push_back(std::move(bytes));
+                markers += marker + "\n";
+            }
+        }
+        message.content = markers + message.content;
+        message.images.clear();
+    }
+    const std::string prompt = format_chat(marked, /*add_assistant_prefix=*/true);
+
+    std::vector<mtmd_bitmap*> bitmaps;
+    struct Bitmaps {
+        std::vector<mtmd_bitmap*>& all;
+        ~Bitmaps() {
+            for (mtmd_bitmap* one : all) {
+                mtmd_bitmap_free(one);
+            }
+        }
+    } free_bitmaps{bitmaps};
+    const mtmd_helper_init_opt options = mtmd_helper_init_opt_default();
+    for (const std::string& blob : blobs) {
+        const mtmd_helper_bitmap_wrapper made = mtmd_helper_bitmap_init_from_buf(
+            vision_, reinterpret_cast<const unsigned char*>(blob.data()), blob.size(), false, options);
+        if (made.bitmap == nullptr) {
+            result.error = "a picture could not be read -- it is not a PNG, a JPEG or a GIF";
+            return result;
+        }
+        bitmaps.push_back(made.bitmap);
+    }
+
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    struct Chunks {
+        mtmd_input_chunks* chunks;
+        ~Chunks() { mtmd_input_chunks_free(chunks); }
+    } free_chunks{chunks};
+    const mtmd_input_text text{prompt.c_str(), prompt.size(), /*add_special=*/true, /*parse_special=*/true};
+    std::vector<const mtmd_bitmap*> given(bitmaps.begin(), bitmaps.end());
+    if (mtmd_tokenize(vision_, chunks, &text, given.data(), given.size()) != 0) {
+        result.error = "the pictures could not be read into the prompt";
+        return result;
+    }
+
+    // Started over: what the context held was text, and is no prefix of this.
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    cached_.clear();
+
+    if (sink.cancel) {
+        llama_set_abort_callback(
+            ctx_, [](void* data) { return (*static_cast<const CancelCallback*>(data))(); },
+            const_cast<CancelCallback*>(&sink.cancel));
+    }
+    struct AbortGuard {
+        llama_context* ctx;
+        ~AbortGuard() { llama_set_abort_callback(ctx, nullptr, nullptr); }
+    } abort_guard{ctx_};
+
+    const auto prompt_start = Clock::now();
+    result.stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
+    llama_pos past = 0;
+    if (mtmd_helper_eval_chunks(vision_, ctx_, chunks, 0, 0, std::max(1, request.params.n_batch),
+                                /*logits_last=*/true, &past) != 0) {
+        result.stats.canceled = sink.cancel && sink.cancel();
+        if (!result.stats.canceled) {
+            result.error = "the model could not read the pictures";
+        }
+        return result;
+    }
+    result.stats.prompt_ms = ms_since(prompt_start);
+    sample(request.params, sink.on_text, sink.cancel, {}, result.stats);
+    // What the context now holds starts with pictures, which no later prompt
+    // of text can share: the next turn starts over too.
+    cached_.clear();
+#else
+    (void)request;
+    (void)sink;
+    result.error = "this build of Crucible cannot read pictures with a local model";
+#endif
+    return result;
 }
 
 

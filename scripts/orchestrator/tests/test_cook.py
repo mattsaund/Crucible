@@ -17,12 +17,15 @@ ROSTER = [
      "keywords": ["documentation", "readme"], "examples": []},
 ]
 
-VERBS = ("LIST", "READ", "WRITE", "RUN", "SEARCH", "ASK", "NOTE", "DONE", "HANDOFF")
+VERBS = ("LIST", "READ", "WRITE", "EDIT", "FIND", "RUN", "SEARCH", "ASK", "NOTE", "DONE", "HANDOFF")
 
 
 def parse(answer):
-    """A small stand-in for the core's parser: `VERB: argument`, and a fence after WRITE."""
-    match = re.search(r"^(%s): ?(.*)$" % "|".join(VERBS), answer, re.M)
+    """A small stand-in for the core's parser: `VERB: argument`, a fence after
+    WRITE, and an action after a NOTE winning over the NOTE."""
+    matches = list(re.finditer(r"^(%s): ?(.*)$" % "|".join(VERBS), answer, re.M))
+    acting = [m for m in matches if m.group(1) != "NOTE"]
+    match = acting[0] if acting else (matches[0] if matches else None)
     if not match:
         attempted = re.search(r"^(%s)\b" % "|".join(VERBS), answer, re.M)
         return {"call": None, "attempted": attempted.group(1).lower() if attempted else "none"}
@@ -30,6 +33,8 @@ def parse(answer):
     if match.group(1) == "WRITE":
         fence = re.search(r"```\n(.*?)```", answer, re.S)
         content = fence.group(1) if fence else ""
+    if match.group(1) == "EDIT":
+        content = answer[match.end():]
     return {"call": {"kind": match.group(1).lower(), "argument": match.group(2).strip(),
                      "content": content}, "attempted": "none"}
 

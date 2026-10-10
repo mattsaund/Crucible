@@ -51,6 +51,8 @@ extern const unsigned int  kMarkSvg_size;
 #include <webview/webview.h>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/app/starter.hpp"
+#include "crucible/util/resources.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"
 #include "dialogs.hpp"
@@ -220,13 +222,32 @@ int App::run() {
     return 1;
 #else
     // Whatever the download did not carry -- Crucible's Python, the runtimes,
-    // the training environment -- is fetched from here, with the window up to
-    // say how far along it is.
+    // the programs experts use, a model to build with when there is none,
+    // the training environment -- is fetched from here, with the window up
+    // to say how far along it is.
+    if (starter::needed(config_)) {
+        std::uint64_t used  = 0;
+        std::uint64_t total = 0;
+        util::system_memory(used, total);
+        setup_.want_model(starter::for_memory(total), config_.resolved_models_dir());
+    }
     setup_.start();
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // Who the window is, said before it exists. crucible.desktop names
+    // `crucible` as the class its window has, and a window that reported
+    // another would be a second application in the dock beside the one that
+    // started it. The icon is the themed one the install puts in hicolor, for
+    // the window managers that draw a window's own icon rather than its menu
+    // entry's. (A Mac's icon is in the bundle, and Windows' in the program.)
+    g_set_prgname("crucible");
+    gtk_window_set_default_icon_name("crucible");
+#endif
 
     webview::webview view(/*debug=*/false, nullptr);
     view.set_title("Crucible");
     view.set_size(1180, 760, WEBVIEW_HINT_NONE);
+    view_.store(&view);
 
     // Shared with the workers, so an errand that outlives this function is
     // not left holding a reference into its stack.
@@ -436,6 +457,7 @@ int App::run() {
     // it is time to ask again. The answer arrives as a notice, through the
     // same wake everything else uses.
     begin_update_check();
+    refresh_prices();
 
     // --- the page -------------------------------------------------------------
     //
@@ -468,6 +490,7 @@ int App::run() {
     // wake; and only then is the wake taken away. The pusher and the webview
     // go as this function returns, pusher first, which is the order they were
     // declared in reversed.
+    view_.store(nullptr);
     {
         const std::lock_guard<std::mutex> lock(gate->mutex);
         gate->open = false;
@@ -475,6 +498,16 @@ int App::run() {
     engine_->stop();
     set_wake(nullptr);
     return 0;
+#endif
+}
+
+void App::quit() {
+#if defined(CRUCIBLE_HAS_WEBVIEW) && defined(CRUCIBLE_HAS_WEB_INDEX)
+    // The window's own thread closes it, as its close button would; run()
+    // then puts everything away in its usual order.
+    if (auto* view = static_cast<webview::webview*>(view_.load())) {
+        view->dispatch([view] { view->terminate(); });
+    }
 #endif
 }
 

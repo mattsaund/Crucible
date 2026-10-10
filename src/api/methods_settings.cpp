@@ -11,6 +11,7 @@
 #include <fstream>
 #include <mutex>
 
+#include "crucible/app/self_source.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/config/trust.hpp"
 #include "crucible/llm/model_catalog.hpp"
@@ -72,6 +73,18 @@ Reply config(const json&, Host& host) {
             }
         }
     }
+    // Nor does an MCP server's environment, which is where its tokens go:
+    // the names are sent, so the screen can say which are set, and the
+    // values are not.
+    if (document.contains("tools") && document["tools"].contains("mcp") && document["tools"]["mcp"].is_array()) {
+        for (json& server : document["tools"]["mcp"]) {
+            if (server.is_object() && server.contains("env") && server["env"].is_object()) {
+                for (auto it = server["env"].begin(); it != server["env"].end(); ++it) {
+                    it.value() = "";
+                }
+            }
+        }
+    }
     return good(std::move(document));
 }
 
@@ -101,6 +114,28 @@ Reply config_set(const json& params, Host& host) {
                 if (old.is_object() && old.value("id", "") == provider.value("id", "")
                     && old.contains("api_key")) {
                     provider["api_key"] = old["api_key"];
+                }
+            }
+        }
+    }
+
+    // And an MCP server's environment sent back empty means "as it was",
+    // by server and name.
+    if (params.contains("tools") && params["tools"].contains("mcp") && document["tools"]["mcp"].is_array()
+        && before.contains("tools") && before["tools"].contains("mcp") && before["tools"]["mcp"].is_array()) {
+        for (json& server : document["tools"]["mcp"]) {
+            if (!server.is_object() || !server.contains("env") || !server["env"].is_object()) {
+                continue;
+            }
+            for (const json& old : before["tools"]["mcp"]) {
+                if (!old.is_object() || old.value("name", "") != server.value("name", "")
+                    || !old.contains("env") || !old["env"].is_object()) {
+                    continue;
+                }
+                for (auto it = server["env"].begin(); it != server["env"].end(); ++it) {
+                    if (it.value() == "" && old["env"].contains(it.key())) {
+                        it.value() = old["env"][it.key()];
+                    }
                 }
             }
         }
@@ -276,12 +311,66 @@ Reply prefs_set(const json& params, const Scene&) {
     return ec ? bad("could not save " + window_file().string() + ": " + ec.message()) : good();
 }
 
+// ---------------------------------------------------------------------------
+// Crucible's own source
+// ---------------------------------------------------------------------------
+
+/// Where the source is, and how a rebuild of it is going.
+Reply self_source(const json&, Host& host) {
+    const self::Source source = self::find(host.config().ui.source_dir);
+    json out{{"found", source.found}, {"root", source.root.string()}, {"build", source.build.string()},
+             {"program", source.program.string()}, {"why", source.why}};
+    if (self::Rebuild* rebuild = host.rebuild()) {
+        out["rebuilding"] = rebuild->running();
+        out["status"]     = rebuild->status();
+        out["log"]        = rebuild->log();
+    }
+    return good(std::move(out));
+}
+
+/// Build it again, in the background.
+Reply self_rebuild(const json&, Host& host) {
+    self::Rebuild* rebuild = host.rebuild();
+    if (rebuild == nullptr) {
+        return bad("this Crucible cannot rebuild itself");
+    }
+    std::string error;
+    if (!rebuild->start(self::find(host.config().ui.source_dir), error)) {
+        return bad(error);
+    }
+    return good();
+}
+
+/// Start what was built, and close this one.
+///
+/// Only where there is a window to close: from anywhere else -- a test's bare
+/// surface, a caller on the pipe -- it would start a second Crucible beside
+/// this one, which is how running the tests once opened a window each time.
+Reply self_restart(const json&, Host& host) {
+    const self::Rebuild* rebuild = host.rebuild();
+    if (rebuild == nullptr) {
+        return bad("this Crucible cannot restart itself");
+    }
+    if (rebuild->running()) {
+        return bad("the rebuild has not finished");
+    }
+    std::string error;
+    if (!self::restart(self::find(host.config().ui.source_dir), error)) {
+        return bad(error);
+    }
+    host.quit();
+    return good();
+}
+
 void settings_methods(std::vector<Method>& table) {
     table.push_back({"config",       nullptr, config});
     table.push_back({"config.set",   nullptr, config_set});
     table.push_back({"models",       models, nullptr});
     table.push_back({"devices",      devices, nullptr});
     table.push_back({"about",        about, nullptr});
+    table.push_back({"self.source",  nullptr, self_source});
+    table.push_back({"self.rebuild", nullptr, self_rebuild});
+    table.push_back({"self.restart", nullptr, self_restart});
     table.push_back({"update.check", update_check, nullptr});
     table.push_back({"prefs",        prefs, nullptr});
     table.push_back({"prefs.set",    prefs_set, nullptr});

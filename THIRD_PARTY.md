@@ -76,20 +76,61 @@ with Crucible or linked into it.
 The tools an expert reaches for beyond the project folder are programs the
 machine has or does not, run the way `curl` is -- started as a separate
 process in the project folder, their output read -- and none is distributed
-with Crucible or linked into it. Each tool says which program it wanted when
-the program is not there.
+with Crucible or linked into it. What the machine lacks of a few of them,
+Crucible fetches on its first start from where each is published, into its
+own data folder (`kit/`), and runs from there: the kit, in the second table.
 
 | tool | program | license | where it comes from |
 |---|---|---|---|
 | `GIT:`, commits after a build's tasks, the Source panel | [git](https://git-scm.com) | GPL-2.0 | your package manager, Xcode's tools, Git for Windows |
-| `GH:`, Publish to GitHub, Release | [gh](https://cli.github.com) | MIT | GitHub's command line, installed separately |
-| `FETCH:` rendered as a browser shows it | Chrome, Chromium or Edge, run headless | Chromium is BSD-3-Clause; the browsers are their makers' | whichever is installed; without one, curl reads the page as served |
+| `GH:`, Publish to GitHub, Release, CI runs | [gh](https://cli.github.com) | MIT | installed, or fetched into the kit |
+| `FETCH:` and `RENDER:` | Chrome, Chromium, Edge or Brave run headless, or Chrome's headless shell | Chromium is BSD-3-Clause; the browsers are their makers' | whichever is installed, or the shell fetched into the kit; without either, FETCH reads the page with curl |
+| `TOOL:` | an MCP server you add in Settings, Tools | the server's own | wherever you got it -- often `npx`, which fetches it on its first run |
 | `PYTHON:` | Crucible's own Python | PSF | see above |
 | `SCREENSHOT:` on macOS | `screencapture` and `sips` | Apple's | part of macOS |
 | the mouse and keyboard on macOS | `osascript` | Apple's | part of macOS |
 | the screen on Windows | PowerShell with the .NET classes Windows ships | Microsoft's | part of Windows |
 | the screen on Linux | `xdotool` or `ydotool`; `grim`, `gnome-screenshot`, `spectacle`, `scrot` or ImageMagick's `import` | BSD, MIT, GPL and LGPL variously | your package manager |
-| the words in a screenshot or a picture | [tesseract](https://github.com/tesseract-ocr/tesseract) | Apache-2.0 | your package manager; optional, for a model that reads text only |
+| the words in a picture, on macOS | the Vision framework, through `osascript` | Apple's | part of macOS |
+| the words in a picture, on Windows | `Windows.Media.Ocr`, through Windows PowerShell | Microsoft's | part of Windows |
+| the words in a picture, on Linux | [tesseract](https://github.com/tesseract-ocr/tesseract), or [RapidOCR](https://github.com/RapidAI/RapidOCR) | Apache-2.0 | your package manager, or RapidOCR fetched into the kit |
+
+The kit, fetched only for what the machine does not have:
+
+| piece | what | license | fetched from |
+|---|---|---|---|
+| GitHub's command line | [gh](https://github.com/cli/cli) | MIT | its GitHub releases |
+| Node.js | [Node.js](https://nodejs.org), the current long-term release | MIT, with its bundled parts under theirs | nodejs.org/dist |
+| a headless browser | [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/)'s headless shell | BSD-3-Clause (Chromium) with its third-party notices | Google's storage for Chrome for Testing |
+| Git, on Windows | [MinGit](https://github.com/git-for-windows/git), Git for Windows' minimal build | GPL-2.0 | Git for Windows' GitHub releases |
+| reading pictures, on Linux | [RapidOCR](https://github.com/RapidAI/RapidOCR) and [onnxruntime](https://onnxruntime.ai) in a Python of its own | Apache-2.0; MIT | PyPI, through pip |
+
+Nothing of these is changed, and each keeps its own license file where it was
+unpacked. `crucible --uninstall` removes the kit with the rest of Crucible's
+data.
+
+## The program a made app runs in
+
+**Make it an app** copies `crucible-app`, which is Crucible's own code
+(MIT) built with webview (MIT), beside the page it packages. The page is
+whoever made it's -- yours.
+
+## The model Crucible fetches to build with
+
+On a machine with no model at all, the first start fetches one open coding
+model, the largest of these that leaves half the machine's memory free:
+
+| model | license | fetched from |
+|---|---|---|
+| [Qwen3-Coder-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct), Q4_K_M | Apache-2.0 | unsloth's GGUF on Hugging Face |
+| [Qwen2.5-Coder Instruct](https://huggingface.co/Qwen) 14B, 7B and 1.5B, Q4_K_M | Apache-2.0 | bartowski's GGUFs on Hugging Face |
+| [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507), Q4_K_M | Apache-2.0 | unsloth's GGUF on Hugging Face |
+
+Every one is Apache-2.0, so what is built with it is yours to use however you
+like. (Qwen2.5-Coder at 3B is not on the list: its license is research only.)
+
+It lands in your models folder like any model you put there, and is yours to
+delete.
 
 The DuckDuckGo search provider reads DuckDuckGo's own HTML results page over
 HTTPS; nothing of theirs is carried here, and using it is between you and
@@ -130,6 +171,12 @@ speaks OpenAI's chat-completions one. **Crucible carries none of their code**
 -- there is no SDK in the build, only requests written against the two
 published wire formats -- and using one is between you and that provider,
 under their terms and on your key.
+
+What a provider's tokens cost is read from
+[LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+(MIT), fetched at most once a day into Crucible's data folder, and only once a
+provider has been added. The request asks for a public file and says nothing
+about the machine.
 
 ## The training environment
 

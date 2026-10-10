@@ -26,6 +26,7 @@
 // hand and a seat has to be pointed at it by hand: see config.hpp, Provider.
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -33,6 +34,7 @@
 
 #include "crucible/config/config.hpp"
 #include "crucible/llm/chat_model.hpp"
+#include "crucible/llm/spend.hpp"
 
 namespace crucible::remote {
 
@@ -71,14 +73,16 @@ struct Quirks {
     bool no_effort        = false;
 };
 
-/// Hands out the model behind a seat, and stops whichever one is answering.
+/// Hands out the model behind a seat, and stops the requests that should stop.
 ///
-/// One per engine. It remembers what it has learned about each model for as
+/// One per engine, and asked from several threads: the chat's and each of a
+/// build's agents. It remembers what it has learned about each model for as
 /// long as the providers stay the same, so the question "what can this model
 /// do" is asked once rather than before every prompt.
 class Hub {
 public:
-    Hub();
+    /// `spend_file` keeps the month's totals; see spend.hpp.
+    explicit Hub(std::filesystem::path spend_file = {});
     ~Hub();
     Hub(const Hub&)            = delete;
     Hub& operator=(const Hub&) = delete;
@@ -86,23 +90,30 @@ public:
     /// The model `params` names. Null, with `error` saying why, when the
     /// provider it names is not one that has been added.
     ///
-    /// The pointer is good until the next call to `adopt`.
+    /// The pointer is good for as long as the hub is: a provider change
+    /// retires the clients it replaces rather than destroying them, because
+    /// an agent may be halfway through a request on one.
     ChatModel* model(const ModelParams& params, std::string& error);
 
     /// A model served on this machine by something that speaks the
     /// chat-completions API at `base_url` -- MLX's server, see
-    /// mlx_server.hpp. Text only, and with the context `context_tokens` it
-    /// was given rather than the 128k assumed of a provider that will not
-    /// say.
+    /// mlx_server.hpp. Text only, with the context `context_tokens` it was
+    /// given rather than the 128k assumed of a provider that will not say,
+    /// and asked one request at a time: it is one model in one memory.
     ChatModel* local_server(const std::string& base_url, int context_tokens);
 
     /// Take the provider list from `config`. What was learned about their
     /// models is kept unless the providers themselves changed.
     void adopt(const Config& config);
 
-    /// Stop the request in flight, if there is one. Safe from any thread --
-    /// which is the point: the thread reading the answer is blocked on the
-    /// next line of it, and Stop is pressed somewhere else.
+    /// What each provider's models have been asked, and what is left of
+    /// their rate limits. See spend.hpp.
+    std::vector<spend::Model> spending() const;
+
+    /// Stop every request in flight whose cancel switch is on, and any that
+    /// was made without one. Safe from any thread -- which is the point: the
+    /// thread reading an answer is blocked on the next line of it, and Stop
+    /// is pressed somewhere else. Set the switch first, then call this.
     void interrupt();
 
 private:
@@ -152,8 +163,10 @@ struct Event {
     std::string detail;      ///< what it said about stopping, when it said anything
     std::string error;       ///< the stream reported a failure
     std::string note;        ///< something to tell the reader; see ChatResult::notes
-    int  input_tokens  = -1; ///< -1 when this event did not say
+    int  input_tokens  = -1; ///< the whole prompt, cached or not; -1 when this event did not say
     int  output_tokens = -1;
+    int  cache_read    = -1; ///< of input_tokens, read from the provider's cache
+    int  cache_write   = -1; ///< of input_tokens, written to it
     bool done          = false;
 };
 

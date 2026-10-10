@@ -10,7 +10,14 @@
 // without a screen or a repository to try them on.
 #include "test_helpers.hpp"
 
+#include <atomic>
+#include <fstream>
+#include <iterator>
+#include <chrono>
+#include <thread>
+
 #include "crucible/api/surface.hpp"
+#include "crucible/engine/leases.hpp"
 #include "crucible/tools/computer.hpp"
 #include "crucible/tools/fetch.hpp"
 #include "crucible/tools/git.hpp"
@@ -135,6 +142,8 @@ TEST(build_settings_round_trip_through_the_config_file) {
     original.build.auto_commit     = false;
     original.build.confirm_plan    = false;
     original.build.rounds_per_task = 25;
+    original.build.agents          = 5;
+    original.build.split           = false;
     original.tools.computer_control = true;
     CHECK(save_config(original, file));
     std::vector<std::string> warnings;
@@ -144,10 +153,74 @@ TEST(build_settings_round_trip_through_the_config_file) {
     CHECK(!reloaded.build.auto_commit);
     CHECK(!reloaded.build.confirm_plan);
     CHECK_EQ(reloaded.build.rounds_per_task, 25);
+    CHECK_EQ(reloaded.build.agents, 5);
+    CHECK(!reloaded.build.split);
     // The one switch that is not about the folder survives a restart in
     // whichever position it was left: a screen that quietly turned itself
     // back on would be the worse mistake.
     CHECK(reloaded.tools.computer_control);
+}
+
+TEST(agents_at_once_outside_one_to_eight_is_refused_for_the_default) {
+    TempDir dir;
+    const auto file = dir.path() / "config.json";
+    std::ofstream(file) << R"({"build": {"agents": 40}})";
+    std::vector<std::string> warnings;
+    const Config loaded = load_config(file, warnings);
+    CHECK_EQ(loaded.build.agents, BuildConfig{}.agents);
+    bool said = false;
+    for (const std::string& warning : warnings) {
+        said = said || warning.find("build.agents") != std::string::npos;
+    }
+    CHECK(said);
+}
+
+// ---------------------------------------------------------------------------
+// Leases: a model in use is not freed under its user
+// ---------------------------------------------------------------------------
+
+TEST(a_lease_holds_a_model_until_it_is_let_go) {
+    Leases leases;
+    CHECK(!leases.held("/m/coder.gguf"));
+    {
+        Leases::Lease first  = leases.take("/m/coder.gguf");
+        Leases::Lease second = leases.take("/m/coder.gguf");
+        CHECK_EQ(leases.count("/m/coder.gguf"), 2);
+        first.release();
+        CHECK(leases.held("/m/coder.gguf"));
+        // Moved, the hold goes with it and is not counted twice.
+        Leases::Lease moved = std::move(second);
+        CHECK(!second.held());
+        CHECK_EQ(leases.count("/m/coder.gguf"), 1);
+    }
+    CHECK(!leases.held("/m/coder.gguf"));
+}
+
+TEST(a_wait_for_room_ends_when_a_lease_does_or_when_stopped) {
+    Leases leases;
+    Leases::Lease held = leases.take("/m/big.gguf");
+
+    // A release that happens before the wait starts is not missed: the
+    // count read before asking the host is what the wait compares against.
+    const std::uint64_t since = leases.releases();
+    std::thread letting_go([&held] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        held.release();
+    });
+    CHECK(leases.wait_for_release({}, since, std::chrono::seconds(5)));
+    letting_go.join();
+
+    // Stopped: the cancel switch is looked at while waiting.
+    std::atomic<bool> stop{false};
+    std::thread stopping([&stop] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        stop.store(true);
+    });
+    const auto started = std::chrono::steady_clock::now();
+    CHECK(!leases.wait_for_release([&stop] { return stop.load(); }, leases.releases(),
+                                   std::chrono::seconds(30)));
+    stopping.join();
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
 }
 
 // ---------------------------------------------------------------------------
@@ -422,4 +495,212 @@ TEST(duckduckgo_results_are_read_off_its_page) {
     tools::SearchSettings settings;
     settings.provider = "duckduckgo";
     CHECK_EQ(tools::request_url("a b", settings), std::string("https://html.duckduckgo.com/html/?q=a%20b"));
+}
+
+// ---------------------------------------------------------------------------
+// EDIT and FIND: part of a file, and where in the project something is
+// ---------------------------------------------------------------------------
+
+TEST(an_edit_is_read_from_its_blocks_with_or_without_a_fence) {
+    const std::optional<tools::ToolCall> call = tools::parse_tool_call(
+        "I will make it blue.\nEDIT: style.css\n```css\n<<<<<<< SEARCH\n  color: red;\n=======\n"
+        "  color: blue;\n>>>>>>> REPLACE\n```\n", "");
+    CHECK(call.has_value() && call->kind == tools::ToolKind::Edit);
+    CHECK_EQ(call->argument, std::string("style.css"));
+    std::string error;
+    const std::vector<tools::EditBlock> blocks = tools::parse_edit_blocks(call->content, error);
+    CHECK_EQ(blocks.size(), std::size_t{1});
+    CHECK_EQ(blocks[0].search, std::string("  color: red;"));
+    CHECK_EQ(blocks[0].replace, std::string("  color: blue;"));
+
+    // Two blocks, markers of another length, and an unclosed one refused.
+    const std::vector<tools::EditBlock> two = tools::parse_edit_blocks(
+        "<<<<< SEARCH\na\n=====\nb\n>>>>> REPLACE\n<<<<<<<<< search\nc\n=========\nd\n>>>>>>>>> replace\n", error);
+    CHECK_EQ(two.size(), std::size_t{2});
+    CHECK(tools::parse_edit_blocks("<<<<<<< SEARCH\na\n=======\nb\n", error).empty());
+    CHECK(error.find("REPLACE") != std::string::npos);
+    CHECK(tools::parse_edit_blocks("just some prose", error).empty());
+}
+
+TEST(an_edit_applies_exactly_or_line_by_line_and_refuses_to_guess) {
+    const std::string css = "body {\n  margin: 0;\n}\n.button {\n  color: red;\n  margin-left: 8px;\n}\n";
+    std::string error;
+    // As written.
+    std::optional<std::string> out =
+        tools::apply_edit_blocks(css, {{"  color: red;", "  color: blue;"}}, error);
+    CHECK(out.has_value() && out->find("color: blue;") != std::string::npos);
+    CHECK(out->find("color: red") == std::string::npos);
+
+    // Copied without its indentation, as a model reading numbered lines does:
+    // found line by line, and the replacement put at the file's indentation.
+    out = tools::apply_edit_blocks(css, {{"margin-left: 8px;", "margin-left: 32px;"}}, error);
+    CHECK(out.has_value());
+    CHECK(out->find("\n  margin-left: 32px;\n") != std::string::npos);
+
+    // Twice in the file is refused, with what to do instead.
+    const std::string twice = ".a { color: red; }\n.b { color: red; }\n";
+    CHECK(!tools::apply_edit_blocks(twice, {{"color: red;", "color: blue;"}}, error).has_value());
+    CHECK(error.find("2 times") != std::string::npos);
+
+    // Not there at all says to read the file again.
+    CHECK(!tools::apply_edit_blocks(css, {{"color: green;", "color: blue;"}}, error).has_value());
+    CHECK(error.find("READ it again") != std::string::npos);
+
+    // An empty SEARCH makes a file that is not there yet, and only then.
+    out = tools::apply_edit_blocks("", {{"", "print('hi')"}}, error);
+    CHECK(out.has_value() && *out == "print('hi')\n");
+    CHECK(!tools::apply_edit_blocks(css, {{"", "x"}}, error).has_value());
+}
+
+TEST(an_edit_forgives_what_a_small_model_copies_wrong) {
+    const std::string page = "<body>\n  <h1>Budget</h1>\n\n  <button id=\"add\">Add</button>\n</body>\n";
+    std::string error;
+    // READ's line numbers, copied with the lines.
+    std::optional<std::string> out =
+        tools::apply_edit_blocks(page, {{"2\t  <h1>Budget</h1>", "  <h1>My budget</h1>"}}, error);
+    CHECK(out.has_value() && out->find("<h1>My budget</h1>") != std::string::npos);
+    out = tools::apply_edit_blocks(page, {{"2 | <h1>Budget</h1>\n3 |\n4 | <button id=\"add\">Add</button>",
+                                           "<h1>B</h1>\n<button id=\"add\" class=\"wide\">Add</button>"}}, error);
+    CHECK(out.has_value() && out->find("class=\"wide\"") != std::string::npos);
+    // A blank line the model left out.
+    out = tools::apply_edit_blocks(page, {{"<h1>Budget</h1>\n<button id=\"add\">Add</button>",
+                                           "<h1>Budget</h1>\n<button id=\"add\">Plus</button>"}}, error);
+    CHECK(out.has_value() && out->find(">Plus<") != std::string::npos);
+    CHECK(out.has_value() && out->find("<body>") == 0);
+    // A number that is the file's own is left alone: these do not count up.
+    const std::string data = "10 apples\n20 pears\n";
+    out = tools::apply_edit_blocks(data, {{"20 pears", "30 pears"}}, error);
+    CHECK(out.has_value() && *out == "10 apples\n30 pears\n");
+    out = tools::apply_edit_blocks(data, {{"  10 apples\n  20 pears", "10 apples\n25 pears"}}, error);
+    CHECK(out.has_value() && *out == "10 apples\n25 pears\n");
+    // Nothing matching: the nearest lines in the file are said back, numbered,
+    // for the next try to copy.
+    CHECK(!tools::apply_edit_blocks(page, {{"<h1>Budget</h1>\n<button id=\"plus\">Add</button>", "x"}}, error)
+               .has_value());
+    CHECK(error.find("nearest lines") != std::string::npos);
+    CHECK(error.find("2\t  <h1>Budget</h1>") != std::string::npos);
+}
+
+TEST(an_edit_changes_the_file_on_disk_and_says_what_moved) {
+    TempDir dir;
+    tools::WorkshopSettings settings = everything_on(dir.path());
+    std::ofstream(dir.path() / "style.css") << ".button {\n  color: red;\n}\n";
+    tools::ToolCall call;
+    call.kind     = tools::ToolKind::Edit;
+    call.argument = "style.css";
+    call.content  = "<<<<<<< SEARCH\n  color: red;\n=======\n  color: blue;\n>>>>>>> REPLACE\n";
+    std::string error;
+    const std::optional<std::string> preview = tools::edited_contents(call, settings, error);
+    CHECK(preview.has_value() && preview->find("blue") != std::string::npos);
+    const tools::ToolResult result = tools::run_tool(call, settings, {}, {});
+    CHECK(result.ok);
+    CHECK(result.summary.rfind("edited style.css", 0) == 0);
+    CHECK(result.changed == std::vector<std::string>{"style.css"});
+    std::ifstream in(dir.path() / "style.css");
+    const std::string now((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK_EQ(now, std::string(".button {\n  color: blue;\n}\n"));
+
+    // Outside the folder is refused like a WRITE is.
+    call.argument = "../elsewhere.css";
+    CHECK(!tools::run_tool(call, settings, {}, {}).ok);
+}
+
+TEST(find_searches_the_project_and_not_what_it_depends_on) {
+    TempDir dir;
+    tools::WorkshopSettings settings = everything_on(dir.path());
+    std::filesystem::create_directories(dir.path() / "src");
+    std::filesystem::create_directories(dir.path() / "node_modules" / "lib");
+    std::ofstream(dir.path() / "style.css") << "a { color: red; }\n";
+    std::ofstream(dir.path() / "src" / "app.js") << "const red = 'Color: Red';\nconsole.log(red);\n";
+    std::ofstream(dir.path() / "node_modules" / "lib" / "x.css") << "b { color: red; }\n";
+
+    tools::ToolCall call;
+    call.kind     = tools::ToolKind::Find;
+    call.argument = "color: red";
+    tools::ToolResult result = tools::run_tool(call, settings, {}, {});
+    CHECK(result.ok);
+    CHECK(result.output.find("style.css:1:") != std::string::npos);
+    CHECK(result.output.find("src/app.js:1:") != std::string::npos);   // whatever its case
+    CHECK(result.output.find("node_modules") == std::string::npos);
+
+    call.argument = "color: red in *.css";
+    result = tools::run_tool(call, settings, {}, {});
+    CHECK(result.output.find("app.js") == std::string::npos);
+    CHECK(result.summary.find("1 line in 1 file") != std::string::npos);
+
+    call.argument = "/console\\.log\\(/";
+    result = tools::run_tool(call, settings, {}, {});
+    CHECK(result.output.find("src/app.js:2:") != std::string::npos);
+
+    call.argument = "nothing like this";
+    CHECK(tools::run_tool(call, settings, {}, {}).output.find("Nothing in the project") != std::string::npos);
+}
+
+TEST(a_glob_matches_names_anywhere_or_paths_from_the_root) {
+    CHECK(tools::glob_matches("*.css", "styles/site.css"));
+    CHECK(!tools::glob_matches("*.css", "styles/site.scss"));
+    CHECK(tools::glob_matches("src/*.py", "src/app.py"));
+    CHECK(!tools::glob_matches("src/*.py", "src/deep/app.py"));
+    CHECK(tools::glob_matches("src/**/*.py", "src/deep/app.py"));
+    CHECK(tools::glob_matches("src/**/*.py", "src/app.py"));
+    CHECK(tools::glob_matches("README.?d", "README.md"));
+}
+
+TEST(the_instructions_teach_edit_and_find_and_the_example_parses) {
+    TempDir dir;
+    const std::string text = tools::workshop_instructions(everything_on(dir.path()), tools::ToolAudience::Cook);
+    CHECK(text.find("EDIT: <file>") != std::string::npos);
+    CHECK(text.find("FIND: <text>") != std::string::npos);
+    // The worked example is itself a call the parser reads.
+    const std::size_t at = text.find("EDIT: style.css");
+    CHECK(at != std::string::npos);
+    const std::optional<tools::ToolCall> example = tools::parse_tool_call(text.substr(at), "");
+    CHECK(example.has_value() && example->kind == tools::ToolKind::Edit);
+    std::string error;
+    CHECK_EQ(tools::parse_edit_blocks(example->content, error).size(), std::size_t{1});
+}
+
+TEST(render_draws_a_page_into_a_pdf_and_a_picture) {
+    if (tools::browser_here().empty()) {
+        std::printf("      (no browser on this machine; skipped)\n");
+        return;
+    }
+    TempDir dir;
+    tools::WorkshopSettings settings = everything_on(dir.path());
+    std::ofstream(dir.path() / "report.html")
+        << "<html><body style='font:32px sans-serif'><h1>Net revenue</h1><p>3,150</p></body></html>";
+    tools::ToolCall call;
+    call.kind     = tools::ToolKind::Render;
+    call.argument = "report.html to out/report.pdf";
+    tools::ToolResult result = tools::run_tool(call, settings, {}, {});
+    CHECK(result.ok);
+    if (!result.ok) {
+        std::printf("      %s\n", result.output.c_str());
+    }
+    std::ifstream pdf(dir.path() / "out" / "report.pdf", std::ios::binary);
+    std::string head(5, '\0');
+    pdf.read(head.data(), 5);
+    CHECK_EQ(head, std::string("%PDF-"));
+
+    call.argument = "report.html -> shot.png at 640x360";
+    result = tools::run_tool(call, settings, {}, {});
+    CHECK(result.ok);
+    CHECK(result.changed == std::vector<std::string>{"shot.png"});
+    CHECK(!result.pictures.empty());
+
+    // Where it goes and what it is are checked before the browser starts.
+    call.argument = "report.html to ../away.pdf";
+    CHECK(!tools::run_tool(call, settings, {}, {}).ok);
+    call.argument = "report.html to report.docx";
+    CHECK(!tools::run_tool(call, settings, {}, {}).ok);
+}
+
+TEST(an_action_after_a_note_is_the_call_and_a_note_alone_is_a_note) {
+    const std::optional<tools::ToolCall> both = tools::parse_tool_call(
+        "NOTE: starting task 1\nWRITE: index.html\n```\n<p>hi</p>\n```", "");
+    CHECK(both.has_value() && both->kind == tools::ToolKind::Write);
+    CHECK_EQ(both->argument, std::string("index.html"));
+    CHECK_EQ(both->content, std::string("<p>hi</p>"));
+    const std::optional<tools::ToolCall> alone = tools::parse_tool_call("NOTE: thinking it over", "");
+    CHECK(alone.has_value() && alone->kind == tools::ToolKind::Note);
 }

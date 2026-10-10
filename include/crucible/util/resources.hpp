@@ -73,6 +73,12 @@ std::string parse_cpu_name(std::string_view cpuinfo);
 bool parse_vm_stat(std::string_view text, std::uint64_t page_size, std::uint64_t total,
                    std::uint64_t& used);
 
+/// The machine's memory as it is now, as (used, total) bytes, read the way
+/// the monitor reads it. False when it cannot be read. On a Mac this runs
+/// vm_stat, so it is for a decision -- may another model be loaded beside
+/// this one -- and not for every frame.
+bool system_memory(std::uint64_t& used, std::uint64_t& total);
+
 /// Samples the machine on a thread of its own and hands back the last reading.
 ///
 /// `on_change` is called after each sample so the screen can redraw; it runs on

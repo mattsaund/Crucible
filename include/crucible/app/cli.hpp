@@ -28,6 +28,12 @@ struct Options {
     /// --install-python: fetch Crucible's own Python and exit. Routing and
     /// cooks run on it; the window fetches it on first start otherwise.
     bool install_python = false;
+
+    /// --install-kit: fetch the programs an expert reaches for that this
+    /// machine lacks -- GitHub's command line, Node, a headless browser --
+    /// and exit. See kit/kit.hpp; the window fetches them on first start
+    /// otherwise.
+    bool install_kit = false;
     bool force           = false;  ///< --force, with --install-trainer
     bool quiet           = false;  ///< --quiet, for an installer's own output
 

@@ -59,6 +59,7 @@
 
 #include "crucible/llm/model_host.hpp"
 #include "crucible/tools/attachments.hpp"
+#include "crucible/tools/mcp.hpp"
 #include "crucible/tools/processes.hpp"
 #include "crucible/tools/web_search.hpp"
 
@@ -70,6 +71,10 @@ enum class ToolKind {
     List,    ///< LIST: <dir>
     Read,    ///< READ: <file>   -- text, a document's text, or a picture
     Write,   ///< WRITE: <file>, followed by a block
+    Edit,    ///< EDIT: <file>, followed by SEARCH/REPLACE blocks: part of a file
+    Find,    ///< FIND: <text or /pattern/> [in <glob>] -- the lines that have it
+    Render,  ///< RENDER: <page> to <out.pdf|out.png> [at WxH] -- drawn by the browser
+    Mcp,     ///< TOOL: <server>/<tool>, then its arguments as JSON -- an MCP server's tool
     Run,     ///< RUN: <command>, in the project root but not confined to it;
              ///< RUN bash: / RUN powershell: and so on name the shell
     Search,  ///< SEARCH: <query>
@@ -104,7 +109,8 @@ struct ToolCall {
     ToolKind    kind = ToolKind::None;
     /// The path, command, query, question or summary on the verb's line.
     std::string argument;
-    /// The body of a WRITE, a PYTHON or a fenced TYPE. Empty for every other verb.
+    /// The body of a WRITE, an EDIT, a PYTHON or a fenced TYPE. Empty for
+    /// every other verb.
     std::string content;
     /// The shell a RUN named -- "bash", "powershell" -- or empty for the
     /// platform's own.
@@ -176,6 +182,10 @@ struct WorkshopSettings {
     /// them -- a workshop with nowhere to keep a process.
     Processes* processes = nullptr;
 
+    /// The MCP servers, whose tools TOOL calls. Owned by the engine; null
+    /// offers none. See mcp.hpp.
+    mcp::Hub* mcp = nullptr;
+
     /// How long a single command may take before it is killed. A build is
     /// minutes; a command that has not finished in this long is stuck, and a
     /// cook that waits forever on it has stopped cooking.
@@ -234,6 +244,47 @@ std::optional<std::filesystem::path> resolve_in_root(const std::filesystem::path
 /// Keep the head and the tail of `text`, with a line in the middle saying what
 /// was dropped. Returns `text` unchanged when it already fits.
 std::string clamp_output(std::string_view text, std::size_t limit);
+
+/// One change an EDIT asks for: the lines as they are, and what they become.
+struct EditBlock {
+    std::string search;
+    std::string replace;
+};
+
+/// The SEARCH/REPLACE blocks in an EDIT's body. Empty, with `error` saying
+/// why, when there are none or one is not closed.
+///
+/// The shape is the one many code models were taught on -- seven angle
+/// brackets, SEARCH, the old lines, seven equals signs, the new lines, seven
+/// angle brackets, REPLACE -- and it is read forgivingly: five to nine of
+/// each marker, any case, with or without a fence around the blocks.
+std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& error);
+
+/// `text` with `blocks` applied in order, or nothing with `error` saying
+/// which block did not apply and why.
+///
+/// Each SEARCH must be found exactly once. When it is not found as written it
+/// is looked for line by line with the indentation and trailing spaces set
+/// aside -- a model copying lines out of a numbered READ gets those wrong
+/// more often than anything else -- and the replacement is indented as the
+/// lines it replaces were. Found more than once is refused rather than
+/// guessed at: changing the wrong one of two identical lines is worse than
+/// being asked for more of the lines around it. An empty SEARCH on an empty
+/// or missing file is the whole of it.
+std::optional<std::string> apply_edit_blocks(const std::string& text, const std::vector<EditBlock>& blocks,
+                                             std::string& error);
+
+/// What an EDIT would leave the file as, without writing it: the question an
+/// approval puts to the person. Nothing, with `error`, when it would not
+/// apply -- the EDIT then fails with that same reason.
+std::optional<std::string> edited_contents(const ToolCall& call, const WorkshopSettings& settings,
+                                           std::string& error);
+
+/// Whether `path` -- relative, with forward slashes -- matches `glob`. `*`
+/// is any run within a name, `**` any run of names, `?` one character; a
+/// glob with no slash is matched against the file's name alone, so `*.css`
+/// finds every stylesheet wherever it is.
+bool glob_matches(std::string_view glob, std::string_view path);
 
 /// Do it.
 ///

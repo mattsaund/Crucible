@@ -17,7 +17,7 @@
 // permissions it will not grant quietly.
 //
 // A screenshot is a picture, and a model on this machine reads text only.
-// Where tesseract is installed the picture's words are read off it, so a
+// The picture's words are read off it by what the machine has, so a
 // local expert can see at least what the screen says; a provider's model
 // that sees pictures is sent the picture itself.
 #pragma once
@@ -65,11 +65,12 @@ Outcome press(std::string_view combination);
 /// pointer's position.
 Outcome scroll(int dx, int dy);
 
-/// The words in a picture, when tesseract is installed; empty otherwise, with
-/// `why` saying so.
+/// The words in a picture, read by what the machine has: Vision on a Mac,
+/// Windows' own OCR engine, tesseract or the kit's RapidOCR on Linux. Empty,
+/// with `why` saying so, when nothing could read them.
 std::string read_text(const std::filesystem::path& picture, std::string& why);
 
-/// Whether tesseract is on the machine.
+/// Whether something on this machine reads the words in a picture.
 bool ocr_available();
 
 /// The screen's size in pixels, "1920x1080", or empty when it cannot be asked.

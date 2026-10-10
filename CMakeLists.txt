@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.9.0
+    VERSION     0.8.9
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -175,9 +175,17 @@ add_library(crucible_core STATIC
     src/tools/computer.cpp
     src/tools/processes.cpp
     src/tools/preview.cpp
+    src/tools/apps.cpp
+    src/tools/mcp.cpp
+    src/kit/kit.cpp
+    src/app/starter.cpp
+    src/app/self_source.cpp
+    src/app/relocate.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
     src/llm/remote_model.cpp
+    src/llm/spend.cpp
+    src/llm/prices.cpp
     src/llm/mlx_server.cpp
     src/llm/model_host.cpp
 
@@ -186,6 +194,7 @@ add_library(crucible_core STATIC
     src/engine/state.cpp
     src/engine/engine.cpp
     src/engine/engine_cook.cpp
+    src/engine/leases.cpp
 
     # app: process-level actions that are not the window
     # api: the one JSON door every interface comes through
@@ -214,6 +223,17 @@ target_include_directories(crucible_core PUBLIC
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
     PRIVATE Threads::Threads crucible_miniz)
+# Pictures, for a model on this machine that has a projector beside it. See
+# LoadedModel::chat_with_pictures.
+if(TARGET mtmd)
+    target_link_libraries(crucible_core PRIVATE mtmd)
+    target_compile_definitions(crucible_core PRIVATE CRUCIBLE_HAS_MTMD)
+endif()
+# ShellExecuteW: opening a program Crucible made as the person's own, not as
+# a child of Crucible's. See src/tools/apps.cpp.
+if(WIN32)
+    target_link_libraries(crucible_core PRIVATE shell32)
+endif()
 
 # The orchestrator package, compiled in. See src/orchestra/package.cpp.
 target_sources(crucible_core PRIVATE ${CRUCIBLE_ORCHESTRATOR_CPP})
@@ -281,6 +301,10 @@ if(WIN32)
     # dbghelp: a crash's stack by name, in crash.log. See src/gui/crash.hpp.
     target_link_libraries(crucible PRIVATE ole32 uuid shell32 dbghelp)
     crucible_utf8_manifest(crucible)
+    # The icon, inside the program. See packaging/windows/icon.rc.in.
+    set(CRUCIBLE_ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/crucible.ico")
+    configure_file(packaging/windows/icon.rc.in "${CMAKE_CURRENT_BINARY_DIR}/crucible_icon.rc" @ONLY)
+    target_sources(crucible PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/crucible_icon.rc")
 elseif(APPLE)
     target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp)
     target_link_libraries(crucible PRIVATE "-framework AppKit")
@@ -352,7 +376,9 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_spelling.cpp
         tests/test_orchestra.cpp
         tests/test_build.cpp
-        tests/test_source.cpp)
+        tests/test_source.cpp
+        tests/test_kit.cpp
+        tests/test_mcp.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
     # They are tested by running ui/render.js in JavaScriptCore -- the same
@@ -477,6 +503,27 @@ else()
         "On Fedora: sudo dnf install webkit2gtk4.1-devel")
 endif()
 
+# crucible-app: the window a program Crucible made runs in, once it is
+# packaged -- a page, its name, and a place for its data. Built with Crucible
+# and installed beside it, because packaging an app is copying this next to
+# the app's page. Nothing of Crucible's own is linked in: no models, no
+# engine, so the program it becomes is small and runs on a machine that has
+# never had Crucible on it. See tools/app_runner.cpp and src/tools/apps.cpp.
+if(CRUCIBLE_HAS_WEBVIEW)
+    add_executable(crucible-app tools/app_runner.cpp)
+    target_link_libraries(crucible-app PRIVATE webview::core_static nlohmann_json::nlohmann_json)
+    if(WIN32)
+        set_target_properties(crucible-app PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
+    install(TARGETS crucible-app
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+    # Packaging is tested with the real runner beside the test binary.
+    if(TARGET crucible_tests)
+        add_dependencies(crucible_tests crucible-app)
+    endif()
+endif()
+
 if(CRUCIBLE_BUILD_TOOLS)
     install(TARGETS crucible-routebench
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -487,7 +534,7 @@ if(CRUCIBLE_BACKEND_DL)
     # llama.cpp's core libraries. Beside the binary on Windows, where that is
     # the only place the loader looks; in Crucible's own lib directory
     # everywhere else, where the RPATH above points at it.
-    foreach(_lib llama ggml ggml-base)
+    foreach(_lib llama ggml ggml-base mtmd)
         if(TARGET ${_lib})
             # These targets carry a PUBLIC_HEADER list for people who install
             # llama.cpp as a library. Crucible only wants the binary, so clear

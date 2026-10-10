@@ -9,7 +9,9 @@
 #include "test_helpers.hpp"
 
 #include <fstream>
+#include <mutex>
 #include <set>
+#include <thread>
 
 #include "crucible/lab/python.hpp"
 #include "crucible/orchestra/link.hpp"
@@ -141,41 +143,58 @@ TEST(the_orchestrator_answers_over_the_pipe) {
     set_env("CRUCIBLE_PYTHON", python);
 
     orchestra::Link link;
-    const json pong = link.call("ping", {{"say", "hi"}}, nullptr);
+    const json pong = link.call("ping", {{"say", "hi"}});
     CHECK_EQ(pong.value("pong", ""), "hi");
 
     // A pinned route asks the core nothing.
-    const json pinned = link.call("route", roster_request("anything", "chemistry"), nullptr);
+    const json pinned = link.call("route", roster_request("anything", "chemistry"));
     CHECK_EQ(pinned.value("expert", ""), "chemistry");
     CHECK_EQ(pinned.value("source", ""), "pinned");
 
     // With no delegator it routes on keywords, having asked whether there is one.
     std::vector<std::string> asked;
-    const json routed = link.call("route", roster_request("what holds a satellite in orbit"),
-                                  [&asked](const std::string& method, const json&) {
-                                      asked.push_back(method);
-                                      return json{{"available", false}};
-                                  });
+    std::mutex               asked_mutex;
+    link.set_handler([&](const std::string& method, const json&) {
+        const std::lock_guard<std::mutex> lock(asked_mutex);
+        asked.push_back(method);
+        return json{{"available", false}};
+    });
+    const json routed = link.call("route", roster_request("what holds a satellite in orbit"));
     CHECK_EQ(routed.value("expert", ""), "physics");
     CHECK_EQ(routed.value("source", ""), "keywords");
     CHECK(asked == std::vector<std::string>{"delegator.ready"});
 
     // A core that cannot answer makes the call fail, with the reason.
+    link.set_handler([](const std::string&, const json&) -> json {
+        throw std::runtime_error("no delegator here");
+    });
     bool threw = false;
     try {
-        link.call("route", roster_request("a question"),
-                  [](const std::string&, const json&) -> json {
-                      throw std::runtime_error("no delegator here");
-                  });
+        link.call("route", roster_request("a question"));
     } catch (const std::runtime_error& e) {
         threw = std::string(e.what()).find("no delegator here") != std::string::npos;
     }
     CHECK(threw);
 
+    // Several calls at once, from several threads: each gets its own answer.
+    std::vector<std::thread> callers;
+    std::vector<std::string> said(4);
+    for (std::size_t i = 0; i < said.size(); ++i) {
+        callers.emplace_back([&link, &said, i] {
+            said[i] = link.call("ping", {{"say", "caller " + std::to_string(i)}}).value("pong", "");
+        });
+    }
+    for (std::thread& caller : callers) {
+        caller.join();
+    }
+    for (std::size_t i = 0; i < said.size(); ++i) {
+        CHECK_EQ(said[i], "caller " + std::to_string(i));
+    }
+
     // Gone, and back on the next call.
     link.stop();
     CHECK(!link.running());
-    CHECK_EQ(link.call("ping", {{"say", "again"}}, nullptr).value("pong", ""), "again");
+    CHECK_EQ(link.call("ping", {{"say", "again"}}).value("pong", ""), "again");
     link.stop();
     if (previous.empty()) {
         unset_env("CRUCIBLE_PYTHON");

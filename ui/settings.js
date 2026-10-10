@@ -211,8 +211,8 @@ function pageProviders() {
                 data-name="${escape(p.name)}">Remove</button></div>
       <div class="hint">${escape(p.endpoint)}</div>
       <div class="hint ${p.key.source === 'none' && p.kind === 'anthropic' ? 'bad' : ''}">${keyLine(p.key)}</div>
-      <div class="hint">${p.models.length ? escape(p.models.join(', ')) : 'no model'}${
-        p.seats.length ? `  ·  ${escape(p.seats.join(', '))}` : ''}</div>
+      <div class="hint">${apart(p.models.length ? escape(p.models.join(', ')) : 'no model',
+        p.seats.length ? escape(p.seats.join(', ')) : '')}</div>
     </div>`).join('');
 
   return `<h1>Providers</h1>
@@ -417,8 +417,8 @@ function pageHardware(c) {
     const g = d.gpus[index];
     return `<div class="order-row">
         ${mode === 'priority' ? `<span class="order-n">${place + 1}</span>` : ''}
-        <span class="order-name">${escape(g.name)} <span class="status">${escape(g.backend)}  ·  ${
-          bytes(g.memory_free)} free of ${bytes(g.memory_total)}</span></span>
+        <span class="order-name">${escape(g.name)} <span class="status">${apart(escape(g.backend),
+          `${bytes(g.memory_free)} free of ${bytes(g.memory_total)}`)}</span></span>
         ${mode === 'priority' ? `
           <button class="action" data-act="gpu-move" data-at="${place}" data-by="-1" ${
             place === 0 ? 'disabled' : ''} aria-label="Move up">&uarr;</button>
@@ -489,7 +489,7 @@ function pageRuntimes() {
           ${r.stale ? '<span class="tag bad">built for another llama.cpp</span>' : ''}
           <button class="link right" data-act="runtime-open" data-id="${r.id}">${open ? 'Less' : 'More'}</button></div>
         <div class="hint">${escape(r.blurb)}</div>
-        <div class="hint">${facts.map(escape).join('  ·  ')}</div>
+        <div class="hint">${apart(...facts.map(escape))}</div>
         ${r.missing ? `<div class="hint bad">Missing ${escape(r.missing)}. Reinstall.</div>` : ''}
         ${!r.installed && !r.buildable && r.blocker ? `<div class="hint">${escape(r.blocker)}</div>` : ''}
         ${open ? `<div class="runtime-detail">
@@ -509,7 +509,7 @@ function pageRuntimes() {
     ${progressView(state.build, 'Installing ' + ((state.build && state.build.backend) || ''),
                    'runtime-cancel', 'runtime-dismiss')}
     ${cards}
-    <p class="lede" style="margin-top:1.2rem">${escape(data.directory)}  ·  ${bytes(data.bytes)}</p>`;
+    <p class="lede" style="margin-top:1.2rem">${apart(escape(data.directory), bytes(data.bytes))}</p>`;
 }
 
 const refreshRuntimes = () => { need('runtimes', 'runtimes', true); need('devices', 'devices', true); };
@@ -561,8 +561,8 @@ function pageTraining() {
       <div class="hint" style="margin-top:.6rem">Highlighted: recommended.</div>
     </div>
     <details class="work"><summary>What goes in it</summary>
-      ${flavors.map((f) => `<div class="act"><strong>${escape(f.id)}</strong>  ·  ${
-        bytes(f.download)} to download, ${bytes(f.installed)} on disk<br>${
+      ${flavors.map((f) => `<div class="act">${apart(`<strong>${escape(f.id)}</strong>`,
+        `${bytes(f.download)} to download, ${bytes(f.installed)} on disk`)}<br>${
         f.steps.map(escape).join(', ')}</div>`).join('')}
       <div class="act">All in ${escape(t.directory)}. cuda includes NVIDIA's proprietary libraries.</div>
     </details>
@@ -619,9 +619,113 @@ function pageTools(c) {
       'Screenshots, the mouse and the keyboard, as you. Nothing bounds a click the way a folder bounds a file.')}
     ${at(c, 'tools.computer_control') ? `<div class="hint" style="margin-top:-.8rem;margin-bottom:1.4rem">
       On a Mac the first screenshot and the first click ask for Screen Recording and Accessibility under
-      System Settings, Privacy &amp; Security. On Linux, xdotool and a screenshot tool are needed. With tesseract
-      installed, a model that reads text only gets the words off each screenshot.</div>` : ''}`;
+      System Settings, Privacy &amp; Security. On Linux, xdotool and a screenshot tool are needed. A model that
+      reads text only is given the words off each screenshot.</div>` : ''}
+    ${kitView()}
+    ${mcpView(c)}`;
 }
+
+/// Programs that offer tools to every expert, over the Model Context
+/// Protocol: what is added, whether each is running, and a form to add one.
+function mcpView(c) {
+  const servers = at(c, 'tools.mcp') || [];
+  const status = (state.mcp && state.mcp.servers) || [];
+  const row = (server, i) => {
+    const s = status.find((x) => x.name === server.name) || {};
+    const said = s.error ? `<span class="bad">${escape(s.error)}</span>`
+               : s.running ? apart('running', count(s.tools, 'tool')) : server.enabled ? 'starts when wanted' : 'off';
+    return `<div class="order-row">
+        <span class="order-name"><strong>${escape(server.name)}</strong>
+          <code>${escape([server.command].concat(server.args || []).join(' '))}</code>
+          <span class="status">${said}</span></span>
+        <label class="row" style="gap:.3rem"><input type="checkbox" data-change="mcp-toggle" data-index="${i}"
+          ${server.enabled ? 'checked' : ''}> on</label>
+        <button class="action" data-act="mcp-remove" data-index="${i}">Remove</button></div>`;
+  };
+  return `<h2 style="margin-top:1.8rem">MCP SERVERS</h2>
+    <div class="hint" style="margin-bottom:.8rem">Programs that offer tools to every expert -- GitHub, a
+      database, a design tool. Each runs as you, like a command does.</div>
+    ${servers.length ? `<div class="field">${servers.map(row).join('')}</div>` : ''}
+    <form class="row" data-submit="mcp-add" style="gap:.4rem;flex-wrap:wrap">
+      <input id="mcp-name" data-draft placeholder="name: github" aria-label="Server name" style="flex:0 0 9rem"
+             autocomplete="off" spellcheck="false">
+      <input id="mcp-command" data-draft placeholder="command: npx -y @modelcontextprotocol/server-github"
+             aria-label="Command" style="flex:1" autocomplete="off" spellcheck="false">
+      <input id="mcp-env" data-draft placeholder="optional: GITHUB_TOKEN=..." aria-label="Environment"
+             style="flex:0 0 14rem" autocomplete="off" spellcheck="false">
+      <button class="action">Add</button></form>`;
+}
+
+/// A command line in words, quotes keeping spaces: what the form is given.
+function splitCommand(line) {
+  const out = [];
+  let word = '', quote = '';
+  for (const ch of line.trim()) {
+    if (quote) { if (ch === quote) quote = ''; else word += ch; }
+    else if (ch === '"' || ch === "'") quote = ch;
+    else if (/\s/.test(ch)) { if (word) { out.push(word); word = ''; } }
+    else word += ch;
+  }
+  if (word) out.push(word);
+  return out;
+}
+
+function mcpServers() { return JSON.parse(JSON.stringify(at(state.config, 'tools.mcp') || [])); }
+
+actions['mcp-add'] = (form) => {
+  const name = form.querySelector('#mcp-name').value.trim();
+  const words = splitCommand(form.querySelector('#mcp-command').value);
+  if (!name || !words.length) { state.error = 'An MCP server needs a name and a command'; return render(); }
+  const env = {};
+  for (const pair of form.querySelector('#mcp-env').value.split(/\s+/).filter(Boolean)) {
+    const at = pair.indexOf('=');
+    if (at > 0) env[pair.slice(0, at)] = pair.slice(at + 1);
+  }
+  const servers = mcpServers().filter((s) => s.name !== name);
+  servers.push({ name, command: words[0], args: words.slice(1), env, enabled: true });
+  form.reset();
+  configure({ tools: { mcp: servers } }).then(refreshMcp);
+};
+actions['mcp-remove'] = (button) => {
+  const servers = mcpServers();
+  servers.splice(Number(button.dataset.index), 1);
+  configure({ tools: { mcp: servers } }).then(refreshMcp);
+};
+actions['mcp-toggle'] = (box) => {
+  const servers = mcpServers();
+  servers[Number(box.dataset.index)].enabled = box.checked;
+  configure({ tools: { mcp: servers } }).then(refreshMcp);
+};
+function refreshMcp() {
+  // A server starts on a thread of its own after a change; asked again in
+  // a moment, it can say how that went.
+  call('mcp.status').then((got) => { state.mcp = got; render(); }).catch(() => {});
+  setTimeout(() => call('mcp.status').then((got) => { state.mcp = got; render(); }).catch(() => {}), 4000);
+}
+
+/// What Crucible fetches for its experts: each program, whether it is in the
+/// kit, the machine has its own, or it is missing -- and the one button
+/// that fetches what is.
+function kitView() {
+  const kit = state.kit;
+  if (!kit) return '';
+  const missing = kit.pieces.filter((p) => p.missing);
+  const row = (p) => `<div class="order-row">
+      <span class="order-name">${escape(p.label)} <span class="status">${escape(p.why)}</span></span>
+      <span class="status">${p.fetched ? 'fetched by Crucible' : p.missing ? 'missing' : 'this machine has its own'}</span>
+    </div>`;
+  return `<h2 style="margin-top:1.8rem">WHAT EXPERTS USE</h2>
+    <div class="hint" style="margin-bottom:.8rem">Programs an expert reaches for. What this machine lacks,
+      Crucible fetches into its own folder and nowhere else.</div>
+    <div class="field">${kit.pieces.map(row).join('')}</div>
+    ${missing.length ? `<button class="action" data-act="kit-fetch">Fetch what is missing (${
+      missing.map((p) => escape(p.label)).join(', ')})</button>` : ''}`;
+}
+
+actions['kit-fetch'] = () => guard(async () => {
+  await call('kit.fetch');
+  state.kit = await call('kit.status');
+});
 
 actions['process-stop'] = (button) => guard(async () => {
   await call('process.stop', { name: button.dataset.name });
@@ -639,7 +743,7 @@ function pageBuild(c) {
       <select data-change="set" data-path="build.architect" aria-label="Architect">
         <option value=""${!at(c, 'build.architect') ? ' selected' : ''}>The delegator picks</option>
         ${seated.map((e) => `<option value="${escape(e.id)}"${at(c, 'build.architect') === e.id ? ' selected' : ''}>${
-          escape(e.name)}${e.provider ? '  ·  ' + escape(e.provider) : ''}</option>`).join('')}
+          escape(e.name)}${e.provider ? ` (${escape(e.provider)})` : ''}</option>`).join('')}
       </select>
       <div class="hint">Writes the plan and the write-up. A frontier model does this best.</div></div>
     ${setting('build.confirm_plan', 'Show me the plan before it starts', 'bool', '')}
@@ -651,6 +755,11 @@ function pageBuild(c) {
       <div class="hint">When no expert fits a task, the build adds one on this model and keeps it. None: use the experts there are.</div></div>
 
     <h2 style="margin-top:1.8rem">THE RUN</h2>
+    ${setting('build.split', 'Frontier models for the large tasks, local ones for the small', 'bool',
+      'When there are both. Saves a provider\'s tokens on the work a model here does as well.')}
+    ${setting('build.agents', 'Agents at once', 'slider',
+      'Tasks that do not wait on each other work side by side. A provider takes any number; a model on this machine, one agent at a time.',
+      { min: 1, max: 8, step: 1 })}
     ${setting('build.auto_commit', 'Commit after each task', 'bool', 'Starts a repository when there is none.')}
     ${setting('build.rounds_per_task', 'Rounds per task', 'slider', 'Before the build moves on without it.',
       { min: 4, max: 200, step: 1 })}`;
@@ -662,6 +771,55 @@ actions['worker-model'] = (e) => {
 };
 
 // --- About -----------------------------------------------------------------------------------------------
+
+/// Crucible's own source, as a project like any other: open it, build on
+/// it, rebuild it and start the result. See app/self_source.hpp.
+function selfView() {
+  const me = state.self;
+  if (!me) return '';
+  if (!me.found) {
+    return `<h2 style="margin-top:1.8rem">CRUCIBLE'S OWN SOURCE</h2>
+      <p class="lede">${escape(me.why || 'Not found.')}</p>
+      <div class="hint">To have Crucible work on itself, clone its source and run it from there -- the
+        one-line installer does both -- or name a checkout here.</div>
+      <div class="row" style="margin-top:.6rem"><button class="action" data-act="self-choose">Choose its folder</button></div>`;
+  }
+  const status = me.rebuilding ? 'Rebuilding...' : me.status === 0 ? 'Built.' : me.status > 0 ? 'The build failed.' : '';
+  return `<h2 style="margin-top:1.8rem">CRUCIBLE'S OWN SOURCE</h2>
+    <p class="lede">${escape(me.root)}</p>
+    <div class="hint">Open it as a project and give a build a directive about Crucible itself; then rebuild,
+      and start the Crucible that was built in place of this one.</div>
+    <div class="row" style="margin-top:.6rem">
+      <button class="action" data-act="self-open">Open it as a project</button>
+      <button class="action" data-act="self-rebuild" ${me.rebuilding ? 'disabled' : ''}>Rebuild</button>
+      <button class="action" data-act="self-restart" ${me.rebuilding || me.status !== 0 ? 'disabled' : ''}
+              title="${me.status === 0 ? 'Start the new build and close this one' : 'Rebuild first'}">Restart into it</button>
+      <span class="status">${escape(status)}</span></div>
+    ${me.log ? codeBlock(me.log, 'shell') : ''}`;
+}
+
+actions['self-open'] = () => guard(async () => {
+  await call('project.open', { path: state.self.root });
+  enter('build');
+});
+actions['self-rebuild'] = () => guard(async () => {
+  await call('self.rebuild');
+  watchRebuild();
+});
+actions['self-restart'] = () => guard(() => call('self.restart'));
+actions['self-choose'] = () => guard(async () => {
+  const chosen = await pickPath({ folder: true, title: 'Choose Crucible\'s source folder', start: '' });
+  if (!chosen) return;
+  await configure({ ui: { source_dir: chosen } });
+  state.self = await call('self.source');
+});
+
+/// Follow a rebuild until it ends.
+async function watchRebuild() {
+  state.self = await call('self.source');
+  render();
+  if (state.self.rebuilding) setTimeout(watchRebuild, 1500);
+}
 
 function pageAbout() {
   const a = state.about;
@@ -683,6 +841,7 @@ function pageAbout() {
       <div class="row"><button class="action" data-act="update-check">${
         state.open.checking ? 'Asking...' : 'Check now'}</button></div></div>
     ${setting('ui.check_updates', 'Check for new versions', 'bool', 'Daily, from GitHub.')}
+    ${selfView()}
     <h2 style="margin-top:1.8rem">WHAT LEAVES THIS MACHINE</h2>
     <p class="lede">The version check, web searches, first-start downloads, base models for
       training, and prompts to providers.</p>
@@ -733,6 +892,9 @@ entering.settings = () => {
   need('build', 'runtime.progress', true);
   need('install', 'trainer.progress', true);
   call('processes').then((got) => { state.processes = got.processes; render(); }).catch(() => {});
+  call('kit.status').then((got) => { state.kit = got; render(); }).catch(() => {});
+  call('mcp.status').then((got) => { state.mcp = got; render(); }).catch(() => {});
+  call('self.source').then((got) => { state.self = got; render(); }).catch(() => {});
 };
 
 /// Follow a long install while one is running.

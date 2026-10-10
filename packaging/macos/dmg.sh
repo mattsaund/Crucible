@@ -4,6 +4,10 @@
 #
 #   packaging/macos/dmg.sh <installed-prefix> <output.dmg> [version]
 #
+# Given an output ending in .app instead, it stops at the bundle and puts it
+# there: how to open the bundle a release will ship, icon and signature and
+# all, without making an image to get at it.
+#
 # The bundle this makes is self-contained, unlike the one install.sh writes.
 # That one is a launcher: three lines of shell that exec the binary the source
 # install put in a prefix, because there the program is already on the disk and
@@ -17,9 +21,9 @@
 # usual way it breaks; not needing one is better than getting one right.
 set -euo pipefail
 
-PREFIX="${1:?usage: dmg.sh <installed-prefix> <output.dmg> [version]}"
-OUTPUT="${2:?usage: dmg.sh <installed-prefix> <output.dmg> [version]}"
-VERSION="${3:-0.8.6}"
+PREFIX="${1:?usage: dmg.sh <installed-prefix> <output.dmg|output.app> [version]}"
+OUTPUT="${2:?usage: dmg.sh <installed-prefix> <output.dmg|output.app> [version]}"
+VERSION="${3:-0.8.9}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
@@ -32,6 +36,11 @@ APP="$STAGE/Crucible.app"
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/lib"
 cp "$PREFIX/bin/crucible" "$APP/Contents/MacOS/Crucible"
+# The window a program Crucible makes runs in: copied out of here into each
+# app a person makes. See tools/app_runner.cpp.
+if [ -x "$PREFIX/bin/crucible-app" ]; then
+    cp "$PREFIX/bin/crucible-app" "$APP/Contents/MacOS/crucible-app"
+fi
 cp -a "$PREFIX/lib/crucible" "$APP/Contents/lib/crucible"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -90,9 +99,20 @@ find "$APP/Contents/lib" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 |
     while IFS= read -r -d '' library; do
         codesign --force --sign - --timestamp=none "$library"
     done
+if [ -f "$APP/Contents/MacOS/crucible-app" ]; then
+    codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/crucible-app"
+fi
 codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/Crucible"
 codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+if [ "${OUTPUT%.app}" != "$OUTPUT" ]; then
+    mkdir -p "$(dirname "$OUTPUT")"
+    rm -rf "$OUTPUT"
+    ditto "$APP" "$OUTPUT"
+    echo "wrote $OUTPUT"
+    exit 0
+fi
 
 # What a downloader meets is still a refusal the first time, so the image
 # carries the way past it.

@@ -37,6 +37,7 @@ Snapshot AppState::snapshot() const {
     copy.context_size = context_size_;
     copy.seats    = seats_;
     copy.resident        = resident_;
+    copy.local_models    = local_models_;
     copy.linked          = linked_;
     copy.delegator_ready = delegator_ready_;
     copy.delegator_progress = delegator_progress_;
@@ -138,6 +139,11 @@ void AppState::set_resident(std::optional<ExpertId> id) {
             seats_[*index].progress = 1.0F;
         }
     }
+}
+
+void AppState::set_local_models(std::vector<LocalModel> models) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    local_models_ = std::move(models);
 }
 
 void AppState::set_linked(std::optional<ExpertId> id) {

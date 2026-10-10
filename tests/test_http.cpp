@@ -16,6 +16,7 @@ namespace {
 using crucible::util::http::Request;
 using crucible::util::http::Response;
 using crucible::util::http::detail::curl_config;
+using crucible::util::http::detail::parse_headers;
 using crucible::util::http::detail::status_from_marker;
 
 bool has(const std::string& text, const std::string& needle) {
@@ -110,4 +111,25 @@ TEST(a_refusal_is_reported_with_what_the_server_said) {
     Response fine;
     fine.status = 200;
     CHECK(fine.ok());
+}
+
+TEST(the_headers_are_the_answers_not_a_redirects) {
+    // A provider's rate limits arrive as headers. With a redirect on the way
+    // curl writes a block per response, and only the last is the answer's.
+    const auto headers = parse_headers(
+        "HTTP/1.1 301 Moved\r\nLocation: https://example.test/b\r\nx-ratelimit-limit-requests: 1\r\n\r\n"
+        "HTTP/2 200\r\nContent-Type: text/event-stream\r\nX-RateLimit-Remaining-Requests:  49\r\n\r\n");
+    Response response;
+    response.headers = headers;
+    CHECK_EQ(response.header("x-ratelimit-remaining-requests"), std::string("49"));
+    CHECK_EQ(response.header("content-type"), std::string("text/event-stream"));
+    CHECK(response.header("x-ratelimit-limit-requests").empty());
+    CHECK(response.header("location").empty());
+}
+
+TEST(curl_is_told_where_to_put_the_headers_only_when_asked) {
+    Request request;
+    request.url = "https://example.test/";
+    CHECK(has(curl_config(request, {}, true, "/tmp/h"), "dump-header = \"/tmp/h\""));
+    CHECK(!has(curl_config(request, {}, true), "dump-header"));
 }

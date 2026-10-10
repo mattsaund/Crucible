@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,6 +21,7 @@ using llama_token = std::int32_t;
 
 struct llama_model;
 struct llama_context;
+struct mtmd_context;
 
 namespace crucible {
 
@@ -67,6 +69,14 @@ public:
     /// `Reasoning: <level>` from the system message. See
     /// Config::reasoning_effort.
     bool takes_effort() const override;
+
+    /// When a projector was found beside the model and it reads pictures --
+    /// a vision model, Qwen2.5-VL or Gemma 3 with its mmproj file. See
+    /// chat_with_pictures.
+    bool sees_images() const override;
+
+    /// The projector this model reads pictures through, or empty.
+    const std::string& projector() const { return projector_; }
 
     // --- and what only a local model can do --------------------------------
 
@@ -125,6 +135,19 @@ private:
     friend class ModelHost;
     LoadedModel(llama_model* model, llama_context* ctx, std::string path);
 
+    /// A turn with pictures in it, for a model with a projector: the
+    /// conversation rendered with a marker where each picture goes, the
+    /// pictures decoded and read through the projector into the context, and
+    /// the answer sampled from there. The context starts over for it --
+    /// what it held was text, and a picture's tokens are not text tokens to
+    /// compare against.
+    ChatResult chat_with_pictures(const ChatRequest& request, const ChatSink& sink);
+
+    /// The answer, sampled from whatever the context holds now: the second
+    /// half of generate(), shared with chat_with_pictures.
+    void sample(const ModelParams& params, const TokenCallback& on_token, const CancelCallback& cancel,
+                const std::string& grammar, GenerationStats& stats);
+
     /// Reuse whatever of `tokens` the context already holds, and return how
     /// many tokens that turned out to be. Leaves the cache holding exactly that
     /// prefix, so the caller decodes from there.
@@ -133,6 +156,19 @@ private:
     llama_model*   model_ = nullptr;
     llama_context* ctx_   = nullptr;
     std::string    path_;
+
+    /// The projector, when the model has one: what turns a picture into
+    /// tokens the model reads. Null for a model that reads text only.
+    mtmd_context*  vision_ = nullptr;
+    std::string    projector_;
+
+    /// One caller at a time. A context is one conversation's worth of state
+    /// on the card, and a build's agent and the chat may both be answered by
+    /// this model: the second waits for the first's round rather than the
+    /// two decoding into one cache. Recursive because chat() measures the
+    /// prompt through prompt_tokens(), and that renders it through
+    /// format_chat(), each of which also stands alone.
+    mutable std::recursive_mutex use_;
 
     /// The tokens currently in the context's KV cache, in order.
     ///

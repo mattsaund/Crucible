@@ -267,6 +267,16 @@ struct GpuConfig {
 ///
 /// Everything here is off by default. Crucible is local-first, and a program that
 /// quietly started sending what you typed to a search engine would not be.
+/// A Model Context Protocol server: a program that offers tools to every
+/// expert. See tools/mcp.hpp.
+struct McpServer {
+    std::string                        name;      ///< "github"
+    std::string                        command;   ///< "npx"
+    std::vector<std::string>           args;      ///< "-y", "@modelcontextprotocol/server-github"
+    std::map<std::string, std::string> env;       ///< keys a server wants: GITHUB_TOKEN
+    bool                               enabled = true;
+};
+
 struct ToolsConfig {
     /// Let experts look things up. See tools/web_search.hpp.
     bool web_search = false;
@@ -340,6 +350,9 @@ struct ToolsConfig {
     /// permission first -- macOS asks for Accessibility and Screen Recording
     /// -- the first attempt says so.
     bool computer_control = false;
+
+    /// MCP servers whose tools every expert is offered, through TOOL.
+    std::vector<McpServer> mcp;
 };
 
 /// How a build is run: who plans it, what a seat made for it runs on, and
@@ -367,6 +380,20 @@ struct BuildConfig {
 
     /// Rounds a task may take before the build moves on without it.
     int rounds_per_task = 40;
+
+    /// How many agents may work at once. Tasks the plan says do not wait on
+    /// each other, and that touch different files, are worked side by side:
+    /// a provider's model answers any number at a time, and each model on
+    /// this machine has one agent at a time, since two agents on one model
+    /// take turns at it and throw away each other's cache.
+    int agents = 3;
+
+    /// Frontier models for the heavy lifting, local ones for the small tasks,
+    /// when the roster has both: a task the plan calls large goes to a
+    /// provider's model, and a small one to a model on this machine, each the
+    /// best of its kind for the work. Saves a provider's tokens on what a
+    /// local model does as well.
+    bool split = true;
 };
 
 /// What to do when a conversation no longer fits in the context.
@@ -412,6 +439,11 @@ struct UiConfig {
     /// no way of learning that the crash it hits every morning was fixed a
     /// month ago. See app/update.hpp.
     bool check_updates = true;
+
+    /// Where Crucible's own source is, when it is not where the running
+    /// program was built from: a checkout somebody pointed it at, so that
+    /// Crucible can be built on like any other project. See self_source.hpp.
+    std::string source_dir;
 };
 
 /// The whole config file.

@@ -38,6 +38,8 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <optional>
+#include <regex>
 #include <sstream>
 #include <system_error>
 #include <thread>
@@ -64,10 +66,14 @@ struct Verb {
 //
 // Longer words before shorter ones that share a start, so SCREENSHOT is
 // tried before SCROLL and neither is mistaken for the other.
-constexpr std::array<Verb, 23> kVerbs{{
+constexpr std::array<Verb, 27> kVerbs{{
     {"LIST",       ToolKind::List},
     {"READ",       ToolKind::Read},
     {"WRITE",      ToolKind::Write},
+    {"EDIT",       ToolKind::Edit},
+    {"FIND",       ToolKind::Find},
+    {"RENDER",     ToolKind::Render},
+    {"TOOL",       ToolKind::Mcp},
     {"RUN",        ToolKind::Run},
     {"SEARCH",     ToolKind::Search},
     {"ASK",        ToolKind::Ask},
@@ -662,6 +668,261 @@ ToolResult do_write(const ToolCall& call, const WorkshopSettings& settings) {
     return result;
 }
 
+/// The file as it is, and whether it was there to read.
+std::optional<std::string> read_file(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        return std::nullopt;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+/// EDIT
+ToolResult do_edit(const ToolCall& call, const WorkshopSettings& settings) {
+    std::string error;
+    const std::optional<std::string> after = edited_contents(call, settings, error);
+    if (!after) {
+        return failure(error);
+    }
+    const std::optional<std::filesystem::path> file = resolve_in_root(settings.root, call.argument);
+    const std::optional<std::string> before = read_file(*file);
+    std::error_code ec;
+    std::filesystem::create_directories(file->parent_path(), ec);
+    {
+        std::ofstream out(*file, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return failure("cannot write " + call.argument);
+        }
+        out << *after;
+    }
+    const util::DiffStat stat = util::diff_stat(before.value_or(""), *after);
+    const std::string recorded = relative_to_root(settings.root, *file);
+
+    ToolResult result;
+    result.ok      = true;
+    result.changed = {recorded};
+    result.detail  = util::unified_diff(before.value_or(""), *after);
+    result.summary = (before ? "edited " : "created ") + recorded + "  " + stat.summary();
+    result.output  = "edited " + recorded + " (" + stat.summary() + ")";
+    return result;
+}
+
+/// Folders FIND does not look in: what a project depends on, what version
+/// control keeps, and what a build or a test run leaves behind. A search for
+/// a color that turns up four hundred matches in node_modules has found
+/// nothing the model can change.
+bool skipped_folder(const std::string& name) {
+    static const std::array<const char*, 18> kSkipped{
+        ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env", "__pycache__",
+        ".mypy_cache", ".pytest_cache", ".tox", ".next", ".nuxt", "dist", "build", "target",
+        ".gradle", ".cache"};
+    return std::any_of(kSkipped.begin(), kSkipped.end(), [&name](const char* skipped) { return name == skipped; });
+}
+
+/// FIND
+ToolResult do_find(const ToolCall& call, const WorkshopSettings& settings) {
+    // FIND: color in *.css -- the text, and optionally which files.
+    std::string wanted = trim(call.argument);
+    std::string glob;
+    if (const std::size_t in = wanted.rfind(" in "); in != std::string::npos) {
+        glob   = trim(wanted.substr(in + 4));
+        wanted = trim(wanted.substr(0, in));
+    }
+    if (wanted.size() >= 2 && wanted.front() == '"' && wanted.back() == '"') {
+        wanted = wanted.substr(1, wanted.size() - 2);
+    }
+    if (wanted.empty()) {
+        return failure("FIND needs something to look for: FIND: color, or FIND: color in *.css");
+    }
+    // /a pattern/ is a regular expression; anything else is text, found
+    // whatever its case.
+    std::optional<std::regex> pattern;
+    if (wanted.size() > 2 && wanted.front() == '/' && wanted.back() == '/') {
+        try {
+            pattern = std::regex(wanted.substr(1, wanted.size() - 2),
+                                 std::regex::ECMAScript | std::regex::icase);
+        } catch (const std::regex_error& e) {
+            return failure("that pattern is not a regular expression: " + std::string(e.what()));
+        }
+    }
+    const std::string needle = format::to_lower(wanted);
+
+    constexpr std::size_t kShown = 80;
+    std::vector<std::string> found;
+    std::size_t matches = 0;
+    std::size_t files   = 0;
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator it(settings.root,
+        std::filesystem::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        const std::filesystem::directory_entry& entry = *it;
+        const std::string name = entry.path().filename().string();
+        if (entry.is_directory(ec)) {
+            if (skipped_folder(name)) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (!entry.is_regular_file(ec) || entry.file_size(ec) > (2U << 20)) {
+            continue;
+        }
+        const std::string relative = relative_to_root(settings.root, entry.path());
+        if (!glob.empty() && !glob_matches(glob, relative)) {
+            continue;
+        }
+        const std::optional<std::string> text = read_file(entry.path());
+        if (!text || text->find('\0') != std::string::npos) {
+            continue;   // a picture, a binary: nothing a line of it could say
+        }
+        bool counted = false;
+        std::size_t number = 0;
+        for (const std::string& line : split_lines(*text)) {
+            ++number;
+            const bool hit = pattern ? std::regex_search(line, *pattern)
+                                     : format::to_lower(line).find(needle) != std::string::npos;
+            if (!hit) {
+                continue;
+            }
+            ++matches;
+            if (!counted) {
+                counted = true;
+                ++files;
+            }
+            if (found.size() < kShown) {
+                std::string shown = trim(line);
+                if (shown.size() > 200) {
+                    shown = shown.substr(0, 200) + "...";
+                }
+                found.push_back(relative + ":" + std::to_string(number) + ": " + shown);
+            }
+        }
+    }
+
+    ToolResult result;
+    result.ok      = true;
+    const std::string where = glob.empty() ? std::string() : " in " + glob;
+    result.summary = "found \"" + wanted + "\"" + where + ": " + std::to_string(matches)
+                   + (matches == 1 ? " line" : " lines") + " in " + std::to_string(files)
+                   + (files == 1 ? " file" : " files");
+    if (found.empty()) {
+        result.output = "Nothing in the project's files matches \"" + wanted + "\"" + where + ".";
+        return result;
+    }
+    for (const std::string& line : found) {
+        result.output += line + "\n";
+    }
+    if (matches > found.size()) {
+        result.output += "(" + std::to_string(matches - found.size())
+                       + " more not shown -- narrow it with \"in <files>\")\n";
+    }
+    result.detail = result.output;
+    return result;
+}
+
+/// RENDER
+ToolResult do_render(const ToolCall& call, const WorkshopSettings& settings) {
+    // RENDER: report.html to report.pdf [at 1280x800] -- also "->" and "as".
+    std::string spec = trim(call.argument);
+    int width = 1280;
+    int height = 800;
+    if (const std::size_t at = spec.rfind(" at "); at != std::string::npos) {
+        const std::string size = trim(spec.substr(at + 4));
+        const std::size_t x = size.find_first_of("xX");
+        if (x != std::string::npos) {
+            width  = std::clamp(std::atoi(size.substr(0, x).c_str()), 64, 7680);
+            height = std::clamp(std::atoi(size.substr(x + 1).c_str()), 64, 7680);
+            spec   = trim(spec.substr(0, at));
+        }
+    }
+    std::string from;
+    std::string to;
+    for (const char* joint : {" -> ", " to ", " as ", " into "}) {
+        if (const std::size_t at = spec.find(joint); at != std::string::npos) {
+            from = trim(spec.substr(0, at));
+            to   = trim(spec.substr(at + std::string_view(joint).size()));
+            break;
+        }
+    }
+    if (from.empty() || to.empty()) {
+        return failure("RENDER takes a page and where to put it: RENDER: report.html to report.pdf, "
+                       "or RENDER: index.html to screenshot.png at 1280x800");
+    }
+    const std::string ext = format::to_lower(std::filesystem::path(to).extension().string());
+    if (ext != ".pdf" && ext != ".png") {
+        return failure("RENDER makes a .pdf or a .png");
+    }
+    const std::optional<std::filesystem::path> out = resolve_in_root(settings.root, to);
+    if (!out) {
+        return failure(to + " is outside the project");
+    }
+    // A page of the project, or one on the web when the web is switched on.
+    std::string page;
+    if (from.rfind("http://", 0) == 0 || from.rfind("https://", 0) == 0) {
+        if (!settings.web) {
+            return failure("drawing a page off the web needs the web switched on in Settings, Tools");
+        }
+        page = from;
+    } else {
+        const std::optional<std::filesystem::path> file = resolve_in_root(settings.root, from);
+        std::error_code ec;
+        if (!file || !std::filesystem::is_regular_file(*file, ec)) {
+            return failure(from + " is not a file in the project");
+        }
+        page = "file://" + file->generic_string();
+#if defined(_WIN32)
+        page = "file:///" + file->generic_string();
+#endif
+    }
+    const std::string error = render(page, *out, width, height, 60);
+    if (!error.empty()) {
+        return failure(error);
+    }
+    const std::string recorded = relative_to_root(settings.root, *out);
+    ToolResult result;
+    result.ok      = true;
+    result.changed = {recorded};
+    result.summary = "rendered " + from + " to " + recorded;
+    result.output  = "drew " + from + " into " + recorded;
+    if (ext == ".png") {
+        attach_picture(result, *out, recorded);
+    }
+    return result;
+}
+
+/// TOOL
+ToolResult do_mcp(const ToolCall& call, const WorkshopSettings& settings) {
+    if (settings.mcp == nullptr || !settings.mcp->any()) {
+        return failure("no MCP servers are set up -- they are added in Settings, Tools");
+    }
+    // server/tool, or server.tool, or server tool.
+    const std::string named = trim(call.argument);
+    const std::size_t split = named.find_first_of("/. ");
+    if (split == std::string::npos || split == 0 || split + 1 >= named.size()) {
+        return failure("TOOL takes the server and the tool, like TOOL: github/create_issue, with "
+                       "the arguments as JSON in a ``` block after it");
+    }
+    const std::string server = named.substr(0, split);
+    const std::string tool   = trim(named.substr(split + 1));
+    nlohmann::json arguments = nlohmann::json::object();
+    if (!trim(call.content).empty()) {
+        arguments = nlohmann::json::parse(call.content, nullptr, false);
+        if (arguments.is_discarded() || !arguments.is_object()) {
+            return failure("the arguments for " + named + " are not a JSON object -- write them as "
+                           "{\"name\": value} in a ``` block");
+        }
+    }
+    const mcp::Result answer = settings.mcp->call(server, tool, arguments, std::max(30, settings.run_timeout_seconds));
+    ToolResult result;
+    result.ok      = answer.ok;
+    result.summary = (answer.ok ? "used " : "could not use ") + server + "/" + tool;
+    result.output  = clamp_output(answer.ok ? answer.text : answer.error, 12000);
+    result.detail  = result.output;
+    result.pictures = answer.images;
+    return result;
+}
+
 /// RUN
 ToolResult do_run(const ToolCall& call, const WorkshopSettings& settings,
                   const CancelCallback& cancel) {
@@ -766,8 +1027,8 @@ ToolResult do_fetch(const ToolCall& call, const WorkshopSettings& settings) {
     }
     ToolResult result;
     result.ok      = true;
-    result.summary = "fetched " + call.argument + (page.title.empty() ? "" : "  ·  " + page.title)
-                   + "  ·  " + (page.how == "browser" ? "rendered in a browser" : "as served");
+    result.summary = "fetched " + call.argument + (page.title.empty() ? "" : ": " + page.title)
+                   + (page.how == "browser" ? ", rendered in a browser" : ", as served");
     result.output  = (page.title.empty() ? "" : page.title + "\n") + page.url + "\n\n" + page.text;
     result.detail  = clamp_output(page.text, settings.max_output_bytes);
     return result;
@@ -960,6 +1221,10 @@ std::string_view tool_kind_name(ToolKind kind) {
         case ToolKind::List:       return "list";
         case ToolKind::Read:       return "read";
         case ToolKind::Write:      return "write";
+        case ToolKind::Edit:       return "edit";
+        case ToolKind::Find:       return "find";
+        case ToolKind::Render:     return "render";
+        case ToolKind::Mcp:        return "tool";
         case ToolKind::Run:        return "run";
         case ToolKind::Search:     return "search";
         case ToolKind::Ask:        return "ask";
@@ -1008,22 +1273,42 @@ std::vector<std::string> shell_argv(std::string_view shell, const std::string& c
 }
 
 std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_view reasoning) {
+    // The first call in the reply, except that a NOTE gives way to an action
+    // after it. Models narrate before they act -- "NOTE: starting task 1",
+    // then the WRITE -- and taking the narration as the call threw the
+    // WRITE away, round after round: a 14B coder wrote eight NOTEs and no
+    // file before the loop noticed. A NOTE on its own is still a NOTE.
     const auto scan = [](std::string_view text) -> std::optional<ToolCall> {
         const std::vector<std::string> lines = split_lines(text);
+        std::optional<ToolCall> note;
         for (std::size_t i = 0; i < lines.size(); ++i) {
             ToolCall call;
             call.kind = verb_of(lines[i], call.argument, call.shell);
             if (call.kind == ToolKind::None) {
                 continue;
             }
-            if (call.kind == ToolKind::Write || call.kind == ToolKind::Python
+            if (call.kind == ToolKind::Note) {
+                if (!note) {
+                    note = call;
+                }
+                continue;
+            }
+            if (call.kind == ToolKind::Write || call.kind == ToolKind::Python || call.kind == ToolKind::Mcp
                 || (call.kind == ToolKind::Type && call.argument.empty())) {
                 std::size_t body = i + 1;
                 call.content = collect_body(lines, body);
             }
+            if (call.kind == ToolKind::Edit) {
+                // Everything after the line: the blocks, with whatever fences
+                // a model put round them, which parse_edit_blocks sets aside.
+                for (std::size_t j = i + 1; j < lines.size(); ++j) {
+                    call.content += lines[j];
+                    call.content += '\n';
+                }
+            }
             return call;
         }
-        return std::nullopt;
+        return note;
     };
 
     if (const std::optional<ToolCall> call = scan(answer)) {
@@ -1067,6 +1352,417 @@ ToolKind attempted_tool_call(std::string_view answer, std::string_view reasoning
         return kind;
     }
     return trim(answer).empty() ? scan(reasoning) : ToolKind::None;
+}
+
+namespace {
+
+/// Which marker a line is, by its run of one character and the word after.
+enum class Marker { None, Search, Divider, Replace };
+
+Marker marker_of(const std::string& line) {
+    const std::string text = trim(line);
+    if (text.empty()) {
+        return Marker::None;
+    }
+    const char first = text.front();
+    std::size_t run = 0;
+    while (run < text.size() && text[run] == first) {
+        ++run;
+    }
+    if (run < 5 || run > 9) {
+        return Marker::None;
+    }
+    const std::string word = format::to_lower(trim(text.substr(run)));
+    if (first == '<' && (word == "search" || word == "find" || word == "original")) {
+        return Marker::Search;
+    }
+    if (first == '=' && word.empty()) {
+        return Marker::Divider;
+    }
+    if (first == '>' && (word == "replace" || word == "updated")) {
+        return Marker::Replace;
+    }
+    return Marker::None;
+}
+
+/// A line with its indentation and trailing spaces set aside, for the
+/// forgiving match.
+std::string bare(const std::string& line) { return trim(line); }
+
+/// The indentation a line opens with.
+std::string indent_of(const std::string& line) {
+    std::size_t end = 0;
+    while (end < line.size() && (line[end] == ' ' || line[end] == '\t')) {
+        ++end;
+    }
+    return line.substr(0, end);
+}
+
+/// How many times `needle` occurs in `text`, not overlapping, and where the
+/// first is.
+std::size_t occurrences(const std::string& text, const std::string& needle, std::size_t& first) {
+    std::size_t count = 0;
+    first = std::string::npos;
+    for (std::size_t at = text.find(needle); at != std::string::npos;
+         at = text.find(needle, at + std::max<std::size_t>(needle.size(), 1))) {
+        if (count == 0) {
+            first = at;
+        }
+        ++count;
+    }
+    return count;
+}
+
+/// SEARCH lines with READ's line numbers taken off. READ shows a file as
+/// "12<tab>line", and a small model copies the numbers with the lines; when
+/// every line with anything on it starts with one, and they count up one at
+/// a time, they are READ's and not the file's.
+std::vector<std::string> without_line_numbers(const std::vector<std::string>& lines) {
+    std::vector<std::string> out;
+    long        expected = -1;
+    std::size_t numbered = 0;
+    bool        spaced   = false;   // set off by spaces alone, which a line's own number can be
+    for (const std::string& line : lines) {
+        if (trim(line).empty()) {
+            out.push_back(line);
+            continue;
+        }
+        std::size_t at = 0;
+        while (at < line.size() && line[at] == ' ') {
+            ++at;
+        }
+        const std::size_t digits = at;
+        while (at < line.size() && std::isdigit(static_cast<unsigned char>(line[at])) != 0) {
+            ++at;
+        }
+        if (at == digits || at - digits > 6) {
+            return lines;
+        }
+        const long number = std::stol(line.substr(digits, at - digits));
+        if (expected >= 0 && number != expected) {
+            return lines;
+        }
+        expected = number + 1;
+        // The separator: READ's tab, or what a model wrote instead -- spaces,
+        // or a bar or a colon with a space either side.
+        std::size_t text = at;
+        if (text < line.size() && line[text] == '\t') {
+            ++text;
+        } else {
+            while (text < line.size() && line[text] == ' ') {
+                ++text;
+            }
+            if (text < line.size() && (line[text] == '|' || line[text] == ':')) {
+                ++text;
+                if (text < line.size() && line[text] == ' ') {
+                    ++text;
+                }
+            } else if (text == at && text < line.size()) {
+                return lines;   // "12px": a number that is part of the line
+            } else {
+                spaced = true;
+            }
+        }
+        ++numbered;
+        out.push_back(line.substr(text));
+    }
+    // Spaces alone are believed only of lines that count up: "20 pears" by
+    // itself is a line about pears.
+    return numbered > 0 && (!spaced || numbered >= 2) ? out : lines;
+}
+
+/// Where `wanted` is in `lines`, compared without indentation -- and, when
+/// `skip_blank`, without the blank lines either side may have that the other
+/// has not. Each match is the first line and how many lines of the file it
+/// covers.
+std::vector<std::pair<std::size_t, std::size_t>> find_lines(const std::vector<std::string>& lines,
+                                                            const std::vector<std::string>& wanted,
+                                                            bool skip_blank) {
+    std::vector<std::pair<std::size_t, std::size_t>> found;
+    std::vector<std::string> want;
+    for (const std::string& line : wanted) {
+        if (!skip_blank || !trim(line).empty()) {
+            want.push_back(bare(line));
+        }
+    }
+    if (want.empty()) {
+        return found;
+    }
+    for (std::size_t at = 0; at < lines.size(); ++at) {
+        if (bare(lines[at]) != want.front()) {
+            continue;
+        }
+        std::size_t k = 0;
+        std::size_t end = at;
+        for (; end < lines.size() && k < want.size(); ++end) {
+            if (skip_blank && trim(lines[end]).empty()) {
+                continue;
+            }
+            if (bare(lines[end]) != want[k]) {
+                break;
+            }
+            ++k;
+        }
+        if (k == want.size()) {
+            found.emplace_back(at, end - at);
+        }
+    }
+    return found;
+}
+
+/// The lines of the file nearest to what a model meant: the stretch the
+/// size of its SEARCH sharing the most lines with it, numbered as READ shows
+/// them. Said back when nothing matched, so the next try has the file's own
+/// text to copy rather than the model's memory of it.
+std::string nearest_lines(const std::vector<std::string>& lines, const std::vector<std::string>& wanted) {
+    if (wanted.empty() || lines.empty()) {
+        return {};
+    }
+    const std::size_t span = std::min<std::size_t>(std::max<std::size_t>(wanted.size(), 1), 20);
+    std::size_t best_at = 0;
+    std::size_t best = 0;
+    for (std::size_t at = 0; at < lines.size(); ++at) {
+        std::size_t shared = 0;
+        for (std::size_t k = 0; k < span && at + k < lines.size(); ++k) {
+            const std::string line = bare(lines[at + k]);
+            if (line.empty()) {
+                continue;
+            }
+            for (const std::string& one : wanted) {
+                if (bare(one) == line) {
+                    ++shared;
+                    break;
+                }
+            }
+        }
+        if (shared > best) {
+            best    = shared;
+            best_at = at;
+        }
+    }
+    if (best == 0) {
+        return {};
+    }
+    std::string out;
+    for (std::size_t k = 0; k < span && best_at + k < lines.size(); ++k) {
+        out += std::to_string(best_at + k + 1) + "\t" + lines[best_at + k] + "\n";
+    }
+    return out;
+}
+
+/// `lines` joined back, with a newline after each when `ends` says the text
+/// had one.
+std::string joined(const std::vector<std::string>& lines, bool ends) {
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        out += lines[i];
+        if (i + 1 < lines.size() || ends) {
+            out += '\n';
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& error) {
+    std::vector<EditBlock> blocks;
+    enum class Part { Outside, Search, Replace } part = Part::Outside;
+    EditBlock current;
+    bool search_started = false;
+    bool replace_started = false;
+    for (const std::string& line : split_lines(body)) {
+        const Marker marker = marker_of(line);
+        if (part == Part::Outside) {
+            if (marker == Marker::Search) {
+                part = Part::Search;
+                current = EditBlock{};
+                search_started = false;
+            }
+            continue;   // a fence, a sentence, a blank line: not part of a block
+        }
+        if (part == Part::Search) {
+            if (marker == Marker::Divider) {
+                part = Part::Replace;
+                replace_started = false;
+                continue;
+            }
+            current.search += (search_started ? "\n" : "") + line;
+            search_started = true;
+            continue;
+        }
+        if (marker == Marker::Replace) {
+            blocks.push_back(std::move(current));
+            part = Part::Outside;
+            continue;
+        }
+        current.replace += (replace_started ? "\n" : "") + line;
+        replace_started = true;
+    }
+    if (part != Part::Outside) {
+        error = part == Part::Search ? "a SEARCH block has no ======= line after it"
+                                     : "a block has no >>>>>>> REPLACE line to end it";
+        return {};
+    }
+    if (blocks.empty()) {
+        error = "EDIT needs SEARCH/REPLACE blocks on the lines after it, like this:\n"
+                "EDIT: style.css\n<<<<<<< SEARCH\n  color: red;\n=======\n  color: blue;\n>>>>>>> REPLACE";
+    }
+    return blocks;
+}
+
+std::optional<std::string> apply_edit_blocks(const std::string& text, const std::vector<EditBlock>& blocks,
+                                             std::string& error) {
+    std::string out = text;
+    for (std::size_t n = 0; n < blocks.size(); ++n) {
+        const EditBlock& block = blocks[n];
+        const std::string which = blocks.size() > 1 ? "block " + std::to_string(n + 1) + ": " : "";
+
+        // An empty SEARCH: the replacement is the file, when there is none yet.
+        if (trim(block.search).empty()) {
+            if (!trim(out).empty()) {
+                error = which + "the SEARCH part is empty, and the file is not -- copy the lines "
+                                "to change into it";
+                return std::nullopt;
+            }
+            out = block.replace + (block.replace.empty() || block.replace.back() == '\n' ? "" : "\n");
+            continue;
+        }
+
+        // As written.
+        std::size_t first = 0;
+        const std::size_t exact = occurrences(out, block.search, first);
+        if (exact == 1) {
+            out.replace(first, block.search.size(), block.replace);
+            continue;
+        }
+        if (exact > 1) {
+            error = which + "those lines are in the file " + std::to_string(exact)
+                  + " times -- include more of the lines around the one to change";
+            return std::nullopt;
+        }
+
+        // Line by line, with the indentation set aside.
+        std::vector<std::string> lines = split_lines(out);
+        const bool ends = !out.empty() && out.back() == '\n';
+        if (ends && !lines.empty() && lines.back().empty()) {
+            lines.pop_back();
+        }
+        std::vector<std::string> wanted = without_line_numbers(split_lines(block.search));
+        while (!wanted.empty() && trim(wanted.back()).empty()) {
+            wanted.pop_back();
+        }
+        while (!wanted.empty() && trim(wanted.front()).empty()) {
+            wanted.erase(wanted.begin());
+        }
+        // Then with the blank lines set aside, which a model adds and drops
+        // without noticing.
+        std::vector<std::pair<std::size_t, std::size_t>> starts = find_lines(lines, wanted, false);
+        if (starts.empty()) {
+            starts = find_lines(lines, wanted, true);
+        }
+        if (starts.empty()) {
+            error = which + "those lines are not in the file. Copy the lines to change exactly as they are, "
+                            "without the line numbers";
+            if (const std::string near = nearest_lines(lines, wanted); !near.empty()) {
+                error += ". The nearest lines in it are:\n" + near;
+            } else {
+                error += " -- READ it again first";
+            }
+            return std::nullopt;
+        }
+        if (starts.size() > 1) {
+            error = which + "those lines are in the file " + std::to_string(starts.size())
+                  + " times -- include more of the lines around the one to change";
+            return std::nullopt;
+        }
+        // The replacement moved to where the lines it replaces sit: the
+        // difference between the first SEARCH line's indentation and the
+        // file's is added to, or taken from, every replacement line.
+        const std::size_t at      = starts.front().first;
+        const std::size_t covered = starts.front().second;
+        const std::string had  = indent_of(lines[at]);
+        const std::string gave = indent_of(wanted.front());
+        std::vector<std::string> replacement = split_lines(block.replace);
+        while (!replacement.empty() && trim(replacement.back()).empty()) {
+            replacement.pop_back();
+        }
+        for (std::string& line : replacement) {
+            if (trim(line).empty()) {
+                continue;
+            }
+            if (line.compare(0, gave.size(), gave) == 0) {
+                line = had + line.substr(gave.size());
+            }
+        }
+        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(at),
+                    lines.begin() + static_cast<std::ptrdiff_t>(at + covered));
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(at), replacement.begin(), replacement.end());
+        out = joined(lines, ends);
+    }
+    return out;
+}
+
+std::optional<std::string> edited_contents(const ToolCall& call, const WorkshopSettings& settings,
+                                           std::string& error) {
+    if (!plausible_path(call.argument)) {
+        error = "\"" + call.argument.substr(0, 60) + "\" is not a file name. EDIT takes a path "
+                "relative to the project root, and the SEARCH/REPLACE blocks go on the lines after it";
+        return std::nullopt;
+    }
+    const std::optional<std::filesystem::path> file = resolve_in_root(settings.root, call.argument);
+    if (!file) {
+        error = call.argument + " is outside the project";
+        return std::nullopt;
+    }
+    const std::vector<EditBlock> blocks = parse_edit_blocks(call.content, error);
+    if (blocks.empty()) {
+        return std::nullopt;
+    }
+    const std::string before = read_file(*file).value_or("");
+    std::optional<std::string> after = apply_edit_blocks(before, blocks, error);
+    if (!after) {
+        error = call.argument + ": " + error;
+    }
+    return after;
+}
+
+bool glob_matches(std::string_view glob, std::string_view path) {
+    // A glob with no slash is about the name, wherever the file is.
+    std::string_view subject = path;
+    if (glob.find('/') == std::string_view::npos) {
+        const std::size_t slash = path.rfind('/');
+        subject = slash == std::string_view::npos ? path : path.substr(slash + 1);
+    }
+    std::string pattern = "^";
+    for (std::size_t i = 0; i < glob.size(); ++i) {
+        const char c = glob[i];
+        if (c == '*') {
+            if (i + 1 < glob.size() && glob[i + 1] == '*') {
+                pattern += ".*";
+                ++i;
+                if (i + 1 < glob.size() && glob[i + 1] == '/') {
+                    ++i;   // "**/" also matches no folder at all
+                    pattern += "/?";
+                }
+            } else {
+                pattern += "[^/]*";
+            }
+        } else if (c == '?') {
+            pattern += "[^/]";
+        } else if (std::string_view(".+()^$|{}[]\\").find(c) != std::string_view::npos) {
+            pattern += '\\';
+            pattern += c;
+        } else {
+            pattern += c;
+        }
+    }
+    pattern += "$";
+    try {
+        return std::regex_match(std::string(subject), std::regex(pattern, std::regex::icase));
+    } catch (const std::regex_error&) {
+        return false;
+    }
 }
 
 std::optional<std::filesystem::path> resolve_in_root(const std::filesystem::path& root,
@@ -1154,6 +1850,10 @@ ToolResult run_tool_as_is(const ToolCall& call, const WorkshopSettings& settings
         case ToolKind::List:   return do_list(call, settings);
         case ToolKind::Read:   return do_read(call, settings);
         case ToolKind::Write:  return do_write(call, settings);
+        case ToolKind::Edit:   return do_edit(call, settings);
+        case ToolKind::Find:   return do_find(call, settings);
+        case ToolKind::Render: return do_render(call, settings);
+        case ToolKind::Mcp:    return do_mcp(call, settings);
         case ToolKind::Run:    return do_run(call, settings, cancel);
         case ToolKind::Search: return do_search(call, search);
         case ToolKind::Fetch:  return do_fetch(call, settings);
@@ -1201,7 +1901,12 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         "LIST: <directory>          what is in it (\".\" is the project root)\n"
         "READ: <file>               its contents, with line numbers; a PDF or Office file as "
         "its text; a picture as itself\n"
-        "WRITE: <file>              then the whole new contents in a ``` block\n";
+        "FIND: <text> [in <files>]  the lines of the project's files that have it: "
+        "FIND: color in *.css\n"
+        "WRITE: <file>              then the whole new contents in a ``` block\n"
+        "EDIT: <file>               change part of a file, with SEARCH/REPLACE blocks (below)\n"
+        "RENDER: <page> to <file>   draw an HTML page or an SVG into a .pdf, or a .png "
+        "(add: at 1280x800)\n";
     if (settings.allow_run) {
         text += "RUN: <command>             run it in the project root and see the output; "
                 "RUN bash: or RUN powershell: picks the shell\n"
@@ -1229,6 +1934,21 @@ std::string workshop_instructions(const WorkshopSettings& settings,
                 "TYPE: <text>               type it into whatever has the focus\n"
                 "KEY: <keys>                press enter, tab, escape, ctrl+c, cmd+s, alt+f4...\n"
                 "SCROLL: up|down <notches>  scroll at the mouse\n";
+    }
+    if (settings.mcp != nullptr) {
+        const std::vector<mcp::Tool> offered = settings.mcp->tools();
+        if (!offered.empty()) {
+            text += "TOOL: <server>/<tool>      a tool another program offers, then its arguments "
+                    "as JSON in a ``` block. These:\n";
+            std::size_t shown = 0;
+            for (const mcp::Tool& tool : offered) {
+                if (++shown > 40) {
+                    text += "                           (and " + std::to_string(offered.size() - 40) + " more)\n";
+                    break;
+                }
+                text += "                           " + mcp::detail::describe(tool) + "\n";
+            }
+        }
     }
     text += "NOTE: <what you are doing>  recorded in the log, no other effect\n";
     if (audience == ToolAudience::Cook) {
@@ -1273,14 +1993,23 @@ std::string workshop_instructions(const WorkshopSettings& settings,
     // that to be applied -- which would put the description into the file in
     // place of the code.
     text +=
-        "\nWRITE replaces the whole file and the new contents go in a fenced block "
-        "on the following lines, never on the same line. Like this:\n"
+        "\nWRITE makes a file, or replaces one whole, and the new contents go in a "
+        "fenced block on the following lines, never on the same line. Like this:\n"
         "\nWRITE: src/calc.py\n"
         "```\n"
         "def add(a, b):\n"
         "    return a + b\n"
         "```\n"
-        "\nRead a file before rewriting it, unless you are creating it.\n";
+        "\nTo change part of a file that exists, use EDIT: copy the lines as they are "
+        "now, then what they become. Like this:\n"
+        "\nEDIT: style.css\n"
+        "<<<<<<< SEARCH\n"
+        "  color: red;\n"
+        "=======\n"
+        "  color: blue;\n"
+        ">>>>>>> REPLACE\n"
+        "\nThe SEARCH lines must be in the file exactly once; READ it first. Several "
+        "blocks may follow one EDIT line.\n";
     if (settings.computer_control) {
         text += "\nTo use the screen: SCREENSHOT: first, find what you want in the picture, "
                 "then CLICK: its pixel, then SCREENSHOT: again to see the result. One "

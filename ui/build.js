@@ -63,27 +63,52 @@ function openTask(build) {
   return touched.length ? touched[touched.length - 1].index : -1;
 }
 
-/// The list of agents: the architect's own row, then a row per task.
-function agentsList(build, chosen) {
+/// The agents, a row each: the architect's own, then one per task. The side
+/// menu draws them under the experts, so they are in sight from every view;
+/// the Build pane draws them itself only while the side menu is folded.
+/// `chosen` is the row to mark as the one open, or null for none; `act` is
+/// what a click does, which in History is to stay on the build it shows.
+function agentRows(build, chosen, act = 'agent-open') {
   const tasks = build.tasks || [];
   const architect = (build.steps || []).find((s) => taskOf(s) === -1 && s.kind === 'plan') || {};
   const row = (index, phase, title, who, extra) => `
-    <button class="agent seat${index === chosen ? ' here' : ''}" data-act="task-open" data-index="${index}"
-            data-phase="${phase}" title="${escape(title)}">
+    <button class="agent seat${index === chosen ? ' here' : ''}" data-act="${act}" data-index="${index}"
+            data-phase="${phase}" title="${escape(`${title}\n${who}${extra ? `\n${extra}` : ''}`)}">
       <span class="dot"></span>
       <span class="agent-text"><span class="agent-title">${escape(title)}</span>
-        <span class="agent-who">${escape(who)}${extra ? `  ·  ${escape(extra)}` : ''}</span></span>
+        <span class="agent-who">${apart(escape(who), extra ? escape(extra) : '')}</span></span>
     </button>`;
   const planning = !tasks.length && build.running;
-  return `<div class="agents">
-      <div class="caption">AGENTS</div>
-      ${row(-1, planning ? 'active' : build.running ? 'dormant' : 'dormant', 'Architect',
-            architect.expert ? expertName(architect.expert) : (planning ? 'planning' : 'the plan and the check'),
-            planning ? 'writing the plan' : '')}
-      ${tasks.map((t) => row(t.index, TASK_PHASE[t.state] || 'unconfigured', `${t.index + 1}. ${t.title}`,
-                              t.expert ? expertName(t.expert) : (t.needs || 'not yet assigned'), t.state)).join('')}
-    </div>`;
+  return row(-1, planning ? 'active' : 'dormant', 'Architect',
+             architect.expert ? expertName(architect.expert) : (planning ? 'planning' : 'the plan and the check'),
+             planning ? 'writing the plan' : '')
+    + tasks.map((t) => row(t.index, TASK_PHASE[t.state] || 'unconfigured', `${t.index + 1}. ${t.title}`,
+                           t.expert ? expertName(t.expert) : (t.needs || 'not yet assigned'), t.state)).join('');
 }
+
+/// The row the agents mark as open: the task on screen in the Build pane,
+/// and none anywhere else, where nothing of an agent's is showing.
+function agentShown(build) {
+  return state.view === 'build' && state.buildPane === 'agents' ? openTask(build) : null;
+}
+
+/// The agents drawn inside a pane, for the Build view with the side menu
+/// folded and for a past build in History.
+function agentsList(build, chosen, act) {
+  return `<div class="agents"><div class="caption">AGENTS</div>${agentRows(build, chosen, act)}</div>`;
+}
+
+/// Click an agent, in the side menu or the pane: its work, in the Build view.
+actions['agent-open'] = (button) => {
+  state.open.task = Number(button.dataset.index);
+  if (state.view === 'build' && state.buildPane === 'agents') {
+    render();
+    return;
+  }
+  // The pane is remembered, and entering Build reads it back.
+  remember.set('build-pane', 'agents');
+  enter('build');
+};
 
 /// The files a task changed, as chips that open them.
 function taskFiles(build, index) {
@@ -104,8 +129,8 @@ function agentWork(build, chosen) {
   const steps = (build.steps || []).filter((s) => taskOf(s) === chosen);
   let head;
   if (task) {
-    head = `<div class="goal-card"><div class="caption">TASK ${task.index + 1}  ·  ${escape(task.state.toUpperCase())}${
-        task.expert ? `  ·  ${escape(expertName(task.expert))}` : ''}</div>
+    head = `<div class="goal-card"><div class="caption">${apart(`TASK ${task.index + 1}`, escape(task.state.toUpperCase()),
+        task.expert ? escape(expertName(task.expert)) : '')}</div>
       <div class="goal">${escape(task.title)}</div>
       <div class="hint" style="margin-top:.4rem;white-space:pre-wrap">${escape(task.detail)}</div>
       ${task.needs ? `<div class="hint">needs: ${escape(task.needs)}</div>` : ''}
@@ -137,7 +162,7 @@ function latestFile(build, chosen) {
   return `<div class="row code-head-row" style="margin-top:1.2rem"><strong class="file-name">${escape(latest)}</strong>
       <span class="status">${file.bytes ? bytes(file.bytes) : ''}</span><span class="spacer"></span>
       <button class="action small" data-act="file-open" data-path="${escape(latest)}">Open in Code</button></div>
-    ${codeBlock(file.content || '', file.language || languageOf(latest))}`;
+    ${codeBlock(file.content || '', languageOf(latest) || file.language)}`;
 }
 
 /// The path the agent of task `index` changed most recently, or ''.
@@ -185,25 +210,24 @@ function buildBody(build) {
         <div class="caption">DIRECTIVE</div>
         <div class="goal">${escape(build.goal)}</div>
         ${attachedChips(build.attachments)}
-        ${running ? `<button class="icon goal-stop" data-act="stop" title="Stop now" aria-label="Stop now">${ICONS.stop}</button>` : ''}
+        ${running ? `<button class="icon goal-stop" data-act="build-cancel" title="Stop now" aria-label="Stop now">${ICONS.stop}</button>` : ''}
       </div>
       <div class="cook-state seat" data-phase="${dot}">
         <span class="dot"></span><strong>${escape(build.state)}</strong>
-        <span class="status">${tasks.length ? `${done} of ${count(tasks.length, 'task')} done` : 'planning'}  ·  ${
-          span(build.seconds)}  ·  ${count(build.total !== undefined ? build.total : (build.steps || []).length, 'step')}</span>
+        <span class="status">${apart(tasks.length ? `${done} of ${count(tasks.length, 'task')} done` : 'planning',
+          span(build.seconds), count(build.total !== undefined ? build.total : (build.steps || []).length, 'step'))}</span>
       </div>
       ${build.state === 'asking' ? `<div class="asking"><div class="caption">IT IS ASKING</div>
           <div>${escape(build.question)}</div>
           <div class="status" style="margin-top:.5rem">answer below</div></div>` : ''}
-      <div class="build-split">${agentsList(build, chosen)}${agentWork(build, chosen)}</div>
+      ${sidebarOpen() ? `<div class="build-split solo">${agentWork(build, chosen)}</div>`
+        : `<div class="build-split">${agentsList(build, chosen)}${agentWork(build, chosen)}</div>`}
       ${build.outcome && !running ? `<hr class="rule"><div class="md outcome">${markdown(build.outcome)}</div>` : ''}
       ${!running && build.state !== 'idle' ? (build.files && build.files.length
         ? `<div class="changed"><span class="status">changed</span> ${build.files.map((f) =>
             `<button class="link file-chip" data-act="file-open" data-path="${escape(f)}">${escape(f)}</button>`).join(' ')}</div>`
         : '<div class="changed bad">no files changed</div>') : ''}`;
 }
-
-actions['task-open'] = (button) => { state.open.task = Number(button.dataset.index); render(); };
 
 // --- the code -----------------------------------------------------------------------------
 
@@ -228,10 +252,15 @@ function codePane() {
       file = open.thumb ? `<img class="code-picture" src="${open.thumb}" alt="${escape(open.path)}">`
                         : '<div class="status" style="padding:1rem">Loading the picture...</div>';
     } else if (open.editing) {
-      file = `<textarea class="code-editor" data-key="editor-key" data-input="editor-change" spellcheck="false"
-                data-draft aria-label="Editing ${escape(open.path)}">${escape(open.draft)}</textarea>`;
+      // The text is typed into a textarea whose own letters are clear, over
+      // the same text colored: highlighted as it is edited, and still a
+      // textarea -- undo, selection, the keyboard -- underneath.
+      file = `<div class="code-editor-wrap">
+          <pre class="code-editor-under" aria-hidden="true"><code>${highlight(open.draft, fileLanguage(open))}\n</code></pre>
+          <textarea class="code-editor" data-key="editor-key" data-input="editor-change" data-scroll="editor-scroll"
+                spellcheck="false" data-draft aria-label="Editing ${escape(open.path)}">${escape(open.draft)}</textarea></div>`;
     } else {
-      file = codeBlock(open.content || '', open.language || languageOf(open.path))
+      file = codeBlock(open.content || '', fileLanguage(open))
            + (open.cut ? '<div class="status">cut: the start of a long file</div>' : '');
     }
   }
@@ -276,11 +305,28 @@ actions['file-open'] = (button) => guard(async () => {
 actions['file-close'] = () => { state.open.file = null; render(); };
 actions['editor-edit'] = () => { const f = state.open.file; f.editing = true; f.draft = f.content || ''; render(); };
 actions['editor-cancel'] = () => { const f = state.open.file; f.editing = false; render(); };
-actions['editor-change'] = (box) => { state.open.file.draft = box.value; };
+/// The language an open file is read as: by its name first, which knows a
+/// Dockerfile, and then by what the reader said.
+const fileLanguage = (file) => languageOf(file.path) || file.language || '';
+
+actions['editor-change'] = (box) => {
+  const f = state.open.file;
+  f.draft = box.value;
+  // The colors under the text, redrawn here rather than by a render: one per
+  // keystroke would draw the whole window again for one letter.
+  const under = box.previousElementSibling;
+  if (under && under.firstElementChild) {
+    under.firstElementChild.innerHTML = highlight(box.value, fileLanguage(f)) + '\n';
+  }
+};
+actions['editor-scroll'] = (box) => {
+  const under = box.previousElementSibling;
+  if (under) { under.scrollTop = box.scrollTop; under.scrollLeft = box.scrollLeft; }
+};
 actions['editor-key'] = (box, event) => {
   if (event.key === 'Tab') { event.preventDefault(); const at = box.selectionStart;
     box.value = box.value.slice(0, at) + '    ' + box.value.slice(box.selectionEnd);
-    box.selectionStart = box.selectionEnd = at + 4; state.open.file.draft = box.value; }
+    box.selectionStart = box.selectionEnd = at + 4; actions['editor-change'](box); }
   if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
     event.preventDefault(); actions['editor-save']();
   }
@@ -315,13 +361,14 @@ function sourcePane() {
   const diff = state.diff === null ? '' : state.diff === undefined ? '<div class="status">Reading...</div>'
     : state.diff ? codeBlock(state.diff, 'diff') : '<div class="status">No difference.</div>';
   const log = !state.log ? '' : state.log.length ? state.log.map((c) => `<div class="commit">
-      <code>${escape(c.hash)}</code> ${escape(c.subject)} <span class="status">${escape(c.author)}  ·  ${escape(c.when)}</span></div>`).join('')
+      <code>${escape(c.hash)}</code> ${escape(c.subject)} <span class="status">${apart(escape(c.author), escape(c.when))}</span></div>`).join('')
     : '<div class="status">No commits yet.</div>';
   const ship = state.ship;
   const plan = (currentBuild() || {}).plan || {};
   return `<div class="source">
       <div class="row source-head"><strong>${escape(s.branch || '(no branch)')}</strong>
-        <span class="status">${s.remote ? escape(s.remote) : 'no remote'}${s.ahead ? `  ·  ${s.ahead} ahead` : ''}${s.behind ? `  ·  ${s.behind} behind` : ''}</span>
+        <span class="status">${apart(s.remote ? escape(s.remote) : 'no remote', s.ahead ? `${s.ahead} ahead` : '',
+          s.behind ? `${s.behind} behind` : '')}</span>
         <span class="spacer"></span>
         <button class="action small" data-act="source-refresh">Refresh</button>
         ${s.remote ? `<button class="action small" data-act="git-pull" ${busy ? 'disabled' : ''}>Pull</button>
@@ -335,6 +382,7 @@ function sourcePane() {
         <button class="action" ${busy || !s.changes.length ? 'disabled' : ''}>Commit</button></form>
       ${diff}
       <div class="caption" style="margin-top:1.2rem">HISTORY</div>${log}
+      ${ciView()}
       <form class="row" data-submit="git-command" style="margin-top:1rem">
         <span class="status">git</span>
         <input id="git-args" data-draft placeholder="any git command: log --oneline -5, branch, stash..." aria-label="git arguments"
@@ -355,7 +403,23 @@ function sourcePane() {
         <input id="ship-notes" data-draft value="${escape(ship.notes)}" placeholder="release notes" aria-label="Release notes" autocomplete="off">
         <button class="action" ${busy || !s.gh ? 'disabled' : ''}>Release</button></form>
       ${ship.url ? `<div class="hint">Released: ${escape(ship.url)}</div>` : ''}
+      <div class="row" style="margin-top:.8rem">
+        <span class="hint">A page of the project can be made a program that opens like any other.</span>
+        <button class="action small" data-act="build-pane" data-pane="preview">Make it an app</button></div>
     </div>`;
+}
+
+/// The latest CI runs on GitHub: what they checked and whether it passed.
+function ciView() {
+  const ci = state.ci;
+  if (!ci || !ci.available) return '';
+  const mark = (run) => run.status !== 'completed' ? '◐ running'
+    : run.conclusion === 'success' ? '✓ passed' : run.conclusion === 'skipped' ? '– skipped' : '✗ ' + (run.conclusion || 'failed');
+  const rows = (ci.runs || []).map((run) => `<div class="commit ci-run" data-conclusion="${escape(run.conclusion || run.status || '')}">
+      <span class="ci-mark">${escape(mark(run))}</span> ${escape(run.name || '')}
+      <span class="status">${apart(escape(run.displayTitle || ''), escape(run.headBranch || ''), escape(run.event || ''))}</span></div>`);
+  return `<div class="caption" style="margin-top:1.2rem">CI ON GITHUB</div>${
+    rows.length ? rows.join('') : '<div class="status">No runs yet.</div>'}`;
 }
 
 async function loadSource() {
@@ -363,6 +427,8 @@ async function loadSource() {
   try {
     state.source = await call('git.status');
     if (state.source.repo) state.log = (await call('git.log')).commits; else state.log = null;
+    // CI only where there is some to ask about: a GitHub remote, and gh.
+    state.ci = state.source.gh && /github\.com/.test(state.source.remote || '') ? await call('git.ci') : null;
   } catch (error) { state.error = error.message; }
   render();
 }
@@ -499,19 +565,55 @@ onSnapshot.push(() => {
 });
 
 /// A build that just finished leaves the tree and the status stale -- and
-/// another step by an agent may have rewritten the file on show.
+/// another step by an agent may have rewritten the file on show, or the page
+/// in the preview.
 let buildWas = '';
+let buildRunning = false;
+let buildSteps = 0;
 onSnapshot.push(() => {
   const build = currentBuild();
-  const now = build ? `${build.id}|${build.running}|${(build.files || []).length}|${build.total || (build.steps || []).length}` : '';
+  const steps = build ? (build.total || (build.steps || []).length) : 0;
+  const now = build ? `${build.id}|${build.running}|${(build.files || []).length}|${steps}` : '';
   if (now === buildWas) return;
   buildWas = now;
+  const finished = buildRunning && build && !build.running;
+  buildRunning = !!(build && build.running);
   if (state.open.taskFile) state.open.taskFile.stale = true;
+  // What changed since the last look: a page, a stylesheet or a script.
+  const fresh = build ? (build.steps || []).slice(-Math.max(0, steps - buildSteps)) : [];
+  buildSteps = steps;
+  const touchedPage = fresh.some((step) => (step.changed || []).some((f) => /\.(html?|css|js|svg|png|jpe?g|gif)$/i.test(f)));
   if (state.view === 'build') {
     if (state.buildPane === 'code') loadTree();
     if (state.buildPane === 'source') loadSource();
+    if (state.buildPane === 'preview' && (touchedPage || finished)) refreshPreview();
+    // A build that has just made or changed a page shows it, from the
+    // agents' pane: what was built is the thing to look at now. Not from a
+    // pane the person chose to be on.
+    if (finished && build.state === 'done' && state.buildPane === 'agents') showWhatWasBuilt();
   } else {
     state.tree = null;
     state.source = null;
   }
 });
+
+/// The page again, unless the person is in the middle of tuning it: then it
+/// waits, and the strip under the bar says it has changed.
+function refreshPreview() {
+  const p = state.preview;
+  if (p.url) return;
+  if (p.changes.length || p.picked || p.making) { p.stale = true; return; }
+  if (p.page) loadPreview(p.page); else enterPreview();
+}
+
+/// After a build: its preview, when the project has a page to show.
+function showWhatWasBuilt() {
+  call('preview.candidates').then((got) => {
+    const pages = got.pages || [];
+    if (!pages.length || state.view !== 'build' || state.buildPane !== 'agents') return;
+    state.preview.pages = pages;
+    state.buildPane = 'preview';
+    remember.set('build-pane', 'preview');
+    loadPreview(pages.includes('index.html') ? 'index.html' : pages[0]);
+  }).catch(() => {});
+}

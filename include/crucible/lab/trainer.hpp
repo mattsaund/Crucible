@@ -112,7 +112,7 @@ struct RunProgress {
     /// counted, and everything else is a guess.
     long long seconds_left() const;
 
-    /// "training  step 120 of 400  ·  loss 1.83" -- one line for the page.
+    /// "training  step 120 of 400, loss 1.83" -- one line for the page.
     std::string label() const;
 };
 

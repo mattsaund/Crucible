@@ -12,6 +12,7 @@
 // It leaves the machine, so it is behind the same switch as search.
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -30,8 +31,21 @@ struct Page {
 /// The headless browser this machine has, as the path to run, or empty.
 std::string browser_here();
 
+/// A browser installed on the machine itself -- Chrome, Chromium, Edge,
+/// Brave -- not counting the kit's. Empty when there is none, which is what
+/// sends the kit to fetch Chrome's headless shell. See kit/kit.hpp.
+std::string system_browser();
+
 /// Read `url`. `max_chars` caps the text; `timeout_seconds` the whole thing.
 Page fetch(std::string_view url, std::size_t max_chars, int timeout_seconds);
+
+/// Draw `page` -- a file of the project, an SVG, or a web address -- into
+/// `out` with the headless browser: a PDF when `out` ends in .pdf, a PNG of
+/// `width` by `height` pixels when it ends in .png. Empty on success, the
+/// reason otherwise. How an expert makes a document or a picture it cannot
+/// write as text: write the HTML, then render it.
+std::string render(const std::string& page, const std::filesystem::path& out, int width, int height,
+                   int timeout_seconds);
 
 // --- exposed for the tests -------------------------------------------------
 

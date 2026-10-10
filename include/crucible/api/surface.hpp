@@ -38,6 +38,10 @@
 #include "crucible/runtime/builder.hpp"
 
 namespace crucible {
+
+namespace self {
+class Rebuild;
+}
 class Setup;
 }  // namespace crucible
 
@@ -72,6 +76,13 @@ public:
     /// What is being fetched for Crucible to run: its Python, the runtimes,
     /// the training environment. See app/setup.hpp.
     virtual Setup*                 setup() { return nullptr; }
+
+    /// A rebuild of Crucible's own source. See app/self_source.hpp.
+    virtual self::Rebuild*         rebuild() { return nullptr; }
+
+    /// Close the window, as its own close button does: what a restart into
+    /// a rebuilt Crucible does once the new one has started.
+    virtual void quit() {}
 
     // --- the configuration -------------------------------------------------
 

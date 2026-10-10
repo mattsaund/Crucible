@@ -338,6 +338,9 @@ std::string drawn(const std::string& expression) {
         "   + html.substr(Math.max(0, html.indexOf('undefined') - 80), 120);"
         " if (html.indexOf('NaN') >= 0) return 'says NaN near: '"
         "   + html.substr(Math.max(0, html.indexOf('NaN') - 80), 120);"
+        // Parts of a line are set apart by space, not by a dot between them.
+        " var dot = html.search(/\\s\\u00b7\\s/);"
+        " if (dot >= 0) return 'a dot between words near: ' + html.substr(Math.max(0, dot - 60), 120);"
         " var tags = ['div', 'button', 'span', 'select', 'details', 'form', 'label', 'aside'];"
         " for (var i = 0; i < tags.length; i++) {"
         "   var opened = (html.match(new RegExp('<' + tags[i] + '[\\\\s>]', 'g')) || []).length;"
@@ -489,9 +492,9 @@ TEST(the_top_bar_says_which_folder_the_chat_works_in) {
     // A new chat, before its first message makes its folder: where it will go.
     const std::string fresh = page().eval(
         "(() => { const was = state.snapshot.project;"
-        " state.snapshot.project = { open: false, scratch_display: '~/Crucible/Scratchpad' };"
+        " state.snapshot.project = { open: false, scratch_display: '~/.crucible/Scratchpad' };"
         " const out = topView(); state.snapshot.project = was; return out; })()");
-    CHECK(fresh.find(">~/Crucible/Scratchpad<") != std::string::npos);
+    CHECK(fresh.find(">~/.crucible/Scratchpad<") != std::string::npos);
     // And that there is a newer version, on the gear.
     CHECK(top.find("9.9.9 is available") != std::string::npos);
 }
@@ -681,20 +684,29 @@ TEST(a_sent_prompt_and_a_goal_show_what_was_attached) {
 }
 
 TEST(the_drop_overlay_says_where_a_drop_goes_or_why_it_cannot) {
-    // The busy state has a cook running and asking, which shuts both boxes
-    // -- the answer goes in, and nothing else.
-    CHECK_EQ(page().eval("dropTarget().why"), "Answer the build's question first");
-    CHECK(page().eval("dropView(dropTarget())").find("Answer the build&#39;s question first") != std::string::npos);
-    CHECK_EQ(page().eval("(function () { var s = state.snapshot.cook.state; state.snapshot.cook.state = 'working';"
-                         " var why = dropTarget().why; state.snapshot.cook.state = s; return why; })()"),
-             "A build is running -- it has the experts");
+    // The busy state has a build running and asking. On the Build view that
+    // shuts the box -- the answer goes in, and nothing else -- while the
+    // chat's box takes a drop whatever the build is doing.
+    const char* const on =
+        "(function (view, what) { var was = state.view; state.view = view; var out = what();"
+        " state.view = was; return out; })";
+    CHECK_EQ(page().eval(std::string(on) + "('build', function () { return dropTarget().why; })"),
+             "Answer the build's question first");
+    CHECK(page().eval(std::string(on) + "('build', function () { return dropView(dropTarget()); })")
+              .find("Answer the build&#39;s question first") != std::string::npos);
+    CHECK_EQ(page().eval(std::string(on)
+                         + "('build', function () { var s = state.snapshot.cook.state;"
+                           " state.snapshot.cook.state = 'working'; var why = dropTarget().why;"
+                           " state.snapshot.cook.state = s; return why; })"),
+             "A build is running -- drop it on Chat, or wait for the build");
+    CHECK_EQ(page().eval(std::string(on) + "('chat', function () { return dropTarget().mode; })"), "chat");
     const char* const without_cook =
         "(function (what) { var cook = state.snapshot.cook, view = state.view;"
         " state.snapshot.cook = null; var out = what();"
         " state.snapshot.cook = cook; state.view = view; return out; })";
     CHECK_EQ(page().eval(std::string(without_cook)
-                         + "(function () { state.view = 'cook'; return dropTarget().mode; })"),
-             "cook");
+                         + "(function () { state.view = 'build'; return dropTarget().mode; })"),
+             "build");
     const std::string from_history = page().eval(
         std::string(without_cook) + "(function () { state.view = 'history'; return dropView(dropTarget()); })");
     CHECK(from_history.find("Drop files or folders here") != std::string::npos);
@@ -839,9 +851,9 @@ TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
         "   { id: '20261005-101500', title: 'why <b>orbits</b> decay', when: '1 hour ago', turns: 3,"
         "     project: '/home/me/orbit', project_name: 'orbit' },"
         "   { id: '20261004-090000', title: 'draft a note', when: 'yesterday', turns: 1,"
-        "     project: '/home/me/Crucible/Scratchpad', project_name: 'Scratchpad' }],"
+        "     project: '/home/me/.crucible/Scratchpad', project_name: 'Scratchpad' }],"
         "   projects: [{ root: '/home/me/orbit', name: 'orbit', display: '~/orbit', current: true },"
-        "              { root: '/home/me/Crucible/Scratchpad', name: 'Scratchpad', display: '~/Crucible/Scratchpad' }] };"
+        "              { root: '/home/me/.crucible/Scratchpad', name: 'Scratchpad', display: '~/.crucible/Scratchpad' }] };"
         " var out = recentsView();"
         " state.recentsWidth = w; state.recents = r; state.snapshot.session = session; return out; })()");
     CHECK(side.find("RECENT CHATS") != std::string::npos);
@@ -849,7 +861,7 @@ TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
     CHECK(side.find("Open project") != std::string::npos);
     CHECK(side.find("class=\"action small\" data-act=\"new-chat\"") != std::string::npos);
     CHECK(side.find("why &lt;b&gt;orbits&lt;/b&gt; decay") != std::string::npos);
-    CHECK(side.find("data-act=\"recent-chat\" data-id=\"20261004-090000\" data-project=\"/home/me/Crucible/Scratchpad\"") != std::string::npos);
+    CHECK(side.find("data-act=\"recent-chat\" data-id=\"20261004-090000\" data-project=\"/home/me/.crucible/Scratchpad\"") != std::string::npos);
     CHECK(side.find("class=\"recent here\"") != std::string::npos);
     CHECK(side.find("data-act=\"recent-project\" data-path=\"/home/me/orbit\"") != std::string::npos);
     // Shut, it is not drawn at all; the top bar has the way back.
@@ -866,7 +878,7 @@ TEST(each_recent_chat_and_project_has_a_bin_but_not_while_something_runs) {
         "   { id: '20261005-101500', title: 'orbits', when: '1 hour ago', turns: 3,"
         "     project: '/home/me/orbit', project_name: 'orbit' },"
         "   { id: '20261004-090000', title: 'a note', when: 'yesterday', turns: 1, scratch: true,"
-        "     project: '/home/me/Crucible/Scratchpad/20261004-090000', project_name: 'Scratchpad' }],"
+        "     project: '/home/me/.crucible/Scratchpad/20261004-090000', project_name: 'Scratchpad' }],"
         "   projects: [{ root: '/home/me/orbit', name: 'orbit', display: '~/orbit' }] };"
         " var out = recentsView();"
         " state.recentsWidth = w; state.recents = r; state.snapshot.busy = b; return out; })";
@@ -878,6 +890,52 @@ TEST(each_recent_chat_and_project_has_a_bin_but_not_while_something_runs) {
     const std::string busy = page().eval(std::string(draw) + "(true)");
     CHECK(busy.find("r-trash") == std::string::npos);
     CHECK(busy.find("data-act=\"recent-chat\"") != std::string::npos);
+}
+
+TEST(the_right_panel_ends_with_the_models_at_work) {
+    // Local models above, the frontier model in use below: what each holds,
+    // what it has cost, and how much of its provider's limits is used.
+    const char* const draw =
+        "(function (snap) { var was = {}; for (var k in snap) { was[k] = state.snapshot[k]; state.snapshot[k] = snap[k]; }"
+        " var w = state.recentsWidth; state.recentsWidth = 16; var out = recentsView(); state.recentsWidth = w;"
+        " for (var k2 in snap) state.snapshot[k2] = was[k2]; return out; })";
+    const std::string busy = std::string(draw) + "({"
+        " memory_total: 25769803776,"
+        " local_models: [{ seat: '', file: 'router.gguf', bytes: 1073741824, delegator: true },"
+        "                { seat: 'math', file: 'math.gguf', bytes: 9663676416, delegator: false }],"
+        " frontier: [{ provider: 'Anthropic', model: 'claude-opus-5-5', last: 2, prompt: 50000, context: 200000,"
+        "   session: { input: 1000, cache_read: 40000, cache_write: 0, output: 900, requests: 3, cost: 0.4213 },"
+        "   month: { input: 9000, cache_read: 90000, cache_write: 0, output: 9000, requests: 30, cost: 12.3 },"
+        "   limits: [{ what: 'requests', limit: 50, remaining: 4, resets: '6m0s' }] },"
+        "  { provider: 'OpenAI', model: 'gpt-5', last: 1, prompt: 0, context: 0,"
+        "   session: { input: 10, cache_read: 0, cache_write: 0, output: 5, requests: 1 },"
+        "   month: { input: 10, cache_read: 0, cache_write: 0, output: 5, requests: 1 }, limits: [] }] })";
+    CHECK_EQ(drawn(busy), "ok");
+    const std::string panel = page().eval(busy);
+    const std::size_t local = panel.find(">LOCAL<");
+    const std::size_t frontier = panel.find(">FRONTIER<");
+    CHECK(local != std::string::npos);
+    CHECK(frontier != std::string::npos);
+    CHECK(local < frontier);
+    CHECK(panel.find("Delegator") != std::string::npos);
+    CHECK(panel.find("Mathematics") != std::string::npos);
+    CHECK(panel.find("9.0 GB") != std::string::npos);
+    CHECK(panel.find("claude-opus-5-5") != std::string::npos);
+    CHECK(panel.find("$0.42") != std::string::npos);
+    CHECK(panel.find("this month") != std::string::npos);
+    CHECK(panel.find("$12") != std::string::npos);
+    CHECK(panel.find("4 of 50 left") != std::string::npos);
+    CHECK(panel.find("u-meter full") != std::string::npos);    // 46 of 50 used
+    CHECK(panel.find("25%") != std::string::npos);             // the context
+    CHECK(panel.find("gpt-5") != std::string::npos);
+    CHECK(panel.find("15 tokens") != std::string::npos);       // no price for it
+
+    // Nothing loaded and nothing asked: it says so, and offers a provider.
+    const std::string empty = std::string(draw) + "({ local_models: [], frontier: [], experts: [] })";
+    CHECK_EQ(drawn(empty), "ok");
+    const std::string none = page().eval(empty);
+    CHECK(none.find("None loaded") != std::string::npos);
+    CHECK(none.find("data-page=\"providers\"") != std::string::npos);
 }
 
 TEST(a_turns_thinking_starts_shut_and_stays_the_way_it_was_left) {
@@ -913,7 +971,7 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
         return page().eval(std::string(buffer) + "(function () { return " + expression + "; })");
     };
     const std::string expert = with("", "modelSelect('', '', {})");
-    CHECK(expert.find("mlx-community/Qwen3-4B-4bit  ·  MLX") != std::string::npos);
+    CHECK(expert.find("mlx-community/Qwen3-4B-4bit (MLX, ") != std::string::npos);
     CHECK(expert.find("cannot run here") == std::string::npos);
     const std::string delegator = with("", "modelSelect('', '', {}, true)");
     CHECK(delegator.find("Qwen3-4B-4bit") == std::string::npos);
@@ -1244,6 +1302,75 @@ TEST(the_aliases_a_model_actually_writes) {
     CHECK(has(highlight("func main", "golang"), "tok-key"));
 }
 
+TEST(html_is_colored_as_tags_attributes_and_the_code_inside_it) {
+    const std::string page = "<p class=\"a\" hidden>Tom &amp; Jerry</p><!-- note -->"
+                             "<style>.a { color: red; }</style><script>const x = 1;</script>";
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-key\">p</span>"));
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-typ\">class</span>"));
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-str\">&quot;a&quot;</span>"));
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-num\">&amp;amp;</span>"));
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-com\">&lt;!-- note --&gt;</span>"));
+    // What a style and a script hold, as CSS and as JavaScript.
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-typ\">color</span>"));
+    CHECK(has(highlight(page, "html"), "<span class=\"tok-key\">const</span>"));
+    // A value with no quotes is a value, and a less-than is not a tag.
+    CHECK(has(highlight("<a href=x>", "htm"), "<span class=\"tok-str\">x</span>"));
+    CHECK(!has(highlight("a < b", "html"), "tok-key"));
+    CHECK(has(highlight("<?xml version=\"1.0\"?>", "xml"), "<span class=\"tok-typ\">version</span>"));
+}
+
+TEST(css_is_colored_by_selector_property_and_value) {
+    const std::string css = ".card:hover { margin: 0 -2px 1.5rem; color: #FF8700 !important; }";
+    CHECK(has(highlight(css, "css"), "<span class=\"tok-key\">card</span>"));
+    CHECK(has(highlight(css, "css"), "<span class=\"tok-typ\">margin</span>"));
+    CHECK(has(highlight(css, "css"), "<span class=\"tok-num\">1.5rem</span>"));
+    CHECK(has(highlight(css, "css"), "<span class=\"tok-num\">#FF8700</span>"));
+    CHECK(has(highlight(css, "scss"), "<span class=\"tok-key\">!important</span>"));
+    CHECK(has(highlight("@media (x: 1px) {}", "css"), "<span class=\"tok-key\">@media</span>"));
+}
+
+TEST(markdown_colors_its_headings_and_the_code_in_its_fences) {
+    const std::string md = "# Title\n\nSee `x` and [docs](https://d.test).\n\n- one\n\n```js\nconst a = 1;\n```";
+    CHECK(has(highlight(md, "md"), "<span class=\"tok-key\"># Title</span>"));
+    CHECK(has(highlight(md, "md"), "<span class=\"tok-str\">`x`</span>"));
+    CHECK(has(highlight(md, "md"), "<span class=\"tok-str\">https://d.test</span>"));
+    CHECK(has(highlight(md, "md"), "<span class=\"tok-num\">-</span>"));
+    CHECK(has(highlight(md, "markdown"), "<span class=\"tok-key\">const</span>"));
+}
+
+TEST(the_languages_a_project_is_built_from_are_all_colored) {
+    CHECK(has(highlight("FROM node:20\nRUN echo $HOME", "dockerfile"), "<span class=\"tok-key\">FROM</span>"));
+    CHECK(has(highlight("all: $(OBJ)\n\t$(CC) -o $@", "makefile"), "<span class=\"tok-var\">$(CC)</span>"));
+    CHECK(has(highlight("set X=1\necho %X%", "bat"), "<span class=\"tok-var\">%X%</span>"));
+    CHECK(has(highlight("REM a note", "cmd"), "<span class=\"tok-com\">REM a note</span>"));
+    CHECK(has(highlight("function F { param($a) }", "ps1"), "<span class=\"tok-var\">$a</span>"));
+    CHECK(has(highlight("<# block #>", "powershell"), "<span class=\"tok-com\">&lt;# block #&gt;</span>"));
+    CHECK(has(highlight("public record P(int X);", "cs"), "<span class=\"tok-key\">record</span>"));
+    CHECK(has(highlight("guard let x else { return }", "swift"), "<span class=\"tok-key\">guard</span>"));
+    CHECK(has(highlight("suspend fun f() {}", "kt"), "<span class=\"tok-key\">suspend</span>"));
+    CHECK(has(highlight("defmodule A do end", "ex"), "<span class=\"tok-key\">defmodule</span>"));
+    CHECK(has(highlight("{- c -} main = do", "hs"), "<span class=\"tok-com\">{- c -}</span>"));
+    CHECK(has(highlight("resource \"a\" \"b\" {}", "tf"), "<span class=\"tok-key\">resource</span>"));
+    CHECK(has(highlight("message A { string b = 1; }", "proto"), "<span class=\"tok-typ\">string</span>"));
+    CHECK(has(highlight("query { a }", "graphql"), "<span class=\"tok-key\">query</span>"));
+    CHECK(has(highlight("type T = keyof U", "ts"), "<span class=\"tok-key\">keyof</span>"));
+    CHECK(has(highlight("\\section{A}", "tex"), "<span class=\"tok-key\">\\section</span>"));
+    CHECK(has(highlight("node_modules/ # deps", "gitignore"), "<span class=\"tok-com\"># deps</span>"));
+}
+
+TEST(a_file_is_read_as_the_language_its_name_says) {
+    const auto lang = [](const std::string& path) { return js().eval("languageOf(" + lit(path) + ")"); };
+    CHECK_EQ(lang("src/app.py"), std::string("py"));
+    CHECK_EQ(lang("Dockerfile"), std::string("dockerfile"));
+    CHECK_EQ(lang("build/Makefile"), std::string("makefile"));
+    CHECK_EQ(lang("CMakeLists.txt"), std::string("cmake"));
+    CHECK_EQ(lang("a\\b\\.gitignore"), std::string("gitignore"));
+    CHECK_EQ(lang(".env.local"), std::string("shell"));
+    CHECK_EQ(lang("README"), std::string(""));
+    // And a block whose fence did not say, that is plainly a page.
+    CHECK_EQ(js().eval("guessLanguage(['<!DOCTYPE html>', '<html>'])"), std::string("html"));
+}
+
 TEST(coloring_never_loses_or_invents_text) {
     // The one property that matters: strip the spans and the code must be
     // exactly what went in. A lexer that drops a character silently
@@ -1260,6 +1387,19 @@ TEST(coloring_never_loses_or_invents_text) {
         {"cpp",  "/* unterminated"},
         {"py",   "'''unterminated"},
         {"cpp",  ""},
+        {"html", "<!DOCTYPE html>\n<p class=a id=\"b\">Tom &amp; <b>x</b></p><!-- c -->\n"
+                 "<style>.a { color: #fff; margin: 0 -2px; }</style><script>if (a < b) {}</script>"},
+        {"html", "<div class=\"unterminated"},
+        {"html", "a < b && c > d <"},
+        {"svg",  "<svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>"},
+        {"css",  ".a:hover, #b > c { font: 12px/1.5 \"Inter\", sans-serif !important; } @media (x: 1px) {}"},
+        {"md",   "# T\n\n- `a` and [b](c \"d\")\n\n```py\ndef f(): pass\n```\n> q"},
+        {"md",   "```\nunterminated"},
+        {"dockerfile", "FROM a:1\nRUN echo $HOME ${X} # c"},
+        {"makefile", "all: $(OBJ)\n\t$(CC) $@ $^ # c"},
+        {"bat",  "@echo off\nREM c\nset X=%1 %X% %~dp0 %"},
+        {"ps1",  "function F { param($a) } <# b #> # c"},
+        {"tex",  "\\section{A} 50\\% % c"},
     };
     for (const auto& [lang, text] : samples) {
         const std::string expression =
@@ -1439,9 +1579,16 @@ TEST(the_build_view_draws_the_agents_and_the_chosen_ones_work) {
     const std::string plan = page().eval("(state.open.task = -1, views.build())");
     CHECK(plan.find("THE PLAN") != std::string::npos);
     CHECK(plan.find("pytest -q") != std::string::npos);
-    // The box belongs to the build: Stop and finish, not Send.
+    // The box belongs to the build: Stop and finish, not Send, and its Stop
+    // now is the build's own rather than the chat's.
     CHECK(plan.find("Stop and finish") != std::string::npos);
-    CHECK(page().eval("views.chat()").find("a build is running") != std::string::npos);
+    CHECK(plan.find("data-act=\"build-cancel\"") != std::string::npos);
+    // The chat is not shut by a build: its box takes a prompt, and the build
+    // is drawn at the foot of the conversation.
+    const std::string chat = page().eval("views.chat()");
+    CHECK(chat.find("◆ building") != std::string::npos);
+    CHECK(chat.find("id=\"prompt\" data-draft") != std::string::npos);
+    CHECK(chat.find("placeholder=\"Ask it something\"") != std::string::npos);
 }
 
 TEST(the_code_source_and_preview_panes_draw_what_was_read) {
@@ -1449,9 +1596,29 @@ TEST(the_code_source_and_preview_panes_draw_what_was_read) {
     const std::string code = page().eval("views.build()");
     CHECK(code.find("todo.py") != std::string::npos);
     CHECK(code.find("data-act=\"editor-edit\"") != std::string::npos);
+    // Editing, what is typed is colored as it is typed: the same lexer, drawn
+    // under the textarea, which scrolls it.
+    page().eval("state.open.file = Object.assign({}, state.open.file,"
+                " { path: 'site/index.html', editing: true, draft: '<p class=\"a\">hi</p>' })");
+    CHECK_EQ(drawn("views.build()"), "ok");
+    const std::string editing = page().eval("views.build()");
+    CHECK(editing.find("code-editor-under") != std::string::npos);
+    CHECK(editing.find("<span class=\"tok-key\">p</span>") != std::string::npos);
+    CHECK(editing.find("data-scroll=\"editor-scroll\"") != std::string::npos);
+    page().eval("state.open.file.editing = false; state.open.file.path = 'src/todo.py'");
 
+    page().eval("state.ci = { available: true, runs: ["
+                "{ name: 'test', displayTitle: 'Add the parser', status: 'completed', conclusion: 'success', headBranch: 'main', event: 'push' },"
+                "{ name: 'test', displayTitle: 'Break it', status: 'completed', conclusion: 'failure', headBranch: 'main', event: 'push' },"
+                "{ name: 'lint', displayTitle: 'Now', status: 'in_progress', conclusion: '', headBranch: 'main', event: 'push' }] }");
     CHECK_EQ(drawn("(state.buildPane = 'source', views.build())"), "ok");
     const std::string source = page().eval("views.build()");
+    CHECK(source.find("CI ON GITHUB") != std::string::npos);
+    CHECK(source.find("✓ passed") != std::string::npos);
+    CHECK(source.find("✗ failure") != std::string::npos);
+    CHECK(source.find("◐ running") != std::string::npos);
+    CHECK(source.find("data-pane=\"preview\"") != std::string::npos);
+    page().eval("state.ci = null");
     CHECK(source.find("data-submit=\"git-commit\"") != std::string::npos);
     CHECK(source.find("Publish to GitHub") != std::string::npos);   // gh is there and there is no remote
     CHECK(source.find("abc1234") != std::string::npos);
@@ -1473,6 +1640,127 @@ TEST(the_code_source_and_preview_panes_draw_what_was_read) {
     CHECK(prompt.find("padding: 12px") != std::string::npos);
 }
 
+TEST(a_seat_at_work_in_the_build_opens_its_work) {
+    // The build fixture has task 2 being worked by Programming: its seat is
+    // lit, says so, and opens the build on that task.
+    const std::string side = page().eval("sideView()");
+    CHECK(side.find("data-act=\"seat-open\"") != std::string::npos);
+    const std::string opened = page().eval(
+        "(function () { var t = (state.snapshot.cook.tasks || []).find(function (x) { return x.state === 'working'; });"
+        " if (!t) return 'no working task in the fixture';"
+        " var was = enter; var went = ''; enter = function (v) { went = v; };"
+        " actions['seat-open']({ dataset: { expert: t.expert } }); enter = was;"
+        " return went + ':' + state.open.task + ':' + t.index; })()");
+    if (opened != "no working task in the fixture") {
+        CHECK(opened.rfind("build:", 0) == 0);
+        const std::size_t first = opened.find(':', 6);
+        CHECK(first != std::string::npos);
+        CHECK_EQ(opened.substr(6, first - 6), opened.substr(first + 1));
+    }
+    // A seat with nothing to do opens its settings.
+    const std::string idle = page().eval(
+        "(function () { var was = enter; var went = ''; enter = function (v, p) { went = v + '/' + p; };"
+        " actions['seat-open']({ dataset: { expert: 'nobody-at-all' } }); enter = was; return went; })()");
+    CHECK_EQ(idle, "settings/experts");
+}
+
+TEST(the_agents_are_in_the_side_menu_under_the_experts) {
+    // With the side menu open the build's agents are in it, under the
+    // experts, where they are in sight from every view; the Build pane then
+    // leaves its own list out rather than draw them twice.
+    page().eval("window.__sideWas = state.sidebar; window.__viewWas = state.view; state.sidebar = 15");
+    const std::string side = page().eval("sideView()");
+    const std::size_t experts = side.find(">EXPERTS<");
+    const std::size_t agents  = side.find(">AGENTS<");
+    CHECK(experts != std::string::npos);
+    CHECK(agents != std::string::npos);
+    CHECK(experts < agents);
+    CHECK(side.find("Architect", agents) != std::string::npos);
+    CHECK(side.find("data-act=\"agent-open\" data-index=\"1\"", agents) != std::string::npos);
+    CHECK(side.find("2. Tests", agents) != std::string::npos);
+    const auto times = [](const std::string& text, const std::string& needle) {
+        std::size_t n = 0;
+        for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
+            ++n;
+        }
+        return n;
+    };
+    const std::string open = page().eval("(state.view = 'build', state.buildPane = 'agents', views.build())");
+    CHECK_EQ(times(open, "1. Write todo.py</span>"), std::size_t{1});
+    CHECK(open.find("build-split solo") != std::string::npos);
+    CHECK(open.find("TASK 2") != std::string::npos);
+
+    // Folded, the pane draws them itself, and the rail has a dot for the one
+    // at work.
+    page().eval("state.sidebar = 0");
+    const std::string folded = page().eval("views.build()");
+    CHECK_EQ(times(folded, "1. Write todo.py</span>"), std::size_t{1});
+    CHECK(folded.find("build-split solo") == std::string::npos);
+    CHECK(folded.find("data-act=\"agent-open\" data-index=\"1\" data-phase=\"active\"") != std::string::npos);
+
+    // Clicked from another view, an agent opens its work in the Build view.
+    const std::string went = page().eval(
+        "(function () { state.view = 'chat'; var was = enter; var to = ''; enter = function (v) { to = v; };"
+        " actions['agent-open']({ dataset: { index: '0' } }); enter = was; return to + ':' + state.open.task; })()");
+    CHECK_EQ(went, "build:0");
+    page().eval("state.sidebar = window.__sideWas; state.view = window.__viewWas; state.open.task = null");
+}
+
+TEST(the_preview_gives_a_page_its_data_calls_and_makes_it_an_app) {
+    // The data calls go in before anything of the page's own, and the picker
+    // after all of it.
+    const std::string doc = page().eval(
+        "tunedDocument('<html><head><title>B</title><script>start()<\\/script></head><body><p>x</p></body></html>')");
+    const std::size_t data  = doc.find("window.crucible = {");
+    const std::size_t theirs = doc.find("start()");
+    const std::size_t picker = doc.find("selectorOf");
+    CHECK(data != std::string::npos && theirs != std::string::npos && picker != std::string::npos);
+    CHECK(data < theirs);
+    CHECK(theirs < picker);
+
+    // A save is kept, and the next load gets it back -- answered to the frame.
+    const std::string said = page().eval(
+        "(function () { var told = []; var keep = tellFrame; tellFrame = function (m) { told.push(m); };"
+        " state.preview.page = 'index.html';"
+        " previewMessage({ crucible: 'data', what: 'save', id: 1, data: { rows: [3] } });"
+        " previewMessage({ crucible: 'data', what: 'load', id: 2 });"
+        " tellFrame = keep; return JSON.stringify(told); })()");
+    CHECK(said.find("\"id\":1,\"data\":true") != std::string::npos);
+    CHECK(said.find("\"id\":2,\"data\":{\"rows\":[3]}") != std::string::npos);
+
+    // The bar offers to make the page an app; making one asks its name, and
+    // what was made offers to open it.
+    page().eval("state.buildPane = 'preview'");
+    CHECK(page().eval("views.build()").find("data-act=\"app-make\"") != std::string::npos);
+    page().eval("state.preview.making = { name: 'Budget', busy: false, can: true }");
+    CHECK_EQ(drawn("views.build()"), "ok");
+    const std::string making = page().eval("views.build()");
+    CHECK(making.find("data-submit=\"app-package\"") != std::string::npos);
+    CHECK(making.find("value=\"Budget\"") != std::string::npos);
+    page().eval("state.preview.making = null; state.preview.made = { name: 'Budget', where: 'in Applications', launch: '/A/Budget.app' }");
+    CHECK_EQ(drawn("views.build()"), "ok");
+    CHECK(page().eval("views.build()").find("Open Budget") != std::string::npos);
+    page().eval("state.preview.made = null; state.preview.stale = true");
+    CHECK(page().eval("views.build()").find("Show it now") != std::string::npos);
+    page().eval("state.preview.stale = false");
+}
+
+TEST(about_offers_crucibles_own_source_as_a_project) {
+    page().eval("state.about = state.about || { version: '0.9.0', update: {}, files: {}, trusted: [] };"
+                "state.self = { found: true, root: '/src/crucible', build: '/src/crucible/build',"
+                " program: '/src/crucible/build/bin/crucible', why: '', rebuilding: false, status: 0, log: 'built' }");
+    CHECK_EQ(drawn("(state.settingsPage = 'about', views.settings())"), "ok");
+    const std::string about = page().eval("views.settings()");
+    CHECK(about.find("CRUCIBLE'S OWN SOURCE") != std::string::npos);
+    CHECK(about.find("data-act=\"self-open\"") != std::string::npos);
+    CHECK(about.find("data-act=\"self-restart\"") != std::string::npos);
+    page().eval("state.self = { found: false, why: 'this copy was installed from a download' }");
+    const std::string none = page().eval("views.settings()");
+    CHECK(none.find("installed from a download") != std::string::npos);
+    CHECK(none.find("data-act=\"self-choose\"") != std::string::npos);
+    page().eval("state.self = null");
+}
+
 TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
     CHECK_EQ(drawn("(state.open.cook = state.snapshot.cook, views.history())"), "ok");
     const std::string opened = page().eval("views.history()");
@@ -1481,9 +1769,34 @@ TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
     page().eval("state.history.cooks.push({ id: 'b0', kind: 'build', tasks: 3, goal: 'a build', state: 'done', when: 'today', files: 2, steps: 9, seconds: 100 })");
     const std::string listed = page().eval("(state.open.cook = null, views.history())");
     CHECK(listed.find("3 tasks") != std::string::npos);
-    CHECK(listed.find("BUILDS AND COOKS") != std::string::npos);
+    CHECK(listed.find("<h2>BUILDS</h2>") != std::string::npos);
 
+    page().eval("state.kit = { folder: '/k', pieces: ["
+                "{ id: 'gh', label: 'GitHub\\'s command line', why: 'releases', fetched: true, missing: false },"
+                "{ id: 'node', label: 'Node.js', why: 'JavaScript', fetched: false, missing: true },"
+                "{ id: 'ocr', label: 'Reading text off pictures', why: 'text', fetched: false, missing: false }] }");
+    CHECK_EQ(drawn("(state.settingsPage = 'tools', views.settings())"), "ok");
     const std::string tools = page().eval("(state.settingsPage = 'tools', views.settings())");
+    CHECK(tools.find("fetched by Crucible") != std::string::npos);
+    CHECK(tools.find("this machine has its own") != std::string::npos);
+    CHECK(tools.find("data-act=\"kit-fetch\"") != std::string::npos);
+    CHECK(tools.find("(Node.js)") != std::string::npos);
+    page().eval("state.kit = null");
+
+    // MCP servers: each with its state, and the form to add one.
+    page().eval("window.__mcpWas = state.config.tools.mcp;"
+                "state.config.tools.mcp = [{ name: 'github', command: 'npx', args: ['-y', 'server-github'],"
+                "  env: { GITHUB_TOKEN: '' }, enabled: true }];"
+                "state.mcp = { servers: [{ name: 'github', running: true, tools: 26, error: '' }] }");
+    CHECK_EQ(drawn("(state.settingsPage = 'tools', views.settings())"), "ok");
+    const std::string mcp = page().eval("views.settings()");
+    CHECK(mcp.find("MCP SERVERS") != std::string::npos);
+    CHECK(mcp.find("npx -y server-github") != std::string::npos);
+    CHECK(mcp.find("<span class=\"part\">running</span><span class=\"part\">26 tools</span>") != std::string::npos);
+    CHECK(mcp.find("data-submit=\"mcp-add\"") != std::string::npos);
+    CHECK_EQ(page().eval(R"JS(JSON.stringify(splitCommand('npx -y "my server" --flag')))JS"),
+             "[\"npx\",\"-y\",\"my server\",\"--flag\"]");
+    page().eval("state.config.tools.mcp = window.__mcpWas; state.mcp = null");
     CHECK(tools.find("tools-computer_control") != std::string::npos);
     CHECK(tools.find("DuckDuckGo") != std::string::npos);
     CHECK(tools.find("data-act=\"process-stop\"") != std::string::npos);
@@ -1491,6 +1804,8 @@ TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
     CHECK(build.find("build.architect") != std::string::npos);
     CHECK(build.find("id=\"worker-model\"") != std::string::npos);
     CHECK(build.find("build-rounds_per_task") != std::string::npos);
+    CHECK(build.find("build-agents") != std::string::npos);
+    CHECK(build.find("Agents at once") != std::string::npos);
 
     // Put back, for anything that runs after.
     page().eval("state.snapshot.cook = window.__cookWas; state.open.task = null;");

@@ -62,6 +62,14 @@ bool stdin_is_a_terminal();
 /// Called once, at the top of main, before anything is printed.
 void use_utf8_console();
 
+/// Make `folder` hidden, the way this system hides one.
+///
+/// On Linux and macOS a name that starts with a dot is already hidden, and
+/// there is nothing to do; Windows hides by an attribute of the folder rather
+/// than by its name, and a `.crucible` in a home folder would otherwise sit in
+/// plain sight in Explorer. Does nothing when the folder is not there.
+void hide_folder(const std::filesystem::path& folder);
+
 /// The argv that runs `command` through the platform's shell.
 ///
 /// A shell rather than an argv split, because pipes, redirections and `&&` are

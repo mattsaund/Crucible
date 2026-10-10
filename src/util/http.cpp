@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <charconv>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <random>
 #include <system_error>
@@ -85,7 +87,7 @@ std::string config_string(std::string_view value) {
 namespace detail {
 
 std::string curl_config(const Request& request, const std::filesystem::path& body_file,
-                        bool streaming) {
+                        bool streaming, const std::filesystem::path& headers_file) {
     std::string config;
     const auto line = [&config](std::string_view text) {
         config += text;
@@ -115,8 +117,42 @@ std::string curl_config(const Request& request, const std::filesystem::path& bod
         // sends, which is a silent edit to a JSON document.
         line("data-binary = " + config_string("@" + body_file.string()));
     }
+    if (!headers_file.empty()) {
+        line("dump-header = " + config_string(headers_file.string()));
+    }
     line("write-out = \"\\n" + std::string(kMarker) + "%{http_code}]]\\n\"");
     return config;
+}
+
+std::vector<Header> parse_headers(std::string_view dumped) {
+    std::vector<Header> headers;
+    while (!dumped.empty()) {
+        const std::size_t end = dumped.find('\n');
+        std::string_view line = dumped.substr(0, end);
+        dumped.remove_prefix(end == std::string_view::npos ? dumped.size() : end + 1);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        // A status line starts the next response's block: a redirect's
+        // headers are the redirect's, not the answer's.
+        if (line.rfind("HTTP/", 0) == 0) {
+            headers.clear();
+            continue;
+        }
+        const std::size_t colon = line.find(':');
+        if (colon == std::string_view::npos || colon == 0) {
+            continue;
+        }
+        std::string name(line.substr(0, colon));
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::string_view value = line.substr(colon + 1);
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+            value.remove_prefix(1);
+        }
+        headers.push_back({std::move(name), std::string(value)});
+    }
+    return headers;
 }
 
 int status_from_marker(std::string_view line) {
@@ -134,6 +170,15 @@ int status_from_marker(std::string_view line) {
 }
 
 }  // namespace detail
+
+std::string Response::header(std::string_view name) const {
+    for (const Header& one : headers) {
+        if (one.name == name) {
+            return one.value;
+        }
+    }
+    return {};
+}
 
 std::string Response::reason() const {
     if (!error.empty()) {
@@ -251,7 +296,7 @@ bool Stream::open(const Request& request, std::string& error) {
     const std::filesystem::path config_file = impl_->directory / "request";
     {
         std::ofstream out(config_file, std::ios::binary);
-        out << detail::curl_config(request, body_file, /*streaming=*/true);
+        out << detail::curl_config(request, body_file, /*streaming=*/true, impl_->directory / "headers");
         if (!out.good()) {
             error = "the request could not be written to " + config_file.string();
             return false;
@@ -312,6 +357,10 @@ Response Stream::finish() {
         impl_->reaped = true;
     }
     response.status = impl_->status;
+    if (std::ifstream dumped(impl_->directory / "headers", std::ios::binary); dumped) {
+        const std::string text((std::istreambuf_iterator<char>(dumped)), std::istreambuf_iterator<char>());
+        response.headers = detail::parse_headers(text);
+    }
     if (impl_->aborted) {
         response.error = "stopped";
     } else if (exit_code != 0) {

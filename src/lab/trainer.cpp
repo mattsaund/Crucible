@@ -76,7 +76,7 @@ std::string RunProgress::label() const {
             if (loss > 0.0F) {
                 char number[16];
                 std::snprintf(number, sizeof(number), "%.3f", static_cast<double>(loss));
-                line += std::string("  \xc2\xb7  loss ") + number;
+                line += std::string(", loss ") + number;
             }
             return line;
         }

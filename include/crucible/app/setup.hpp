@@ -12,7 +12,10 @@
 //   1. Crucible's own Python, which routing and cooks run on (lab/python.hpp);
 //   2. the compute runtimes this machine can use -- the CPU always, CUDA with
 //      NVIDIA's libraries where there is an NVIDIA driver, Metal or Vulkan;
-//   3. the training environment, built from that Python, which is also what
+//   3. the programs an expert reaches for that the machine lacks -- see
+//      kit/kit.hpp;
+//   4. a model to build with, when there is none at all -- see starter.hpp;
+//   5. the training environment, built from that Python, which is also what
 //      runs MLX models on a Mac.
 //
 // Only what is missing, and nothing at all on a machine that has it all. It
@@ -23,12 +26,15 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "crucible/app/starter.hpp"
 #include "crucible/lab/pyenv.hpp"
 #include "crucible/runtime/backend.hpp"
 #include "crucible/runtime/builder.hpp"
@@ -62,6 +68,14 @@ public:
     /// for a test harness that brings its own.
     void start();
 
+    /// Fetch `model` into `models_dir` too, on the next start(): a machine
+    /// with nothing to build with. See starter.hpp.
+    void want_model(starter::Model model, std::filesystem::path models_dir);
+
+    /// The file name of a model fetched since this was last called, and
+    /// clears it: the session seats it. An outbox, like the engine's.
+    std::optional<std::string> take_model();
+
     /// Stop waiting and return. An install already handed to the runtime
     /// builder or the training installer is theirs to stop.
     void stop();
@@ -80,6 +94,9 @@ private:
 
     mutable std::mutex     mutex_;
     std::vector<Item>      items_;
+    std::optional<starter::Model> model_;          ///< to fetch, when asked for
+    std::filesystem::path         models_dir_;
+    std::optional<std::string>    model_ready_;    ///< fetched, waiting to be seated
     std::vector<BackendKind> kinds_;   ///< parallel to the runtime items, in order
     bool                   running_ = false;
     std::atomic<bool>      stop_{false};

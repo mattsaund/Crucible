@@ -27,12 +27,17 @@
 #include <ggml-backend.h>
 #include <llama.h>
 
+#if defined(CRUCIBLE_HAS_MTMD)
+#include <mtmd.h>
+#endif
+
 #include "crucible/config/gpu_policy.hpp"
 #include "crucible/llm/model_shape.hpp"
 #include "crucible/llm/sampling.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/resources.hpp"
 
 namespace crucible {
 namespace {
@@ -308,6 +313,50 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
            " but only " + format::bytes(available) + " is free on " + where + advice;
 }
 
+/// The projector beside a model file, when it has one: a GGUF in the same
+/// folder with "mmproj" in its name -- the way vision models are published,
+/// and the way LM Studio lays them out. With several, the one whose name
+/// shares the most with the model's.
+std::filesystem::path find_projector(const std::string& model_path) {
+    const std::filesystem::path model(model_path);
+    const auto lower = [](std::string text) {
+        std::transform(text.begin(), text.end(), text.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    };
+    const std::string stem = lower(model.stem().string());
+    std::filesystem::path best;
+    std::size_t best_shared = 0;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(model.parent_path(), ec)) {
+        const std::string name = lower(entry.path().filename().string());
+        if (!entry.is_regular_file(ec) || entry.path() == model || name.find("mmproj") == std::string::npos
+            || lower(entry.path().extension().string()) != ".gguf") {
+            continue;
+        }
+        // How much of the model's own name is in the projector's, past the
+        // "mmproj-" most of them start with.
+        std::string bare = name;
+        if (const std::size_t at = bare.find("mmproj"); at != std::string::npos) {
+            bare.erase(at, 6);
+        }
+        std::size_t shared = 0;
+        for (std::size_t length = std::min(stem.size(), bare.size()); length > 0 && shared == 0; --length) {
+            for (std::size_t from = 0; from + length <= stem.size(); ++from) {
+                if (bare.find(stem.substr(from, length)) != std::string::npos) {
+                    shared = length;
+                    break;
+                }
+            }
+        }
+        if (best.empty() || shared > best_shared) {
+            best        = entry.path();
+            best_shared = shared;
+        }
+    }
+    return best;
+}
+
 /// Whether a direct-I/O load can be trusted on these devices.
 ///
 /// Not on Vulkan. Direct I/O turns off memory-mapping, and without a mapping
@@ -383,7 +432,7 @@ ModelHost::ModelHost(std::filesystem::path log_path) {
 }
 
 ModelHost::~ModelHost() {
-    expert_.reset();
+    experts_.clear();
     router_.reset();
     llama_backend_free();
 
@@ -398,10 +447,104 @@ std::uint64_t ModelHost::resident_bytes() const {
     if (router_) {
         total += router_->bytes();
     }
-    if (expert_) {
-        total += expert_->bytes();
+    for (const Resident& resident : experts_) {
+        total += resident.model->bytes();
     }
     return total;
+}
+
+std::vector<ModelHost::Held> ModelHost::held() const {
+    std::vector<Held> out;
+    out.reserve(experts_.size());
+    for (const Resident& resident : experts_) {
+        out.push_back({resident.id, resident.model.get()});
+    }
+    return out;
+}
+
+std::optional<ExpertId> ModelHost::loaded_expert() const {
+    if (experts_.empty()) {
+        return std::nullopt;
+    }
+    return experts_.back().id;
+}
+
+LoadedModel* ModelHost::expert() const {
+    return experts_.empty() ? nullptr : experts_.back().model.get();
+}
+
+std::uint64_t ModelHost::estimate_bytes(const ModelParams& params) {
+    std::error_code ec;
+    const std::filesystem::path path(params.path);
+    if (std::filesystem::is_directory(path, ec)) {
+        // An MLX model: its weights are the files in the folder, and what it
+        // holds once loaded is about their size and a tenth for the cache.
+        std::uint64_t total = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(path, ec)) {
+            if (entry.is_regular_file(ec)) {
+                total += entry.file_size(ec);
+            }
+        }
+        return total + total / 10;
+    }
+    const ModelShape shape = read_model_shape(path);
+    if (shape.known) {
+        return shape.resident_bytes(params.n_ctx);
+    }
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    return ec ? 0 : static_cast<std::uint64_t>(size) + static_cast<std::uint64_t>(size) / 10;
+}
+
+bool ModelHost::fits_beside(const ModelParams& requested) const {
+    if (experts_.empty() && !router_) {
+        return true;   // nothing to share with; the load's own checks speak
+    }
+    ModelParams params = requested;
+    refresh_gpu_split(params, gpu_);
+
+    // The cards, where they say what is free. That figure is live, so what is
+    // already resident is in it.
+    const std::vector<ComputeDevice> gpus = gpu_devices();
+    const bool cards_say = std::any_of(gpus.begin(), gpus.end(),
+                                       [](const ComputeDevice& gpu) { return gpu.memory_free > 0; });
+    if (cards_say
+        && !vram_shortfall(params.path, params, resident_bytes(), "the models in use").empty()) {
+        return false;
+    }
+
+    // The machine's memory, where the cards share it or do not say. A model
+    // that would leave less than a tenth of it -- and never under two
+    // gigabytes -- is not loaded beside another: the desktop and everything
+    // else on it live there too, and a machine paging its model weights is
+    // slower than one that waited for the other model to finish.
+#if defined(__APPLE__)
+    constexpr bool shared = true;
+#else
+    const bool shared = !cards_say;
+#endif
+    if (shared) {
+        std::uint64_t used  = 0;
+        std::uint64_t total = 0;
+        if (util::system_memory(used, total) && total > 0) {
+            const std::uint64_t available = total > used ? total - used : 0;
+            const std::uint64_t headroom  = std::max<std::uint64_t>(2ULL << 30, total / 10);
+            if (estimate_bytes(params) + headroom > available) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool ModelHost::free_one(const Keep& keep) {
+    for (auto it = experts_.begin(); it != experts_.end(); ++it) {
+        if (keep && keep(it->params.path)) {
+            continue;
+        }
+        experts_.erase(it);
+        return true;
+    }
+    return false;
 }
 
 std::vector<std::string> ModelHost::devices() {
@@ -483,12 +626,13 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // on at a crawl -- so this is the only point at which saying no is cheap.
     if (params.vram_only) {
         // What is already on the cards, and what it is. Loading an expert
-        // releases the previous one first, so the only thing resident then is
-        // the delegator -- and loading the delegator after a settings change is
-        // the mirror image of that.
+        // frees every expert nobody is using first, so what is resident then
+        // is the delegator and the experts in use -- and loading the delegator
+        // after a settings change is the mirror image of that.
         const std::uint64_t held = resident_bytes();
         const std::string   holder =
-            role == Role::Expert ? "the delegator" : "the resident expert";
+            role == Role::Expert ? (experts_.empty() ? "the delegator" : "the models in use")
+                                 : "the resident experts";
         if (const std::string shortfall = vram_shortfall(params.path, params, held, holder);
             !shortfall.empty()) {
             error = std::filesystem::path(params.path).filename().string() + " " + shortfall;
@@ -565,13 +709,36 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         return nullptr;
     }
 
-    return std::unique_ptr<LoadedModel>(new LoadedModel(model, ctx, params.path));
+    std::unique_ptr<LoadedModel> loaded(new LoadedModel(model, ctx, params.path));
+#if defined(CRUCIBLE_HAS_MTMD)
+    // A vision model's projector, when there is one beside it: what lets it
+    // read the pictures it is sent. A projector that will not load leaves a
+    // model that reads text, which is what it was before anyone looked.
+    if (role == Role::Expert) {
+        if (const std::filesystem::path projector = find_projector(params.path); !projector.empty()) {
+            mtmd_context_params vision = mtmd_context_params_default();
+            vision.use_gpu       = params.n_gpu_layers != 0;
+            vision.n_threads     = resolve_threads(params.n_threads);
+            vision.print_timings = false;
+            loaded->vision_ = mtmd_init_from_file(projector.string().c_str(), model, vision);
+            if (loaded->vision_ != nullptr) {
+                loaded->projector_ = projector.string();
+            }
+        }
+    }
+#endif
+    return loaded;
 }
 
 LoadedModel* ModelHost::acquire_router(const ModelParams& params,
                                        const ProgressCallback& progress,
                                        const CancelCallback& cancel,
-                                       std::string& error) {
+                                       std::string& error,
+                                       const Keep& keep,
+                                       bool* crowded) {
+    if (crowded != nullptr) {
+        *crowded = false;
+    }
     if (router_ && router_->path() == params.path) {
         return router_.get();
     }
@@ -584,10 +751,18 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
     // driver handed more than the card holds does not fail -- it spills into
     // system RAM, and a delegator running from there takes seconds per
     // decision with nothing on screen to say why.
-    if (expert_) {
-        const ModelParams planned = placed_delegator(params);
-        if (!vram_shortfall(planned.path, planned, 0, {}).empty()) {
-            release_expert();
+    //
+    // Only experts nobody is using are freed for it. When the ones in use
+    // leave no room, the delegator waits: routing goes on keywords meanwhile,
+    // which is a worse pick, where the alternative is a crashed agent.
+    const ModelParams planned = placed_delegator(params);
+    while (!experts_.empty() && !vram_shortfall(planned.path, planned, 0, {}).empty()) {
+        if (!free_one(keep)) {
+            if (crowded != nullptr) {
+                *crowded = true;
+            }
+            error = "the experts in use leave no room for the delegator";
+            return nullptr;
         }
     }
 
@@ -622,41 +797,54 @@ LoadedModel* ModelHost::acquire_expert(const ExpertId& id,
                                        const ModelParams& params,
                                        const ProgressCallback& progress,
                                        const CancelCallback& cancel,
-                                       std::string& error) {
-    if (expert_ && loaded_expert_ == id && expert_->path() == params.path) {
-        return expert_.get();
+                                       std::string& error,
+                                       const Keep& keep,
+                                       bool* crowded) {
+    if (crowded != nullptr) {
+        *crowded = false;
+    }
+    // Already resident, under this seat or another. The same weights loaded
+    // the same way are one model whichever seat names them: the seats are
+    // Crucible's idea, not llama.cpp's, and reloading a file already in memory
+    // cost half a minute on every route change for anyone who had not yet
+    // found nine different models to fill the table with. Moved to the back,
+    // as the one most recently asked for.
+    for (auto it = experts_.begin(); it != experts_.end(); ++it) {
+        if (it->params.path == params.path && (it->id == id || same_load(it->params, params))) {
+            Resident resident = std::move(*it);
+            experts_.erase(it);
+            resident.id = id;
+            experts_.push_back(std::move(resident));
+            return experts_.back().model.get();
+        }
     }
 
-    // A different seat, but the same weights loaded the same way.
-    //
-    // Nothing needs to happen: the seats are Crucible's idea, not llama.cpp's,
-    // and the model behind two of them is one model. Reloading it would cost
-    // half a minute for a large expert to arrive at the file already in memory
-    // -- which is what happened on every route change for anyone who has not
-    // yet found nine different models to fill the table with.
-    if (expert_ && expert_params_ && same_load(*expert_params_, params)) {
-        loaded_expert_ = id;
-        return expert_.get();
+    // Free first, then load. Holding two at once would double the peak
+    // memory and defeat the entire point of loading experts just in time --
+    // so every expert nobody is using goes, as it always has.
+    release_experts(keep);
+
+    // What is left is in use. The new one is loaded beside it when there is
+    // room, and otherwise not at all: the caller waits for a lease to end.
+    if (!experts_.empty() && !fits_beside(params)) {
+        if (crowded != nullptr) {
+            *crowded = true;
+        }
+        error = "the models in use leave no room for " + std::filesystem::path(params.path).filename().string();
+        return nullptr;
     }
 
-    // Free first, then load. Holding both at once would double the peak memory
-    // and defeat the entire point of loading experts just in time.
-    release_expert();
-
-    expert_ = load(params, Role::Expert, progress, cancel, error);
-    if (expert_) {
-        loaded_expert_ = id;
-        expert_params_ = params;
-    } else {
-        expert_params_.reset();
+    std::unique_ptr<LoadedModel> model = load(params, Role::Expert, progress, cancel, error);
+    if (!model) {
+        return nullptr;
     }
-    return expert_.get();
+    experts_.push_back(Resident{id, params, std::move(model)});
+    return experts_.back().model.get();
 }
 
-void ModelHost::release_expert() {
-    expert_.reset();
-    loaded_expert_.reset();
-    expert_params_.reset();
+void ModelHost::release_experts(const Keep& keep) {
+    while (free_one(keep)) {
+    }
 }
 
 }  // namespace crucible

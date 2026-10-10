@@ -94,6 +94,17 @@ std::tm utc_time(std::time_t when) {
     return parts;
 }
 
+void hide_folder(const std::filesystem::path& folder) {
+#if defined(_WIN32)
+    const DWORD attributes = ::GetFileAttributesW(folder.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_HIDDEN) == 0) {
+        ::SetFileAttributesW(folder.c_str(), attributes | FILE_ATTRIBUTE_HIDDEN);
+    }
+#else
+    (void)folder;
+#endif
+}
+
 std::vector<std::string> shell_command(const std::string& command) {
 #if defined(_WIN32)
     // cmd rather than PowerShell: it is always present, it starts in

@@ -291,14 +291,15 @@ CLIP.drop = `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" 
   <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>`;
 
 /// Which box a drop would go in, or why it cannot go in one: the same
-/// reasons the box itself is shut for.
+/// reasons the box itself is shut for. A running build shuts only its own
+/// box; the chat's takes a drop whatever the build is doing.
 function dropTarget() {
   const s = state.snapshot || {};
   if (state.modal) return { why: 'Close the dialog first' };
   const cook = s.cook && s.cook.running ? s.cook : null;
-  if (cook) {
+  if (cook && state.view === 'build') {
     return { why: cook.state === 'asking' ? 'Answer the build\'s question first'
-                                          : 'A build is running -- it has the experts' };
+                                          : 'A build is running -- drop it on Chat, or wait for the build' };
   }
   return { mode: state.view === 'build' ? 'build' : 'chat' };
 }

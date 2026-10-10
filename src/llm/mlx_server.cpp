@@ -131,6 +131,12 @@ bool Server::serving(const std::filesystem::path& dir) const {
     return child_ && child_->running() && dir_ == dir;
 }
 
+bool Server::running() const { return child_ && child_->running(); }
+
+std::filesystem::path Server::served() const {
+    return running() ? dir_ : std::filesystem::path();
+}
+
 std::string Server::base_url() const {
     return "http://127.0.0.1:" + std::to_string(port_) + "/v1";
 }

@@ -4,6 +4,12 @@
 // time, counting the tokens it cost, and writing the history to disk.
 #include "test_helpers.hpp"
 
+#include <chrono>
+
+#include "crucible/app/relocate.hpp"
+#include "crucible/llm/loaded_model.hpp"
+#include "crucible/llm/model_host.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
 
 // ---------------------------------------------------------------------------
@@ -128,10 +134,12 @@ TEST(a_protocol_line_written_where_a_channel_name_goes_is_the_answer) {
         const ResponseFilter::Piece out = filter_in_chunks(raw, chunk);
         CHECK(out.answer.find("NOTE: The project has no test file. Need to list.\n") != std::string::npos);
         CHECK(out.answer.find("\nLIST: .") != std::string::npos);
+        // The LIST is the call: the note says it is about to list, and an
+        // action after a note is what a model that narrates means to do.
         const std::optional<tools::ToolCall> call = tools::parse_tool_call(out.answer, out.reasoning);
         CHECK(call.has_value());
         if (call) {
-            CHECK(call->kind == tools::ToolKind::Note);
+            CHECK(call->kind == tools::ToolKind::List);
         }
     }
 }
@@ -491,12 +499,138 @@ TEST(a_chats_scratch_folder_is_told_apart_from_a_project) {
     const char* home = std::getenv("HOME");
     const std::string previous = home != nullptr ? home : "";
     set_env("HOME", temp.path().string());
-    CHECK(is_scratch(temp.path() / "Crucible" / "Scratchpad" / "20261005-120000"));
-    CHECK(is_scratch(temp.path() / "Crucible" / "Scratchpad"));
-    CHECK(!is_scratch(temp.path() / "Crucible" / "Scratchpadding"));
+    CHECK(is_scratch(temp.path() / ".crucible" / "Scratchpad" / "20261005-120000"));
+    CHECK(is_scratch(temp.path() / ".crucible" / "Scratchpad"));
+    CHECK(!is_scratch(temp.path() / ".crucible" / "Scratchpadding"));
+    CHECK(!is_scratch(temp.path() / "Crucible" / "Scratchpad" / "20261005-120000"));
     CHECK(!is_scratch(temp.path() / "code" / "orbit"));
     CHECK(!is_scratch({}));
     set_env("HOME", previous);
+}
+
+namespace {
+
+/// HOME, and the folders for data and settings, in a temporary folder for
+/// the life of a test, and put back afterwards.
+class ScopedHome {
+public:
+    explicit ScopedHome(const std::filesystem::path& home) {
+        for (const char* name : {"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"}) {
+            const char* value = std::getenv(name);
+            saved_.push_back({name, value != nullptr ? std::optional<std::string>(value) : std::nullopt});
+        }
+        set_env("HOME", home.string());
+        set_env("XDG_DATA_HOME", (home / "data").string());
+        set_env("XDG_CONFIG_HOME", (home / "config").string());
+    }
+    ~ScopedHome() {
+        for (const auto& [name, value] : saved_) {
+            if (value) {
+                set_env(name, *value);
+            } else {
+                unset_env(name);
+            }
+        }
+    }
+    ScopedHome(const ScopedHome&)            = delete;
+    ScopedHome& operator=(const ScopedHome&) = delete;
+
+private:
+    std::vector<std::pair<const char*, std::optional<std::string>>> saved_;
+};
+
+nlohmann::json read_json(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    return nlohmann::json::parse(in, nullptr, /*allow_exceptions=*/false);
+}
+
+void write_text(const std::filesystem::path& file, const std::string& text) {
+    std::filesystem::create_directories(file.parent_path());
+    std::ofstream(file, std::ios::binary) << text;
+}
+
+}  // namespace
+
+TEST(the_old_scratchpad_is_moved_out_of_sight_with_its_chats) {
+    TempDir temp;
+    const ScopedHome home(temp.path());
+    const std::filesystem::path old_pad = paths::old_scratchpad_dir();
+    const std::filesystem::path made    = old_pad / "20261001-100000";
+    write_text(made / "index.html", "<h1>Budget</h1>");
+    write_text(old_pad.parent_path() / ".DS_Store", "finder");
+
+    // A chat in it, recorded as the store records one: the folder by path,
+    // under a history folder named for that path, and a picture it took.
+    const Project before = Project::at(made);
+    nlohmann::json chat = {{"id", "20261001-100000"}, {"name", "a budget"}, {"project", before.root.string()},
+                           {"turns", {{{"prompt", "make it"}, {"picture", (before.root / "shot.png").string()},
+                                       {"reply", "It is in " + before.root.string() + " now."}}}}};
+    write_text(before.dir / "sessions" / "20261001-100000.json", chat.dump(1, '\t'));
+    write_text(paths::projects_dir() / "recent.json",
+               nlohmann::json::array({before.root.string(), "/somewhere/else"}).dump(2));
+    write_text(paths::trust_file(),
+               nlohmann::json({{"trusted", {{{"added", 1}, {"path", old_pad.string()}}}}}).dump(2));
+
+    const std::vector<std::string> said = relocate::scratchpad();
+    CHECK(!said.empty());
+    CHECK(!said.empty() && said[0].find("out of sight") != std::string::npos);
+
+    // The folder, hidden, and nothing left where it was -- the Finder's
+    // litter included.
+    const std::filesystem::path now = paths::scratchpad_dir() / "20261001-100000";
+    CHECK(std::filesystem::exists(now / "index.html"));
+    CHECK(!std::filesystem::exists(old_pad.parent_path()));
+
+    // Its history, under the name its new path gives it, saying where it is.
+    const Project after = Project::at(now);
+    CHECK(!std::filesystem::exists(before.dir));
+    const nlohmann::json moved = read_json(after.dir / "sessions" / "20261001-100000.json");
+    CHECK_EQ(moved.value("project", std::string()), after.root.string());
+    CHECK_EQ(moved["turns"][0].value("picture", std::string()), (after.root / "shot.png").string());
+    // A path in the middle of what somebody said is what they said.
+    CHECK_EQ(moved["turns"][0].value("reply", std::string()), "It is in " + before.root.string() + " now.");
+    const std::vector<SessionSummary> chats = recent_chats(5);
+    CHECK_EQ(chats.size(), std::size_t{1});
+    CHECK(!chats.empty() && chats[0].project == after.root);
+
+    // The recent projects and the trust follow it; what is elsewhere stays.
+    const nlohmann::json recent = read_json(paths::projects_dir() / "recent.json");
+    CHECK_EQ(recent[0].get<std::string>(), after.root.string());
+    CHECK_EQ(recent[1].get<std::string>(), std::string("/somewhere/else"));
+    const std::string trusted = read_json(paths::trust_file())["trusted"][0].value("path", std::string());
+    CHECK(trusted.find(".crucible") != std::string::npos);
+    CHECK(trusted.find("Scratchpad") != std::string::npos);
+
+    // And a second start has nothing to do.
+    CHECK(relocate::scratchpad().empty());
+}
+
+TEST(what_is_not_crucibles_in_the_old_folder_is_left_where_it_is) {
+    TempDir temp;
+    const ScopedHome home(temp.path());
+    const std::filesystem::path old_pad = paths::old_scratchpad_dir();
+    write_text(old_pad / "20261001-100000" / "a.txt", "a");
+    write_text(old_pad / "20261001-100000" / "same.txt", "newer");
+    write_text(old_pad.parent_path() / "notes.txt", "mine");
+    // The same folder already in the new Scratchpad: a Crucible from before
+    // was still running in it after the first move, and made it again. The
+    // two are put back together, the newer of a file both have kept.
+    write_text(paths::scratchpad_dir() / "20261001-100000" / "b.txt", "b");
+    write_text(paths::scratchpad_dir() / "20261001-100000" / "same.txt", "older");
+    const auto past = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    std::filesystem::last_write_time(paths::scratchpad_dir() / "20261001-100000" / "same.txt", past);
+
+    CHECK(!relocate::scratchpad().empty());
+    CHECK(std::filesystem::exists(old_pad.parent_path() / "notes.txt"));
+    CHECK(!std::filesystem::exists(old_pad));
+    const std::filesystem::path merged = paths::scratchpad_dir() / "20261001-100000";
+    CHECK(std::filesystem::exists(merged / "a.txt"));
+    CHECK(std::filesystem::exists(merged / "b.txt"));
+    std::ifstream same(merged / "same.txt");
+    std::string kept;
+    std::getline(same, kept);
+    CHECK_EQ(kept, std::string("newer"));
+    CHECK(!std::filesystem::exists(paths::scratchpad_dir() / "20261001-100000-2"));
 }
 
 TEST(a_multi_line_prompt_still_makes_a_one_line_title) {
@@ -726,3 +860,83 @@ TEST(a_turn_holding_bytes_that_are_not_utf8_still_saves) {
     CHECK(saved);
     CHECK_EQ(error, std::string());
 }
+
+// ---------------------------------------------------------------------------
+// A local model that sees
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A picture of one color, as a BMP: the simplest file a projector's reader
+/// takes, written here rather than kept as a fixture.
+std::string solid_bmp(int side, unsigned char r, unsigned char g, unsigned char b) {
+    const int row = side * 3;   // a multiple of four for the sides used here
+    const int data = row * side;
+    std::string out(54, '\0');
+    const auto put = [&out](std::size_t at, std::uint32_t value, int bytes) {
+        for (int i = 0; i < bytes; ++i) {
+            out[at + static_cast<std::size_t>(i)] = static_cast<char>((value >> (8 * i)) & 0xFF);
+        }
+    };
+    out[0] = 'B';
+    out[1] = 'M';
+    put(2, 54 + static_cast<std::uint32_t>(data), 4);
+    put(10, 54, 4);
+    put(14, 40, 4);
+    put(18, static_cast<std::uint32_t>(side), 4);
+    put(22, static_cast<std::uint32_t>(side), 4);
+    put(26, 1, 2);
+    put(28, 24, 2);
+    put(34, static_cast<std::uint32_t>(data), 4);
+    for (int i = 0; i < side * side; ++i) {
+        out += static_cast<char>(b);
+        out += static_cast<char>(g);
+        out += static_cast<char>(r);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(a_local_model_with_a_projector_reads_a_picture) {
+    // Only where a vision model is named: CRUCIBLE_VISION_MODEL, a GGUF with
+    // its mmproj projector in the same folder. Too large for every run to
+    // fetch, and the one way to know the picture really reaches the model.
+    const char* named = std::getenv("CRUCIBLE_VISION_MODEL");
+    if (named == nullptr || *named == '\0') {
+        return;
+    }
+    TempDir dir;
+    ModelHost host(dir.path() / "llama.log");
+    ModelParams params;
+    params.model       = named;
+    params.path        = named;
+    params.n_ctx       = 4096;
+    params.max_tokens  = 32;
+    params.temperature = 0.0F;
+    std::string error;
+    LoadedModel* model = host.acquire_expert("eyes", params, {}, {}, error);
+    CHECK(model != nullptr);
+    if (model == nullptr) {
+        std::printf("      %s\n", error.c_str());
+        return;
+    }
+    CHECK(model->sees_images());
+
+    const std::vector<ChatMessage> messages{
+        {"user", "What color is this picture? Answer with one word.",
+         {ChatImage{"image/bmp", format::base64(solid_bmp(64, 220, 20, 20))}}}};
+    const ChatRequest request{messages, params, ""};
+    std::string answer;
+    ChatSink sink;
+    sink.on_text = [&answer](std::string_view text) { answer += text; };
+    const ChatResult result = model->chat(request, sink);
+    CHECK(result.error.empty());
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    CHECK(answer.find("red") != std::string::npos);
+    if (answer.find("red") == std::string::npos) {
+        std::printf("      it said: %s\n", answer.c_str());
+    }
+}
+

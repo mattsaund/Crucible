@@ -44,6 +44,9 @@ function cookChain(cook) {
     chain.map((id) => escape(expertName(id))).join('  →  ')}</div>`;
 }
 
+/// A past build's agent, chosen where it is drawn.
+actions['task-open'] = (button) => { state.open.task = Number(button.dataset.index); render(); };
+
 /// One cook, running or finished: the goal, where it is, and what it did.
 function cookBody(cook, live) {
   // A build, opened from History: the plan and its agents, as the Build
@@ -54,9 +57,9 @@ function cookBody(cook, live) {
         ${attachedChips(cook.attachments)}</div>
       <div class="cook-state seat" data-phase="${cook.state === 'failed' ? 'missing' : 'dormant'}">
         <span class="dot"></span><strong>${escape(cook.state)}</strong>
-        <span class="status">${count((cook.tasks || []).length, 'task')}  ·  ${span(cook.seconds)}  ·  ${
-          count(cook.total !== undefined ? cook.total : (cook.steps || []).length, 'step')}</span></div>
-      <div class="build-split">${agentsList(cook, chosen)}${agentWork(cook, chosen)}</div>
+        <span class="status">${apart(count((cook.tasks || []).length, 'task'), span(cook.seconds),
+          count(cook.total !== undefined ? cook.total : (cook.steps || []).length, 'step'))}</span></div>
+      <div class="build-split">${agentsList(cook, chosen, 'task-open')}${agentWork(cook, chosen)}</div>
       ${cook.outcome ? `<hr class="rule"><div class="md outcome">${markdown(cook.outcome)}</div>` : ''}`;
   }
   const failed = cook.state === 'failed';
@@ -79,13 +82,13 @@ function cookBody(cook, live) {
         <div class="caption">GOAL</div>
         <div class="goal">${escape(cook.goal)}</div>
         ${attachedChips(cook.attachments)}
-        ${running ? `<button class="icon goal-stop" data-act="stop"
+        ${running ? `<button class="icon goal-stop" data-act="build-cancel"
             title="Stop now" aria-label="Stop now">${ICONS.stop}</button>` : ''}
       </div>
       <div class="cook-state seat" data-phase="${dot}">
         <span class="dot"></span><strong>${escape(cook.state)}</strong>
-        <span class="status">pass ${cook.iterations || 0}  ·  ${span(cook.seconds)}  ·  ${
-          count(cook.total !== undefined ? cook.total : (cook.steps || []).length, 'step')}</span>
+        <span class="status">${apart(`pass ${cook.iterations || 0}`, span(cook.seconds),
+          count(cook.total !== undefined ? cook.total : (cook.steps || []).length, 'step'))}</span>
       </div>
       ${cookChain(cook)}
       ${cook.state === 'asking' ? `<div class="asking"><div class="caption">IT IS ASKING</div>

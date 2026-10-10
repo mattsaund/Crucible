@@ -43,11 +43,20 @@ std::filesystem::path runtime_build_dir();
 /// data_dir()/projects -- per-project session history, keyed by directory.
 std::filesystem::path projects_dir();
 
-/// ~/Crucible/Scratchpad -- the project a conversation goes in when none is
-/// open. Crucible's own folder to work in, but the person's work rather than
-/// the program's state: so beside their home rather than in data_dir(),
-/// where it would be hidden and an uninstall would take it.
+/// ~/.crucible -- Crucible's folder in the home folder, hidden the way each
+/// system hides one (see util::hide_folder). What is in it is the person's
+/// work rather than the program's state, so it is beside their home rather
+/// than in data_dir(), where an uninstall would take it.
+std::filesystem::path home_folder();
+
+/// home_folder()/Scratchpad -- the project a conversation goes in when none
+/// is open, a folder for each.
 std::filesystem::path scratchpad_dir();
+
+/// ~/Crucible/Scratchpad, where the Scratchpad was before it was hidden: in
+/// plain sight in every file browser and every listing of a home folder.
+/// Read once, by app/relocate.hpp, to move it.
+std::filesystem::path old_scratchpad_dir();
 
 /// The user's home folder: HOME, or USERPROFILE on Windows.
 std::filesystem::path home_dir();

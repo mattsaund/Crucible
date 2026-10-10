@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: MIT
+//
+// Crucible's icon, inside crucible.exe: what Explorer shows for the file, what
+// the taskbar shows for the running window, and what the window wears in its
+// corner. Without it all three are Windows' blank program icon, whatever the
+// Start menu's shortcut says.
+//
+// 32512 is IDI_APPLICATION, which is the id the webview asks its own program
+// for when it makes the window, and so the one that reaches the window too.
+//
+// Configured by CMake with the icon's full path, because the resource compiler
+// looks for the file from wherever the build runs it rather than from beside
+// this one.
+32512 ICON "@CRUCIBLE_ICON_ICO@"

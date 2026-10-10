@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import threading
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -44,8 +45,15 @@ class ScriptedCore:
     """
 
     def __init__(self, replies, stop_after=None, auto_edits=True, answers=None, check_ok=True,
-                 can_make=False, make_ok=True, confirm_plan=False, git=True, repo=False):
+                 can_make=False, make_ok=True, confirm_plan=False, git=True, repo=False, agents=1,
+                 listing=".:\n  (empty)\n"):
         self.replies = list(replies)
+        self.listing = listing
+        self.agents = agents
+        self.lock = threading.RLock()
+        self.handles = 0
+        self.held = {}        # seat handle -> expert
+        self.released = []
         self.rounds = 0
         self.stop_after = stop_after
         self.auto_edits = auto_edits
@@ -67,7 +75,12 @@ class ScriptedCore:
 
     def settings(self):
         return {"architect": "", "can_make": self.can_make, "auto_commit": True,
-                "rounds_per_task": 12, "confirm_plan": self.confirm_plan}
+                "rounds_per_task": 12, "confirm_plan": self.confirm_plan, "agents": self.agents}
+
+    def spawn(self, target, *args):
+        thread = threading.Thread(target=target, args=args, daemon=True)
+        thread.start()
+        return thread
 
     def flags(self):
         return self.call("engine.flags")
@@ -76,7 +89,10 @@ class ScriptedCore:
         self.moods.append((mood, text))
 
     def call(self, method, params=None):
-        params = params or {}
+        with self.lock:
+            return self.answer(method, params or {})
+
+    def answer(self, method, params):
         if method == "engine.flags":
             stop = ((self.stop_after is not None and self.rounds >= self.stop_after)
                     or not self.replies)
@@ -85,7 +101,13 @@ class ScriptedCore:
             return {"available": False}
         if method == "seat.take":
             self.seats.append(params["expert"])
-            return {"ok": True}
+            self.handles += 1
+            handle = "s%d" % self.handles
+            self.held[handle] = params["expert"]
+            return {"ok": True, "seat": handle}
+        if method == "seat.release":
+            self.released.append(self.held.pop(params["seat"], None))
+            return {}
         if method == "seat.chat":
             self.rounds += 1
             self.prompts.append(params["messages"])
@@ -96,12 +118,12 @@ class ScriptedCore:
         if method == "tools.run":
             self.ran.append((params["kind"], params["argument"]))
             if params["kind"] == "list":
-                return {"ok": True, "output": ".:\n  (empty)\n", "summary": "listed .", "detail": "", "changed": []}
+                return {"ok": True, "output": self.listing, "summary": "listed .", "detail": "", "changed": []}
             if params["kind"] == "run":
                 ok = self.check_ok if params["argument"] == PLAN["check"] else True
                 return {"ok": ok, "output": "$ " + params["argument"] + "\n" + ("passed" if ok else "1 failed"),
                         "summary": "$ " + params["argument"], "detail": "", "changed": []}
-            changed = [params["argument"]] if params["kind"] == "write" else []
+            changed = [params["argument"]] if params["kind"] in ("write", "edit") else []
             return {"ok": True, "output": "ran " + params["kind"], "summary": params["kind"] + " "
                     + params["argument"], "detail": "", "changed": changed}
         if method == "edit.ask":
@@ -125,6 +147,8 @@ class ScriptedCore:
             return {"ok": True}
         if method == "git.commit":
             self.commits.append(params["message"])
+            self.committed_paths = getattr(self, "committed_paths", [])
+            self.committed_paths.append(params.get("paths"))
             return {"ok": True, "summary": "committed abc1234 " + params["message"].split("\n")[0]}
         if method == "teach.record":
             self.records.append(params)
@@ -234,9 +258,19 @@ class TheLoop(unittest.TestCase):
     def test_a_remote_agents_work_is_recorded_for_teaching(self):
         core = ScriptedCore([plan_text(), "WRITE: todo.py\n```\nx\n```", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"])
         build.run(core, params(core))
-        # Programming is remote and did tasks 1 and 2; Writing is local.
-        self.assertEqual([r["expert"] for r in core.records], ["programming", "programming"])
-        self.assertEqual(core.records[0]["files"], ["todo.py"])
+        # Programming is remote and did tasks 1 and 2; Writing is local, so
+        # its work teaches nobody -- but who each task went to does.
+        work = [r for r in core.records if r["expert"] not in ("architect", "delegator")]
+        self.assertEqual([r["expert"] for r in work], ["programming", "programming"])
+        self.assertEqual(work[0]["files"], ["todo.py"])
+        routed = [r for r in core.records if r["expert"] == "delegator"]
+        self.assertEqual([r["completion"] for r in routed], ["Programming", "Programming", "Writing"])
+        self.assertTrue(routed[0]["prompt"].startswith("Python back end: Write todo.py"))
+        # The plan a remote architect wrote, with the prompt it answered.
+        planned = [r for r in core.records if r["expert"] == "architect"]
+        self.assertEqual(len(planned), 1)
+        self.assertIn("Write a plan as JSON", planned[0]["prompt"])
+        self.assertIn('"tasks"', planned[0]["completion"])
 
     def test_a_failed_check_adds_a_fix_task_and_checks_again(self):
         core = ScriptedCore([plan_text(), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c",
@@ -356,3 +390,190 @@ class TheLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SideBySide(unittest.TestCase):
+    """Agents working at once: tasks that do not wait on each other run
+    together, and what must not overlap does not."""
+
+    PLAN = {
+        "summary": "Three independent pieces.", "run": "", "check": "", "ship": "",
+        "tasks": [
+            {"title": "Make a.py", "detail": "a", "files": ["a.py"], "needs": "python", "after": []},
+            {"title": "Make b.py", "detail": "b", "files": ["b.py"], "needs": "python", "after": []},
+            {"title": "Make c.md", "detail": "c", "files": ["c.md"], "needs": "documentation", "after": [0, 1]},
+        ],
+    }
+
+    class Core(ScriptedCore):
+        """Answers each agent from its own task, and records how many rounds
+        were in flight at once."""
+
+        def __init__(self, plan, seats, barrier=None, **kwargs):
+            super().__init__([], **kwargs)
+            self.plan = plan
+            self.seat_info = seats
+            self.barrier = barrier
+            self.in_flight = 0
+            self.most = 0
+            self.turns = {}
+
+        def call(self, method, params=None):
+            params = params or {}
+            if method == "seat.chat":
+                return self.chat(params)
+            with self.lock:
+                if method == "engine.flags":
+                    return {"stop": False, "cancel": False, "running": True, "auto_edits": True}
+                return self.answer(method, params)
+
+        def chat(self, params):
+            system = params["messages"][0]["content"]
+            if "Write a plan as JSON" in params["messages"][-1]["content"]:
+                return {"answer": plan_text(self.plan), "reasoning": "", "ms": 1}
+            if "The build is over" in params["messages"][-1]["content"]:
+                return {"answer": "All three were made.", "reasoning": "", "ms": 1}
+            number = int(system.split("Your task, ", 1)[1].split(" of", 1)[0])
+            task = self.plan["tasks"][number - 1]
+            with self.lock:
+                self.in_flight += 1
+                self.most = max(self.most, self.in_flight)
+                turn = self.turns.get(task["title"], 0)
+                self.turns[task["title"]] = turn + 1
+            try:
+                if turn == 0 and self.barrier is not None and task["after"] == []:
+                    self.barrier.wait()   # both first tasks are mid-round at once, or this times out
+                if turn == 0:
+                    return {"answer": "WRITE: " + task["files"][0] + "\n```\nx\n```", "reasoning": "", "ms": 1}
+                return {"answer": "DONE: made " + task["files"][0], "reasoning": "", "ms": 1}
+            finally:
+                with self.lock:
+                    self.in_flight -= 1
+
+    def run_build(self, core, seats):
+        out = params(core, seats=seats)
+        build.Build(core, out).run()
+        return core.published[-1]
+
+    def test_independent_tasks_run_at_the_same_time(self):
+        seats = {"programming": {"model": True, "remote": True, "local": ""},
+                 "writing": {"model": True, "remote": True, "local": ""}}
+        core = self.Core(self.PLAN, seats, barrier=threading.Barrier(2, timeout=5), agents=3)
+        journal = self.run_build(core, seats)
+        self.assertEqual([t["state"] for t in journal["tasks"]], ["done", "done", "done"])
+        self.assertEqual(core.most, 2)
+        # The third came after both, and its own files are all it committed.
+        self.assertEqual(core.committed_paths, [["a.py"], ["b.py"], ["c.md"]] if
+                         core.commits[0].startswith("Make a") else [["b.py"], ["a.py"], ["c.md"]])
+        # Every seat taken was handed back.
+        self.assertEqual(core.held, {})
+
+    def test_one_model_on_this_machine_takes_one_agent_at_a_time(self):
+        seats = {"programming": {"model": True, "remote": False, "local": "/m/coder.gguf"},
+                 "writing": {"model": True, "remote": False, "local": "/m/coder.gguf"}}
+        core = self.Core(self.PLAN, seats, agents=3)
+        journal = self.run_build(core, seats)
+        self.assertEqual([t["state"] for t in journal["tasks"]], ["done", "done", "done"])
+        self.assertEqual(core.most, 1)
+
+    def test_tasks_that_share_a_file_wait_for_each_other(self):
+        plan = json.loads(json.dumps(self.PLAN))
+        plan["tasks"][1]["files"] = ["a.py"]
+        seats = {"programming": {"model": True, "remote": True, "local": ""},
+                 "writing": {"model": True, "remote": True, "local": ""}}
+        core = self.Core(plan, seats, agents=3)
+        journal = self.run_build(core, seats)
+        self.assertEqual([t["state"] for t in journal["tasks"]], ["done", "done", "done"])
+        self.assertEqual(core.most, 1)
+
+    def test_one_agent_is_the_old_build_exactly(self):
+        seats = {"programming": {"model": True, "remote": True, "local": ""},
+                 "writing": {"model": True, "remote": True, "local": ""}}
+        core = self.Core(self.PLAN, seats, agents=1)
+        self.run_build(core, seats)
+        self.assertEqual(core.most, 1)
+        # With one agent the whole tree is committed, as before.
+        self.assertEqual(core.committed_paths, [None, None, None])
+
+
+class SmallChanges(unittest.TestCase):
+    """"Make the button blue" on a project that exists: one task, no plan to
+    agree, and the agent's own account as the outcome."""
+
+    ONE = {"summary": "Make the button blue.", "run": "", "check": "", "ship": "",
+           "tasks": [{"title": "Make the button blue", "detail": "In style.css, .add { color: blue }",
+                      "files": ["style.css"], "needs": "CSS", "after": []}]}
+
+    def test_a_one_task_change_is_not_put_to_the_person_and_needs_no_write_up(self):
+        core = ScriptedCore([plan_text(self.ONE),
+                             "EDIT: style.css\n<<<<<<< SEARCH\ncolor: red;\n=======\ncolor: blue;\n>>>>>>> REPLACE",
+                             "DONE: the button is blue now", "(unused)"],
+                            confirm_plan=True, listing=".:\n  index.html\n  style.css\n  app.js\n")
+        build.Build(core, params(core, directive="make the button blue")).run()
+        journal = core.published[-1]
+        self.assertEqual(journal["state"], "done")
+        self.assertEqual(journal["outcome"], "the button is blue now")
+        # No question asked, and the three rounds were the plan, the edit and DONE.
+        self.assertFalse(any(step["kind"] == "ask" for step in journal["steps"]))
+        self.assertEqual(core.rounds, 3)
+
+    def test_the_architect_is_told_how_to_make_a_program_for_a_computer(self):
+        prompt = build.plan_prompt("a budgeting app with charts", "/p", "It is empty.")
+        self.assertIn("window.crucible.save(data)", prompt)
+        self.assertIn("ONE task", prompt)
+        system = build.task_system_prompt("", "d", {"summary": ""}, {"title": "t", "detail": "d", "files": []},
+                                          0, 1, "/p", "", "")
+        self.assertIn("window.crucible.load()", system)
+        self.assertIn("EDIT", system)
+
+
+class Mixing(unittest.TestCase):
+    """Frontier models for the large tasks, local ones for the small, when the
+    roster has both."""
+
+    def build_with(self, seats, size, chosen):
+        core = ScriptedCore([])
+        out = params(core, seats=seats)
+        made = build.Build(core, out)
+        decision = build.routing.Decision(chosen, 0.9, build.routing.KEYWORD, "keywords")
+        task = {"title": "t", "detail": "d", "size": size, "needs": ""}
+        return made.mixed(decision, task, "work")
+
+    def test_a_large_task_goes_to_a_providers_model_and_a_small_one_stays_here(self):
+        seats = {"programming": {"model": True, "remote": True}, "writing": {"model": True, "remote": False,
+                                                                             "local": "/m/coder.gguf"}}
+        self.assertEqual(self.build_with(seats, "large", "writing").expert, "programming")
+        self.assertEqual(self.build_with(seats, "small", "programming").expert, "writing")
+        # What already fits is left as it is.
+        self.assertEqual(self.build_with(seats, "large", "programming").expert, "programming")
+        self.assertEqual(self.build_with(seats, "", "programming").expert, "programming")
+
+    def test_with_only_one_kind_there_is_nothing_to_mix(self):
+        seats = {"programming": {"model": True, "remote": False}, "writing": {"model": True, "remote": False}}
+        self.assertEqual(self.build_with(seats, "large", "writing").expert, "writing")
+
+    def test_the_plan_says_how_large_each_task_is(self):
+        plan, why = build.read_plan(json.dumps({"tasks": [
+            {"title": "core", "detail": "d", "size": "LARGE"},
+            {"title": "docs", "detail": "d", "size": "tiny"}]}))
+        self.assertEqual([t["size"] for t in plan["tasks"]], ["large", ""])
+
+
+class Notes(unittest.TestCase):
+    def test_an_agent_that_only_writes_notes_is_told_to_act_and_then_stopped(self):
+        notes = ["NOTE: still thinking"] * (build.IDLE_LIMIT + 2)
+        core = ScriptedCore([plan_text({"summary": "", "run": "", "check": "", "ship": "", "tasks": [
+            {"title": "Make a.py", "detail": "a", "files": ["a.py"], "needs": "python", "after": []}]})] + notes + ["x"])
+        build.Build(core, params(core)).run()
+        journal = core.published[-1]
+        self.assertEqual(journal["tasks"][0]["outcome"], "the agent kept answering without acting")
+        # Each note was answered with the push to act.
+        self.assertIn("A NOTE does nothing", core.prompts[2][-1]["content"])
+
+    def test_a_write_after_a_note_in_one_reply_is_done(self):
+        core = ScriptedCore([plan_text({"summary": "", "run": "", "check": "", "ship": "", "tasks": [
+            {"title": "Make a.py", "detail": "a", "files": ["a.py"], "needs": "python", "after": []}]}),
+            "NOTE: starting\nWRITE: a.py\n```\nprint(1)\n```", "DONE: made a.py", "x"])
+        build.Build(core, params(core)).run()
+        self.assertIn(("write", "a.py"), core.ran)
+        self.assertEqual(core.published[-1]["tasks"][0]["state"], "done")

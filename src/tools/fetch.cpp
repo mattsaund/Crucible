@@ -4,6 +4,8 @@
 // See fetch.hpp.
 #include "crucible/tools/fetch.hpp"
 
+#include "crucible/kit/kit.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -82,16 +84,29 @@ std::string browser_dom(const std::string& browser, std::string_view url, int ti
             }
         }
     });
+    // Read until the page has ended, then stop the browser. Chrome's own
+    // headless mode prints the DOM and then does not exit -- measured with
+    // Chrome 154 on a Mac, 2026-10-10: the page arrived in under a second
+    // and the process was still there a minute later -- so waiting for the
+    // end of its output waited for the watchdog, and threw the page away.
     std::string html;
     std::string line;
+    bool        ended = false;
     while (child.read_line(line)) {
         html += line;
         html += '\n';
+        if (line.find("</html>") != std::string::npos || line.find("</HTML>") != std::string::npos) {
+            ended = true;
+            break;
+        }
+    }
+    if (ended) {
+        child.terminate();
     }
     const int status = child.wait();
     finished.store(true, std::memory_order_relaxed);
     watchdog.join();
-    if (timed_out.load(std::memory_order_relaxed)) {
+    if (timed_out.load(std::memory_order_relaxed) && !ended) {
         error = "the browser took longer than " + std::to_string(timeout_seconds) + " seconds";
         return {};
     }
@@ -105,6 +120,70 @@ std::string browser_dom(const std::string& browser, std::string_view url, int ti
 }
 
 }  // namespace
+
+std::string render(const std::string& page, const std::filesystem::path& out, int width, int height,
+                   int timeout_seconds) {
+    const std::string browser = browser_here();
+    if (browser.empty()) {
+        return "there is no browser to draw it with yet -- Crucible fetches one as it starts";
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(out.parent_path(), ec);
+    std::filesystem::remove(out, ec);
+    const std::filesystem::path profile = std::filesystem::temp_directory_path() / "crucible-render";
+    std::filesystem::create_directories(profile, ec);
+    const std::string ext = out.extension().string();
+    std::vector<std::string> argv{browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                                  "--disable-extensions", "--hide-scrollbars", "--mute-audio",
+                                  "--user-data-dir=" + profile.string(), "--virtual-time-budget=4000"};
+    if (ext == ".pdf") {
+        argv.push_back("--no-pdf-header-footer");
+        argv.push_back("--print-to-pdf=" + out.string());
+    } else {
+        argv.push_back("--window-size=" + std::to_string(width) + "," + std::to_string(height));
+        argv.push_back("--screenshot=" + out.string());
+    }
+    argv.push_back(page);
+
+    util::Subprocess child;
+    std::string error;
+    if (!child.start(argv, {}, {}, error)) {
+        return "the browser would not start: " + error;
+    }
+    // Done when the file is there and has stopped growing -- not when the
+    // browser exits, which Chrome's own headless mode does not do. See
+    // browser_dom.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    std::uintmax_t last = 0;
+    int            still = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const std::uintmax_t size = std::filesystem::exists(out, ec) ? std::filesystem::file_size(out, ec) : 0;
+        if (size > 0 && size == last) {
+            if (++still >= 2) {
+                break;
+            }
+        } else {
+            still = 0;
+        }
+        last = size;
+        if (!child.running() && size > 0) {
+            break;
+        }
+        if (!child.running() && size == 0) {
+            still = -1;
+            break;
+        }
+    }
+    if (child.running()) {
+        child.terminate();
+    }
+    child.wait();
+    if (!std::filesystem::exists(out, ec) || std::filesystem::file_size(out, ec) == 0) {
+        return "the browser drew nothing" + std::string(still < 0 ? "" : " in time");
+    }
+    return {};
+}
 
 namespace detail {
 
@@ -145,6 +224,15 @@ std::string title_of(std::string_view html) {
 }  // namespace detail
 
 std::string browser_here() {
+    // The kit's headless shell first, when it has one: it is made for this,
+    // and it is only there because the machine had no browser of its own.
+    if (const std::filesystem::path shell = kit::browser(); !shell.empty()) {
+        return shell.string();
+    }
+    return system_browser();
+}
+
+std::string system_browser() {
     for (const char* name : {"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
                              "chrome", "msedge", "microsoft-edge", "brave-browser"}) {
         if (util::on_path(name)) {

@@ -26,7 +26,7 @@ function turnWho(turn) {
   const tip = 'How sure the delegator was, and what decided it.'
             + (route && route.detail ? '\n' + route.detail : '');
   return `<div class="who" title="${escape(tip)}"><span class="seat">◆ ${escape(who)}</span>${
-    bits.map((b) => `<span class="sep">·</span><span>${escape(b)}</span>`).join('')}</div>`;
+    bits.map((b) => `<span>${escape(b)}</span>`).join('')}</div>`;
 }
 
 /// What the turn cost, under it.
@@ -36,7 +36,7 @@ function turnMeta(turn) {
   if (turn.prompt_tokens > 0) bits.push(`${compact(turn.prompt_tokens)} in`);
   if (turn.output_tokens > 0) bits.push(`${compact(turn.output_tokens)} out`);
   if (turn.canceled) bits.push('-- stopped');
-  return bits.length ? `<div class="meta">${bits.map(escape).join('  ·  ')}</div>` : '';
+  return bits.length ? `<div class="meta">${apart(...bits.map(escape))}</div>` : '';
 }
 
 /// What an expert did on the way to answering: the files it read, the
@@ -186,7 +186,7 @@ function setupView() {
   if (!setup.running && !failed.length) return '';
   const rows = setup.items.map((item) => {
     const measured = typeof item.progress === 'number' && item.state === 'working';
-    const size = item.download && item.state !== 'done' ? `  ·  ${bytes(item.download)}` : '';
+    const size = item.download && item.state !== 'done' ? ` (${bytes(item.download)})` : '';
     const said = item.state === 'done' ? 'ready'
                : item.state === 'waiting' ? `waiting${size}`
                : item.detail || item.state;
@@ -254,8 +254,7 @@ function tallyView() {
     project.output_tokens || 0} written.\nContext: ${s.context_used || 0} of ${
     s.context_size || 0} tokens.`;
   return `<div class="tally${used >= 75 ? ' warm' : ''}" title="${escape(tip)}">${
-    compact(usage.input_tokens)} in  ·  ${compact(usage.output_tokens)} out  ·  ${
-    used}% context used</div>`;
+    apart(`${compact(usage.input_tokens)} in`, `${compact(usage.output_tokens)} out`, `${used}% context used`)}</div>`;
 }
 
 // --- who answers, and how hard it thinks -----------------------------------------------
@@ -355,28 +354,25 @@ actions['effort-pick'] = (item) => {
   configure({ reasoning_effort: item.dataset.value || '' });
 };
 
-/// The box a prompt, a goal or an answer is typed into.
+/// The box a prompt, a directive or an answer is typed into.
 ///
-/// One function for Chat and Cook, because it is one box: the same place on
-/// the screen, the same Enter, the same reason for being shut. What differs
-/// is the hint in it and the word on the button.
+/// One function for Chat and Build, because it is one box: the same place on
+/// the screen, the same Enter. What differs is the hint in it and the word on
+/// the button -- and that on the Build view, while a build runs, the box is
+/// the build's: for its question when it asks one, and otherwise shut.
+///
+/// The chat is never shut by a build. Its turns are answered beside the
+/// build's agents, by the same experts, one model at a time each.
 function composerView(options) {
   const s = state.snapshot;
   const cook = s.cook && s.cook.running ? s.cook : null;
-  const asking = cook && cook.state === 'asking';
+  const owns = cook && options.build;
+  const asking = owns && cook.state === 'asking';
   const auto_ = !!s.auto_edits;
 
-  // The box belongs to the build that is running, on the Build view;
-  // elsewhere it is shut, and says why. A cook started through the API is
-  // a build without a plan, and the Build view owns it the same way.
-  const owns = cook && options.build;
   let hint = options.hint;
   let disabled = false;
   if (asking) hint = 'answer the question above';
-  else if (cook && !owns) {
-    hint = 'a build is running -- it has the experts';
-    disabled = true;
-  }
 
   // Auto sits beside the box rather than in Settings because whether you are
   // watching an expert edit your files is a decision that changes between one
@@ -396,7 +392,7 @@ function composerView(options) {
       ${autoButton}
       <button type="button" class="action" data-act="cook-stop" ${finishing ? 'disabled' : ''}
               title="Finish cleanly, then stop">Stop and finish</button>
-      <button type="button" class="action" data-act="stop" title="Stop at once">Stop now</button>`;
+      <button type="button" class="action" data-act="build-cancel" title="Stop at once">Stop now</button>`;
     disabled = true;
     hint = finishing ? 'finishing up' : 'building';
   } else {
@@ -442,14 +438,17 @@ views.chat = () => {
   // What the program has to say goes to the side menu's status line, and a
   // seat that would not load says so on its own row.
   //
-  // A cook is the same experts doing the same work for longer, so the journal
-  // of one that is running is drawn here too rather than only on its own tab:
-  // somebody watching Chat should not have to guess why the box is shut.
+  // A build running beside the chat is drawn at the foot of it, its last few
+  // steps and any question it is waiting on: the same experts are answering
+  // both, and a question from the build is answered on the Build view.
+  const asking = s.cook && s.cook.running && s.cook.state === 'asking';
   const cooking = s.cook && s.cook.running
     ? `<div class="turn cook-here"><div class="who"><span class="seat">◆ building</span>
-         <span class="sep">·</span><span>${escape(s.cook.goal)}</span></div>
+         <span>${escape(s.cook.goal)}</span></div>
          ${cookSteps(s.cook.steps.slice(-6))}
-         <button class="link" data-act="view" data-view="build">Open the build</button></div>`
+         ${asking ? `<div class="asking"><div class="caption">THE BUILD IS ASKING</div>
+             <div>${escape(s.cook.question)}</div></div>` : ''}
+         <button class="link" data-act="view" data-view="build">${asking ? 'Answer it in Build' : 'Open the build'}</button></div>`
     : '';
   const body = turns.length || cooking ? turnsView(turns, 0) + cooking : readiness();
   return sideView() + `<div class="pane">
@@ -467,17 +466,18 @@ actions.send = (form) => {
   const text = box.value.trim();
   const mode = form.dataset.mode;
   const s = state.snapshot;
-  const asking = s.cook && s.cook.running && s.cook.state === 'asking';
-  // Text typed while a cook is asking is the answer to it, whichever view it
-  // was typed on. The question is on screen; the box under it answers it.
-  // What is attached stays where it is for the next prompt.
-  if (asking) {
-    if (!text) return;
+  const building = s.cook && s.cook.running;
+  // Text typed on the Build view while its build is asking is the answer to
+  // it: the question is on screen, and the box under it answers it. What is
+  // attached stays where it is for the next prompt. On Chat it is a prompt,
+  // whatever the build is doing.
+  if (mode === 'build' && building) {
+    if (s.cook.state !== 'asking' || !text) return;
     box.value = '';
     growComposer(box);
     return guard(() => call('cook.answer', { answer: text }));
   }
-  if (s.busy) return;
+  if (mode !== 'build' && s.busy) return;
   const files = state.attached[mode] || [];
   // A question can be only its attachments -- "here" and a PDF says enough
   // -- but a goal has to say what it is.
@@ -552,10 +552,12 @@ actions.opener = (chip) => {
 
 actions.stop = () => {
   // Said at once. Stopping a model mid-thought can take a moment, and a
-  // button that does nothing visible gets pressed again.
+  // button that does nothing visible gets pressed again. The chat's turn
+  // only: a build running beside it is stopped from the Build view.
   state.snapshot.status = 'stopping';
   guard(() => call('cancel'));
 };
+actions['build-cancel'] = () => guard(() => call('cook.cancel'));
 actions['turn-retry']  = (e) => guard(() => call('turn.retry',  { index: Number(e.dataset.index) }));
 actions['turn-delete'] = (e) => guard(() => call('turn.delete', { index: Number(e.dataset.index) }));
 actions['edit-allow']  = () => guard(() => call('edit.approve', { approved: true }));

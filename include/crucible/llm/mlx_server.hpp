@@ -12,8 +12,8 @@
 // asked through (remote::Hub::local_server). Nothing leaves the machine: the
 // server listens on 127.0.0.1 and nowhere else.
 //
-// One at a time, like an expert loaded here. Starting one stops the last; a
-// GGUF expert taking the seat stops it too.
+// One at a time. Starting one stops the last, when nobody is using it; a GGUF
+// expert stops it too, on the same terms -- see engine/leases.hpp.
 #pragma once
 
 #include <cstdint>
@@ -62,6 +62,12 @@ public:
 
     /// True while `dir` is the model being served and its server is up.
     bool serving(const std::filesystem::path& dir) const;
+
+    /// True while any model is being served.
+    bool running() const;
+
+    /// The model being served, or empty when none is.
+    std::filesystem::path served() const;
 
     /// Where to send requests: "http://127.0.0.1:<port>/v1".
     std::string base_url() const;

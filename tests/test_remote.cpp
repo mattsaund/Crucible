@@ -10,9 +10,13 @@
 // that the model declined.
 #include "test_helpers.hpp"
 
+#include <cmath>
+
 #include <nlohmann/json.hpp>
 
+#include "crucible/llm/prices.hpp"
 #include "crucible/llm/remote_model.hpp"
+#include "crucible/llm/spend.hpp"
 
 namespace {
 
@@ -518,3 +522,114 @@ TEST(a_hub_hands_back_the_same_model_until_the_providers_change) {
     // Stopping when nothing is running is not an error.
     hub.interrupt();
 }
+
+// ---------------------------------------------------------------------------
+// What the frontier models were asked, and what it cost
+// ---------------------------------------------------------------------------
+
+TEST(a_cached_prompt_is_counted_apart_from_a_fresh_one) {
+    // Billed apart -- a cached read costs about a tenth of a fresh one -- so
+    // counted apart, while the prompt's whole size still says how full the
+    // context is.
+    const auto start = wire::parse_anthropic(
+        R"({"type":"message_start","message":{"usage":{"input_tokens":120,"cache_read_input_tokens":9000,"cache_creation_input_tokens":800}}})");
+    CHECK_EQ(start.input_tokens, 9920);
+    CHECK_EQ(start.cache_read, 9000);
+    CHECK_EQ(start.cache_write, 800);
+    const auto openai = wire::parse_openai(
+        R"({"choices":[],"usage":{"prompt_tokens":5000,"completion_tokens":40,"prompt_tokens_details":{"cached_tokens":4096}}})");
+    CHECK_EQ(openai.input_tokens, 5000);
+    CHECK_EQ(openai.cache_read, 4096);
+    CHECK_EQ(openai.output_tokens, 40);
+}
+
+TEST(a_providers_rate_limits_are_read_from_its_headers) {
+    using crucible::util::http::Header;
+    const auto anthropic = crucible::spend::limits_from(
+        {{"anthropic-ratelimit-requests-limit", "50"}, {"anthropic-ratelimit-requests-remaining", "49"},
+         {"anthropic-ratelimit-requests-reset", "2026-10-10T05:00:00Z"},
+         {"anthropic-ratelimit-input-tokens-limit", "30000"}, {"anthropic-ratelimit-input-tokens-remaining", "21000"}});
+    CHECK_EQ(anthropic.size(), std::size_t{2});
+    CHECK_EQ(anthropic[0].what, std::string("requests"));
+    CHECK_EQ(anthropic[0].remaining, std::int64_t{49});
+    CHECK_EQ(anthropic[0].resets, std::string("2026-10-10T05:00:00Z"));
+    CHECK_EQ(anthropic[1].what, std::string("input tokens"));
+    const auto openai = crucible::spend::limits_from(
+        {{"x-ratelimit-limit-tokens", "800000"}, {"x-ratelimit-remaining-tokens", "799000"},
+         {"x-ratelimit-reset-tokens", "6m0s"}});
+    CHECK_EQ(openai.size(), std::size_t{1});
+    CHECK_EQ(openai[0].limit, std::int64_t{800000});
+    // A provider that says nothing, or says something that is not a number.
+    CHECK(crucible::spend::limits_from({{"content-type", "text/event-stream"}}).empty());
+    CHECK(crucible::spend::limits_from({{"x-ratelimit-limit-tokens", "lots"},
+                                        {"x-ratelimit-remaining-tokens", "1"}}).empty());
+}
+
+TEST(the_months_spending_outlasts_a_restart) {
+    TempDir dir;
+    const auto file = dir.path() / "spend.json";
+    crucible::Provider provider;
+    provider.id   = "anthropic";
+    provider.name = "Anthropic";
+    provider.kind = "anthropic";
+    crucible::spend::Tokens used;
+    used.input    = 100;
+    used.output   = 20;
+    used.requests = 1;
+    {
+        crucible::spend::Ledger ledger(file);
+        ledger.record(provider, "claude-x", used, 100, 200000, {});
+        ledger.record(provider, "claude-x", used, 300, 0, {{"x-ratelimit-limit-requests", "10"},
+                                                            {"x-ratelimit-remaining-requests", "8"}});
+        const auto models = ledger.models();
+        CHECK_EQ(models.size(), std::size_t{1});
+        CHECK_EQ(models[0].session.input, std::uint64_t{200});
+        CHECK_EQ(models[0].session.requests, std::uint64_t{2});
+        CHECK_EQ(models[0].prompt, 300);
+        CHECK_EQ(models[0].context, 200000);
+        CHECK_EQ(models[0].limits.size(), std::size_t{1});
+    }
+    // Started again: the month is still counted, the session starts at nothing.
+    crucible::spend::Ledger again(file);
+    const auto models = again.models();
+    CHECK_EQ(models.size(), std::size_t{1});
+    CHECK_EQ(models[0].month.output, std::uint64_t{40});
+    CHECK_EQ(models[0].session.requests, std::uint64_t{0});
+}
+
+TEST(a_model_is_priced_from_the_list_however_it_is_spelled) {
+    namespace prices = crucible::prices;
+    const prices::detail::List list = prices::detail::reduce(R"({
+        "sample_spec": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+        "claude-opus-4-5": {"litellm_provider": "anthropic", "mode": "chat",
+            "input_cost_per_token": 5e-06, "output_cost_per_token": 2.5e-05,
+            "cache_read_input_token_cost": 5e-07, "cache_creation_input_token_cost": 6.25e-06},
+        "gpt-4o": {"litellm_provider": "openai", "mode": "chat",
+            "input_cost_per_token": 2.5e-06, "output_cost_per_token": 1e-05},
+        "gemini/gemini-2.5-pro": {"litellm_provider": "gemini", "mode": "chat",
+            "input_cost_per_token": 1.25e-06, "output_cost_per_token": 1e-05},
+        "text-embedding-3-small": {"litellm_provider": "openai", "mode": "embedding",
+            "input_cost_per_token": 2e-08, "output_cost_per_token": 0}
+    })");
+    CHECK(list.count("text-embedding-3-small") == 0);
+    // As it is named, with a date on the end, and with its provider in front.
+    CHECK(prices::detail::lookup(list, "https://api.anthropic.com", "claude-opus-4-5").has_value());
+    CHECK(prices::detail::lookup(list, "https://api.anthropic.com", "claude-opus-4-5-20251101").has_value());
+    CHECK(prices::detail::lookup(list, "https://api.anthropic.com/v1", "claude-opus-4.5").has_value());
+    CHECK(prices::detail::lookup(list, "https://generativelanguage.googleapis.com/v1beta/openai",
+                                 "gemini-2.5-pro").has_value());
+    // The same name at somebody else's address is not the same price, and a
+    // server on your own network costs nothing to ask.
+    CHECK(!prices::detail::lookup(list, "https://api.groq.com/openai/v1", "gpt-4o").has_value());
+    CHECK(!prices::detail::lookup(list, "http://192.168.1.20:8080/v1", "gpt-4o").has_value());
+    CHECK(prices::detail::provider_for("http://localhost:11434/v1").empty());
+
+    // A cached read at its own price, and output at its own.
+    const auto opus = prices::detail::lookup(list, "https://api.anthropic.com", "claude-opus-4-5");
+    crucible::spend::Tokens tokens;
+    tokens.input      = 1000000;
+    tokens.cache_read = 1000000;
+    tokens.output     = 100000;
+    CHECK(opus && std::abs(prices::cost(tokens, *opus) - (5.0 + 0.5 + 2.5)) < 1e-9);
+}
+

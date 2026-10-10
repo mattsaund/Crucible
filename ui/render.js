@@ -21,6 +21,13 @@
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
+/// Parts of a line side by side, set apart by space rather than by a
+/// character between them: each in a span of its own, the gap the
+/// stylesheet's. Takes markup, so escape text first; empty parts are left out.
+const apart = (...parts) => parts
+  .filter((p) => p !== '' && p !== null && p !== undefined && p !== false)
+  .map((p) => `<span class="part">${p}</span>`).join('');
+
 // --- markdown -------------------------------------------------------------
 //
 // Headings, bullets, numbered items, quotes, fences with a language, rules,
@@ -175,11 +182,17 @@ function markdown(src) {
 /// A fence says ```py and a file name says .py; both mean Python, and the
 /// header is a label for a person rather than the key the lexer looks up.
 const LANG_NAMES = {
-  py: 'python', py3: 'python', python3: 'python',
-  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
-  rs: 'rust', kt: 'kotlin', rb: 'ruby', sh: 'shell', bash: 'shell', zsh: 'shell',
-  yml: 'yaml', md: 'markdown', h: 'c', hpp: 'c++', cc: 'c++', cxx: 'c++',
-  cpp: 'c++', cs: 'c#', golang: 'go', psql: 'sql', mysql: 'sql', sqlite: 'sql',
+  py: 'python', py3: 'python', python3: 'python', pyw: 'python', pyi: 'python',
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+  rs: 'rust', kt: 'kotlin', kts: 'kotlin', rb: 'ruby', sh: 'shell', bash: 'shell', zsh: 'shell',
+  yml: 'yaml', md: 'markdown', mdx: 'markdown', h: 'c', hpp: 'c++', hh: 'c++', cc: 'c++', cxx: 'c++',
+  cpp: 'c++', cs: 'c#', fs: 'f#', golang: 'go', psql: 'sql', mysql: 'sql', sqlite: 'sql',
+  htm: 'html', xhtml: 'html', svg: 'svg', ps1: 'powershell', psm1: 'powershell', bat: 'batch',
+  cmd: 'batch', mk: 'makefile', ex: 'elixir', exs: 'elixir', hs: 'haskell', jl: 'julia',
+  pl: 'perl', pm: 'perl', tf: 'terraform', hcl: 'terraform', gql: 'graphql', proto: 'protobuf',
+  m: 'objective-c', mm: 'objective-c', erl: 'erlang', clj: 'clojure', scm: 'scheme', el: 'lisp',
+  ml: 'ocaml', gradle: 'groovy',
 };
 
 function codeBlock(code, lang, extra) {
@@ -230,7 +243,7 @@ const KEYWORDS = {
   rust: 'as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self static struct super trait true type unsafe use where while',
   go: 'break case chan const continue default defer else fallthrough false for func go goto if import interface map nil package range return select struct switch true type var',
   java: 'abstract assert base break case catch class const continue default do else enum extends false final finally for fun get if implements import in init inline interface internal is lateinit let native new null object open operator out override package private protected public return sealed set static super suspend switch synchronized this throw throws transient true try typealias val var when where while',
-  js: 'as async await break case catch class const continue debugger default delete do else enum export extends false finally for from function get if implements import in instanceof interface let new null of private protected public readonly return set static super switch this throw true try type typeof undefined var void while yield',
+  js: 'abstract as asserts async await break case catch class const continue debugger declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface is keyof let namespace new null of override private protected public readonly return satisfies set static super switch this throw true try type typeof undefined var void while yield',
   python: 'and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield',
   shell: 'case do done elif else esac fi for function if in local readonly return select then time until while',
   ruby: 'alias and begin break case class def defined? do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield',
@@ -238,8 +251,28 @@ const KEYWORDS = {
   lua: 'and break do else elseif end false for function goto if in local nil not or repeat return then true until while',
   sql: 'ALTER AND AS ASC BY CASE CREATE CROSS DELETE DESC DISTINCT DROP ELSE END EXISTS FROM FULL GROUP HAVING IN INDEX INNER INSERT INTO IS JOIN LEFT LIKE LIMIT NOT NULL OFFSET ON OR ORDER OUTER RIGHT SELECT SET TABLE THEN UNION UPDATE VALUES VIEW WHEN WHERE WITH',
   cmake: 'add_custom_command add_executable add_library add_subdirectory else elseif endforeach endfunction endif endmacro find_package foreach function if include install macro message option project return set target_compile_definitions target_include_directories target_link_libraries',
-  css: 'and from important media import keyframes not only supports to',
   yaml: 'false no null true yes',
+  csharp: 'abstract as async await base break case catch checked class const continue default delegate do dynamic else enum event explicit extern false finally fixed for foreach get goto if implicit in init interface internal is lock nameof namespace new null operator out override params partial private protected public readonly record ref return sealed set sizeof stackalloc static struct switch this throw true try typeof unchecked unsafe using var virtual volatile when where while yield',
+  swift: 'Any Self actor as associatedtype async await break case catch class continue default defer deinit do else enum extension fallthrough false fileprivate for func guard if import in init inout internal is let nil open operator private protocol public repeat rethrows return self some static struct subscript super switch throw throws true try typealias var where while',
+  kotlin: 'abstract annotation as break by catch class companion const constructor continue crossinline data do else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private protected public reified return sealed set super suspend tailrec this throw true try typealias val var vararg when where while',
+  scala: 'abstract case catch class def do else enum export extends false final finally for given if implicit import lazy match new null object override package private protected return sealed super then this throw trait true try type using val var while with yield',
+  dart: 'abstract as assert async await break case catch class const continue covariant default deferred do dynamic else enum export extends extension external factory false final finally for get if implements import in interface is late library mixin new null on operator part required rethrow return set static super switch sync this throw true try typedef var while with yield',
+  zig: 'align allowzero and anyframe anytype asm async await break callconv catch comptime const continue defer else enum errdefer error export extern false fn for if inline noalias nosuspend null opaque or orelse packed pub resume return struct suspend switch test threadlocal true try undefined union unreachable usingnamespace var volatile while',
+  haskell: 'as case class data default deriving do else family forall foreign hiding if import in infix infixl infixr instance let module newtype of qualified then type where',
+  elixir: 'after alias and catch cond def defimpl defmacro defmacrop defmodule defp defprotocol defstruct do else end false fn for if import in nil not or quote raise receive require rescue true try unless unquote use when with',
+  erlang: 'after and andalso band begin bnot bor bsl bsr bxor case catch cond div end fun if let not of or orelse receive rem try when xor',
+  julia: 'abstract baremodule begin break catch const continue do else elseif end export false finally for function global if import in let local macro module mutable primitive quote return struct true try type using where while',
+  r: 'FALSE Inf NA NULL NaN TRUE break else for function if in library next repeat require return while',
+  perl: 'and cmp do else elsif eq for foreach ge gt if last le local lt my ne next no not or our package print redo require return sub unless until use while',
+  powershell: 'begin break catch class continue data do dynamicparam else elseif end enum exit filter finally for foreach from function hidden if in param process return static switch throw trap try until using while',
+  batch: 'call cd cls copy defined del do echo else endlocal errorlevel exist exit for goto if in md mkdir move not pause popd pushd rd ren rmdir set setlocal shift start title type',
+  dockerfile: 'add arg as cmd copy entrypoint env expose from healthcheck label maintainer onbuild run shell stopsignal user volume workdir',
+  makefile: 'define else endef endif export ifdef ifeq ifndef ifneq include override unexport vpath',
+  graphql: 'directive enum extend false fragment implements input interface mutation null on query scalar schema subscription true type union',
+  protobuf: 'enum extend false import map message oneof option optional package repeated required reserved returns rpc service stream syntax to true',
+  terraform: 'count data depends_on dynamic false for for_each if in lifecycle locals module null output provider resource terraform true variable',
+  ocaml: 'and as begin class do done downto else end exception false for fun function functor if in include inherit let match method module mutable new object of open or private rec sig struct then to true try type val virtual when while with',
+  lisp: 'cond def defmacro defn define defun do false fn if lambda let loop nil ns quote recur require true when',
 };
 
 const TYPES = {
@@ -249,6 +282,12 @@ const TYPES = {
   java: 'Boolean Byte Char Double Float Int Integer Long Object Short String Unit boolean byte char double float int long short void',
   js: 'Array Boolean Date Error JSON Map Math Number Object Promise RegExp Set String Symbol WeakMap any bigint boolean never number object string symbol unknown void',
   python: 'bool bytes complex dict float frozenset int list object set str tuple type',
+  csharp: 'bool byte char decimal double float int long object sbyte short string uint ulong ushort void',
+  swift: 'Array Bool Character Dictionary Double Float Int Int64 Optional Set String UInt Void',
+  kotlin: 'Any Array Boolean Byte Char Double Float Int List Long Map Nothing Set Short String Unit',
+  dart: 'List Map Never Object Set String bool double int num void',
+  zig: 'bool f32 f64 i8 i16 i32 i64 isize type u8 u16 u32 u64 usize void',
+  protobuf: 'bool bytes double fixed32 fixed64 float int32 int64 sfixed32 sfixed64 sint32 sint64 string uint32 uint64',
 };
 
 const words = (list, fold) => {
@@ -267,6 +306,8 @@ function guessLanguage(lines) {
   const bang = (lines[0] || '').match(/^#!.*?\b(python3?|bash|sh|zsh|node|ruby|php|lua)\b/);
   if (bang) return { node: 'javascript', zsh: 'bash', sh: 'bash' }[bang[1]] || bang[1];
   const signs = [
+    ['html', /^\s*(<!DOCTYPE html|<html[\s>]|<(head|body|div|section|main|script|style|template)[\s>])/im],
+    ['xml', /^\s*<\?xml\s/],
     ['python', /^\s*(def \w+\(.*\)\s*(->.*)?:|class \w+(\(.*\))?:|from [\w.]+ import |import [\w.]+(, [\w.]+)*$|if __name__ == ['"]__main__['"]:|elif .*:$)/m],
     ['rust', /^\s*(fn \w+(<.*>)?\(|let mut |use std::|impl\b|pub fn |println!\()/m],
     ['go', /^\s*(package \w+$|func (\(.*\) )?\w+\(|import \($|fmt\.Print)/m],
@@ -294,20 +335,51 @@ function langSpec(name) {
     c: 'c', h: 'c', cc: 'c', cpp: 'c', 'c++': 'c', cxx: 'c', hpp: 'c', objc: 'c',
     rust: 'rust', rs: 'rust',
     go: 'go', golang: 'go',
-    java: 'java', kotlin: 'java', kt: 'java', cs: 'java', csharp: 'java', swift: 'java', scala: 'java',
-    js: 'js', javascript: 'js', jsx: 'js', ts: 'js', typescript: 'js', tsx: 'js',
-    py: 'python', python: 'python', python3: 'python',
-    sh: 'shell', bash: 'shell', zsh: 'shell', shell: 'shell', console: 'shell',
-    rb: 'ruby', ruby: 'ruby',
+    java: 'java', groovy: 'java', gradle: 'java',
+    kotlin: 'kotlin', kt: 'kotlin', kts: 'kotlin',
+    cs: 'csharp', csharp: 'csharp', 'c#': 'csharp',
+    swift: 'swift', scala: 'scala', sc: 'scala', dart: 'dart', zig: 'zig',
+    m: 'c', mm: 'c', 'objective-c': 'c', ino: 'c', cu: 'c', glsl: 'c', hlsl: 'c', metal: 'c',
+    js: 'js', javascript: 'js', jsx: 'js', mjs: 'js', cjs: 'js',
+    ts: 'js', typescript: 'js', tsx: 'js', mts: 'js', cts: 'js',
+    py: 'python', python: 'python', python3: 'python', py3: 'python', pyw: 'python', pyi: 'python',
+    sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell', ksh: 'shell', shell: 'shell', console: 'shell',
+    env: 'shell', dotenv: 'shell',
+    rb: 'ruby', ruby: 'ruby', rake: 'ruby', gemspec: 'ruby',
     php: 'php',
     lua: 'lua',
-    sql: 'sql', postgres: 'sql', psql: 'sql', mysql: 'sql', sqlite: 'sql',
-    json: 'json', jsonc: 'json',
+    sql: 'sql', postgres: 'sql', postgresql: 'sql', psql: 'sql', mysql: 'sql', sqlite: 'sql', plsql: 'sql',
+    json: 'json', jsonc: 'json', json5: 'json', jsonl: 'json', geojson: 'json', webmanifest: 'json',
     yaml: 'yaml', yml: 'yaml',
-    toml: 'toml', ini: 'toml', cfg: 'toml', conf: 'toml',
+    toml: 'toml', ini: 'toml', cfg: 'toml', conf: 'toml', properties: 'toml', editorconfig: 'toml',
+    gitignore: 'hash', dockerignore: 'hash', gitattributes: 'hash', npmrc: 'hash', nginx: 'hash',
     cmake: 'cmake',
-    css: 'css', scss: 'css', less: 'css',
+    css: 'css', scss: 'css', sass: 'css', less: 'css', styl: 'css',
     diff: 'diff', patch: 'diff',
+    html: 'markup', htm: 'markup', xhtml: 'markup', xml: 'markup', svg: 'markup', vue: 'markup',
+    svelte: 'markup', astro: 'markup', xaml: 'markup', plist: 'markup', xsd: 'markup', xsl: 'markup',
+    xslt: 'markup', rss: 'markup', atom: 'markup', csproj: 'markup', vbproj: 'markup', props: 'markup',
+    targets: 'markup', resx: 'markup', storyboard: 'markup', xib: 'markup', jinja: 'markup',
+    j2: 'markup', hbs: 'markup', handlebars: 'markup', ejs: 'markup', erb: 'markup',
+    md: 'markdown', markdown: 'markdown', mdx: 'markdown', mkd: 'markdown',
+    ps1: 'powershell', psm1: 'powershell', psd1: 'powershell', powershell: 'powershell', pwsh: 'powershell',
+    bat: 'batch', cmd: 'batch', batch: 'batch',
+    dockerfile: 'dockerfile', containerfile: 'dockerfile', docker: 'dockerfile',
+    makefile: 'makefile', mk: 'makefile', make: 'makefile', mak: 'makefile',
+    hs: 'haskell', haskell: 'haskell', lhs: 'haskell',
+    ex: 'elixir', exs: 'elixir', elixir: 'elixir', heex: 'elixir',
+    erl: 'erlang', hrl: 'erlang', erlang: 'erlang',
+    jl: 'julia', julia: 'julia',
+    r: 'r', rmd: 'r',
+    pl: 'perl', pm: 'perl', perl: 'perl',
+    graphql: 'graphql', gql: 'graphql',
+    proto: 'protobuf', protobuf: 'protobuf',
+    tf: 'terraform', tfvars: 'terraform', hcl: 'terraform', terraform: 'terraform',
+    ml: 'ocaml', mli: 'ocaml', ocaml: 'ocaml', fs: 'ocaml', fsx: 'ocaml', fsharp: 'ocaml', 'f#': 'ocaml',
+    clj: 'lisp', cljs: 'lisp', edn: 'lisp', clojure: 'lisp', lisp: 'lisp', el: 'lisp', scm: 'lisp',
+    scheme: 'lisp', rkt: 'lisp', racket: 'lisp',
+    asm: 'asm', s: 'asm', nasm: 'asm',
+    tex: 'tex', latex: 'tex', sty: 'tex', bib: 'tex',
   }[n];
   if (!family) return null;
 
@@ -329,8 +401,36 @@ function langSpec(name) {
     yaml:   { ...HASH, keywords: KEYWORDS.yaml },
     toml:   { ...HASH, keywords: 'false true' },
     cmake:  { ...HASH, keywords: KEYWORDS.cmake, fold: true },
-    css:    { line: [], block: ['/*', '*/'], quotes: QUOTES, keywords: KEYWORDS.css },
+    css:    { css: true },
     diff:   { diff: true },
+    markup: { markup: true },
+    markdown: { markdown: true },
+    hash:   { ...HASH },
+    csharp: { ...C, keywords: KEYWORDS.csharp, types: TYPES.csharp, preproc: true },
+    kotlin: { ...C, keywords: KEYWORDS.kotlin, types: TYPES.kotlin, dollar: true },
+    swift:  { ...C, keywords: KEYWORDS.swift, types: TYPES.swift },
+    scala:  { ...C, keywords: KEYWORDS.scala, types: TYPES.java },
+    dart:   { ...C, keywords: KEYWORDS.dart, types: TYPES.dart },
+    zig:    { ...C, block: null, keywords: KEYWORDS.zig, types: TYPES.zig },
+    haskell: { line: ['--'], block: ['{-', '-}'], quotes: QUOTES, keywords: KEYWORDS.haskell },
+    elixir: { ...HASH, keywords: KEYWORDS.elixir },
+    erlang: { line: ['%'], block: null, quotes: QUOTES, keywords: KEYWORDS.erlang },
+    julia:  { ...HASH, block: ['#=', '=#'], triple: true, keywords: KEYWORDS.julia },
+    r:      { ...HASH, keywords: KEYWORDS.r },
+    perl:   { ...HASH, keywords: KEYWORDS.perl, dollar: true },
+    powershell: { line: ['#'], block: ['<#', '#>'], quotes: QUOTES, keywords: KEYWORDS.powershell,
+                  dollar: true, fold: true },
+    batch:  { line: ['::', 'REM ', 'rem ', 'Rem ', '@REM ', '@rem '], block: null, quotes: '"',
+              keywords: KEYWORDS.batch, percent: true, fold: true },
+    dockerfile: { ...HASH, keywords: KEYWORDS.dockerfile, dollar: true, fold: true },
+    makefile: { ...HASH, keywords: KEYWORDS.makefile, dollar: true },
+    graphql: { ...HASH, quotes: '"', keywords: KEYWORDS.graphql },
+    protobuf: { ...C, keywords: KEYWORDS.protobuf, types: TYPES.protobuf },
+    terraform: { line: ['#', '//'], block: ['/*', '*/'], quotes: '"', keywords: KEYWORDS.terraform, dollar: true },
+    ocaml:  { line: ['//'], block: ['(*', '*)'], quotes: '"', keywords: KEYWORDS.ocaml },
+    lisp:   { line: [';'], block: null, quotes: '"', keywords: KEYWORDS.lisp },
+    asm:    { line: [';', '#', '//'], block: null, quotes: QUOTES, keywords: '' },
+    tex:    { line: ['%'], block: null, quotes: '', keywords: '', backslash: true },
   }[family];
 
   return {
@@ -357,6 +457,9 @@ function highlight(code, langName) {
   const spec = langSpec(langName);
   if (!spec) return escape(code);
   if (spec.diff) return highlightDiff(code);
+  if (spec.markup) return highlightMarkup(code);
+  if (spec.css) return highlightCss(code);
+  if (spec.markdown) return highlightMarkdown(code);
 
   let out = '';
   let i = 0;
@@ -403,9 +506,23 @@ function highlight(code, langName) {
     }
     if (spec.dollar && ch === '$') {
       let j = i + 1;
-      if (code[j] === '{') { const c = code.indexOf('}', j); j = c < 0 ? n : c + 1; }
+      const close = { '{': '}', '(': ')' }[code[j]];
+      if (close) { const c = code.indexOf(close, j); j = c < 0 ? n : c + 1; }
+      else if (/[@<^?*%+]/.test(code[j] || '')) j += 1;   // make's automatic variables
       else while (j < n && isWordChar(code[j])) j += 1;
       flush(); span('tok-var', code.slice(i, j)); i = j; continue;
+    }
+    // A batch file's %NAME%, and its %1 and %~dp0.
+    if (spec.percent && ch === '%') {
+      const m = /^%(~[a-z]*\d|\d|\*|[A-Za-z_][\w.:~=-]*%)/.exec(code.slice(i, i + 80));
+      if (m) { flush(); span('tok-var', m[0]); i += m[0].length; continue; }
+    }
+    // TeX's commands: \section, \begin.
+    if (spec.backslash && ch === '\\') {
+      let j = i + 1;
+      while (j < n && /[A-Za-z@]/.test(code[j])) j += 1;
+      if (j === i + 1 && j < n) j += 1;   // \% and the other one-character ones
+      flush(); span('tok-key', code.slice(i, j)); i = j; continue;
     }
     // A preprocessor line, which is a '#' that starts one.
     if (spec.preproc && ch === '#' && /(^|\n)[ \t]*$/.test(code.slice(Math.max(0, i - 40), i))) {
@@ -433,6 +550,204 @@ function highlight(code, langName) {
   }
   flush();
   return out;
+}
+
+/// CSS, and the Sass and Less written like it: selectors, the properties a
+/// rule sets and the values it gives them, at-rules, and numbers with their
+/// units and colors in hex -- the parts a stylesheet is read by.
+function highlightCss(code) {
+  let out = '';
+  let plain = '';
+  const n = code.length;
+  const flush = () => { if (plain) { out += escape(plain); plain = ''; } };
+  const span = (cls, text) => { flush(); out += `<span class="${cls}">${escape(text)}</span>`; };
+  let depth = 0;          // how many blocks in
+  let value = false;      // after a property's colon, until its semicolon
+  let i = 0;
+  while (i < n) {
+    const ch = code[i];
+    if (code.startsWith('/*', i)) {
+      const c = code.indexOf('*/', i + 2); const end = c < 0 ? n : c + 2;
+      span('tok-com', code.slice(i, end)); i = end; continue;
+    }
+    if (code.startsWith('//', i) && (i === 0 || /\s/.test(code[i - 1]))) {   // Sass and Less
+      const c = code.indexOf('\n', i); const end = c < 0 ? n : c;
+      span('tok-com', code.slice(i, end)); i = end; continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < n && code[j] !== ch && code[j] !== '\n') j += code[j] === '\\' ? 2 : 1;
+      const end = Math.min(j + 1, n);
+      span('tok-str', code.slice(i, end)); i = end; continue;
+    }
+    if (ch === '{') { depth += 1; value = false; plain += ch; i += 1; continue; }
+    if (ch === '}') { depth = Math.max(0, depth - 1); value = false; plain += ch; i += 1; continue; }
+    if (ch === ';') { value = false; plain += ch; i += 1; continue; }
+    if (ch === '@' || (ch === '!' && /^!important/i.test(code.slice(i, i + 10)))) {
+      let j = i + 1;
+      while (j < n && /[\w-]/.test(code[j])) j += 1;
+      span('tok-key', code.slice(i, j)); i = j; continue;
+    }
+    if (ch === '$' && /[\w-]/.test(code[i + 1] || '')) {   // a Sass variable
+      let j = i + 1;
+      while (j < n && /[\w-]/.test(code[j])) j += 1;
+      span('tok-var', code.slice(i, j)); i = j; continue;
+    }
+    if (value && ch === '#' && /[\da-fA-F]/.test(code[i + 1] || '')) {
+      let j = i + 1;
+      while (j < n && /[\da-fA-F]/.test(code[j])) j += 1;
+      span('tok-num', code.slice(i, j)); i = j; continue;
+    }
+    if (/\d/.test(ch) || ((ch === '.' || ch === '-') && /\d/.test(code[i + 1] || '') && value)) {
+      if (value || depth === 0 && /\d/.test(ch)) {
+        let j = i + 1;
+        while (j < n && /[\d.]/.test(code[j])) j += 1;
+        while (j < n && /[a-zA-Z%]/.test(code[j])) j += 1;   // the unit
+        span('tok-num', code.slice(i, j)); i = j; continue;
+      }
+    }
+    if (/[A-Za-z_-]/.test(ch)) {
+      let j = i;
+      while (j < n && /[\w-]/.test(code[j])) j += 1;
+      const word = code.slice(i, j);
+      if (value) {
+        plain += word;
+      } else if (depth > 0 && /^\s*:/.test(code.slice(j, j + 40)) && !/^\s*:[\w-]+\s*[{,]/.test(code.slice(j, j + 60))) {
+        span('tok-typ', word);   // a property
+      } else {
+        span('tok-key', word);   // a selector's part
+      }
+      i = j; continue;
+    }
+    if (ch === ':' && depth > 0 && !value && !/^:[\w-]+\s*[{,]/.test(code.slice(i, i + 60))) {
+      value = true;
+    }
+    plain += ch;
+    i += 1;
+  }
+  flush();
+  return out;
+}
+
+/// HTML, XML and the rest of the angle-bracket family: tag names, their
+/// attributes and values, comments, entities -- and the inside of a script
+/// or a style colored as the language it is, since that is most of a page.
+function highlightMarkup(code) {
+  let out = '';
+  let plain = '';
+  const n = code.length;
+  const flush = () => { if (plain) { out += escape(plain); plain = ''; } };
+  const span = (cls, text) => {
+    if (!text) return;
+    flush();
+    out += cls ? `<span class="${cls}">${escape(text)}</span>` : escape(text);
+  };
+  const until = (from, mark) => { const c = code.indexOf(mark, from); return c < 0 ? n : c + mark.length; };
+  let i = 0;
+  while (i < n) {
+    if (code.startsWith('<!--', i)) { const end = until(i + 4, '-->'); span('tok-com', code.slice(i, end)); i = end; continue; }
+    if (code.startsWith('<![CDATA[', i)) { const end = until(i + 9, ']]>'); span('tok-str', code.slice(i, end)); i = end; continue; }
+    if (code[i] === '<' && /[A-Za-z!?/]/.test(code[i + 1] || '')) {
+      const start = i;
+      let j = i + 1;
+      const closing = code[j] === '/';
+      if (/[/!?]/.test(code[j])) j += 1;
+      let k = j;
+      while (k < n && /[\w:.-]/.test(code[k])) k += 1;
+      const name = code.slice(j, k);
+      span('', code.slice(i, j));
+      span('tok-key', name);
+      i = k;
+      // Its attributes, to the '>' -- or to the next '<', when one never closed.
+      while (i < n && code[i] !== '>' && code[i] !== '<') {
+        const ch = code[i];
+        if (ch === '"' || ch === "'") { const end = until(i + 1, ch); span('tok-str', code.slice(i, end)); i = end; continue; }
+        if (ch === '=') {
+          plain += ch;
+          i += 1;
+          // A value written without quotes runs to the next space or the end.
+          const bare = /^[^\s"'<>=`]+/.exec(code.slice(i, i + 200));
+          if (bare) { span('tok-str', bare[0]); i += bare[0].length; }
+          continue;
+        }
+        if (/[A-Za-z_:@#[(*-]/.test(ch)) {
+          let m = i;
+          while (m < n && /[\w:.@#[\]()*-]/.test(code[m])) m += 1;
+          span(name.toLowerCase() === '!doctype' ? 'tok-key' : 'tok-typ', code.slice(i, m));
+          i = m;
+          continue;
+        }
+        plain += ch;
+        i += 1;
+      }
+      if (code[i] === '>') { plain += '>'; i += 1; }
+      // A script or a style: what is in it is JavaScript or CSS -- or JSON,
+      // for the scripts that are data.
+      const tag = name.toLowerCase();
+      if (!closing && (tag === 'script' || tag === 'style')) {
+        const opening = code.slice(start, i);
+        const close = code.toLowerCase().indexOf(`</${tag}`, i);
+        const end = close < 0 ? n : close;
+        const lang = tag === 'style' ? 'css'
+          : /type\s*=\s*["']?(application\/(ld\+)?json|importmap)/i.test(opening) ? 'json'
+          : /type\s*=\s*["']?text\/(x-)?(template|html)/i.test(opening) ? 'html' : 'js';
+        flush();
+        out += highlight(code.slice(i, end), lang);
+        i = end;
+      }
+      continue;
+    }
+    if (code[i] === '&') {
+      const entity = /^&(#\d+|#x[\da-fA-F]+|[A-Za-z][A-Za-z\d]*);/.exec(code.slice(i, i + 40));
+      if (entity) { span('tok-num', entity[0]); i += entity[0].length; continue; }
+    }
+    plain += code[i];
+    i += 1;
+  }
+  flush();
+  return out;
+}
+
+/// Markdown: a heading, a quote and a list item by how the line starts, code
+/// by its backticks -- a fenced block colored as the language its fence
+/// names -- and a link's address. Emphasis is left as it is written.
+function highlightMarkdown(code) {
+  const lines = code.split('\n');
+  const out = [];
+  const inline = (text) => {
+    let html = '';
+    let last = 0;
+    const pattern = /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\[([^\]\n]*)\]\(([^)\s]*)([^)]*)\)/g;
+    for (let m = pattern.exec(text); m; m = pattern.exec(text)) {
+      html += escape(text.slice(last, m.index));
+      html += m[1] ? `<span class="tok-str">${escape(m[0])}</span>`
+                   : `[${escape(m[3])}](<span class="tok-str">${escape(m[4])}</span>${escape(m[5])})`;
+      last = m.index + m[0].length;
+    }
+    return html + escape(text.slice(last));
+  };
+  for (let at = 0; at < lines.length; at += 1) {
+    const line = lines[at];
+    const fence = /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/.exec(line);
+    if (fence) {
+      let end = at + 1;
+      while (end < lines.length && !lines[end].trim().startsWith(fence[1])) end += 1;
+      out.push(`<span class="tok-com">${escape(line)}</span>`);
+      if (end > at + 1) out.push(highlight(lines.slice(at + 1, end).join('\n'), fence[2]));
+      if (end < lines.length) out.push(`<span class="tok-com">${escape(lines[end])}</span>`);
+      at = end;
+      continue;
+    }
+    if (/^\s{0,3}#{1,6}(\s|$)/.test(line)) { out.push(`<span class="tok-key">${escape(line)}</span>`); continue; }
+    if (/^\s{0,3}>/.test(line) || /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      out.push(`<span class="tok-com">${escape(line)}</span>`);
+      continue;
+    }
+    const item = /^(\s*)([-*+]|\d+[.)])(\s+)/.exec(line);
+    out.push(item ? `${escape(item[1])}<span class="tok-num">${escape(item[2])}</span>${item[3]}${inline(line.slice(item[0].length))}`
+                  : inline(line));
+  }
+  return out.join('\n');
 }
 
 // --- what changed between two texts ---------------------------------------
@@ -484,7 +799,21 @@ function diffLines(before, after) {
 /// The language a file's extension names: "py" for calc.py. Empty for a
 /// file with none, which highlight() takes as plain text.
 function languageOf(path) {
-  return (String(path || '').match(/\.([A-Za-z0-9+#]+)$/) || [, ''])[1];
+  const name = String(path || '').split(/[\\/]/).pop();
+  const lower = name.toLowerCase();
+  // The files named for what they are rather than by an extension.
+  const named = {
+    dockerfile: 'dockerfile', containerfile: 'dockerfile', makefile: 'makefile', gnumakefile: 'makefile',
+    'cmakelists.txt': 'cmake', gemfile: 'ruby', rakefile: 'ruby', podfile: 'ruby', vagrantfile: 'ruby',
+    brewfile: 'ruby', jenkinsfile: 'groovy', procfile: 'shell', '.env': 'shell', '.bashrc': 'shell',
+    '.zshrc': 'shell', '.profile': 'shell', '.bash_profile': 'shell', '.gitignore': 'gitignore',
+    '.dockerignore': 'gitignore', '.gitattributes': 'gitignore', '.editorconfig': 'editorconfig',
+    '.npmrc': 'npmrc',
+  }[lower];
+  if (named) return named;
+  if (/^(dockerfile|containerfile)\./.test(lower) || lower.endsWith('.dockerfile')) return 'dockerfile';
+  if (lower.startsWith('.env.')) return 'shell';
+  return (name.match(/\.([A-Za-z0-9+#]+)$/) || [, ''])[1];
 }
 
 /// Lines that changed, colored as what they are: the gutter says added or
@@ -495,7 +824,7 @@ function diffBlock(rows, lang, where) {
   const removed = rows.filter((r) => r.kind === 'del').length;
   return `<div class="code"><div class="code-head">
       <span class="lang">${escape(LANG_NAMES[String(lang || '').toLowerCase()] || lang || 'diff')}</span>
-      <span class="code-count">${where ? `${escape(where)}  ·  ` : ''}+${added}  −${removed}</span>
+      <span class="code-count">${apart(where ? escape(where) : '', `+${added}  −${removed}`)}</span>
     </div>
     <div class="diff">${rows.map((row) => {
       if (row.kind === 'note') return `<div class="dl dl-note">${escape(row.text)}</div>`;

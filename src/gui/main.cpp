@@ -12,12 +12,14 @@
 #include <vector>
 
 #include "crucible/app/cli.hpp"
+#include "crucible/app/relocate.hpp"
 #include "crucible/app/setup_runtimes.hpp"
 #include "crucible/app/setup_trainer.hpp"
 #include "crucible/app/uninstall.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/config/trust.hpp"
+#include "crucible/kit/kit.hpp"
 #include "crucible/session/store.hpp"
 #include "crucible/util/platform.hpp"
 #include "app.hpp"
@@ -27,6 +29,11 @@ int main(int argc, char** argv) {
     // Started from a terminal, `crucible --help` prints the braille mark, and
     // on Windows the console needs telling before it can render it.
     crucible::util::use_utf8_console();
+
+    // The programs Crucible fetched for its experts, ahead of the machine's
+    // own on this process's PATH, so every command an expert runs finds them.
+    // See kit/kit.hpp.
+    crucible::kit::put_on_path();
 
     const crucible::app::Options options = crucible::app::parse_arguments(argc, argv);
     if (options.should_exit) {
@@ -44,6 +51,9 @@ int main(int argc, char** argv) {
     }
     if (options.install_python) {
         return crucible::run_python_setup(options.quiet, options.force);
+    }
+    if (options.install_kit) {
+        return crucible::run_kit_setup(options.quiet);
     }
     if (options.install_runtimes) {
         return crucible::run_runtime_setup(options.quiet, options.force);
@@ -70,7 +80,10 @@ int main(int argc, char** argv) {
     // From here on, a crash says where it happened. See crash.hpp.
     crucible::gui::crash::install(crucible::paths::data_dir() / "crash.log");
 
-    std::vector<std::string> warnings;
+    // The Scratchpad used to be ~/Crucible, in plain sight; it is in a hidden
+    // folder now, and a Crucible from before left its chats in the old one.
+    // Moved before anything here has read a path that names it.
+    std::vector<std::string> warnings = crucible::relocate::scratchpad();
     crucible::Config config = crucible::load_config(warnings);
 
     crucible::gui::App app(std::move(config), std::move(warnings),

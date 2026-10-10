@@ -146,7 +146,17 @@ json cook_task_json(const CookTask& task) {
 /// would buy some bandwidth across an in-process call in exchange for two
 /// sides that can disagree about what they are looking at.
 json snapshot_to_json(const Snapshot& snapshot) {
+    // Which platform this is, for the words the page uses about it: where a
+    // program it makes is found, what a shortcut is called.
+#if defined(_WIN32)
+    constexpr const char* platform = "windows";
+#elif defined(__APPLE__)
+    constexpr const char* platform = "macos";
+#else
+    constexpr const char* platform = "linux";
+#endif
     json out{
+        {"platform",         platform},
         {"mood",             mood_word(snapshot.mood)},
         {"status",           snapshot.status},
         {"busy",             snapshot.busy},
@@ -169,6 +179,14 @@ json snapshot_to_json(const Snapshot& snapshot) {
     }
     if (snapshot.resident) { out["resident"] = *snapshot.resident; }
     if (snapshot.linked)   { out["linked"]   = *snapshot.linked; }
+
+    // What is in this machine's memory, for the foot of the right-hand panel.
+    json local = json::array();
+    for (const LocalModel& model : snapshot.local_models) {
+        local.push_back(json{{"seat", model.seat}, {"file", model.file}, {"bytes", model.bytes},
+                             {"delegator", model.delegator}});
+    }
+    out["local_models"] = std::move(local);
 
     // The roster and the seat states are parallel arrays in the engine and one
     // array of objects here. Two arrays that have to be zipped by index is a

@@ -303,6 +303,32 @@ bool parse_vm_stat(std::string_view text, std::uint64_t page_size, std::uint64_t
     return true;
 }
 
+bool system_memory(std::uint64_t& used, std::uint64_t& total) {
+    used = total = 0;
+    if (parse_meminfo(read_file("/proc/meminfo"), used, total)) {
+        return true;
+    }
+#if defined(_WIN32)
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof(memory);
+    if (::GlobalMemoryStatusEx(&memory) != 0) {
+        total = memory.ullTotalPhys;
+        used  = memory.ullTotalPhys - memory.ullAvailPhys;
+        return true;
+    }
+    return false;
+#else
+    if (!to_number(sysctl_value("hw.memsize"), total) || total == 0) {
+        return false;
+    }
+    std::uint64_t page_size = 0;
+    if (!to_number(sysctl_value("hw.pagesize"), page_size) || page_size == 0) {
+        page_size = 4096;
+    }
+    return parse_vm_stat(output_of({"vm_stat"}), page_size, total, used);
+#endif
+}
+
 int ResourceSample::memory_percent() const {
     if (total == 0) {
         return -1;

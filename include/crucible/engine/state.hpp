@@ -78,7 +78,7 @@ struct TurnAction {
 
     /// A picture the action produced, by path: a screenshot it took, a
     /// picture it looked at. The window asks for the bytes when it draws it.
-    std::string picture;
+    std::string picture = {};
 };
 
 /// One exchange. Kept as a unit so the transcript can show which expert
@@ -142,6 +142,14 @@ struct PendingEdit {
     std::string after;   ///< the file as it would be
 };
 
+/// A model in this machine's memory, as the right-hand panel lists it.
+struct LocalModel {
+    std::string   seat;              ///< the expert it was loaded for; empty for the delegator
+    std::string   file;              ///< the model's file or folder name
+    std::uint64_t bytes     = 0;     ///< what it holds in memory
+    bool          delegator = false;
+};
+
 /// A consistent copy of everything the renderer needs for one frame.
 struct Snapshot {
     Mood        mood = Mood::Idle;
@@ -196,6 +204,11 @@ struct Snapshot {
     int context_used  = 0;
     int context_size  = 0;
 
+    /// Every model in this machine's memory now: the delegator, the experts
+    /// resident beside each other, an MLX model's server. Published when one
+    /// loads or is let go, so a frame never waits on a load to find out.
+    std::vector<LocalModel> local_models;
+
     /// Tokens spent since Crucible started.
     TokenUsage session_usage;
 
@@ -240,6 +253,9 @@ public:
     void configure_seats(const Config& config);
 
     void set_resident(std::optional<ExpertId> id);
+
+    /// What is in memory now. See Snapshot::local_models.
+    void set_local_models(std::vector<LocalModel> models);
 
     /// Open a new turn and return its index.
     std::size_t begin_turn(std::string prompt, std::vector<TurnAttachment> attachments = {});
@@ -346,6 +362,7 @@ private:
     std::vector<SeatState>               seats_ =
         std::vector<SeatState>(roster_->size());
     std::optional<ExpertId>              resident_;
+    std::vector<LocalModel>              local_models_;
     std::optional<ExpertId>              linked_;
     bool                                 delegator_ready_ = false;
     float                                delegator_progress_ = -1.0F;

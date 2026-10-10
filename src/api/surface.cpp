@@ -12,8 +12,13 @@
 #include "crucible/session/store.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <optional>
 
+#include "crucible/llm/prices.hpp"
+#include "crucible/llm/spend.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/resources.hpp"
 #include "methods.hpp"
 
 namespace crucible::api {
@@ -32,6 +37,18 @@ json fail(const json& id, std::string message) {
 /// -- and it travels through here inside a snapshot.
 std::string text_of(const json& document) {
     return document.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+/// This machine's memory, asked once: the models' share of it is what the
+/// right-hand panel draws, and asking costs a program run on a Mac.
+std::uint64_t memory_total() {
+    static const std::uint64_t total = [] {
+        std::uint64_t used = 0;
+        std::uint64_t all  = 0;
+        util::system_memory(used, all);
+        return all;
+    }();
+    return total;
 }
 
 /// Every method there is, built once.
@@ -230,11 +247,11 @@ std::string Surface::snapshot() {
         if (!items.empty()) {
             json list = json::array();
             for (const Setup::Item& item : items) {
-                const char* state = item.state == Setup::Item::State::Working ? "working"
+                const char* phase = item.state == Setup::Item::State::Working ? "working"
                                   : item.state == Setup::Item::State::Done    ? "done"
                                   : item.state == Setup::Item::State::Failed  ? "failed"
                                                                               : "waiting";
-                json one{{"id", item.id}, {"label", item.label}, {"state", state},
+                json one{{"id", item.id}, {"label", item.label}, {"state", phase},
                          {"detail", item.detail}, {"download", item.download}};
                 if (item.progress >= 0.0F) {
                     one["progress"] = item.progress;
@@ -244,6 +261,35 @@ std::string Surface::snapshot() {
             out["setup"] = json{{"running", setup->running()}, {"items", list}};
         }
     }
+
+    // The frontier models: what each has been asked, what that cost at list
+    // prices, and what its provider says is left of its limits. See
+    // llm/spend.hpp and llm/prices.hpp.
+    if (const Engine* engine = host_.engine()) {
+        const auto tokens = [](const spend::Tokens& t) {
+            return json{{"input", t.input}, {"cache_read", t.cache_read}, {"cache_write", t.cache_write},
+                        {"output", t.output}, {"requests", t.requests}};
+        };
+        json frontier = json::array();
+        for (const spend::Model& model : engine->spending()) {
+            json one{{"provider", model.provider}, {"model", model.model}, {"last", model.last},
+                     {"prompt", model.prompt}, {"context", model.context},
+                     {"session", tokens(model.session)}, {"month", tokens(model.month)}};
+            if (const std::optional<prices::Price> price = prices::find(model.endpoint, model.model)) {
+                one["session"]["cost"] = prices::cost(model.session, *price);
+                one["month"]["cost"]   = prices::cost(model.month, *price);
+            }
+            json limits = json::array();
+            for (const spend::Limit& limit : model.limits) {
+                limits.push_back(json{{"what", limit.what}, {"limit", limit.limit},
+                                      {"remaining", limit.remaining}, {"resets", limit.resets}});
+            }
+            one["limits"] = std::move(limits);
+            frontier.push_back(std::move(one));
+        }
+        out["frontier"] = std::move(frontier);
+    }
+    out["memory_total"] = memory_total();
 
     const update::State newer = host_.update();
     out["version"] = CRUCIBLE_VERSION;

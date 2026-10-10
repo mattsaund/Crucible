@@ -32,4 +32,8 @@ int run_python_setup(bool quiet, bool force);
 /// Print what is installed. Returns 0 when the trainer could run right now.
 int run_trainer_status();
 
+/// `crucible --install-kit`: fetch every kit piece this machine lacks. 0 when
+/// nothing is missing any more, 1 when a piece could not be had.
+int run_kit_setup(bool quiet);
+
 }  // namespace crucible

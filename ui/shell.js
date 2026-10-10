@@ -96,11 +96,11 @@ function modelSelect(selected, provider, extra, localOnly) {
   const mlxWhy = state.models ? state.models.mlx_unavailable || '' : '';
   if (offered.length) {
     html += `<optgroup label="Models folder">${offered.map((m) => {
-      if (m.format !== 'mlx') return option(m.name, `${m.name}  ·  ${bytes(m.bytes)}`);
+      if (m.format !== 'mlx') return option(m.name, `${m.name} (${bytes(m.bytes)})`);
       const usable = !mlxWhy || m.name === chosen;
       return `<option value="${escape(m.name)}"${m.name === chosen ? ' selected' : ''}${usable ? '' : ' disabled'}
           title="${escape(mlxWhy || 'An MLX model, answered by MLX on this machine')}">${
-          escape(`${m.name}  ·  MLX  ·  ${bytes(m.bytes)}${usable ? '' : '  (cannot run here)'}`)}</option>`;
+          escape(`${m.name} (MLX, ${bytes(m.bytes)})${usable ? '' : ', cannot run here'}`)}</option>`;
     }).join('')}</optgroup>`;
   }
   // `localOnly` is for the delegator, which has to be a file here.
@@ -159,7 +159,7 @@ function topView() {
         title="${escape(project.root || folder)}"><bdi>${escape(folder)}</bdi></button>` : ''}
     <nav>${tabs}
       <button class="icon" data-act="gear" aria-current="${state.view === 'settings'}"
-              title="${s.update ? `Settings  ·  Crucible ${escape(s.update.latest)} is available`
+              title="${s.update ? `Settings\nCrucible ${escape(s.update.latest)} is available`
                                 : 'Settings'}" aria-label="Settings">${ICONS.gear}${update}</button>
       <button class="icon" data-act="fold-right" aria-pressed="${recentsOpen()}"
               title="Show or hide recent chats and projects"
@@ -215,9 +215,9 @@ function recentsView() {
   const chats = !r ? '<div class="status r-empty">Reading...</div>'
     : r.chats.length ? r.chats.map((c) => `<div class="r-row"><button class="recent${c.id === here ? ' here' : ''}"
           data-act="recent-chat" data-id="${escape(c.id)}" data-project="${escape(c.project)}"
-          title="${escape(`${c.title}\n${c.project_name}  ·  ${c.when}  ·  ${count(c.turns, 'turn')}`)}">
+          title="${escape(`${c.title}\n${c.project_name}\n${c.when}\n${count(c.turns, 'turn')}`)}">
           <span class="r-title">${escape(c.title || '(untitled)')}</span>
-          <span class="r-meta">${escape(c.scratch ? c.when : `${c.project_name}  ·  ${c.when}`)}</span></button>${
+          <span class="r-meta">${c.scratch ? escape(c.when) : apart(escape(c.project_name), escape(c.when))}</span></button>${
           bin('chat-delete', `data-id="${escape(c.id)}" data-project="${escape(c.project)}"
               data-title="${escape(c.title || '(untitled)')}" data-scratch="${c.scratch ? 1 : ''}"`, 'Delete')}</div>`).join('')
     : '<div class="status r-empty">No chats.</div>';
@@ -239,7 +239,78 @@ function recentsView() {
                   ${busy ? 'disabled' : ''}>Open project</button></div>
         ${projects}
       </div>
+      ${usageView()}
     </aside>`;
+}
+
+// --- the models at work ---------------------------------------------------------
+
+/// A bar for how much of something is used, 0 to 1. Red past nine tenths.
+function meter(share, title) {
+  const used = Math.min(1, Math.max(0, share || 0));
+  return `<div class="u-meter${used > 0.9 ? ' full' : ''}" title="${escape(title)}">
+      <span style="width:${Math.round(used * 100)}%"></span></div>`;
+}
+
+/// Dollars, as a cost is read: cents under ten, whole dollars over.
+const dollars = (n) => `$${n < 10 ? n.toFixed(2) : Math.round(n).toLocaleString()}`;
+
+/// When a provider's limit fills again, from what it wrote: a time
+/// ("2026-10-10T05:00:00Z") or a length ("6m0s").
+function resets(text) {
+  if (!text) return '';
+  const when = Date.parse(text);
+  return Number.isNaN(when) ? `resets in ${text}` : `resets in ${span((when - Date.now()) / 1000)}`;
+}
+
+/// The foot of the right-hand panel: the models in this machine's memory,
+/// and under them the frontier model in use -- what it has cost at list
+/// prices, and how much of its provider's limits and its context is used.
+function usageView() {
+  const s = state.snapshot;
+  const total = s.memory_total || 0;
+  const local = (s.local_models || []).map((m) => `
+      <div class="u-row" title="${escape(m.file)}">
+        <span class="u-name">${escape(m.delegator ? 'Delegator' : expertName(m.seat))}</span>
+        <span class="u-num">${bytes(m.bytes)}</span></div>
+      ${total ? meter(m.bytes / total, `${bytes(m.bytes)} of ${bytes(total)} memory`) : ''}`).join('')
+    || '<div class="u-none">None loaded</div>';
+
+  // The one asked last is the one in use; before any has been asked, the
+  // seats that would be.
+  const asked = s.frontier || [];
+  let frontier;
+  if (asked.length) {
+    const [now, ...earlier] = asked;
+    const sent = (t) => (t.input || 0) + (t.cache_read || 0) + (t.cache_write || 0);
+    const live = (s.experts || []).some((e) => e.provider && e.model === now.model
+      && (e.id === s.linked || working(e.id)));
+    const cost = now.session.cost === undefined ? '<span class="u-num" title="Not on the price list">no price</span>'
+      : `<span class="u-num" title="At list prices. This month: ${dollars(now.month.cost)}">${dollars(now.session.cost)}</span>`;
+    const bars = (now.limits || []).map((l) => `<div class="u-row u-small"><span>${escape(l.what)}</span>
+        <span>${compact(l.remaining)} of ${compact(l.limit)} left</span></div>
+      ${meter((l.limit - l.remaining) / l.limit, resets(l.resets))}`).join('');
+    const context = now.context ? `<div class="u-row u-small"><span>context</span>
+        <span>${Math.round((100 * now.prompt) / now.context)}%</span></div>
+      ${meter(now.prompt / now.context, `${compact(now.prompt)} of ${compact(now.context)} tokens`)}` : '';
+    frontier = `<div class="u-row seat" data-phase="${live ? 'active' : 'dormant'}">
+        <span class="dot"></span><span class="u-name" title="${escape(now.model)}">${escape(now.model)}</span>${cost}</div>
+      <div class="u-meta">${apart(escape(now.provider), `${compact(sent(now.session))} in`, `${compact(now.session.output)} out`)}</div>
+      ${now.month.cost === undefined ? '' : `<div class="u-row u-small"><span>this month</span>
+        <span>${dollars(now.month.cost)}</span></div>`}
+      ${bars}${context}
+      ${earlier.map((m) => `<div class="u-row u-small u-other"><span class="u-name" title="${escape(m.provider)}">${escape(m.model)}</span>
+        <span>${m.session.cost === undefined ? `${compact(sent(m.session) + m.session.output)} tokens` : dollars(m.session.cost)}</span></div>`).join('')}`;
+  } else {
+    const seats = (s.experts || []).filter((e) => e.provider);
+    frontier = seats.map((e) => `<div class="u-row" title="${escape(e.name)}">
+        <span class="u-name">${escape(e.model)}</span><span class="u-num">not asked yet</span></div>`).join('')
+      || `<div class="u-none">${apart('None added', '<button class="link" data-act="settings-page" data-page="providers">add one</button>')}</div>`;
+  }
+  return `<div class="usage">
+      <h2>LOCAL</h2>${local}
+      <h2 class="u-frontier">FRONTIER</h2>${frontier}
+    </div>`;
 }
 
 actions['fold-right'] = () =>
@@ -292,11 +363,39 @@ afterDraw.push(() => {
 
 /// What a seat row says when the pointer rests on it.
 function seatTip(e) {
-  const where = e.provider ? `${e.model}  ·  answered by ${e.provider}`
+  const where = e.provider ? `${e.model}, answered by ${e.provider}`
               : e.model ? e.model + (e.phase === 'missing' ? '  (missing)' : '')
               : 'no model yet';
-  return `${e.blurb ? e.blurb + '\n' : ''}${where}`;
+  return `${e.blurb ? e.blurb + '\n' : ''}${where}${
+    e.made ? '\nMade by a build for work nobody on the roster fitted' : ''}`;
 }
+
+/// The task an expert has in the build that is running, when it has one --
+/// what the side menu lights the seat for, and where clicking it goes.
+function working(id) {
+  const cook = state.snapshot.cook;
+  if (!cook || !cook.running) return null;
+  return (cook.tasks || []).find((t) => t.expert === id && t.state === 'working') || null;
+}
+
+/// Click a seat: the work it is doing, when it is doing some -- the build, on
+/// that agent, with the file it touched last open -- and its settings when
+/// it is not.
+actions['seat-open'] = (button) => {
+  const id = button.dataset.expert;
+  const cook = state.snapshot.cook;
+  const tasks = cook ? (cook.tasks || []) : [];
+  const task = working(id) || (cook && cook.kind === 'build'
+    ? tasks.filter((t) => t.expert === id && t.state !== 'waiting').slice(-1)[0] : null);
+  if (task) {
+    // The pane is remembered, and entering Build reads it back.
+    remember.set('build-pane', 'agents');
+    state.open.task = task.index;
+    enter('build');
+    return;
+  }
+  enter('settings', 'experts');
+};
 
 function sideView() {
   const s = state.snapshot;
@@ -319,40 +418,50 @@ function sideView() {
     // Closed, it is a rail rather than nothing: the dots still say which seat
     // is loaded, which is the one thing worth a glance while it is folded.
     const dots = experts.map((e, i) =>
-      `<button class="seat" data-act="settings-page" data-page="experts"
-               data-phase="${i === linked ? 'active' : e.phase}" title="${escape(e.name)}">
+      `<button class="seat" data-act="seat-open" data-expert="${escape(e.id)}"
+               data-phase="${i === linked || working(e.id) ? 'active' : e.phase}" title="${escape(e.name)}">
          <span class="dot"></span></button>`).join('');
+    // And under them a dot for each agent at work, which opens its work.
+    const cook = state.snapshot.cook;
+    const busy = cook && cook.running ? (cook.tasks || []).filter((t) => t.state === 'working') : [];
+    const agentDots = busy.map((t) =>
+      `<button class="seat" data-act="agent-open" data-index="${t.index}" data-phase="active"
+               title="${escape(`${t.index + 1}. ${t.title}`)}"><span class="dot"></span></button>`).join('');
     return `<aside class="rail">
         <button class="seat" data-act="settings-page" data-page="general"
                 data-phase="${delegatorPhase}"
                 title="${escape(delegator.model || 'no delegator')}"><span class="dot"></span></button>
-        <div class="rail-gap"></div>${dots}
+        <div class="rail-gap"></div>${dots}${agentDots ? `<div class="rail-gap"></div>${agentDots}` : ''}
       </aside>`;
   }
 
-  // The line from the delegator runs down the whole list, so a seat's place
-  // in it is its index in the roster whichever heading it is drawn under.
+  // The line from the delegator runs down the list to the seat with the
+  // turn, so a seat's place on it is its index in the roster.
   const seatRow = (e, i) => {
     const classes = ['seat'];
     if (linked >= 0 && i < linked) classes.push('on-trunk');
     if (i === linked) classes.push('elbow', 'linked');
-    return `<button class="${classes.join(' ')}" data-act="settings-page" data-page="experts"
-        data-phase="${i === linked && e.phase !== 'loading' ? 'active' : e.phase}"
-        title="${escape(seatTip(e))}">
+    const busy = working(e.id);
+    return `<button class="${classes.join(' ')}" data-act="seat-open" data-expert="${escape(e.id)}"
+        data-phase="${(i === linked || busy) && e.phase !== 'loading' ? 'active' : e.phase}"
+        title="${escape(busy ? e.name + ' is working on task ' + (busy.index + 1) + ': ' + busy.title + ' -- click to see it'
+                             : seatTip(e))}">
       <span class="dot"></span><span class="name">${escape(e.name)}</span>
       ${e.provider ? `<span class="cloud" title="Answered by ${escape(e.provider)}">${ICONS.cloud}</span>` : ''}
       ${e.phase === 'loading' ? ring(e.progress) : ''}
     </button>`;
   };
-  const people = experts.map((e, i) => (e.made ? '' : seatRow(e, i))).join('') || '<div class="status">None yet.</div>';
-  // The agents: seats builds made for tasks nobody on the roster fitted.
-  // Under a heading of their own, so the roster a person wrote stays the
-  // roster a person wrote, and what a build added is plain to see.
-  const agents = experts.map((e, i) => (e.made ? seatRow(e, i) : '')).join('');
-  const seats = people + (agents
-    ? `<h2 class="experts-head agents-head${linked >= 0 ? ' on-trunk' : ''}"
-          title="Experts a build made for itself. Ejected and edited like any other.">AGENTS</h2>${agents}`
-    : '');
+  // Every seat on the roster, those a build made for work nobody fitted
+  // among them: they are experts like any other once they are made.
+  const seats = experts.map(seatRow).join('') || '<div class="status">None yet.</div>';
+  // Under the experts, the agents of the build: the architect and one per
+  // task, each saying whose it is and how far it has got, and each opening
+  // its work. Here rather than only in the Build view, so what is at work
+  // is in sight from whichever view is open.
+  const build = state.snapshot.cook;
+  const agents = build ? `<h2 class="experts-head agents-head"
+        title="The build's agents: the architect, and one for each task. Click one to see its work.">AGENTS</h2>
+      ${agentRows(build, agentShown(build))}` : '';
 
   // What the program last said stays on the line until something else is:
   // an idle engine says nothing, which would otherwise wipe it the moment it
@@ -379,6 +488,7 @@ function sideView() {
         </button>
         <h2 class="experts-head${linked >= 0 ? ' on-trunk' : ''}">EXPERTS</h2>${seats}
         <button class="action wide" data-act="settings-page" data-page="experts">Manage experts</button>
+        ${agents}
       </div>
       <div class="roster-foot">
         <button class="action" data-act="eject" ${loaded ? '' : 'disabled'}

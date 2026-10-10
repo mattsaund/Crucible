@@ -65,7 +65,15 @@ struct Response {
     std::string body;
     std::string error;
 
+    /// The headers of the response, names in lower case: the last response,
+    /// when a redirect made more than one. What a provider says about its
+    /// rate limits is here and nowhere else.
+    std::vector<Header> headers;
+
     bool ok() const { return error.empty() && status >= 200 && status < 300; }
+
+    /// The value of the header `name` (lower case), or empty.
+    std::string header(std::string_view name) const;
 
     /// Why this is not ok, in words fit to show somebody: the transport error,
     /// or the status and the start of the body.
@@ -131,11 +139,16 @@ namespace detail {
 /// The curl configuration file for `request`, as text.
 ///
 /// `body_file` is where the body has been written, or empty when there is
-/// none. Split out because the quoting is the part that can be wrong: a header
-/// value with a quote or a backslash in it must come out the other side as the
-/// same bytes, and that is a thing to assert rather than to hope for.
+/// none, and `headers_file` where curl writes the response's headers, or empty
+/// for none. Split out because the quoting is the part that can be wrong: a
+/// header value with a quote or a backslash in it must come out the other side
+/// as the same bytes, and that is a thing to assert rather than to hope for.
 std::string curl_config(const Request& request, const std::filesystem::path& body_file,
-                        bool streaming);
+                        bool streaming, const std::filesystem::path& headers_file = {});
+
+/// The headers of the last response in what curl dumped -- one block per
+/// response when there were redirects -- with the names in lower case.
+std::vector<Header> parse_headers(std::string_view dumped);
 
 /// The status out of the line curl is told to end every response with, or -1
 /// when `line` is not that line.

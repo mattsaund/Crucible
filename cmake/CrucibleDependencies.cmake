@@ -257,12 +257,21 @@ if(EXISTS ${CRUCIBLE_UI_DIR}/render.js)
 endif()
 
 # Those same functions, run by the tests in the engine that will run them for
-# real. JavaScriptCore ships with WebKitGTK, so on a machine that can build
-# the interface it is already here; where it is not -- Windows and macOS,
-# whose webviews are not WebKit-on-GTK -- the suite skips that one file and
-# every other test still runs.
+# real. JavaScriptCore ships with WebKitGTK, so on a Linux machine that can
+# build the interface it is already here; on a Mac it is a system framework
+# with the same C interface, because WKWebView is WebKit too. Only Windows,
+# whose webview is not WebKit, skips that one file -- and every other test
+# still runs there.
 set(CRUCIBLE_JSC_FOUND OFF)
-if(UNIX AND NOT APPLE)
+if(APPLE)
+    find_library(CRUCIBLE_JSC_FRAMEWORK JavaScriptCore)
+    if(CRUCIBLE_JSC_FRAMEWORK)
+        set(JSC_LIBRARIES ${CRUCIBLE_JSC_FRAMEWORK})
+        set(JSC_INCLUDE_DIRS "")
+        set(JSC_LIBRARY_DIRS "")
+        set(CRUCIBLE_JSC_FOUND ON)
+    endif()
+elseif(UNIX)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(JSC QUIET javascriptcoregtk-4.1)
@@ -349,6 +358,9 @@ set(LLAMA_BUILD_SERVER   OFF CACHE INTERNAL "")
 set(LLAMA_BUILD_APP      OFF CACHE INTERNAL "")
 set(LLAMA_BUILD_COMMON   OFF CACHE INTERNAL "")
 set(LLAMA_CURL           OFF CACHE INTERNAL "")
+# mtmd alone, without llama.cpp's tools: the library a model that sees pictures
+# needs to read one -- its projector -- and nothing that links `common`.
+set(LLAMA_BUILD_MTMD     ON  CACHE INTERNAL "")
 
 set(GGML_BUILD_TESTS     OFF CACHE INTERNAL "")
 set(GGML_BUILD_EXAMPLES  OFF CACHE INTERNAL "")
@@ -426,7 +438,7 @@ crucible_unversion_directory("${llama_SOURCE_DIR}")
 # Treat every dependency's headers as system headers, so Crucible can keep a
 # strict warning set without drowning in diagnostics from llama.cpp.
 # ---------------------------------------------------------------------------
-foreach(_dep llama ggml ggml-base ggml-cpu nlohmann_json)
+foreach(_dep llama ggml ggml-base ggml-cpu mtmd nlohmann_json)
     if(TARGET ${_dep})
         # ALIAS targets reject set_target_properties, so resolve through them.
         get_target_property(_aliased ${_dep} ALIASED_TARGET)

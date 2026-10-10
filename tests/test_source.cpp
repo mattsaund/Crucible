@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/tools/apps.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/tools/preview.hpp"
 
@@ -127,6 +128,30 @@ TEST(a_repository_can_be_started_committed_to_and_read_back) {
     CHECK(!tools::git::commit(dir.path(), "  ", none).empty());
 }
 
+TEST(a_commit_of_named_paths_leaves_the_others_alone) {
+    // Two agents side by side: the one that finished commits its file and
+    // not the one the other is halfway through writing.
+    if (!tools::git::available()) {
+        std::printf("      (no git on PATH; skipped)\n");
+        return;
+    }
+    TempDir dir;
+    CHECK(tools::git::init(dir.path()).empty());
+    write(dir.path() / "done.py", "print('done')\n");
+    write(dir.path() / "halfway.py", "def unfinished(\n");
+    std::string summary;
+    CHECK(tools::git::commit(dir.path(), "Finish done.py", summary, {"done.py", "never-made.py"}).empty());
+    CHECK(summary.rfind("committed ", 0) == 0);
+    const tools::git::Status after = tools::git::status(dir.path());
+    CHECK_EQ(after.changes.size(), std::size_t{1});
+    CHECK_EQ(after.changes[0].path, std::string("halfway.py"));
+
+    // Named paths that are not there at all commit nothing, and say so.
+    std::string nothing;
+    CHECK(tools::git::commit(dir.path(), "Nothing", nothing, {"never-made.py"}).empty());
+    CHECK_EQ(nothing, std::string("nothing to commit"));
+}
+
 // ---------------------------------------------------------------------------
 // The preview
 // ---------------------------------------------------------------------------
@@ -223,4 +248,54 @@ TEST(a_build_is_started_through_the_same_door_as_a_cook) {
     CHECK(reply["error"].get<std::string>().find("no method") == std::string::npos);
     const nlohmann::json empty = ask(surface, {{"method", "build.start"}});
     CHECK(empty["error"].get<std::string>().find("directive") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// A project's page, made a program
+// ---------------------------------------------------------------------------
+
+TEST(an_app_is_named_from_its_page_and_its_names_are_safe_everywhere) {
+    TempDir dir;
+    write(dir.path() / "index.html", "<html><head><title>Budget: Gross & Net</title></head></html>");
+    CHECK_EQ(tools::apps::name_for(dir.path(), "index.html"), std::string("Budget Gross & Net"));
+    CHECK_EQ(tools::apps::detail::slug("Budget: Gross & Net"), std::string("budget-gross-net"));
+    CHECK_EQ(tools::apps::detail::file_name("  a/b\\\\c?.  "), std::string("abc"));
+    const std::string plist = tools::apps::detail::info_plist("A & B", "dev.crucible.made.a-b", "a-b");
+    CHECK(plist.find("<string>A &amp; B</string>") != std::string::npos);
+    CHECK(plist.find("<key>CFBundleExecutable</key><string>a-b</string>") != std::string::npos);
+    const std::string entry = tools::apps::detail::desktop_entry("Budget", "/home/x/.local/share/crucible-apps/budget/budget");
+    CHECK(entry.find("Exec=\"/home/x/.local/share/crucible-apps/budget/budget\"") != std::string::npos);
+}
+
+TEST(a_page_is_packaged_with_the_runner_beside_it) {
+    if (tools::apps::runner().empty()) {
+        std::printf("      (no crucible-app built beside the tests; skipped)\n");
+        return;
+    }
+    TempDir project;
+    TempDir apps;
+    write(project.path() / "index.html",
+          "<html><head><title>Budget</title><link rel=\"stylesheet\" href=\"style.css\"></head>"
+          "<body><script src=\"app.js\"></script></body></html>");
+    write(project.path() / "style.css", "body { color: blue; }");
+    write(project.path() / "app.js", "window.crucible.load();");
+    set_env("CRUCIBLE_APPS_DIR", apps.path().string());
+    std::string error;
+    const std::optional<tools::apps::Made> made = tools::apps::package(project.path(), "index.html", "", error);
+    unset_env("CRUCIBLE_APPS_DIR");
+    CHECK(made.has_value());
+    if (!made) {
+        std::printf("      %s\n", error.c_str());
+        return;
+    }
+    CHECK_EQ(made->name, std::string("Budget"));
+    CHECK(std::filesystem::is_regular_file(made->launch));
+    std::ifstream in(made->program / "app" / "index.html");
+    const std::string page((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // One file, its stylesheet and script inside it.
+    CHECK(page.find("color: blue") != std::string::npos);
+    CHECK(page.find("window.crucible.load()") != std::string::npos);
+    std::ifstream about(made->program / "app" / "app.json");
+    const std::string json_text((std::istreambuf_iterator<char>(about)), std::istreambuf_iterator<char>());
+    CHECK(json_text.find("\"name\": \"Budget\"") != std::string::npos);
 }

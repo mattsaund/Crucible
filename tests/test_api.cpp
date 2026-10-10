@@ -94,6 +94,16 @@ TEST(the_surface_lists_what_it_understands) {
     }
 }
 
+TEST(a_surface_with_no_window_does_not_start_another_crucible) {
+    // The test above asks every method of a surface with nothing behind it,
+    // and a restart there used to start the built Crucible -- a new window on
+    // the desktop each time the suite ran, with no window here to close.
+    api::Surface surface = bare();
+    const json   reply   = ask(surface, R"({"id":1,"method":"self.restart"})");
+    CHECK(reply["ok"] == false);
+    CHECK(reply.value("error", std::string{}).find("cannot restart") != std::string::npos);
+}
+
 TEST(an_unknown_method_names_itself_in_the_refusal) {
     api::Surface surface = bare();
     const json   reply   = ask(surface, R"({"id":1,"method":"summon"})");

@@ -4,6 +4,8 @@
 // programs. See computer.hpp.
 #include "crucible/tools/computer.hpp"
 
+#include "crucible/kit/kit.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -100,6 +102,7 @@ std::string js_string(std::string_view text) {
     return out + "\"";
 }
 
+#if defined(_WIN32)
 /// A PowerShell single-quoted literal: only the quote needs doubling.
 std::string ps_string(std::string_view text) {
     std::string out = "'";
@@ -111,6 +114,7 @@ std::string ps_string(std::string_view text) {
     }
     return out + "'";
 }
+#endif
 
 #if defined(__APPLE__)
 
@@ -313,21 +317,97 @@ std::string input_tool(std::string& why) {
 #endif
 }
 
+// --- the words in a picture ------------------------------------------------
+//
+// Read by what the machine has, so nothing need be installed on two of the
+// three: a Mac's Vision framework, asked through JavaScript for Automation
+// the way the screen verbs ask for the mouse; Windows' own OCR engine, asked
+// through PowerShell's view of WinRT; and on Linux, which has neither,
+// tesseract when it is there and the kit's RapidOCR when it is not.
+
+#if defined(__APPLE__)
+/// Vision's text recognizer, the one Live Text uses, on the file given.
+constexpr const char* kVisionScript = R"JXA(
+ObjC.import('Foundation');
+ObjC.import('Vision');
+function run(argv) {
+  var handler = $.VNImageRequestHandler.alloc.initWithURLOptions($.NSURL.fileURLWithPath(argv[0]), $({}));
+  var request = $.VNRecognizeTextRequest.alloc.init;
+  request.recognitionLevel = 0;
+  request.usesLanguageCorrection = true;
+  var error = $();
+  if (!handler.performRequestsError($([request]), error)) { throw new Error('Vision could not read it'); }
+  var lines = [];
+  for (var i = 0; i < request.results.count; i++) {
+    var best = request.results.objectAtIndex(i).topCandidates(1);
+    if (best.count > 0) lines.push(ObjC.unwrap(best.objectAtIndex(0).string));
+  }
+  return lines.join('\n');
+}
+)JXA";
+#elif defined(_WIN32)
+/// Windows.Media.Ocr, from Windows PowerShell -- 5.1, which has WinRT; the
+/// newer PowerShell does not.
+constexpr const char* kWindowsOcrScript = R"PS(
+param([string]$Path)
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType = WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+  $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($engine -eq $null) { throw 'no OCR language is installed' }
+$result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+$result.Lines | ForEach-Object { $_.Text }
+)PS";
+#else
+/// RapidOCR in the kit's Python, for a Linux machine without tesseract.
+constexpr const char* kRapidOcrScript =
+    "import sys\n"
+    "from rapidocr_onnxruntime import RapidOCR\n"
+    "result, _ = RapidOCR()(sys.argv[1])\n"
+    "print('\\n'.join(line[1] for line in (result or [])))\n";
+#endif
+
 bool ocr_available() {
-    return util::on_path("tesseract");
+#if defined(__APPLE__) || defined(_WIN32)
+    return true;
+#else
+    return util::on_path("tesseract") || !kit::ocr_python().empty();
+#endif
 }
 
 std::string read_text(const std::filesystem::path& picture, std::string& why) {
     why.clear();
-    if (!ocr_available()) {
-        why = "tesseract is not installed, so the words in a picture cannot be read "
-              "for a model that reads text only";
+    int status = 0;
+    std::string text;
+#if defined(__APPLE__)
+    text = run({"osascript", "-l", "JavaScript", "-e", kVisionScript, picture.string()}, status, 60);
+#elif defined(_WIN32)
+    const std::filesystem::path script = std::filesystem::temp_directory_path() / "crucible-ocr.ps1";
+    std::ofstream(script, std::ios::binary | std::ios::trunc) << kWindowsOcrScript;
+    text = run({"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                script.string(), picture.string()}, status, 60);
+#else
+    if (util::on_path("tesseract")) {
+        text = run({"tesseract", picture.string(), "-", "--psm", "3"}, status, 60);
+    } else if (const std::filesystem::path python = kit::ocr_python(); !python.empty()) {
+        text = run({python.string(), "-I", "-c", kRapidOcrScript, picture.string()}, status, 120);
+    } else {
+        why = "nothing on this machine reads the words in a picture yet -- Crucible fetches a reader "
+              "as it starts, or install tesseract";
         return {};
     }
-    int status = 0;
-    const std::string text = run({"tesseract", picture.string(), "-", "--psm", "3"}, status, 60);
+#endif
     if (status != 0) {
-        why = "tesseract could not read it: " + trimmed(text);
+        why = "the words in it could not be read: " + trimmed(text);
         return {};
     }
     return trimmed(text);

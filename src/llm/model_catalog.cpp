@@ -25,7 +25,15 @@ bool has_gguf_extension(const std::filesystem::path& path) {
     std::string extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return extension == ".gguf";
+    if (extension != ".gguf") {
+        return false;
+    }
+    // A vision model's projector is a GGUF too, and not a model to chat with:
+    // it is loaded beside the model it belongs to. See ModelHost::load.
+    std::string name = path.filename().string();
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return name.find("mmproj") == std::string::npos;
 }
 
 }  // namespace
