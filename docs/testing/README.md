@@ -35,7 +35,7 @@ needs more nudging.
 2. **Build.** In Build: *I need a budgeting software that gives me charts of
    my gross and net revenue.* Reply *go* to the plan.
    - The agents are listed under the experts in the side menu.
-   - The status line and the working agent are orange and breathing.
+   - The status line and the working agent are orange.
    - The bottom right shows the model in memory (and the provider's cost,
      with a key).
 3. **Use it.** Preview: type two numbers, press Save, see two bar charts.

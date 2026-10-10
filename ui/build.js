@@ -77,8 +77,8 @@ function openTask(build) {
 function agentRows(build, chosen, act = 'agent-open') {
   const tasks = build.tasks || [];
   const architect = (build.steps || []).find((s) => taskOf(s) === -1 && s.kind === 'plan') || {};
-  // What an agent at work is doing is said in orange, and breathes, so a
-  // model writing a long file reads as busy rather than stuck.
+  // What an agent at work is doing is said in orange, so a model writing
+  // a long file reads as busy rather than stuck.
   const live = atWork(build);
   const row = (index, phase, title, who, extra) => {
     const working = live && phase === 'active';
