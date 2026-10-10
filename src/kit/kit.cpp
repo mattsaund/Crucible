@@ -113,6 +113,22 @@ bool download(const std::string& url, const fs::path& to, std::uint64_t total,
     return true;
 }
 
+/// The tar to run. On Windows, the one in System32 -- bsdtar, which opens a
+/// zip -- rather than whichever is first on PATH: with Git's own tools ahead
+/// of it, that is GNU tar, which does not.
+std::string tar_program() {
+#if defined(_WIN32)
+    if (const char* root = std::getenv("SystemRoot"); root != nullptr && *root != '\0') {
+        const fs::path system = fs::path(root) / "System32" / "tar.exe";
+        std::error_code ec;
+        if (fs::is_regular_file(system, ec)) {
+            return system.string();
+        }
+    }
+#endif
+    return "tar";
+}
+
 /// Unpack `archive` into `into`, by whichever means this machine has. A zip
 /// is bsdtar's to open on a Mac and on Windows, which ship it; on Linux,
 /// unzip's when it is there and Crucible's own Python's when it is not.
@@ -137,12 +153,12 @@ bool unpack(const fs::path& archive, const fs::path& into, std::string& error) {
             said = "there is no unzip, and Crucible's Python is not installed yet";
         }
 #else
-        ok = run({"tar", "-xf", archive.string(), "-C", into.string()}, said);
+        ok = run({tar_program(), "-xf", archive.string(), "-C", into.string()}, said);
 #endif
     } else if (ends(".tar.xz")) {
-        ok = run({"tar", "-xJf", archive.string(), "-C", into.string()}, said);
+        ok = run({tar_program(), "-xJf", archive.string(), "-C", into.string()}, said);
     } else {
-        ok = run({"tar", "-xzf", archive.string(), "-C", into.string()}, said);
+        ok = run({tar_program(), "-xzf", archive.string(), "-C", into.string()}, said);
     }
     if (!ok) {
         error = "could not unpack " + name + (said.empty() ? std::string() : ": " + said);

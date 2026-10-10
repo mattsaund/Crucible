@@ -43,6 +43,12 @@ function currentBuild() {
 /// architect's row, which is -1.
 const taskOf = (step) => (step.task === undefined || step.task === null ? -1 : step.task);
 
+/// Whether a build is at work now: running, and not waiting on an answer.
+/// What lights the status line and the working agents in orange.
+function atWork(build) {
+  return !!(build && build.running && build.state !== 'asking');
+}
+
 /// How a task's state is drawn: a seat dot's phase, and a word.
 const TASK_PHASE = { waiting: 'unconfigured', working: 'active', done: 'dormant', incomplete: 'missing',
                      failed: 'missing', skipped: 'unconfigured', stopped: 'missing' };
@@ -71,13 +77,21 @@ function openTask(build) {
 function agentRows(build, chosen, act = 'agent-open') {
   const tasks = build.tasks || [];
   const architect = (build.steps || []).find((s) => taskOf(s) === -1 && s.kind === 'plan') || {};
-  const row = (index, phase, title, who, extra) => `
-    <button class="agent seat${index === chosen ? ' here' : ''}" data-act="${act}" data-index="${index}"
-            data-phase="${phase}" title="${escape(`${title}\n${who}${extra ? `\n${extra}` : ''}`)}">
+  // What an agent at work is doing is said in orange, and breathes, so a
+  // model writing a long file reads as busy rather than stuck.
+  const live = atWork(build);
+  const row = (index, phase, title, who, extra) => {
+    const working = live && phase === 'active';
+    return `
+    <button class="agent seat${index === chosen ? ' here' : ''}${working ? ' at-work' : ''}"
+            data-act="${act}" data-index="${index}" data-phase="${phase}"
+            title="${escape(`${title}\n${who}${extra ? `\n${extra}` : ''}`)}">
       <span class="dot"></span>
       <span class="agent-text"><span class="agent-title">${escape(title)}</span>
-        <span class="agent-who">${apart(escape(who), extra ? escape(extra) : '')}</span></span>
+        <span class="agent-who">${apart(escape(who),
+          extra ? (working ? `<span class="working">${escape(extra)}</span>` : escape(extra)) : '')}</span></span>
     </button>`;
+  };
   const planning = !tasks.length && build.running;
   return row(-1, planning ? 'active' : 'dormant', 'Architect',
              architect.expert ? expertName(architect.expert) : (planning ? 'planning' : 'the plan and the check'),
@@ -213,7 +227,7 @@ function buildBody(build) {
         ${running ? `<button class="icon goal-stop" data-act="build-cancel" title="Stop now" aria-label="Stop now">${ICONS.stop}</button>` : ''}
       </div>
       <div class="cook-state seat" data-phase="${dot}">
-        <span class="dot"></span><strong>${escape(build.state)}</strong>
+        <span class="dot"></span><strong${atWork(build) ? ' class="working"' : ''}>${escape(build.state)}</strong>
         <span class="status">${apart(tasks.length ? `${done} of ${count(tasks.length, 'task')} done` : 'planning',
           span(build.seconds), count(build.total !== undefined ? build.total : (build.steps || []).length, 'step'))}</span>
       </div>

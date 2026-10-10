@@ -197,6 +197,18 @@ h2 {
 /* The parts of a line, set apart by space where a dot used to go. */
 .part + .part { margin-left: 1.1em; }
 
+/* At work: said in orange, and breathing, in the side menu's status line,
+   under the agent working and on its dot -- the signs that a model is busy
+   between the moments a file changes. Still for anyone who asked for less
+   motion. */
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+.working { color: var(--flame); animation: breathe 1.6s ease-in-out infinite; }
+.side-status.busy { animation: breathe 1.6s ease-in-out infinite; }
+.agent.at-work .dot, .working-dot .dot { animation: breathe 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .working, .side-status.busy, .agent.at-work .dot, .working-dot .dot { animation: none; }
+}
+
 .body { white-space: pre-wrap; }
 .body.md { white-space: normal; }
 .thinking { color: var(--dim); }

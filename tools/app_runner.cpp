@@ -19,6 +19,7 @@
 //
 // Nothing else of Crucible is in it -- no models, no engine -- so it is small,
 // starts at once, and runs on a machine Crucible was never installed on.
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -166,7 +167,8 @@ int main() {
         const json value = given.is_array() && !given.empty() ? given[0] : json(nullptr);
         std::error_code ec;
         fs::create_directories(data.parent_path(), ec);
-        const fs::path part = data.string() + ".part";
+        fs::path part = data;
+        part += ".part";
         {
             std::ofstream out(part, std::ios::binary | std::ios::trunc);
             if (!out) {

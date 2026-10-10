@@ -4,6 +4,7 @@
 #include "crucible/tools/mcp.hpp"
 
 #include <chrono>
+#include <filesystem>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/util/subprocess.hpp"
@@ -140,6 +141,15 @@ bool Client::start(const ServerConfig& config, std::string& error) {
     config_ = config;
     std::vector<std::string> argv{config.command};
     argv.insert(argv.end(), config.args.begin(), config.args.end());
+#if defined(_WIN32)
+    // npx, npm, uvx and the like are .cmd scripts on Windows, and a script is
+    // not a program Windows will start -- the command interpreter runs it. A
+    // server named "npx", which is how most are written, is handed to cmd.
+    if (std::filesystem::path(config.command).extension().empty() && !util::on_path(config.command + ".exe")
+        && (util::on_path(config.command + ".cmd") || util::on_path(config.command + ".bat"))) {
+        argv.insert(argv.begin(), {"cmd", "/d", "/c"});
+    }
+#endif
     auto child = std::make_unique<util::Subprocess>();
     util::Subprocess::Streams streams;
     streams.input  = true;

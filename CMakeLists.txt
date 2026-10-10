@@ -514,6 +514,9 @@ if(CRUCIBLE_HAS_WEBVIEW)
     target_link_libraries(crucible-app PRIVATE webview::core_static nlohmann_json::nlohmann_json)
     if(WIN32)
         set_target_properties(crucible-app PROPERTIES WIN32_EXECUTABLE TRUE)
+        # UTF-8 for its narrow strings, as Crucible's own: the data folder is
+        # under a home folder whose name may be anybody's.
+        crucible_utf8_manifest(crucible-app)
     endif()
     install(TARGETS crucible-app
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

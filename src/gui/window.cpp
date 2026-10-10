@@ -49,6 +49,9 @@ extern const unsigned int  kMarkSvg_size;
 #if defined(CRUCIBLE_HAS_WEBVIEW)
 #include <nlohmann/json.hpp>
 #include <webview/webview.h>
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <gtk/gtk.h>   // the window's name and icon; see App::run
+#endif
 
 #include "crucible/api/surface.hpp"
 #include "crucible/app/starter.hpp"

@@ -425,7 +425,7 @@ function sideView() {
     const cook = state.snapshot.cook;
     const busy = cook && cook.running ? (cook.tasks || []).filter((t) => t.state === 'working') : [];
     const agentDots = busy.map((t) =>
-      `<button class="seat" data-act="agent-open" data-index="${t.index}" data-phase="active"
+      `<button class="seat working-dot" data-act="agent-open" data-index="${t.index}" data-phase="active"
                title="${escape(`${t.index + 1}. ${t.title}`)}"><span class="dot"></span></button>`).join('');
     return `<aside class="rail">
         <button class="seat" data-act="settings-page" data-page="general"
@@ -473,7 +473,7 @@ function sideView() {
   // occasional action, and a button stretched across a side menu that can be
   // dragged to four hundred pixels reads as the most important thing here.
   return `<aside style="width:${sidebarWidth()}rem">
-      <div class="side-status${state.error ? ' bad' : s.busy ? ' busy' : ''}" title="${escape(said || status)}">${
+      <div class="side-status${state.error ? ' bad' : s.busy || atWork(s.cook) ? ' busy' : ''}" title="${escape(said || status)}">${
         escape(status) || '&nbsp;'}</div>
       <div class="roster-scroll">
         <h2${linked >= 0 ? ' class="on-trunk-gap"' : ''}>DELEGATOR</h2>

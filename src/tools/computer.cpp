@@ -346,10 +346,20 @@ function run(argv) {
 }
 )JXA";
 #elif defined(_WIN32)
+/// PowerShell, asked to run `script` and to stop at the first thing that
+/// fails. Left to itself it carries on past an error and exits 0, and what it
+/// said about the failure is read back as though it were the answer: an OCR
+/// that could not open a picture came back as the words in it that way. The
+/// OCR script below says the same thing on its first line.
+std::vector<std::string> powershell(const std::string& script) {
+    return {"powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + script};
+}
+
 /// Windows.Media.Ocr, from Windows PowerShell -- 5.1, which has WinRT; the
 /// newer PowerShell does not.
 constexpr const char* kWindowsOcrScript = R"PS(
 param([string]$Path)
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
@@ -421,10 +431,9 @@ std::string screen_size() {
                                  "String(Math.round(f.size.width))+'x'+String(Math.round(f.size.height))"},
                                 status, 20);
 #elif defined(_WIN32)
-    const std::string out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 "Add-Type -AssemblyName System.Windows.Forms; "
+    const std::string out = run(powershell("Add-Type -AssemblyName System.Windows.Forms; "
                                  "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
-                                 "\"$($b.Width)x$($b.Height)\""},
+                                 "\"$($b.Width)x$($b.Height)\""),
                                 status, 20);
 #else
     std::string out;
@@ -477,7 +486,7 @@ Outcome screenshot(const std::filesystem::path& file, int max_side, int display)
         "$g2=[System.Drawing.Graphics]::FromImage($small); $g2.DrawImage($bmp,0,0,$w,$h); "
         "$small.Save(" + ps_string(file.string()) + ",[System.Drawing.Imaging.ImageFormat]::Png) } "
         "else { $bmp.Save(" + ps_string(file.string()) + ",[System.Drawing.Imaging.ImageFormat]::Png) }";
-    out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command", script}, status, 60);
+    out = run(powershell(script), status, 60);
     if (status != 0 || !std::filesystem::exists(file, ec)) {
         return failed("could not take a screenshot: " + trimmed(out));
     }
@@ -518,10 +527,9 @@ Outcome move(int x, int y) {
                "moved the mouse to " + std::to_string(x) + ", " + std::to_string(y));
 #elif defined(_WIN32)
     int status = 0;
-    const std::string out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 "Add-Type -AssemblyName System.Windows.Forms; "
+    const std::string out = run(powershell("Add-Type -AssemblyName System.Windows.Forms; "
                                  "[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point("
-                                 + std::to_string(x) + "," + std::to_string(y) + ")"}, status, 20);
+                                 + std::to_string(x) + "," + std::to_string(y) + ")"), status, 20);
     return status == 0 ? done("moved the mouse to " + std::to_string(x) + ", " + std::to_string(y))
                        : failed("could not move the mouse: " + trimmed(out));
 #else
@@ -573,7 +581,7 @@ Outcome click(int x, int y, std::string_view button, int count) {
                   "[W.M]::mouse_event(" + flags.substr(flags.find(',') + 1) + ",0,0,0,0); Start-Sleep -Milliseconds 80; ";
     }
     int status = 0;
-    const std::string out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command", script}, status, 20);
+    const std::string out = run(powershell(script), status, 20);
     return status == 0 ? done(summary) : failed("could not click: " + trimmed(out));
 #else
     std::string why;
@@ -621,9 +629,8 @@ Outcome type_text(std::string_view text) {
         }
     }
     int status = 0;
-    const std::string out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 "Add-Type -AssemblyName System.Windows.Forms; "
-                                 "[System.Windows.Forms.SendKeys]::SendWait(" + ps_string(braced) + ")"},
+    const std::string out = run(powershell("Add-Type -AssemblyName System.Windows.Forms; "
+                                 "[System.Windows.Forms.SendKeys]::SendWait(" + ps_string(braced) + ")"),
                                 status, 60);
     return status == 0 ? done(summary) : failed("could not type: " + trimmed(out));
 #else
@@ -666,9 +673,8 @@ Outcome press(std::string_view combination) {
         return failed("the Windows key cannot be sent this way");
     }
     int status = 0;
-    const std::string out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 "Add-Type -AssemblyName System.Windows.Forms; "
-                                 "[System.Windows.Forms.SendKeys]::SendWait(" + ps_string(detail::sendkeys(keys)) + ")"},
+    const std::string out = run(powershell("Add-Type -AssemblyName System.Windows.Forms; "
+                                 "[System.Windows.Forms.SendKeys]::SendWait(" + ps_string(detail::sendkeys(keys)) + ")"),
                                 status, 20);
     return status == 0 ? done(summary) : failed("could not press " + lower(combination) + ": " + trimmed(out));
 #else
@@ -692,10 +698,9 @@ Outcome scroll(int dx, int dy) {
                + std::to_string(-dy * 3) + "," + std::to_string(-dx * 3) + "));", summary);
 #elif defined(_WIN32)
     int status = 0;
-    const std::string out = run({"powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint x, uint y, int d, int e);' -Name M -Namespace W; "
+    const std::string out = run(powershell("Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint x, uint y, int d, int e);' -Name M -Namespace W; "
                                  "[W.M]::mouse_event(0x0800,0,0," + std::to_string(-dy * 120) + ",0); "
-                                 + (dx != 0 ? "[W.M]::mouse_event(0x1000,0,0," + std::to_string(dx * 120) + ",0);" : "")},
+                                 + (dx != 0 ? "[W.M]::mouse_event(0x1000,0,0," + std::to_string(dx * 120) + ",0);" : "")),
                                 status, 20);
     return status == 0 ? done(summary) : failed("could not scroll: " + trimmed(out));
 #else

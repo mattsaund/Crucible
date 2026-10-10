@@ -598,13 +598,13 @@ function highlightCss(code) {
       while (j < n && /[\da-fA-F]/.test(code[j])) j += 1;
       span('tok-num', code.slice(i, j)); i = j; continue;
     }
-    if (/\d/.test(ch) || ((ch === '.' || ch === '-') && /\d/.test(code[i + 1] || '') && value)) {
-      if (value || depth === 0 && /\d/.test(ch)) {
-        let j = i + 1;
-        while (j < n && /[\d.]/.test(code[j])) j += 1;
-        while (j < n && /[a-zA-Z%]/.test(code[j])) j += 1;   // the unit
-        span('tok-num', code.slice(i, j)); i = j; continue;
-      }
+    // A number with its unit: in a value, or in an at-rule's condition.
+    const signed = (ch === '.' || ch === '-') && /\d/.test(code[i + 1] || '');
+    if ((value && (/\d/.test(ch) || signed)) || (depth === 0 && /\d/.test(ch))) {
+      let j = i + 1;
+      while (j < n && /[\d.]/.test(code[j])) j += 1;
+      while (j < n && /[a-zA-Z%]/.test(code[j])) j += 1;   // the unit
+      span('tok-num', code.slice(i, j)); i = j; continue;
     }
     if (/[A-Za-z_-]/.test(ch)) {
       let j = i;

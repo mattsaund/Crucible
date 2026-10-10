@@ -1678,6 +1678,17 @@ TEST(the_agents_are_in_the_side_menu_under_the_experts) {
     CHECK(side.find("Architect", agents) != std::string::npos);
     CHECK(side.find("data-act=\"agent-open\" data-index=\"1\"", agents) != std::string::npos);
     CHECK(side.find("2. Tests", agents) != std::string::npos);
+    // At work, it says so in orange: the status line at the top, and under
+    // the agent working. Waiting on an answer is not working.
+    CHECK(side.find("side-status busy") != std::string::npos);
+    CHECK(side.find("<span class=\"working\">working</span>") != std::string::npos);
+    CHECK(side.find("agent seat at-work") != std::string::npos);
+    const std::string waiting = page().eval(
+        "(function () { var was = state.snapshot.cook.state, busy = state.snapshot.busy;"
+        " state.snapshot.cook.state = 'asking'; state.snapshot.busy = false;"
+        " var out = sideView(); state.snapshot.cook.state = was; state.snapshot.busy = busy; return out; })()");
+    CHECK(waiting.find("class=\"working\"") == std::string::npos);
+    CHECK(waiting.find("side-status busy") == std::string::npos);
     const auto times = [](const std::string& text, const std::string& needle) {
         std::size_t n = 0;
         for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {

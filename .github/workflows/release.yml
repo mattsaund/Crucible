@@ -169,5 +169,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
-          draft: true
+          # Published rather than left a draft: pushing the tag is the
+          # decision to release, and the three installers above are what has
+          # to pass first -- this job runs only when all of them did.
+          draft: false
           generate_release_notes: true
