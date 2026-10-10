@@ -556,6 +556,36 @@ TEST(an_edit_is_read_from_its_blocks_with_or_without_a_fence) {
     CHECK(error.find("=======") != std::string::npos);
 }
 
+TEST(a_second_call_in_a_reply_is_named_and_not_run) {
+    // gpt-oss-20b's shape: two EDITs in one reply, the second's blocks for
+    // another file. They stay out of the first, and the result says so.
+    const std::optional<tools::ToolCall> call = tools::parse_tool_call(
+        "EDIT: app.js\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\nEND EDIT\n\nEDIT: index.html\n"
+        "<<<<<<< SEARCH\n50\t<script src=\"app.js\"></script>\n=======\n<script src=\"app.js\"></script>\n"
+        ">>>>>>> REPLACE\n", "");
+    CHECK(call.has_value() && call->argument == "app.js");
+    std::string error;
+    CHECK_EQ(tools::parse_edit_blocks(call->content, error).size(), std::size_t{1});
+    CHECK_EQ(call->unrun, std::string("EDIT: index.html"));
+
+    // A verb inside a block is the file's text, not a call.
+    const std::optional<tools::ToolCall> doc = tools::parse_tool_call(
+        "EDIT: README.md\n<<<<<<< SEARCH\nRUN: make\n=======\nRUN: make test\n>>>>>>> REPLACE\n", "");
+    CHECK(doc.has_value() && doc->unrun.empty());
+    CHECK_EQ(tools::parse_edit_blocks(doc->content, error).size(), std::size_t{1});
+
+    TempDir dir;
+    { std::ofstream(dir.path() / "app.js") << "let a = 1;\n"; }
+    tools::WorkshopSettings settings;
+    settings.enabled = true;
+    settings.root    = dir.path();
+    const std::optional<tools::ToolCall> reads =
+        tools::parse_tool_call("READ: app.js\nREAD: index.html\n", "");
+    CHECK(reads.has_value() && reads->unrun == "READ: index.html");
+    const tools::ToolResult read = tools::run_tool(*reads, settings, tools::SearchSettings{}, {});
+    CHECK(read.ok && read.output.find("\"READ: index.html\" after it was not run") != std::string::npos);
+}
+
 TEST(an_edit_applies_exactly_or_line_by_line_and_refuses_to_guess) {
     const std::string css = "body {\n  margin: 0;\n}\n.button {\n  color: red;\n  margin-left: 8px;\n}\n";
     std::string error;

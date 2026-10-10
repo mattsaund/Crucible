@@ -115,6 +115,9 @@ struct ToolCall {
     /// The shell a RUN named -- "bash", "powershell" -- or empty for the
     /// platform's own.
     std::string shell;
+    /// The line of a second call in the same answer, which is not run: the
+    /// result says so, and the model sends it again.
+    std::string unrun;
 };
 
 /// What happened, in the two registers it has to be reported in: `output` goes

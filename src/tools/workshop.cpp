@@ -219,6 +219,35 @@ bool is_fence(const std::string& line) {
     return trimmed.rfind("```", 0) == 0 || trimmed.rfind("~~~", 0) == 0;
 }
 
+/// Which marker a line is, by its run of one character and the word after.
+enum class Marker { None, Search, Divider, Replace };
+
+Marker marker_of(const std::string& line) {
+    const std::string text = trim(line);
+    if (text.empty()) {
+        return Marker::None;
+    }
+    const char first = text.front();
+    std::size_t run = 0;
+    while (run < text.size() && text[run] == first) {
+        ++run;
+    }
+    if (run < 5 || run > 9) {
+        return Marker::None;
+    }
+    const std::string word = format::to_lower(trim(text.substr(run)));
+    if (first == '<' && (word == "search" || word == "find" || word == "original")) {
+        return Marker::Search;
+    }
+    if (first == '=' && word.empty()) {
+        return Marker::Divider;
+    }
+    if (first == '>' && (word == "replace" || word == "updated")) {
+        return Marker::Replace;
+    }
+    return Marker::None;
+}
+
 /// Collect a verb's body, starting at `index` (the line after the verb).
 ///
 /// Three shapes are accepted, because models produce all three whatever they
@@ -1283,7 +1312,11 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
     // then the WRITE -- and taking the narration as the call threw the
     // WRITE away, round after round: a 14B coder wrote eight NOTEs and no
     // file before the loop noticed. A NOTE on its own is still a NOTE.
-    const auto scan = [](std::string_view text) -> std::optional<ToolCall> {
+    //
+    // One call is run a reply. A second one in the answer is named in the
+    // call, so the result can say it was not run and the model sends it
+    // again rather than taking it as done.
+    const auto scan = [](std::string_view text, bool names_the_next) -> std::optional<ToolCall> {
         const std::vector<std::string> lines = split_lines(text);
         std::optional<ToolCall> note;
         for (std::size_t i = 0; i < lines.size(); ++i) {
@@ -1307,17 +1340,37 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
                 }
                 continue;
             }
+            std::size_t end = i + 1;
             if (call.kind == ToolKind::Write || call.kind == ToolKind::Python || call.kind == ToolKind::Mcp
                 || (call.kind == ToolKind::Type && call.argument.empty())) {
-                std::size_t body = i + 1;
-                call.content = collect_body(lines, body);
+                call.content = collect_body(lines, end);
             }
             if (call.kind == ToolKind::Edit) {
-                // Everything after the line: the blocks, with whatever fences
-                // a model put round them, which parse_edit_blocks sets aside.
-                for (std::size_t j = i + 1; j < lines.size(); ++j) {
-                    call.content += lines[j];
+                // The blocks, with whatever fences a model put round them,
+                // which parse_edit_blocks sets aside -- up to a call on a line
+                // of its own outside a block. A second EDIT in the reply is
+                // for another file, and its blocks were once tried on this one.
+                bool inside = false;
+                for (; end < lines.size(); ++end) {
+                    const Marker marker = marker_of(lines[end]);
+                    inside = marker == Marker::Search || (inside && marker != Marker::Replace);
+                    std::string argument;
+                    std::string shell;
+                    if (!inside && marker == Marker::None
+                        && verb_of(lines[end], argument, shell) != ToolKind::None) {
+                        break;
+                    }
+                    call.content += lines[end];
                     call.content += '\n';
+                }
+            }
+            for (; names_the_next && end < lines.size(); ++end) {
+                std::string argument;
+                std::string shell;
+                const ToolKind next = verb_of(lines[end], argument, shell);
+                if (next != ToolKind::None && next != ToolKind::Note) {
+                    call.unrun = trim(lines[end]);
+                    break;
                 }
             }
             return call;
@@ -1325,14 +1378,14 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
         return note;
     };
 
-    if (const std::optional<ToolCall> call = scan(answer)) {
+    if (const std::optional<ToolCall> call = scan(answer, true)) {
         return call;
     }
     // Only when there was nothing for the user. A model that has written an
     // answer is answering, and a tool-trained model that writes its call on a
     // reasoning channel has not.
     if (trim(answer).empty()) {
-        return scan(reasoning);
+        return scan(reasoning, false);
     }
     return std::nullopt;
 }
@@ -1369,35 +1422,6 @@ ToolKind attempted_tool_call(std::string_view answer, std::string_view reasoning
 }
 
 namespace {
-
-/// Which marker a line is, by its run of one character and the word after.
-enum class Marker { None, Search, Divider, Replace };
-
-Marker marker_of(const std::string& line) {
-    const std::string text = trim(line);
-    if (text.empty()) {
-        return Marker::None;
-    }
-    const char first = text.front();
-    std::size_t run = 0;
-    while (run < text.size() && text[run] == first) {
-        ++run;
-    }
-    if (run < 5 || run > 9) {
-        return Marker::None;
-    }
-    const std::string word = format::to_lower(trim(text.substr(run)));
-    if (first == '<' && (word == "search" || word == "find" || word == "original")) {
-        return Marker::Search;
-    }
-    if (first == '=' && word.empty()) {
-        return Marker::Divider;
-    }
-    if (first == '>' && (word == "replace" || word == "updated")) {
-        return Marker::Replace;
-    }
-    return Marker::None;
-}
 
 /// A line with its indentation and trailing spaces set aside, for the
 /// forgiving match.
@@ -1952,6 +1976,10 @@ ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
     // leaves here as UTF-8, because it is about to be kept as JSON: in the
     // session, in a cook's journal, and in what the window is sent.
     ToolResult result = run_tool_as_is(call, settings, search, cancel);
+    if (!call.unrun.empty()) {
+        result.output += "\n\nOne call per reply: \"" + call.unrun + "\" after it was not run. "
+                         "Send it again on its own.";
+    }
     result.output  = crucible::detail::scrub_utf8(result.output);
     result.summary = crucible::detail::scrub_utf8(result.summary);
     result.detail  = crucible::detail::scrub_utf8(result.detail);

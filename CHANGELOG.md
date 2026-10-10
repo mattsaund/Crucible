@@ -282,6 +282,14 @@ it, and the red card is gone.
   which started the built program. A restart now needs a window to close.
   The same test asked `trainer.remove`, which took away the real training
   environment on every run; it asks in a data folder of its own now.
+- A model on MLX's server is given `top_k`, `min_p` and the repetition
+  penalty, as a GGUF is; without the penalty gpt-oss-20b wrote the same
+  SEARCH block until it was stopped.
+- One call runs per reply, and a second one is named in the result, so the
+  model sends it again; an EDIT ends at the next call, where a second EDIT's
+  blocks, for another file, used to be tried on the first.
+- An MCP server starts on a machine with no data folder yet: the folder for
+  its log is made first.
 - On a Mac, `tests/test_install.sh` stopped after its first few checks and
   reported success: bash 3.2 treats an empty array as unset. It runs all of
   them now, and six that had gone stale were brought up to date.

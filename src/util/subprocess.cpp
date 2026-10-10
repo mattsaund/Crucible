@@ -117,6 +117,11 @@ bool Subprocess::start(const std::vector<std::string>& argv,
 
     int errors = -1;
     if (!streams.errors.empty()) {
+        // Its folder made first: an MCP server's log is in the data folder,
+        // which a fresh machine does not have yet, and the server would
+        // otherwise not start for want of somewhere to complain.
+        std::error_code made;
+        std::filesystem::create_directories(streams.errors.parent_path(), made);
         errors = ::open(streams.errors.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
         if (errors < 0) {
             error = "could not open " + streams.errors.string() + ": " + std::strerror(errno);
@@ -533,6 +538,8 @@ bool Subprocess::start(const std::vector<std::string>& argv,
 
     HANDLE errors = nullptr;
     if (!streams.errors.empty()) {
+        std::error_code made;   // its folder made first, as above
+        std::filesystem::create_directories(streams.errors.parent_path(), made);
         errors = ::CreateFileW(streams.errors.wstring().c_str(), FILE_APPEND_DATA,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
