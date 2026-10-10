@@ -534,6 +534,26 @@ TEST(an_edit_is_read_from_its_blocks_with_or_without_a_fence) {
         tools::apply_edit_blocks("<p>a</p>\n<script src=\"chart.js\"></script>\n<p>b</p>\n", cut, error);
     CHECK(gone.has_value() && *gone == "<p>a</p>\n<p>b</p>\n");
     CHECK(tools::parse_edit_blocks("just some prose", error).empty());
+
+    // REPLACE used as the divider, as a 14B model wrote it: the lines after
+    // the marker are the new ones, not a deletion and something to drop.
+    const std::vector<tools::EditBlock> swapped = tools::parse_edit_blocks(
+        "<<<<<<< SEARCH\nheader {\n    background-color: #4CAF50;\n}\n>>>>>>> REPLACE\n"
+        "header {\n    background-color: #371a94;\n}\n\n"
+        "<<<<<<< SEARCH\nsection {\n    padding: 1.5em;\n}\n>>>>>>> REPLACE\n"
+        "section {\n    padding: 48px;\n}\n```\n", error);
+    CHECK_EQ(swapped.size(), std::size_t{2});
+    const std::optional<std::string> styled = tools::apply_edit_blocks(
+        "body {\n    margin: 0;\n}\n\nheader {\n    background-color: #4CAF50;\n}\n\n"
+        "section {\n    padding: 1.5em;\n}\n", swapped, error);
+    CHECK(styled.has_value()
+          && *styled == "body {\n    margin: 0;\n}\n\nheader {\n    background-color: #371a94;\n}\n\n"
+                        "section {\n    padding: 48px;\n}\n");
+    // A sentence after it is neither: refused, with the shape to use.
+    CHECK(tools::parse_edit_blocks(
+              "<<<<<<< SEARCH\n<script src=\"chart.js\"></script>\n>>>>>>> REPLACE\nThat takes it out.\n", error)
+              .empty());
+    CHECK(error.find("=======") != std::string::npos);
 }
 
 TEST(an_edit_applies_exactly_or_line_by_line_and_refuses_to_guess) {

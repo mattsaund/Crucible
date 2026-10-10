@@ -1619,16 +1619,63 @@ std::string nearest_lines(const std::vector<std::string>& lines, const std::vect
     return out;
 }
 
+/// What a block that went from SEARCH straight to >>>>>>> REPLACE meant,
+/// from the lines after the marker: none, the lines are to go; lines sharing
+/// one with the SEARCH, the marker was used as the divider and they are the
+/// new lines. Anything else is not a guess worth making -- taking new lines
+/// for a deletion once threw away the rules a model was changing.
+bool settle_unmarked(EditBlock& block, std::vector<std::string> after, std::string& error) {
+    while (!after.empty() && trim(after.back()).empty()) {
+        after.pop_back();
+    }
+    while (!after.empty() && trim(after.front()).empty()) {
+        after.erase(after.begin());
+    }
+    if (after.empty()) {
+        return true;
+    }
+    const std::vector<std::string> old_lines = without_line_numbers(split_lines(block.search));
+    bool shared = false;
+    for (const std::string& line : without_line_numbers(after)) {
+        for (const std::string& old : old_lines) {
+            shared = shared || (!trim(line).empty() && bare(line) == bare(old));
+        }
+    }
+    if (!shared) {
+        error = "a block went from SEARCH straight to >>>>>>> REPLACE with other lines after it. "
+                "Put ======= between the lines to change and the new ones, and >>>>>>> REPLACE "
+                "after the new ones";
+        return false;
+    }
+    block.replace = joined(after, false);
+    return true;
+}
+
 }  // namespace
 
 std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& error) {
     std::vector<EditBlock> blocks;
-    enum class Part { Outside, Search, Replace } part = Part::Outside;
+    // After: a SEARCH went straight to >>>>>>> REPLACE, and the lines up to
+    // the next marker or fence say whether that was a deletion.
+    enum class Part { Outside, Search, Replace, After } part = Part::Outside;
     EditBlock current;
+    std::vector<std::string> after;
     bool search_started = false;
     bool replace_started = false;
     for (const std::string& line : split_lines(body)) {
         const Marker marker = marker_of(line);
+        if (part == Part::After) {
+            if (marker == Marker::None && !is_fence(line)) {
+                after.push_back(line);
+                continue;
+            }
+            if (!settle_unmarked(current, std::move(after), error)) {
+                return {};
+            }
+            blocks.push_back(std::move(current));
+            after.clear();
+            part = Part::Outside;
+        }
         if (part == Part::Outside) {
             if (marker == Marker::Search) {
                 part = Part::Search;
@@ -1643,12 +1690,8 @@ std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& err
                 replace_started = false;
                 continue;
             }
-            // Straight from SEARCH to REPLACE: the lines are to go, which is
-            // how a small model says delete. Safe to take at its word -- they
-            // still have to be in the file to match.
             if (marker == Marker::Replace) {
-                blocks.push_back(std::move(current));
-                part = Part::Outside;
+                part = Part::After;
                 continue;
             }
             current.search += (search_started ? "\n" : "") + line;
@@ -1662,6 +1705,13 @@ std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& err
         }
         current.replace += (replace_started ? "\n" : "") + line;
         replace_started = true;
+    }
+    if (part == Part::After) {
+        if (!settle_unmarked(current, std::move(after), error)) {
+            return {};
+        }
+        blocks.push_back(std::move(current));
+        part = Part::Outside;
     }
     if (part != Part::Outside) {
         error = part == Part::Search ? "a SEARCH block has no ======= line after it"
