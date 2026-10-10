@@ -190,6 +190,33 @@ class ReadingThePlan(unittest.TestCase):
         self.assertEqual(build.read_plan("I would start by...")[0], None)
         self.assertEqual(build.read_plan('{"summary": "x", "tasks": []}')[0], None)
 
+    def test_asked_for_in_one_task_it_is_one_task(self):
+        plan, _ = build.read_plan(plan_text())
+        self.assertTrue(build.ONE_TASK.search("In one task, rewrite app.js"))
+        self.assertTrue(build.ONE_TASK.search("do it as a single task please"))
+        self.assertFalse(build.ONE_TASK.search("someone tasked with it"))
+        merged = build.one_task(plan, "In one task, write the todo app")
+        self.assertEqual(len(merged["tasks"]), 1)
+        task = merged["tasks"][0]
+        self.assertIn("- Write todo.py", task["detail"])
+        self.assertIn("- Write the README", task["detail"])
+        self.assertEqual(task["after"], [])
+        self.assertEqual(merged["check"], plan["check"])
+        files = [f for t in plan["tasks"] for f in t.get("files", [])]
+        self.assertEqual(sorted(set(files)), sorted(task["files"]))
+
+    def test_a_check_that_describes_rather_than_runs_is_no_check(self):
+        said = json.dumps({"summary": "s", "run": "open index.html",
+                           "check": "open index.html in a web browser and verify that the charts are drawn",
+                           "ship": "", "tasks": [{"title": "a", "detail": "b", "after": []}]})
+        plan, _ = build.read_plan(said)
+        self.assertEqual(plan["check"], "")
+        self.assertEqual(plan["run"], "open index.html")
+        # Commands that only happen to share a word are commands.
+        self.assertEqual(build.command_or_nothing("npm run verify"), "npm run verify")
+        self.assertEqual(build.command_or_nothing("python -m pytest -q tests/test_should_work.py"),
+                         "python -m pytest -q tests/test_should_work.py")
+
     def test_bad_dependencies_are_dropped(self):
         plan, _ = build.read_plan(json.dumps({"tasks": [
             {"title": "a", "detail": "a", "after": [1, 7, -1, 0]},

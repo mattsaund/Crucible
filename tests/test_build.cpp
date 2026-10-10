@@ -239,6 +239,13 @@ TEST(a_run_may_name_its_shell_and_a_run_followed_by_prose_is_prose) {
     CHECK(ps.has_value() && ps->shell == "powershell");
     // "RUN the tests first" was a sentence before and still is.
     CHECK(!tools::parse_tool_call("RUN the tests first: they matter", "").has_value());
+
+    // One of the verbs handed to RUN is the verb, not a shell command.
+    const std::optional<tools::ToolCall> render = tools::parse_tool_call("RUN: RENDER: index.html to out.png", "");
+    CHECK(render.has_value() && render->kind == tools::ToolKind::Render);
+    CHECK(render.has_value() && render->argument == "index.html to out.png");
+    const std::optional<tools::ToolCall> plain = tools::parse_tool_call("RUN: npm test", "");
+    CHECK(plain.has_value() && plain->kind == tools::ToolKind::Run);
     CHECK(tools::known_shell("bash"));
     CHECK(!tools::known_shell("python"));
     const std::vector<std::string> cmd  = tools::shell_argv("cmd", "dir");
@@ -519,6 +526,13 @@ TEST(an_edit_is_read_from_its_blocks_with_or_without_a_fence) {
     CHECK_EQ(two.size(), std::size_t{2});
     CHECK(tools::parse_edit_blocks("<<<<<<< SEARCH\na\n=======\nb\n", error).empty());
     CHECK(error.find("REPLACE") != std::string::npos);
+    // Straight from SEARCH to REPLACE is the lines taken out.
+    const std::vector<tools::EditBlock> cut =
+        tools::parse_edit_blocks("<<<<<<< SEARCH\n32\t<script src=\"chart.js\"></script>\n>>>>>>> REPLACE\n", error);
+    CHECK_EQ(cut.size(), std::size_t{1});
+    const std::optional<std::string> gone =
+        tools::apply_edit_blocks("<p>a</p>\n<script src=\"chart.js\"></script>\n<p>b</p>\n", cut, error);
+    CHECK(gone.has_value() && *gone == "<p>a</p>\n<p>b</p>\n");
     CHECK(tools::parse_edit_blocks("just some prose", error).empty());
 }
 
@@ -542,9 +556,11 @@ TEST(an_edit_applies_exactly_or_line_by_line_and_refuses_to_guess) {
     CHECK(!tools::apply_edit_blocks(twice, {{"color: red;", "color: blue;"}}, error).has_value());
     CHECK(error.find("2 times") != std::string::npos);
 
-    // Not there at all says to read the file again.
+    // Not there at all says to read the file again -- or, for a short one,
+    // to write it whole.
     CHECK(!tools::apply_edit_blocks(css, {{"color: green;", "color: blue;"}}, error).has_value());
     CHECK(error.find("READ it again") != std::string::npos);
+    CHECK(error.find("WRITE the whole file") != std::string::npos);
 
     // An empty SEARCH makes a file that is not there yet, and only then.
     out = tools::apply_edit_blocks("", {{"", "print('hi')"}}, error);
@@ -599,6 +615,12 @@ TEST(an_edit_changes_the_file_on_disk_and_says_what_moved) {
     std::ifstream in(dir.path() / "style.css");
     const std::string now((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     CHECK_EQ(now, std::string(".button {\n  color: blue;\n}\n"));
+
+    // A refused edit keeps what the model wrote, for whoever reads the step.
+    call.content = "<<<<<<< SEARCH\n  background: green;\n=======\n  color: blue;\n>>>>>>> REPLACE\n";
+    const tools::ToolResult refused = tools::run_tool(call, settings, {}, {});
+    CHECK(!refused.ok);
+    CHECK(refused.detail.find("background: green;") != std::string::npos);
 
     // Outside the folder is refused like a WRITE is.
     call.argument = "../elsewhere.css";

@@ -346,7 +346,7 @@ Reply history_cook(const json& params, const Scene& scene) {
     for (const CookTask& task : cook->tasks) {
         tasks.push_back(cook_task_json(task));
     }
-    return good(json{{"goal", cook->goal}, {"outcome", cook->outcome},
+    return good(json{{"id", what}, {"goal", cook->goal}, {"outcome", cook->outcome},
                      {"kind", cook->kind},
                      {"plan", json{{"summary", cook->plan.summary}, {"run", cook->plan.run},
                                    {"check", cook->plan.check}, {"ship", cook->plan.ship}}},

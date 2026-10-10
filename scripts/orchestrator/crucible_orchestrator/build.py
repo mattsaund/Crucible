@@ -105,7 +105,8 @@ APP_GUIDE = (
     "window.crucible.save(data)` after every change; Crucible provides both, in its preview and "
     "in the finished program. Make it look finished: a clear layout, comfortable spacing, "
     "readable type. Crucible shows the page as it is built and packages it as a program the "
-    "person opens like any other, so the plan needs no packaging task and its \"ship\" is \"\".")
+    "person opens like any other, so the plan needs no packaging task, and its \"ship\" and its "
+    "\"check\" are \"\": the page is shown, not run.")
 
 APP_NOTE = ("If this is a desktop web app (index.html, style.css, app.js): plain HTML, CSS and "
             "JavaScript, no packages, and nothing from the internet -- no <script> or <link> with "
@@ -123,9 +124,18 @@ NOTE_PUSH = ("Noted. A NOTE does nothing on its own -- take the next action now:
 GO_WORDS = ("", "go", "yes", "y", "ok", "okay", "start", "build", "run", "do it", "proceed",
             "looks good", "fine", "sure", "yep")
 
+# A person asking for the work in one piece: "in one task", "as a single task".
+ONE_TASK = re.compile(r"\b(?:one|a single|1)\s+task\b", re.I)
+
+# What gives away a "command" that is a description of something for a person
+# to do -- "open index.html in a web browser and verify the charts".
+PROSE = re.compile(r"\b(?:verify|ensure|make sure|check that|confirm|manually|visually|by hand|"
+                   r"in (?:a|the) (?:web )?browser|should)\b", re.I)
+
 PLAN_SHAPE = ('{"summary": "<one paragraph: what will be built and how>",\n'
               ' "run": "<the command that runs it, or \\"\\">",\n'
-              ' "check": "<one command that proves it works -- tests or a smoke run -- or \\"\\">",\n'
+              ' "check": "<one shell command that proves it works -- tests or a smoke run -- or \\"\\"; '
+              'never a description of something for a person to do>",\n'
               ' "ship": "<the command that packages it for people, or \\"\\">",\n'
               ' "tasks": [\n'
               '   {"title": "<a few words>", "detail": "<exactly what to make, and how to tell it is done>",\n'
@@ -135,6 +145,39 @@ PLAN_SHAPE = ('{"summary": "<one paragraph: what will be built and how>",\n'
 
 
 # --- the plan -------------------------------------------------------------------
+
+
+def one_task(plan, directive):
+    """`plan` as the one task a person asked for: the pieces the architect cut
+    it into, kept in order as that task's steps, and every file they named.
+
+    Asked for in so many words, one task is what is meant. A small local
+    architect plans eight for a change to one file whatever it is told, and
+    the person should not have to argue it down.
+    """
+    tasks = plan["tasks"]
+    files = []
+    for task in tasks:
+        for name in task.get("files", []):
+            if name not in files:
+                files.append(name)
+    steps = "\n".join("- " + task["title"] + (": " + task["detail"] if task.get("detail") else "")
+                      for task in tasks)
+    merged = {"title": cook.clip(directive, 60), "detail": directive + ("\n\nSteps:\n" + steps if steps else ""),
+              "files": files, "needs": tasks[0].get("needs", "") if tasks else "",
+              "size": "large" if any(t.get("size") == "large" for t in tasks) else "small", "after": []}
+    return dict(plan, tasks=[merged])
+
+
+def command_or_nothing(text):
+    """`text` when it is a command, or "" when it describes one.
+
+    Asked for the command that proves the work, an architect sometimes writes
+    what a person would do instead. Run, a sentence is an error, the error is
+    a failed check, and a task is spent making a sentence pass.
+    """
+    text = str(text or "").strip()
+    return "" if len(text.split()) >= 6 and PROSE.search(text) else text
 
 
 def find_json(text):
@@ -171,9 +214,9 @@ def read_plan(text):
         return None, "the plan has no tasks"
     plan = {
         "summary": str(parsed.get("summary") or "").strip(),
-        "run": str(parsed.get("run") or "").strip(),
-        "check": str(parsed.get("check") or "").strip(),
-        "ship": str(parsed.get("ship") or "").strip(),
+        "run": command_or_nothing(parsed.get("run")),
+        "check": command_or_nothing(parsed.get("check")),
+        "ship": command_or_nothing(parsed.get("ship")),
         "tasks": [],
     }
     for entry in tasks[:MAX_TASKS]:
@@ -567,6 +610,8 @@ class Build:
                 plan = {"summary": "", "run": "", "check": "", "ship": "",
                         "tasks": [{"title": cook.clip(self.directive, 60), "detail": self.directive,
                                    "files": [], "needs": "", "after": []}]}
+            if len(plan["tasks"]) > 1 and (ONE_TASK.search(self.directive) or ONE_TASK.search(feedback)):
+                plan = one_task(plan, self.directive)
             self.adopt_plan(plan)
             # A plan of one task is a change to make, not a project to agree:
             # "make the button blue" asked whether to make the button blue

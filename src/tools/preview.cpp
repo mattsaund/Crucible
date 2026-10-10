@@ -273,12 +273,11 @@ Bundle bundle(const std::filesystem::path& root, std::string_view page, std::siz
                 if (src_at != std::string::npos && value_end < opened.size()) {
                     opened.erase(src_at, value_end + 1 - src_at);
                 }
-                const std::size_t end = html.find("</script>", at);
-                const std::size_t end_low = lower(html.substr(at, std::min<std::size_t>(html.size() - at, 400))).find("</script>");
-                (void)end_low;
+                // The closing tag however it is written, </script> or </SCRIPT>.
+                const std::size_t close = lower(html.substr(at)).find("</script");
                 result += opened + "\n" + text + "\n";
-                if (end != std::string::npos) {
-                    at = end;   // the closing tag is copied on the next pass
+                if (close != std::string::npos) {
+                    at += close;   // the closing tag is copied on the next pass
                 } else {
                     result += "</script>";
                 }

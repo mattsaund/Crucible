@@ -684,7 +684,12 @@ ToolResult do_edit(const ToolCall& call, const WorkshopSettings& settings) {
     std::string error;
     const std::optional<std::string> after = edited_contents(call, settings, error);
     if (!after) {
-        return failure(error);
+        // What it tried, kept with the refusal: the journal shows the blocks
+        // a model wrote beside why they did not apply, which is how anybody
+        // reading it -- or improving the matching -- sees what went wrong.
+        ToolResult refused = failure(error);
+        refused.detail = clamp_output(call.content, settings.max_output_bytes);
+        return refused;
     }
     const std::optional<std::filesystem::path> file = resolve_in_root(settings.root, call.argument);
     const std::optional<std::string> before = read_file(*file);
@@ -1287,6 +1292,15 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
             if (call.kind == ToolKind::None) {
                 continue;
             }
+            // "RUN: RENDER: index.html to page.png" -- one of these verbs handed
+            // to the shell, where it is a command not found. Taken as the verb.
+            if (call.kind == ToolKind::Run) {
+                ToolCall inner;
+                inner.kind = verb_of(call.argument, inner.argument, inner.shell);
+                if (inner.kind != ToolKind::None && inner.kind != ToolKind::Run && inner.kind != ToolKind::Note) {
+                    call = inner;
+                }
+            }
             if (call.kind == ToolKind::Note) {
                 if (!note) {
                     note = call;
@@ -1587,6 +1601,14 @@ std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& err
                 replace_started = false;
                 continue;
             }
+            // Straight from SEARCH to REPLACE: the lines are to go, which is
+            // how a small model says delete. Safe to take at its word -- they
+            // still have to be in the file to match.
+            if (marker == Marker::Replace) {
+                blocks.push_back(std::move(current));
+                part = Part::Outside;
+                continue;
+            }
             current.search += (search_started ? "\n" : "") + line;
             search_started = true;
             continue;
@@ -1666,6 +1688,12 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
                             "without the line numbers";
             if (const std::string near = nearest_lines(lines, wanted); !near.empty()) {
                 error += ". The nearest lines in it are:\n" + near;
+            } else if (lines.size() <= 200) {
+                // Nothing like them at all: the model is working from a file
+                // it remembers rather than the one there. A file this short
+                // is better written whole than patched from memory.
+                error += " -- READ it again, or WRITE the whole file, which for one of "
+                       + std::to_string(lines.size()) + " lines is simpler";
             } else {
                 error += " -- READ it again first";
             }

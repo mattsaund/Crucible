@@ -1781,6 +1781,13 @@ TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
     const std::string listed = page().eval("(state.open.cook = null, views.history())");
     CHECK(listed.find("3 tasks") != std::string::npos);
     CHECK(listed.find("<h2>BUILDS</h2>") != std::string::npos);
+    // One left asking when Crucible closed was interrupted; the one running
+    // now is still working.
+    page().eval("state.history.cooks.push({ id: 'b9', kind: 'build', tasks: 8, goal: 'left', state: 'asking',"
+                " when: 'yesterday', files: 0, steps: 2, seconds: 0 })");
+    const std::string left = page().eval("views.history()");
+    CHECK(left.find("<span class=\"part\">interrupted</span>") != std::string::npos);
+    CHECK_EQ(page().eval("settled({ id: state.snapshot.cook.id, state: 'working' })"), std::string("working"));
 
     page().eval("state.kit = { folder: '/k', pieces: ["
                 "{ id: 'gh', label: 'GitHub\\'s command line', why: 'releases', fetched: true, missing: false },"

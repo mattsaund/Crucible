@@ -21,7 +21,7 @@ views.history = () => {
     <button class="card pick" data-act="history-cook" data-id="${escape(c.id)}">
       <div class="title"><strong>${escape(c.goal)}</strong><span class="tag">${c.kind === 'build' ? 'build' : 'cook'}</span></div>
       <div class="hint">${apart(escape(c.when), c.kind === 'build' ? count(c.tasks || 0, 'task') : '',
-        count(c.files, 'file'), count(c.steps, 'step'), span(c.seconds), escape(c.state))}</div>
+        count(c.files, 'file'), count(c.steps, 'step'), span(c.seconds), escape(settled(c)))}</div>
     </button>`).join('') : '<p class="lede">No builds yet.</p>';
 
   const sessions = h.sessions.length ? h.sessions.map((c) => `

@@ -187,6 +187,17 @@ TEST(a_page_is_bundled_with_its_local_files_inside_it) {
 
     CHECK(!tools::preview::bundle(dir.path(), "../elsewhere.html").ok);
     CHECK(!tools::preview::bundle(dir.path(), "site/missing.html").ok);
+
+    // A closing tag in capitals closes the script all the same, rather than
+    // the page's text after it ending up inside the script.
+    write(dir.path() / "shout.html", "<SCRIPT SRC=\"site/app.js\"></SCRIPT><p id=\"after\">x</p>");
+    const tools::preview::Bundle shouted = tools::preview::bundle(dir.path(), "shout.html");
+    const std::size_t script = shouted.html.find("console.log('hi')");
+    const std::size_t closed = shouted.html.find("</SCRIPT>");
+    CHECK(script != std::string::npos);
+    CHECK(closed != std::string::npos && closed > script);
+    CHECK(shouted.html.find("<p id=\"after\">", closed) != std::string::npos);
+    CHECK(shouted.html.find("</script>") == std::string::npos);   // not closed twice
 }
 
 TEST(candidate_pages_put_index_first_and_skip_what_nobody_previews) {

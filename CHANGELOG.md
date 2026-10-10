@@ -239,7 +239,19 @@ READ's line numbers when a model copies them with the lines, and matches with
 blank lines set aside; when nothing matches, the nearest lines in the file are
 said back, numbered, so the next try copies the file's own text rather than
 the model's memory of it. A 14B coder that had spent eleven rounds on "those
-lines are not in the file" was the reason.
+lines are not in the file" was the reason. A refused edit keeps the blocks
+the model wrote, so the step shows what it tried beside why it did not apply
+-- one turned out to be Chart.js's documentation example, recited -- and when
+nothing like them is in a short file, the model is told to write it whole. A
+block that goes straight from SEARCH to REPLACE takes its lines out, which is
+how a small model asks for a deletion.
+
+**A build does what it is told about its size, and checks only what can be
+run.** Asked for "in one task", it is one task, whatever the architect cut it
+into: the pieces become that task's steps. A "check" the architect wrote as a
+description -- "open index.html in a web browser and verify the charts" -- is
+not run as a command, where it failed and cost a task spent making a sentence
+pass; a page app has no check, since the page is shown rather than run.
 
 **Crucible's icon, everywhere.** On Windows the icon is inside `crucible.exe`,
 so the taskbar, Explorer and the window itself show it rather than Windows'
@@ -268,6 +280,11 @@ it, and the red card is gone.
   them now, and six that had gone stale were brought up to date.
 - A failed C++ test on GitHub Actions is an annotation on the commit, naming
   the case, the file and the line, which anyone can read without signing in.
+- A build left mid-way -- Crucible closed while it ran -- says interrupted in
+  History, rather than asking or working for ever after.
+- The preview closes a script whose closing tag is written in capitals.
+- `RUN: RENDER: index.html to page.png` -- one of the verbs handed to the
+  shell, where it was a command not found -- is taken as the verb.
 - The settings have a **Build** page: who plans, the model for new agents,
   whether to show the plan first, commits, and rounds per task.
 - The orchestrator protocol is 2: a journal step says which task of a build
