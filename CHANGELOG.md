@@ -280,6 +280,8 @@ it, and the red card is gone.
 - Running the test suite opened a Crucible window each time: the test that
   asks every method of a surface with nothing behind it asked `self.restart`,
   which started the built program. A restart now needs a window to close.
+  The same test asked `trainer.remove`, which took away the real training
+  environment on every run; it asks in a data folder of its own now.
 - On a Mac, `tests/test_install.sh` stopped after its first few checks and
   reported success: bash 3.2 treats an empty array as unset. It runs all of
   them now, and six that had gone stale were brought up to date.

@@ -86,7 +86,11 @@ TEST(the_surface_lists_what_it_understands) {
 
     // Every method it advertises has to be one it actually answers. A list
     // that drifts from the implementation is worse than no list, because an
-    // interface believes it.
+    // interface believes it. Asked in a data folder of its own: trainer.remove
+    // takes no parameters, and asked here it took away the training
+    // environment of whoever ran the suite.
+    const TempDir        temp;
+    const ScopedDataHome scoped(temp.path());
     for (const std::string& method : listed) {
         const json one = ask(surface, json{{"id", 1}, {"method", method}}.dump());
         const std::string error = one.value("error", std::string{});
