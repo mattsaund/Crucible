@@ -236,6 +236,17 @@ TEST(a_server_on_this_machine_is_always_told_how_long_a_reply_may_be) {
     ModelParams capped;
     capped.max_tokens = 300;
     CHECK_EQ(openai(conversation(), capped, local)["max_tokens"].get<int>(), 300);
+
+    // The sampling a GGUF gets, a model on MLX's server gets too; a provider
+    // would refuse the fields it does not know.
+    local.local_sampling = true;
+    const json sampled = openai(conversation(), ModelParams{}, local);
+    CHECK_EQ(sampled["top_k"].get<int>(), 40);
+    CHECK(sampled["min_p"].get<double>() > 0.049 && sampled["min_p"].get<double>() < 0.051);
+    CHECK(sampled["repetition_penalty"].get<double>() > 1.049 && sampled["repetition_penalty"].get<double>() < 1.051);
+    CHECK_EQ(sampled["repetition_context_size"].get<int>(), 64);
+    const json provider = openai(conversation(), ModelParams{});
+    CHECK(!provider.contains("top_k") && !provider.contains("repetition_penalty"));
 }
 
 TEST(a_picture_counts_toward_the_token_estimate) {

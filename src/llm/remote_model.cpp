@@ -263,6 +263,17 @@ std::string openai_body(std::string_view model, const ChatRequest& request,
         };
         body["temperature"] = tidy(request.params.temperature);
         body["top_p"]       = tidy(request.params.top_p);
+        if (quirks.local_sampling) {
+            // The rest of the Generation page, which llama.cpp is given and a
+            // provider would refuse. Without the repetition penalty a model
+            // on MLX's server wrote the same three lines until it was stopped.
+            body["top_k"]              = request.params.top_k;
+            body["min_p"]              = tidy(request.params.min_p);
+            body["repetition_penalty"] = tidy(request.params.repeat_penalty);
+            if (request.params.repeat_last_n > 0) {
+                body["repetition_context_size"] = request.params.repeat_last_n;
+            }
+        }
     }
     const int limit = request.params.max_tokens > 0 ? request.params.max_tokens
                     : quirks.always_max_tokens       ? kUnboundedReply
@@ -1037,6 +1048,7 @@ ChatModel* Hub::local_server(const std::string& base_url, int context_tokens) {
         Quirks quirks;
         quirks.no_images         = true;
         quirks.always_max_tokens = true;
+        quirks.local_sampling    = true;
         found = impl_->clients
                     .emplace(key, std::make_unique<Client>(provider, "default_model", impl_->flight,
                                                            facts, quirks, true))

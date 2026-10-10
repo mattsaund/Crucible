@@ -65,6 +65,8 @@ struct Quirks {
     bool no_images         = false;  ///< a text-only model: pictures are refused
     bool always_max_tokens = false;  ///< says a limit even for "until it stops":
                                      ///< a server whose own default is short
+    bool local_sampling    = false;  ///< a server on this machine, given top_k,
+                                     ///< min_p and the repetition penalty too
 
     // The Messages shape, through a gateway that is not Anthropic's own.
     bool no_fallbacks     = false;
