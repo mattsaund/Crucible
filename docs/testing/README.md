@@ -80,9 +80,17 @@ Exits non-zero when the turn or the build failed.
 
 ## Seen on 2026-10-10
 
-macOS, M4, 24 GB, Qwen2.5-Coder-14B, no provider. Each task took 5 to 15
-minutes. Fixed along the way: plans split into many tasks when one was asked
-for, a "check" written as a sentence and run as a command, edits that copied
-READ's line numbers, `RUN: RENDER:`. Still weak at that size: the model edits
-from memory instead of the file, and sometimes writes over a whole file. Worth
-re-running on a bigger model.
+macOS, M4, 24 GB, no provider. The scenario got as far as step 3.
+
+- **Qwen2.5-Coder-14B (GGUF).** 5 to 15 minutes a task. Fixed along the
+  way: plans split into many tasks when one was asked for, a "check" written
+  as a sentence and run as a command, edits that copied READ's line numbers,
+  `RUN: RENDER:`, and new lines written after `>>>>>>> REPLACE` read as a
+  deletion. Still weak: edits from memory instead of the file, and sometimes
+  writes over a whole file.
+- **gpt-oss-20b (MLX).** Plans in 30 seconds. Fixed: MLX models got no
+  repetition penalty, so it looped; two EDITs in one reply. Still open: a
+  WRITE sometimes arrives with no content, and it reads files with
+  `RUN: sed -n` rather than READ.
+
+Next: the whole scenario on a 30B coder or with a provider key.
