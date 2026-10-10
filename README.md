@@ -218,7 +218,8 @@ specific guidelines:
 3. Contributor MUST look at/document code and code changes. You need to
    understand the code that is being written.
 
-Every push is built and tested on Linux, macOS and Windows.
+Every push is built and tested on Linux, macOS and Windows. How to test a
+change or a release: [docs/testing](docs/testing/README.md).
 
 ___
 ## License

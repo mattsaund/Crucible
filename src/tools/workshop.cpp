@@ -1485,6 +1485,61 @@ std::vector<std::string> without_line_numbers(const std::vector<std::string>& li
     return numbered > 0 && (!spaced || numbered >= 2) ? out : lines;
 }
 
+/// `lines` joined back, with a newline after each when `ends` says the text
+/// had one.
+std::string joined(const std::vector<std::string>& lines, bool ends) {
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        out += lines[i];
+        if (i + 1 < lines.size() || ends) {
+            out += '\n';
+        }
+    }
+    return out;
+}
+
+/// Whether `line` starts with READ's number: digits and a tab.
+bool read_numbered(const std::string& line) {
+    std::size_t at = 0;
+    while (at < line.size() && line[at] == ' ') {
+        ++at;
+    }
+    const std::size_t digits = at;
+    while (at < line.size() && std::isdigit(static_cast<unsigned char>(line[at])) != 0) {
+        ++at;
+    }
+    return at > digits && at - digits <= 6 && at < line.size() && line[at] == '\t';
+}
+
+/// REPLACE lines with READ's numbers taken off. A model that copied them
+/// into the SEARCH copies them into the lines it writes too, and they would
+/// land in the file as text: "51<tab></body>". Taken off when the SEARCH had
+/// them, or when every line written has one -- READ's own format, digits and
+/// a tab, which no file line starts with by chance on every line.
+std::string without_read_numbers(const std::string& text, bool search_had_them) {
+    std::vector<std::string> lines = split_lines(text);
+    bool every = false;
+    for (const std::string& line : lines) {
+        if (trim(line).empty()) {
+            continue;
+        }
+        if (!read_numbered(line)) {
+            every = false;
+            break;
+        }
+        every = true;
+    }
+    if (!search_had_them && !every) {
+        return text;
+    }
+    for (std::string& line : lines) {
+        if (read_numbered(line)) {
+            line.erase(0, line.find('\t') + 1);
+        }
+    }
+    return joined(lines, !text.empty() && text.back() == '\n');
+}
+
 /// Where `wanted` is in `lines`, compared without indentation -- and, when
 /// `skip_blank`, without the blank lines either side may have that the other
 /// has not. Each match is the first line and how many lines of the file it
@@ -1560,19 +1615,6 @@ std::string nearest_lines(const std::vector<std::string>& lines, const std::vect
     std::string out;
     for (std::size_t k = 0; k < span && best_at + k < lines.size(); ++k) {
         out += std::to_string(best_at + k + 1) + "\t" + lines[best_at + k] + "\n";
-    }
-    return out;
-}
-
-/// `lines` joined back, with a newline after each when `ends` says the text
-/// had one.
-std::string joined(const std::vector<std::string>& lines, bool ends) {
-    std::string out;
-    for (std::size_t i = 0; i < lines.size(); ++i) {
-        out += lines[i];
-        if (i + 1 < lines.size() || ends) {
-            out += '\n';
-        }
     }
     return out;
 }
@@ -1655,7 +1697,7 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
         std::size_t first = 0;
         const std::size_t exact = occurrences(out, block.search, first);
         if (exact == 1) {
-            out.replace(first, block.search.size(), block.replace);
+            out.replace(first, block.search.size(), without_read_numbers(block.replace, false));
             continue;
         }
         if (exact > 1) {
@@ -1670,7 +1712,9 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
         if (ends && !lines.empty() && lines.back().empty()) {
             lines.pop_back();
         }
-        std::vector<std::string> wanted = without_line_numbers(split_lines(block.search));
+        const std::vector<std::string> written = split_lines(block.search);
+        std::vector<std::string> wanted = without_line_numbers(written);
+        const bool numbered = wanted != written;
         while (!wanted.empty() && trim(wanted.back()).empty()) {
             wanted.pop_back();
         }
@@ -1711,7 +1755,7 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
         const std::size_t covered = starts.front().second;
         const std::string had  = indent_of(lines[at]);
         const std::string gave = indent_of(wanted.front());
-        std::vector<std::string> replacement = split_lines(block.replace);
+        std::vector<std::string> replacement = split_lines(without_read_numbers(block.replace, numbered));
         while (!replacement.empty() && trim(replacement.back()).empty()) {
             replacement.pop_back();
         }

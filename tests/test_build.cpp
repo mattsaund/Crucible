@@ -578,6 +578,11 @@ TEST(an_edit_forgives_what_a_small_model_copies_wrong) {
     out = tools::apply_edit_blocks(page, {{"2 | <h1>Budget</h1>\n3 |\n4 | <button id=\"add\">Add</button>",
                                            "<h1>B</h1>\n<button id=\"add\" class=\"wide\">Add</button>"}}, error);
     CHECK(out.has_value() && out->find("class=\"wide\"") != std::string::npos);
+    // And the numbers it copied into the lines it wrote come off them too,
+    // rather than landing in the file as text.
+    out = tools::apply_edit_blocks(page, {{"5\t</body>", "5\t  <p>total</p>\n6\t</body>"}}, error);
+    CHECK(out.has_value() && out->find("  <p>total</p>\n</body>") != std::string::npos);
+    CHECK(out.has_value() && out->find("6\t") == std::string::npos);
     // A blank line the model left out.
     out = tools::apply_edit_blocks(page, {{"<h1>Budget</h1>\n<button id=\"add\">Add</button>",
                                            "<h1>Budget</h1>\n<button id=\"add\">Plus</button>"}}, error);

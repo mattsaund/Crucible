@@ -244,7 +244,8 @@ the model wrote, so the step shows what it tried beside why it did not apply
 -- one turned out to be Chart.js's documentation example, recited -- and when
 nothing like them is in a short file, the model is told to write it whole. A
 block that goes straight from SEARCH to REPLACE takes its lines out, which is
-how a small model asks for a deletion.
+how a small model asks for a deletion; and READ's line numbers copied into the
+lines it writes come off them, rather than landing in the file as text.
 
 **A build does what it is told about its size, and checks only what can be
 run.** Asked for "in one task", it is one task, whatever the architect cut it
