@@ -21,6 +21,9 @@ not be read -- was never marked done, and the window drew nothing new again:
 a model load stopped at 100% as far as anyone could see. Every redraw now
 ends, failed or not, and the next one tries again.
 
+**The corner names the models.** The local models at the foot of the right
+panel go by their own names rather than their seats', which are on hover.
+
 ## 0.8.9 — 2026-10-10
 
 **Build: give it a directive and it makes the software.** A new tab beside

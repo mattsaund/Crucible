@@ -938,8 +938,11 @@ TEST(the_right_panel_ends_with_the_models_at_work) {
     CHECK(local != std::string::npos);
     CHECK(frontier != std::string::npos);
     CHECK(local < frontier);
-    CHECK(panel.find("Delegator") != std::string::npos);
-    CHECK(panel.find("Mathematics") != std::string::npos);
+    // Each by the model's name, and whose it is on hover.
+    CHECK(panel.find(">router<") != std::string::npos);
+    CHECK(panel.find(">math<") != std::string::npos);
+    CHECK(panel.find("Delegator: router.gguf") != std::string::npos);
+    CHECK(panel.find("Mathematics: math.gguf") != std::string::npos);
     CHECK(panel.find("9.0 GB") != std::string::npos);
     CHECK(panel.find("claude-opus-5-5") != std::string::npos);
     CHECK(panel.find("$0.42") != std::string::npos);

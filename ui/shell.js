@@ -270,9 +270,10 @@ function resets(text) {
 function usageView() {
   const s = state.snapshot;
   const total = s.memory_total || 0;
+  // Each by the model's own name; whose it is, on hover.
   const local = (s.local_models || []).map((m) => `
-      <div class="u-row" title="${escape(m.file)}">
-        <span class="u-name">${escape(m.delegator ? 'Delegator' : expertName(m.seat))}</span>
+      <div class="u-row" title="${escape(`${m.delegator ? 'Delegator' : expertName(m.seat)}: ${m.file}`)}">
+        <span class="u-name">${escape(m.file.replace(/\.gguf$/i, ''))}</span>
         <span class="u-num">${bytes(m.bytes)}</span></div>
       ${total ? meter(m.bytes / total, `${bytes(m.bytes)} of ${bytes(total)} memory`) : ''}`).join('')
     || '<div class="u-none">None loaded</div>';
