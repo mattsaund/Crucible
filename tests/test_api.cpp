@@ -108,6 +108,14 @@ TEST(a_surface_with_no_window_does_not_start_another_crucible) {
     CHECK(reply.value("error", std::string{}).find("cannot restart") != std::string::npos);
 }
 
+TEST(a_surface_with_no_window_does_not_update_itself) {
+    api::Surface surface = bare();
+    const json reply = ask(surface, R"({"id":1,"method":"update.install"})");
+    CHECK(reply["ok"] == false);
+    CHECK(reply.value("error", std::string{}).find("cannot update itself") != std::string::npos);
+    CHECK(ask(surface, R"({"id":1,"method":"update.progress"})")["result"]["phase"] == "idle");
+}
+
 TEST(an_unknown_method_names_itself_in_the_refusal) {
     api::Surface surface = bare();
     const json   reply   = ask(surface, R"({"id":1,"method":"summon"})");

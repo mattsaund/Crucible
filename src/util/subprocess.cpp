@@ -344,6 +344,20 @@ bool on_path(const std::string& program) {
     return false;
 }
 
+bool start_detached(const std::vector<std::string>& argv, std::string& error) {
+    // A subshell put in the background: the program is the shell's
+    // grandchild, handed to the system when the shell exits, and outlives
+    // this one.
+    std::vector<std::string> shell{"/bin/sh", "-c", "(\"$0\" \"$@\" >/dev/null 2>&1 </dev/null &)"};
+    shell.insert(shell.end(), argv.begin(), argv.end());
+    Subprocess child;
+    if (!child.start(shell, {}, {}, error)) {
+        return false;
+    }
+    child.wait();
+    return true;
+}
+
 #endif  // !_WIN32
 
 // ---------------------------------------------------------------------------
@@ -744,6 +758,28 @@ bool on_path(const std::string& program) {
         return true;
     }
     return ::SearchPathW(nullptr, name.c_str(), nullptr, MAX_PATH, found, nullptr) != 0;
+}
+
+bool start_detached(const std::vector<std::string>& argv, std::string& error) {
+    // Not through Subprocess, whose job object ends everything in it when
+    // this program does -- the one thing a program meant to outlive it must
+    // not be part of.
+    std::wstring line = command_line(argv);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION info{};
+    if (::CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE,
+                         CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+                         nullptr, nullptr, &startup, &info) == 0
+        && ::CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE,
+                            CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                            &info) == 0) {
+        error = "could not start " + (argv.empty() ? std::string() : argv.front()) + ": " + last_error();
+        return false;
+    }
+    ::CloseHandle(info.hThread);
+    ::CloseHandle(info.hProcess);
+    return true;
 }
 
 #endif  // _WIN32

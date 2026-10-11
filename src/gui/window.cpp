@@ -278,6 +278,18 @@ int App::run() {
             if (!gate->open) {
                 return;
             }
+            // Landed however this ends. The pusher sends nothing while one
+            // is on its way, so a push that returned early without saying so
+            // left the window drawing the same frame for good -- a load at
+            // 100% that never finished, as far as anyone could see.
+            struct Landed {
+                Pusher*& pushing;
+                ~Landed() {
+                    if (pushing != nullptr) {
+                        pushing->landed();
+                    }
+                }
+            } landed{pushing};
 
             // On the window's thread, which is the session's thread: the one
             // place the jobs a frame loop used to do can still be done.
@@ -321,9 +333,6 @@ int App::run() {
                 return;
             }
             view.eval("window.crucibleSnapshot && window.crucibleSnapshot(" + snapshot + ")");
-            if (pushing != nullptr) {
-                pushing->landed();
-            }
         });
     });
     pushing = &pusher;

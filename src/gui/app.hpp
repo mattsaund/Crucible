@@ -71,6 +71,7 @@ private:
     lab::pyenv::Installer* trainer_installer() override { return &pyenv_installer_; }
     Setup*                 setup() override { return &setup_; }
     self::Rebuild*         rebuild() override { return &rebuild_; }
+    update::Installer*     updater() override { return &updater_; }
     void                   quit() override;
 
     Config      config() const override { return config_; }
@@ -245,6 +246,10 @@ private:
     /// A rebuild of Crucible's own source, when somebody asks for one. See
     /// app/self_source.hpp.
     self::Rebuild         rebuild_;
+
+    /// An update to the newest release, when somebody asks for one. See
+    /// app/update.hpp.
+    update::Installer     updater_;
 
     /// The window while it is open, for quit(): a webview, held as void so
     /// this header does not need webview's. Set and cleared by run().

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <system_error>
 #include <vector>
@@ -12,6 +13,14 @@
 
 #include "crucible/config/paths.hpp"
 #include "crucible/util/http.hpp"
+#include "crucible/util/platform.hpp"
+#include "crucible/util/subprocess.hpp"
+
+#if defined(_WIN32)
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 #ifndef CRUCIBLE_VERSION
 #define CRUCIBLE_VERSION "0.0.0"
@@ -217,6 +226,258 @@ State refresh(bool allowed_to_ask) {
     state.checked_at = now_seconds();
     write_cache(state);
     return state;
+}
+
+// ---------------------------------------------------------------------------
+// Updating in place
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The .app this program runs from, or empty when it is not in one.
+std::filesystem::path bundle_of(const std::filesystem::path& program) {
+    for (std::filesystem::path at = program; at.has_parent_path() && at != at.parent_path();
+         at = at.parent_path()) {
+        if (at.extension() == ".app") {
+            return at;
+        }
+    }
+    return {};
+}
+
+/// The AppImage this program was started from, when it was.
+std::filesystem::path appimage() {
+    const char* path = std::getenv("APPIMAGE");
+    return path != nullptr && *path != '\0' ? std::filesystem::path(path) : std::filesystem::path();
+}
+
+/// What the update replaces: the install folder (bin's parent) on Windows,
+/// the .app on a Mac, the AppImage on Linux.
+std::filesystem::path target_of(Install install) {
+    const std::filesystem::path program = util::executable_path();
+    switch (install) {
+        case Install::Setup: {
+            const std::filesystem::path bin = program.parent_path();
+            return bin.filename() == "bin" ? bin.parent_path() : bin;
+        }
+        case Install::AppBundle: return bundle_of(program);
+        case Install::AppImage:  return appimage();
+        case Install::Source:    break;
+    }
+    return {};
+}
+
+/// A path for a POSIX shell: in single quotes, with any quote of its own
+/// closed, escaped and reopened.
+std::string sh(const std::filesystem::path& path) {
+    std::string out = "'";
+    for (const char c : path.string()) {
+        out += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    }
+    return out + "'";
+}
+
+long this_process() {
+#if defined(_WIN32)
+    return static_cast<long>(::GetCurrentProcessId());
+#else
+    return static_cast<long>(::getpid());
+#endif
+}
+
+}  // namespace
+
+Install install_here() {
+#if defined(_WIN32)
+    // The setup program installs over whatever folder it is pointed at, so
+    // an install.ps1 build updates the same way as a setup one.
+    return Install::Setup;
+#else
+    if (!bundle_of(util::executable_path()).empty()) {
+        return Install::AppBundle;
+    }
+    if (!appimage().empty()) {
+        return Install::AppImage;
+    }
+    return Install::Source;
+#endif
+}
+
+std::string asset_for(Install install) {
+    switch (install) {
+        case Install::Setup:     return "Crucible-Setup.exe";
+        case Install::AppBundle: return "Crucible-macOS.dmg";
+        case Install::AppImage:  return "Crucible-x86_64.AppImage";
+        case Install::Source:    break;
+    }
+    return {};
+}
+
+bool find_asset(std::string_view body, std::string_view asset, std::string& url, std::uint64_t& bytes) {
+    const json parsed = json::parse(body, nullptr, /*allow_exceptions=*/false);
+    if (!parsed.is_object() || !parsed.contains("assets") || !parsed["assets"].is_array()) {
+        return false;
+    }
+    for (const json& one : parsed["assets"]) {
+        if (one.is_object() && one.value("name", std::string()) == asset) {
+            url   = one.value("browser_download_url", std::string());
+            bytes = one.value("size", std::uint64_t{0});
+            return !url.empty();
+        }
+    }
+    return false;
+}
+
+std::string swap_script(Install install, long pid, const std::filesystem::path& fetched,
+                        const std::filesystem::path& target) {
+    const std::string id = std::to_string(pid);
+    if (install == Install::Setup) {
+        // cmd reads a script in the console's code page; 65001 is UTF-8, so a
+        // folder with an accented name survives. The setup program shows its
+        // own progress and, silent, starts nothing: the last line does.
+        const std::string folder = target.string();
+        return "@echo off\r\n"
+               "chcp 65001 >nul\r\n"
+               "rem Crucible's update: wait for it to close, install over it, start it again.\r\n"
+               ":wait\r\n"
+               "tasklist /NH /FI \"PID eq " + id + "\" 2>nul | find \"" + id + "\" >nul\r\n"
+               "if not errorlevel 1 (\r\n"
+               "  ping -n 2 127.0.0.1 >nul\r\n"
+               "  goto wait\r\n"
+               ")\r\n"
+               "\"" + fetched.string() + "\" /SILENT /SUPPRESSMSGBOXES /NORESTART /DIR=\"" + folder + "\"\r\n"
+               "start \"\" \"" + (target / "bin" / "crucible.exe").string() + "\"\r\n";
+    }
+    const std::string wait = "while kill -0 " + id + " 2>/dev/null; do sleep 0.5; done\n";
+    if (install == Install::AppBundle) {
+        // Copied beside the old one and swapped in only once the copy is
+        // whole: a failure anywhere leaves the old Crucible where it was,
+        // and it is opened either way.
+        const std::filesystem::path fresh = target.string() + ".new";
+        return "#!/bin/sh\n"
+               "# Crucible's update: wait for it to close, put the new one in its place, open it.\n"
+               + wait +
+               "mount=$(mktemp -d) || exit 1\n"
+               "if hdiutil attach -nobrowse -quiet -mountpoint \"$mount\" " + sh(fetched) + "; then\n"
+               "  app=$(ls -d \"$mount\"/*.app | head -n 1)\n"
+               "  rm -rf " + sh(fresh) + "\n"
+               "  ditto \"$app\" " + sh(fresh) + " && rm -rf " + sh(target) + " && mv " + sh(fresh) + " "
+               + sh(target) + "\n"
+               "  hdiutil detach -quiet \"$mount\"\n"
+               "fi\n"
+               "rm -f " + sh(fetched) + "\n"
+               "open " + sh(target) + "\n";
+    }
+    return "#!/bin/sh\n"
+           "# Crucible's update: wait for it to close, put the new one in its place, start it.\n"
+           + wait +
+           "chmod +x " + sh(fetched) + " && mv -f " + sh(fetched) + " " + sh(target) + "\n"
+           "exec " + sh(target) + "\n";
+}
+
+Installer::~Installer() {
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+bool Installer::start(std::function<void()> launched, std::string& error) {
+    const Install install = install_here();
+    if (asset_for(install).empty() || target_of(install).empty()) {
+        error = "this Crucible was built from source -- update it with: " + std::string(update_command());
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (progress_.running()) {
+        error = "an update is already under way";
+        return false;
+    }
+    if (worker_.joinable()) {
+        worker_.join();   // the last one, which has ended
+    }
+    progress_ = Progress{};
+    progress_.phase = Phase::Asking;
+    worker_ = std::thread([this, launched = std::move(launched)] { run(launched); });
+    return true;
+}
+
+Installer::Progress Installer::progress() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    Progress out = progress_;
+    if (out.phase == Phase::Downloading) {
+        std::error_code ec;
+        const std::uintmax_t got = std::filesystem::file_size(downloading_, ec);
+        out.done = ec ? 0 : static_cast<std::uint64_t>(got);
+    }
+    return out;
+}
+
+void Installer::set(Phase phase, std::string error) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    progress_.phase = phase;
+    progress_.error = std::move(error);
+}
+
+void Installer::run(std::function<void()> launched) {
+    const Install install = install_here();
+    const std::string asset = asset_for(install);
+
+    std::string body;
+    std::string error;
+    if (!fetch(body, error)) {
+        set(Phase::Failed, error);
+        return;
+    }
+    std::string   url;
+    std::uint64_t bytes = 0;
+    if (!find_asset(body, asset, url, bytes)) {
+        set(Phase::Failed, "the newest release has no " + asset);
+        return;
+    }
+
+    const std::filesystem::path folder = paths::data_dir() / "update";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    const std::filesystem::path part    = folder / (asset + ".part");
+    const std::filesystem::path fetched = folder / asset;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        progress_.phase = Phase::Downloading;
+        progress_.total = bytes;
+        downloading_    = part;
+    }
+    if (!util::http::download(url, part, 1800, error)) {
+        std::filesystem::remove(part, ec);
+        set(Phase::Failed, "the download failed: " + error);
+        return;
+    }
+    std::filesystem::remove(fetched, ec);
+    std::filesystem::rename(part, fetched, ec);
+    if (ec) {
+        set(Phase::Failed, "the download could not be kept: " + ec.message());
+        return;
+    }
+
+    set(Phase::Starting);
+    const std::filesystem::path script = folder / (install == Install::Setup ? "update.cmd" : "update.sh");
+    {
+        std::ofstream out(script, std::ios::binary);
+        out << swap_script(install, this_process(), fetched, target_of(install));
+        if (!out) {
+            set(Phase::Failed, "the update script could not be written");
+            return;
+        }
+    }
+    const std::vector<std::string> argv =
+        install == Install::Setup ? std::vector<std::string>{"cmd", "/c", "\"" + script.string() + "\""}
+                                  : std::vector<std::string>{"/bin/sh", script.string()};
+    if (!util::start_detached(argv, error)) {
+        set(Phase::Failed, error);
+        return;
+    }
+    if (launched) {
+        launched();
+    }
 }
 
 }  // namespace crucible::update

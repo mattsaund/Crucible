@@ -225,6 +225,7 @@ Reply about(const json&, const Scene& scene) {
                         {"available", update::newer_than_this(newer)},
                         {"page", newer.page.empty() ? update::releases_url() : newer.page},
                         {"command", std::string(update::update_command())},
+                        {"installable", !update::asset_for(update::install_here()).empty()},
                         {"checked_at", newer.checked_at},
                         {"checks", scene.config.ui.check_updates}}},
         // For reading, so each is written with ~ for the home directory.
@@ -362,6 +363,37 @@ Reply self_restart(const json&, Host& host) {
     return good();
 }
 
+/// The newest release, fetched and started in place of this one. Crucible
+/// closes once it has started; the new one opens when it is in.
+Reply update_install(const json&, Host& host) {
+    update::Installer* installer = host.updater();
+    if (installer == nullptr) {
+        return bad("this Crucible cannot update itself");
+    }
+    std::string error;
+    if (!installer->start([&host] { host.quit(); }, error)) {
+        return bad(error);
+    }
+    return good();
+}
+
+/// How far an update has got, for the line under its button.
+Reply update_progress(const json&, Host& host) {
+    const update::Installer* installer = host.updater();
+    if (installer == nullptr) {
+        return good(json{{"phase", "idle"}});
+    }
+    const update::Installer::Progress progress = installer->progress();
+    using Phase = update::Installer::Phase;
+    const char* phase = progress.phase == Phase::Asking        ? "asking"
+                      : progress.phase == Phase::Downloading   ? "downloading"
+                      : progress.phase == Phase::Starting      ? "starting"
+                      : progress.phase == Phase::Failed        ? "failed"
+                                                               : "idle";
+    return good(json{{"phase", phase}, {"done", progress.done}, {"total", progress.total},
+                     {"error", progress.error}});
+}
+
 void settings_methods(std::vector<Method>& table) {
     table.push_back({"config",       nullptr, config});
     table.push_back({"config.set",   nullptr, config_set});
@@ -371,6 +403,8 @@ void settings_methods(std::vector<Method>& table) {
     table.push_back({"self.source",  nullptr, self_source});
     table.push_back({"self.rebuild", nullptr, self_rebuild});
     table.push_back({"self.restart", nullptr, self_restart});
+    table.push_back({"update.install",  nullptr, update_install});
+    table.push_back({"update.progress", nullptr, update_progress});
     table.push_back({"update.check", update_check, nullptr});
     table.push_back({"prefs",        prefs, nullptr});
     table.push_back({"prefs.set",    prefs_set, nullptr});

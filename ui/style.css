@@ -325,6 +325,9 @@ button.action:disabled { color: var(--faint); cursor: default; }
   background: var(--flame); border-color: var(--flame); color: var(--ink);
 }
 .action.toggle[aria-pressed="true"]:hover { background: var(--flame-lit); }
+/* The one thing a card is for, like Update now. */
+.action.primary:not(:disabled) { background: var(--flame); border-color: var(--flame); color: var(--ink); }
+.action.primary:hover:not(:disabled) { background: var(--flame-lit); }
 
 .ok { color: var(--flame); } .bad { color: var(--error); } .meh { color: var(--faint); }
 
@@ -553,6 +556,12 @@ nav button.icon { position: relative; }
   position: absolute; top: .45rem; right: .4rem; width: 7px; height: 7px;
   border-radius: 50%; background: var(--flame);
 }
+/* A newer Crucible: one click to the page with Update now on it. */
+nav button.update-link {
+  color: var(--flame); border: 1px solid var(--flame); border-radius: 999px;
+  padding: .15rem .7rem; margin: auto .4rem auto 0; font-size: .85em;
+}
+nav button.update-link:hover { color: var(--text); background: var(--hover); }
 
 /* --- the side menu ---------------------------------------------------------- */
 .side-status {

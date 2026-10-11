@@ -62,9 +62,9 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `--no-trainer`,
 `-y`, `--uninstall`. Run from inside a clone, it builds that clone.
 
-**Updating:** run the installer again, or download the new release. Crucible
-checks GitHub once a day and says when there is one (Settings → About turns it
-off). Config, models and history are kept. Versions are tagged `v0.8.9`; what
+**Updating:** Settings → About → **Update now**, or run the installer again.
+Crucible checks GitHub once a day and says when there is one. Config, models
+and history are kept. Versions are tagged `v0.9.0`; what
 changed is in [CHANGELOG.md](CHANGELOG.md).
 
 **Uninstall:** `crucible --uninstall`. It asks before deleting models. If the

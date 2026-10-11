@@ -495,8 +495,29 @@ TEST(the_top_bar_says_which_folder_the_chat_works_in) {
         " state.snapshot.project = { open: false, scratch_display: '~/.crucible/Scratchpad' };"
         " const out = topView(); state.snapshot.project = was; return out; })()");
     CHECK(fresh.find(">~/.crucible/Scratchpad<") != std::string::npos);
-    // And that there is a newer version, on the gear.
+    // And that there is a newer version, on the gear and as a link to it.
     CHECK(top.find("9.9.9 is available") != std::string::npos);
+    CHECK(top.find("update-link") != std::string::npos);
+}
+
+TEST(a_newer_version_is_one_button_away_where_it_can_be_installed) {
+    const std::string about = page().eval(
+        "(() => { state.about.update.installable = true; state.settingsPage = 'about';"
+        " const out = views.settings(); state.about.update.installable = false; return out; })()");
+    CHECK(about.find("data-act=\"update-install\"") != std::string::npos);
+    CHECK(about.find("Update now") != std::string::npos);
+    // Built from source: the command to paste instead.
+    const std::string source = page().eval("(state.settingsPage = 'about', views.settings())");
+    CHECK(source.find("update-install") == std::string::npos);
+    CHECK(source.find("crucible --update") != std::string::npos);
+    // On its way: how far, and the button cannot be pressed twice.
+    const std::string going = page().eval(
+        "(() => { state.about.update.installable = true;"
+        " state.updating = { phase: 'downloading', done: 1048576, total: 4194304 };"
+        " const out = views.settings(); state.updating = null; state.about.update.installable = false;"
+        " return out; })()");
+    CHECK(going.find("Downloading 1.0 MB of 4.0 MB") != std::string::npos);
+    CHECK(going.find("data-act=\"update-install\" disabled") != std::string::npos);
 }
 
 TEST(an_unlabeled_block_is_colored_in_the_language_its_code_is_in) {

@@ -827,7 +827,8 @@ function pageAbout() {
   const u = a.update;
   const status = u.available
     ? `<p class="ok">Crucible ${escape(u.latest)} is available.</p>
-       <p class="lede"><code>${escape(u.command)}</code><br>${escape(u.page)}</p>`
+       ${u.installable ? updateLine() : `<p class="lede"><code>${escape(u.command)}</code></p>`}
+       <p class="lede">${escape(u.page)}</p>`
     : u.latest ? `<p class="lede">Up to date.</p>`
                : '<p class="lede">Not checked yet.</p>';
   const files = [['Configuration', a.files.config], ['Models', a.files.models],
@@ -838,7 +839,9 @@ function pageAbout() {
   return `<h1>About</h1><p class="lede">A local AI lab.</p>
     <div class="card"><div class="title"><strong>Crucible ${escape(a.version)}</strong></div>
       ${status}
-      <div class="row"><button class="action" data-act="update-check">${
+      <div class="row">${u.available && u.installable
+        ? `<button class="action primary" data-act="update-install" ${updating() ? 'disabled' : ''}>Update now</button>` : ''}
+        <button class="action" data-act="update-check">${
         state.open.checking ? 'Asking...' : 'Check now'}</button></div></div>
     ${setting('ui.check_updates', 'Check for new versions', 'bool', 'Daily, from GitHub.')}
     ${selfView()}
@@ -852,6 +855,34 @@ function pageAbout() {
     ${a.trusted.length ? a.trusted.map((f) => `<div class="hint">${escape(f)}</div>`).join('')
                        : '<p class="lede">None.</p>'}`;
 }
+
+/// Whether an update is on its way.
+const updating = () => ['asking', 'downloading', 'starting'].includes((state.updating || {}).phase);
+
+/// Where an update has got, under its button.
+function updateLine() {
+  const p = state.updating;
+  if (!p || p.phase === 'idle') {
+    return '<p class="lede">Downloads it, closes Crucible, installs it and opens it again.</p>';
+  }
+  if (p.phase === 'failed') return `<p class="bad">${escape(p.error)}</p>`;
+  if (p.phase === 'downloading') {
+    return `<p class="lede">Downloading ${bytes(p.done)}${p.total ? ` of ${bytes(p.total)}` : ''}</p>`;
+  }
+  return `<p class="lede">${p.phase === 'asking' ? 'Finding the download' : 'Closing to install'}</p>`;
+}
+
+/// Follow an update until Crucible closes for it, or it fails.
+async function watchUpdate() {
+  state.updating = await call('update.progress');
+  render();
+  if (updating()) setTimeout(watchUpdate, 700);
+}
+
+actions['update-install'] = () => guard(async () => {
+  await call('update.install');
+  await watchUpdate();
+});
 
 actions['update-check'] = () => guard(async () => {
   state.open.checking = true; render();

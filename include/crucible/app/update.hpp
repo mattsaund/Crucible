@@ -20,8 +20,11 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace crucible::update {
 
@@ -75,5 +78,68 @@ bool fetch(std::string& body, std::string& error);
 /// The whole thing: read the cache, ask if it is due, write the cache back.
 /// Returns the state it ended with, asked for or cached.
 State refresh(bool allowed_to_ask);
+
+// --- updating in place ---------------------------------------------------------
+//
+// What a release ships for each platform, fetched and started by Crucible
+// itself: the setup program on Windows, the disk image's application on a
+// Mac, the AppImage on Linux. A copy built from source has no such file and
+// keeps the one-line command above.
+
+/// How this copy was installed, which decides what updates it.
+enum class Install { Setup, AppBundle, AppImage, Source };
+
+/// Read from where this program is: inside a .app bundle, an AppImage
+/// ($APPIMAGE), Windows (whose installer installs over any prefix), or a
+/// build from source.
+Install install_here();
+
+/// The release file that updates an install of this kind; empty for Source.
+std::string asset_for(Install install);
+
+/// Where `asset` downloads from, and its size, in GitHub's reply about a
+/// release. False when the release does not carry it.
+bool find_asset(std::string_view body, std::string_view asset, std::string& url, std::uint64_t& bytes);
+
+/// The script that waits for this Crucible (`pid`) to close, puts `fetched`
+/// in place of the install at `target`, and starts the new one. `target` is
+/// the install folder on Windows, the .app on a Mac, the AppImage on Linux.
+std::string swap_script(Install install, long pid, const std::filesystem::path& fetched,
+                        const std::filesystem::path& target);
+
+/// The newest release's installer, fetched and started on a thread of its
+/// own. When it has been started, `launched` is called: the caller closes
+/// Crucible, and the script finishes the job.
+class Installer {
+public:
+    enum class Phase { Idle, Asking, Downloading, Starting, Failed };
+    struct Progress {
+        Phase         phase = Phase::Idle;
+        std::uint64_t done  = 0;
+        std::uint64_t total = 0;
+        std::string   error;
+        bool running() const { return phase == Phase::Asking || phase == Phase::Downloading
+                                      || phase == Phase::Starting; }
+    };
+
+    Installer() = default;
+    ~Installer();
+    Installer(const Installer&)            = delete;
+    Installer& operator=(const Installer&) = delete;
+
+    /// False, with `error`, when one is already under way or nothing here
+    /// can be updated this way.
+    bool start(std::function<void()> launched, std::string& error);
+    Progress progress() const;
+
+private:
+    void run(std::function<void()> launched);
+    void set(Phase phase, std::string error = {});
+
+    mutable std::mutex mutex_;
+    Progress           progress_;
+    std::filesystem::path downloading_;
+    std::thread        worker_;
+};
 
 }  // namespace crucible::update

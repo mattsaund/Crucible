@@ -123,4 +123,8 @@ private:
 /// advice before a ten-minute build discovers the same thing.
 bool on_path(const std::string& program);
 
+/// Start `argv` as a program of its own, which goes on when this one exits:
+/// what finishes an update once Crucible has closed. Nothing is read from it.
+bool start_detached(const std::vector<std::string>& argv, std::string& error);
+
 }  // namespace crucible::util

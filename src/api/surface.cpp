@@ -296,7 +296,8 @@ std::string Surface::snapshot() {
     if (update::newer_than_this(newer)) {
         out["update"] = json{{"latest", newer.latest},
                              {"page", newer.page.empty() ? update::releases_url() : newer.page},
-                             {"command", std::string(update::update_command())}};
+                             {"command", std::string(update::update_command())},
+                             {"installable", !update::asset_for(update::install_here()).empty()}};
     }
     return text_of(out);
 }

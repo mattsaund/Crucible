@@ -161,3 +161,54 @@ TEST(this_build_says_which_version_it_is) {
     // And it is a version the comparison can read, not a word.
     CHECK(update::compare(version, "0.0.1") > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Updating in place
+// ---------------------------------------------------------------------------
+
+TEST(each_install_is_updated_by_the_file_its_release_carries) {
+    CHECK_EQ(update::asset_for(update::Install::Setup), std::string("Crucible-Setup.exe"));
+    CHECK_EQ(update::asset_for(update::Install::AppBundle), std::string("Crucible-macOS.dmg"));
+    CHECK_EQ(update::asset_for(update::Install::AppImage), std::string("Crucible-x86_64.AppImage"));
+    CHECK(update::asset_for(update::Install::Source).empty());
+}
+
+TEST(a_release_says_where_its_installer_downloads_from) {
+    const std::string body = R"({"tag_name": "v0.9.0", "assets": [
+        {"name": "Crucible-macOS.dmg", "size": 5000000,
+         "browser_download_url": "https://github.com/x/releases/download/v0.9.0/Crucible-macOS.dmg"},
+        {"name": "Crucible-Setup.exe", "size": 4600000,
+         "browser_download_url": "https://github.com/x/releases/download/v0.9.0/Crucible-Setup.exe"}]})";
+    std::string   url;
+    std::uint64_t bytes = 0;
+    CHECK(update::find_asset(body, "Crucible-Setup.exe", url, bytes));
+    CHECK(url.find("Crucible-Setup.exe") != std::string::npos);
+    CHECK_EQ(bytes, std::uint64_t{4600000});
+    CHECK(!update::find_asset(body, "Crucible-x86_64.AppImage", url, bytes));
+    CHECK(!update::find_asset("rate limited", "Crucible-Setup.exe", url, bytes));
+}
+
+TEST(the_swap_waits_for_crucible_to_close_and_starts_the_new_one) {
+    // Windows: the setup program over the same folder, then the program.
+    const std::string windows = update::swap_script(update::Install::Setup, 4242,
+                                                    "C:/data/update/Crucible-Setup.exe", "C:/Programs/Crucible");
+    CHECK(windows.find("PID eq 4242") != std::string::npos);
+    CHECK(windows.find("/SILENT") != std::string::npos);
+    CHECK(windows.find("/DIR=\"C:/Programs/Crucible\"") != std::string::npos);
+    CHECK(windows.find("crucible.exe") != std::string::npos);
+
+    // A Mac: the old app goes only once the new one is copied whole.
+    const std::string mac = update::swap_script(update::Install::AppBundle, 4242,
+                                                "/data/update/Crucible-macOS.dmg", "/Applications/Crucible.app");
+    CHECK(mac.find("kill -0 4242") != std::string::npos);
+    CHECK(mac.find("ditto \"$app\" '/Applications/Crucible.app.new' && rm -rf '/Applications/Crucible.app'")
+          != std::string::npos);
+    CHECK(mac.find("open '/Applications/Crucible.app'") != std::string::npos);
+
+    // An AppImage, in a folder with a quote in its name.
+    const std::string image = update::swap_script(update::Install::AppImage, 7, "/tmp/new.AppImage",
+                                                  "/home/me/Matt's apps/Crucible.AppImage");
+    CHECK(image.find("mv -f '/tmp/new.AppImage' '/home/me/Matt'\\''s apps/Crucible.AppImage'")
+          != std::string::npos);
+    CHECK(image.find("exec '/home/me/Matt'\\''s apps/Crucible.AppImage'") != std::string::npos);
+}

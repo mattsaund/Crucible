@@ -157,7 +157,8 @@ function topView() {
     <span class="mark">CRUCIBLE</span>
     ${folder ? `<button type="button" class="project-path" data-act="show-folder"
         title="${escape(project.root || folder)}"><bdi>${escape(folder)}</bdi></button>` : ''}
-    <nav>${tabs}
+    <nav>${s.update ? `<button class="update-link" data-act="settings-page" data-page="about"
+        title="Crucible ${escape(s.update.latest)} is available">Update</button>` : ''}${tabs}
       <button class="icon" data-act="gear" aria-current="${state.view === 'settings'}"
               title="${s.update ? `Settings\nCrucible ${escape(s.update.latest)} is available`
                                 : 'Settings'}" aria-label="Settings">${ICONS.gear}${update}</button>

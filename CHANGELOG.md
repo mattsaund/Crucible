@@ -6,6 +6,21 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.0 — 2026-10-11
+
+**Update now.** When a newer Crucible is out, the top bar says **Update** and
+Settings → About has an **Update now** button: it downloads the release's
+installer for this machine, closes Crucible, installs it and opens it again.
+On Windows that is the setup program, run silently over the folder Crucible is
+in; on a Mac the disk image's application, swapped in only once it is copied
+whole; on Linux the AppImage. A copy built from source keeps the one-line
+command.
+
+**The window keeps drawing.** A redraw that failed once -- the state could
+not be read -- was never marked done, and the window drew nothing new again:
+a model load stopped at 100% as far as anyone could see. Every redraw now
+ends, failed or not, and the next one tries again.
+
 ## 0.8.9 — 2026-10-10
 
 **Build: give it a directive and it makes the software.** A new tab beside

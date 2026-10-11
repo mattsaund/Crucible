@@ -80,6 +80,9 @@ public:
     /// A rebuild of Crucible's own source. See app/self_source.hpp.
     virtual self::Rebuild*         rebuild() { return nullptr; }
 
+    /// Updating to the newest release in place. See app/update.hpp.
+    virtual update::Installer*     updater() { return nullptr; }
+
     /// Close the window, as its own close button does: what a restart into
     /// a rebuilt Crucible does once the new one has started.
     virtual void quit() {}
