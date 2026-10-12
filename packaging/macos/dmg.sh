@@ -23,7 +23,7 @@ set -euo pipefail
 
 PREFIX="${1:?usage: dmg.sh <installed-prefix> <output.dmg|output.app> [version]}"
 OUTPUT="${2:?usage: dmg.sh <installed-prefix> <output.dmg|output.app> [version]}"
-VERSION="${3:-0.9.0}"
+VERSION="${3:-0.9.1}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
@@ -62,26 +62,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# An .icns with the sizes the Finder actually asks for. iconutil is part of
-# macOS; sips alone produces a single-resolution file that looks soft in the
-# dock, which is the one place this icon is going to be seen.
+# The icon, made by packaging/macos/icns.sh, which a source install uses too.
 #
 # The Mac has an icon of its own, drawn to Apple's grid -- the tile inset from
 # the edge of the canvas, with its shadow -- because the dock sets icons side
 # by side and one drawn edge to edge looks a size too big among them.
 ICON="$ROOT/packaging/icons/crucible-mac.png"
 [ -f "$ICON" ] || ICON="$ROOT/packaging/icons/crucible.png"
-if [ -f "$ICON" ]; then
-    set="$WORK/crucible.iconset"
-    mkdir -p "$set"
-    for size in 16 32 64 128 256 512; do
-        sips -z "$size" "$size" "$ICON" \
-             --out "$set/icon_${size}x${size}.png" >/dev/null
-        sips -z "$((size * 2))" "$((size * 2))" "$ICON" \
-             --out "$set/icon_${size}x${size}@2x.png" >/dev/null
-    done
-    iconutil -c icns "$set" -o "$APP/Contents/Resources/crucible.icns"
-fi
+sh "$ROOT/packaging/macos/icns.sh" "$ICON" "$APP/Contents/Resources/crucible.icns"
 
 # Signed ad hoc, which needs no Apple certificate and is not the same as
 # unsigned. On Apple Silicon every piece of code has to carry a signature, and

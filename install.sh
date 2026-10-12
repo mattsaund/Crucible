@@ -1235,16 +1235,18 @@ PLIST
 exec "$PREFIX/bin/crucible" "\$@"
 LAUNCHER
     chmod +x "$app/Contents/MacOS/Crucible"
-    # sips and iconutil are part of macOS, so the icon costs nothing to make --
-    # and an application with the generic icon does not look like one you meant
-    # to install.
-    # The Mac's own icon, drawn to Apple's grid; see packaging/macos/dmg.sh.
+    # The Mac's own icon, drawn to Apple's grid, made the way the disk image's
+    # is: packaging/macos/icns.sh. An application with the generic icon does
+    # not look like one you meant to install -- and that is what this left,
+    # quietly, while it asked sips for an .icns it cannot write.
     local icon="$SRC_DIR/packaging/icons/crucible-mac.png"
     [ -f "$icon" ] || icon="$SRC_DIR/packaging/icons/crucible.png"
-    if [ -f "$icon" ] && command -v sips >/dev/null 2>&1; then
-        sips -s format icns "$icon" \
-             --out "$app/Contents/Resources/crucible.icns" >/dev/null 2>&1 || true
+    if [ -f "$icon" ] && command -v iconutil >/dev/null 2>&1; then
+        sh "$SRC_DIR/packaging/macos/icns.sh" "$icon" "$app/Contents/Resources/crucible.icns" >/dev/null 2>&1 \
+            || warn "could not make the application's icon"
     fi
+    # The Finder keeps the icon it last saw for a bundle; a touch tells it to look again.
+    touch "$app"
     ok "added Crucible to $APP_BUNDLE_DIR"
 }
 

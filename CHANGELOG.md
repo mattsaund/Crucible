@@ -6,6 +6,21 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.1 — 2026-10-11
+
+A hotfix for icons.
+
+- **A source install on a Mac has its icon again.** install.sh asked `sips`
+  for an .icns straight from the 1024-pixel Mac icon, which it cannot write,
+  and hid the failure: the application in /Applications had none. It is made
+  the way the disk image's is now -- an iconset of every size, packed by
+  `iconutil` -- by one script both use, `packaging/macos/icns.sh`, and the
+  installer test makes one rather than only reading the installer's text.
+- **The AppImage's window wears the icon.** The window asks the icon theme for
+  it, and an AppImage installs no theme; its own share folder is searched
+  first now. Its icon is the SVG, as an installed Crucible's is, rather than
+  the 1024-pixel PNG filed under 256.
+
 ## 0.9.0 — 2026-10-11
 
 **Update now.** When a newer Crucible is out, the top bar says **Update** and

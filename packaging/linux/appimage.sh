@@ -29,7 +29,7 @@ trap 'rm -rf "$WORK"' EXIT
 APPDIR="$WORK/Crucible.AppDir"
 
 mkdir -p "$APPDIR/usr" "$APPDIR/usr/share/applications" \
-         "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+         "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 cp -a "$PREFIX/bin" "$APPDIR/usr/bin"
 cp -a "$PREFIX/lib" "$APPDIR/usr/lib"
 
@@ -51,8 +51,11 @@ fi
 sed -e 's|@CRUCIBLE_GUI_EXEC@|crucible|' "$ROOT/packaging/linux/crucible.desktop.in" \
     > "$APPDIR/crucible.desktop"
 cp "$APPDIR/crucible.desktop" "$APPDIR/usr/share/applications/crucible.desktop"
+# The file's own icon, at the top, and the window's, in the theme: the SVG an
+# installed Crucible uses, which is every size at once -- the 1024-pixel PNG
+# used to sit in the 256 folder, where a desktop that checks sizes passes over it.
 cp "$ROOT/packaging/icons/crucible.png" "$APPDIR/crucible.png"
-cp "$ROOT/packaging/icons/crucible.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/crucible.png"
+cp "$ROOT/packaging/icons/crucible.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/crucible.svg"
 
 # AppRun is what the outer file runs, and it resolves its own path rather than
 # trusting the caller's: the AppImage is mounted somewhere different on every
@@ -73,6 +76,11 @@ if ! ldd "$APPDIR/usr/bin/crucible" 2>/dev/null | grep -q 'libwebkit2gtk.*=> /';
     printf '  Arch:            sudo pacman -S webkit2gtk-4.1\n' >&2
     exit 1
 fi
+
+# The window asks the icon theme for "crucible", and an AppImage installs no
+# theme: its own share folder goes first on the path that is searched, or the
+# running window wears the generic icon.
+export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 exec "$APPDIR/usr/bin/crucible" "$@"
 RUN

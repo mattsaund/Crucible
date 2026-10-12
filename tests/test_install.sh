@@ -600,8 +600,8 @@ check     "in /Applications when that is writable, and the home one when not" \
           grep -qF '[ -w /Applications ] && APP_BUNDLE_DIR="/Applications"' "$HERE/../install.sh"
 check     "the bundle launches the installed binary rather than copying it" \
           grep -q 'exec "$PREFIX/bin/crucible"' "$HERE/../install.sh"
-check     "and it carries the icon" \
-          grep -q 'format icns' "$HERE/../install.sh"
+check     "and it carries the icon, made the way the disk image's is" \
+          grep -q 'packaging/macos/icns.sh' "$HERE/../install.sh"
 check     "Windows gets a Start Menu and Desktop shortcut" \
           grep -q "GetFolderPath('Programs')" "$HERE/../install.ps1"
 check     "with the icon copied out of the checkout, which may be deleted" \
@@ -622,6 +622,15 @@ check     "which the disk image's application is given" \
           grep -q 'crucible-mac.png' "$HERE/../packaging/macos/dmg.sh"
 check     "and so is the one a source install makes" \
           grep -q 'crucible-mac.png' "$HERE/../install.sh"
+# Made, not only asked for: sips alone could not write an .icns from it, and a
+# check that read the installer's text passed while every install had no icon.
+if [ "$(uname -s)" = "Darwin" ]; then
+    ICNS_OUT="$(mktemp -d)/crucible.icns"
+    check "the Mac icon really becomes an .icns" \
+          sh "$HERE/../packaging/macos/icns.sh" "$HERE/../packaging/icons/crucible-mac.png" "$ICNS_OUT"
+    check "with the sizes the dock asks for" \
+          sh -c "iconutil -c iconset '$ICNS_OUT' -o '$ICNS_OUT.iconset' && test -s '$ICNS_OUT.iconset/icon_512x512@2x.png'"
+fi
 
 # Windows keeps the switches too, and ignores them the same way.
 check     "Windows still takes -NoGui without failing" \

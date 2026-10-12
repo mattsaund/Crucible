@@ -74,7 +74,7 @@ Exits non-zero when the turn or the build failed.
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
 2. Push to `main` and wait for CI to pass on all three systems.
-3. Tag and push the tag: `git tag v0.9.0 && git push origin v0.9.0`.
+3. Tag and push the tag: `git tag v0.9.1 && git push origin v0.9.1`.
    The installers workflow builds the three installers and publishes the
    release.
 
