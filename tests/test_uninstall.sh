@@ -125,6 +125,10 @@ exists()       { [ -e "$1" ] && echo yes || echo no; }
 
 echo "crucible --uninstall safety tests"
 echo
+# The Mac application is the one thing outside the sandbox: whatever is in
+# /Applications belongs to whoever runs this, and an uninstall of a copy in the
+# sandbox used to take it -- every run. Noted now, checked at the end.
+APPS_BEFORE="$(ls -d /Applications/Crucible.app "$HOME/Applications/Crucible.app" 2>/dev/null)"
 
 echo "  declining leaves everything in place"
 ROOT="$(setup declining)"
@@ -278,6 +282,9 @@ printf 'n\n' | XDG_CONFIG_HOME="$ROOT/cfg" XDG_DATA_HOME="$ROOT/dat" \
     XDG_CACHE_HOME="$ROOT/cache" \
     "$ROOT/bin/crucible" --uninstall >/dev/null 2>&1
 check "exit code"             "$?"                                       "0"
+
+check "the real Mac application is left alone" \
+      "$(ls -d /Applications/Crucible.app "$HOME/Applications/Crucible.app" 2>/dev/null)" "$APPS_BEFORE"
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

@@ -143,6 +143,9 @@ jobs:
               echo "bundle at $app"
               test -x "$app/Contents/MacOS/Crucible"
               test -f "$app/Contents/Info.plist"
+              # And its icon, made rather than only asked for: an install that
+              # hid sips failing left the application with none.
+              test -s "$app/Contents/Resources/crucible.icns"
               # The plist carries the version the binary reports, so a bundle
               # that says 0 is a plist built from an unset variable.
               /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \

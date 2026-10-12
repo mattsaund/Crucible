@@ -372,6 +372,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_trainer.cpp
         tests/test_prebuilt.cpp
         tests/test_update.cpp
+        tests/test_uninstall.cpp
         tests/test_attachments.cpp
         tests/test_spelling.cpp
         tests/test_orchestra.cpp

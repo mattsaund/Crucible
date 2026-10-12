@@ -20,8 +20,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -241,9 +244,14 @@ std::vector<std::filesystem::path> application_entries(const std::filesystem::pa
     );
 
 #if defined(__APPLE__)
-    candidates.emplace_back("/Applications/Crucible.app");
+    std::vector<std::filesystem::path> apps{"/Applications/Crucible.app"};
     if (home != nullptr && *home != '\0') {
-        candidates.push_back(std::filesystem::path(home) / "Applications" / "Crucible.app");
+        apps.push_back(std::filesystem::path(home) / "Applications" / "Crucible.app");
+    }
+    for (const std::filesystem::path& app : apps) {
+        if (app_belongs_to(app, binary)) {
+            candidates.push_back(app);
+        }
     }
 #elif defined(_WIN32)
     // The folders WScript.Shell calls Programs and Desktop, named the way the
@@ -470,6 +478,36 @@ int run_uninstall(bool assume_yes) {
     }
     std::cout << "\n\n";
     return 0;
+}
+
+bool app_belongs_to(const std::filesystem::path& app, const std::filesystem::path& binary) {
+    if (binary.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    const std::filesystem::path bundle  = std::filesystem::weakly_canonical(app, ec);
+    const std::filesystem::path program = std::filesystem::weakly_canonical(binary, ec);
+
+    // The disk image's: the program is inside it.
+    const auto [left, right] = std::mismatch(bundle.begin(), bundle.end(), program.begin(), program.end());
+    if (left == bundle.end() && right != program.end()) {
+        return true;
+    }
+
+    // install.sh's: a few lines of shell that exec the program, by its path --
+    // compared resolved, so a prefix reached through a link is still this one.
+    std::ifstream in(app / "Contents" / "MacOS" / "Crucible", std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::size_t exec = text.find("exec \"");
+    if (text.size() > 4096 || text.rfind("#!", 0) != 0 || exec == std::string::npos) {
+        return false;
+    }
+    const std::size_t from = exec + 6;
+    const std::size_t to   = text.find('"', from);
+    if (to == std::string::npos) {
+        return false;
+    }
+    return std::filesystem::weakly_canonical(text.substr(from, to - from), ec) == program;
 }
 
 }  // namespace crucible

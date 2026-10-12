@@ -20,6 +20,13 @@ A hotfix for icons.
   it, and an AppImage installs no theme; its own share folder is searched
   first now. Its icon is the SVG, as an installed Crucible's is, rather than
   the 1024-pixel PNG filed under 256.
+- **Uninstalling takes only its own Mac application.** `crucible --uninstall`
+  removed /Applications/Crucible.app whichever install it belonged to -- and
+  the uninstaller test, which uninstalls a copy in a sandbox, took the real
+  one on every run. It now removes the launcher that execs this binary, or
+  the disk image's application the binary is inside, and nothing else; the
+  test checks the real one is still there. CI checks the installed
+  application has its icon.
 
 ## 0.9.0 — 2026-10-11
 
