@@ -8,8 +8,15 @@ there, and it keeps your config, models and history.
 
 ## 0.9.2 (2026-10-21)
 
-Everything Crucible stands on, brought up to the newest.
+Everything Crucible stands on, brought up to the newest, and a window that
+opens on Linux with NVIDIA's driver on Wayland.
 
+- **The window opens with NVIDIA's driver on Wayland.** WebKitGTK's DMA-BUF
+  renderer ended the program at its first frame, saying only "Error 71
+  (Protocol error) dispatching to Wayland display": on KDE Plasma with driver
+  615, Crucible 0.9.1 never opened. The renderer is turned off when NVIDIA's
+  driver is loaded, for Crucible and for the apps Make it an app makes, and a
+  `WEBKIT_DISABLE_DMABUF_RENDERER` set by hand is left as it is.
 - **llama.cpp b11799**, from b10678: the models and fixes of more than a
   thousand builds. The runtimes are built from the same tag, so a Crucible
   that updates fetches its runtimes again on its first start.

@@ -513,6 +513,8 @@ endif()
 if(CRUCIBLE_HAS_WEBVIEW)
     add_executable(crucible-app tools/app_runner.cpp)
     target_link_libraries(crucible-app PRIVATE webview::core_static nlohmann_json::nlohmann_json)
+    # webkit_env.hpp, which it shares with Crucible's own window.
+    target_include_directories(crucible-app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gui)
     if(WIN32)
         set_target_properties(crucible-app PROPERTIES WIN32_EXECUTABLE TRUE)
         # UTF-8 for its narrow strings, as Crucible's own: the data folder is

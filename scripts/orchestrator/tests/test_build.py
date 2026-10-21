@@ -227,6 +227,19 @@ class ReadingThePlan(unittest.TestCase):
         self.assertEqual(plan["tasks"][0]["after"], [])
         self.assertEqual(build.order_tasks(plan["tasks"]), [0, 1])
 
+    def test_one_item_where_a_list_goes_is_a_list_of_one(self):
+        # As LFM2.5-1.2B planned it: "after": 1, which stopped the build with
+        # "'int' object is not iterable", and one file as a bare string.
+        plan, why = build.read_plan(json.dumps({"tasks": [
+            {"title": "page", "detail": "write it", "files": "index.html"},
+            {"title": "style", "detail": "style it", "files": ["style.css"], "after": 0},
+            {"title": "check", "detail": "check it", "after": ["0", "1", "first"]},
+        ]}))
+        self.assertEqual(why, "")
+        self.assertEqual(plan["tasks"][0]["files"], ["index.html"])
+        self.assertEqual(plan["tasks"][1]["after"], [0])
+        self.assertEqual(plan["tasks"][2]["after"], [0, 1])
+
     def test_too_many_tasks_are_cut(self):
         many = {"tasks": [{"title": "t%d" % i, "detail": "d"} for i in range(30)]}
         plan, _ = build.read_plan(json.dumps(many))

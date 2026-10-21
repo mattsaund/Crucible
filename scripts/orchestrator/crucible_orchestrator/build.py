@@ -204,6 +204,28 @@ def find_json(text):
     return None
 
 
+def as_list(value):
+    """One item where a list goes, as a small model writes it ("after": 1,
+    "files": "index.html"), is a list of one. Iterated as it is, a number
+    raised and a file name came apart into letters."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def task_number(value):
+    """A dependency's task number, written as a number or as digits, or None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def read_plan(text):
     """A plan out of what the architect said: the plan, or the reason it is not one."""
     parsed = find_json(text)
@@ -226,8 +248,8 @@ def read_plan(text):
         detail = str(entry.get("detail") or "").strip()
         if not title and not detail:
             continue
-        files = entry.get("files") or []
-        after = entry.get("after") or []
+        files = as_list(entry.get("files"))
+        after = as_list(entry.get("after"))
         size = str(entry.get("size") or "").strip().lower()
         plan["tasks"].append({
             "title": title or cook.clip(detail, 60),
@@ -235,7 +257,7 @@ def read_plan(text):
             "files": [str(f) for f in files if isinstance(f, (str, int, float))][:12],
             "needs": str(entry.get("needs") or "").strip(),
             "size": size if size in ("large", "small") else "",
-            "after": [int(a) for a in after if isinstance(a, (int, float)) and not isinstance(a, bool)],
+            "after": [n for n in (task_number(a) for a in after) if n is not None],
         })
     if not plan["tasks"]:
         return None, "no task in the plan had a title or a detail"

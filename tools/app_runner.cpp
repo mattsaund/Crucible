@@ -28,6 +28,8 @@
 #include <string>
 #include <system_error>
 
+#include "webkit_env.hpp"
+
 #include <nlohmann/json.hpp>
 #include <webview/webview.h>
 
@@ -143,6 +145,9 @@ window.crucible = {
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 #else
 int main() {
+#endif
+#if !defined(_WIN32) && !defined(__APPLE__)
+    crucible::gui::avoid_nvidia_dmabuf_renderer();
 #endif
     const fs::path folder = app_folder();
     const json about = json::parse(read_all(folder / "app.json"), nullptr, false);
