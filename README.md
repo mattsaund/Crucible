@@ -13,17 +13,16 @@
    ⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⠀⠀⠀⠀
 ```
 
-**Crucible** builds software from a sentence. Say what you need; an architect
-plans it, agents build it, you watch it take shape, tune it, and keep it as a
-program of its own. Frontier models do the heavy lifting, local models the
-rest, side by side. You bring the idea, the design and the vision.
+**Crucible** builds software from a sentence. An architect plans it, agents
+build it, and you tune it and keep it as a program of its own. Frontier models
+do the heavy lifting, local models the rest.
 
 It is also a local LLM workshop: a roster of small expert models, a delegator
 that routes each prompt to the right one, and a fine-tuner to make more.
 
 Website: https://msaunders.dev/crucible/
 
-![A build: the plan's agents in the side menu, the models at work in the corner](docs/images/build.png)
+![A build: its agents in the side menu, the model at work in the corner](docs/images/build.png)
 
 ___
 ## Install
@@ -173,10 +172,11 @@ Every model, local or not, gets the same tools in a trusted folder:
 ### Hardware
 
 - Runtimes (CPU, CUDA, Metal, Vulkan) install from Settings, downloaded or
-  compiled. A downloaded CUDA runtime needs only the NVIDIA driver.
+  compiled. A downloaded CUDA runtime needs only the NVIDIA driver, 580 or
+  newer.
 - Several GPUs: auto, even, priority or single.
 
-![Runtimes: what is installed and what it would take to add more](docs/images/runtimes.png)
+![Runtimes: CPU, CUDA and Vulkan, two of them downloaded](docs/images/runtimes.png)
 
 ### History
 

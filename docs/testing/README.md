@@ -74,7 +74,7 @@ Exits non-zero when the turn or the build failed.
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
 2. Push to `main` and wait for CI to pass on all three systems.
-3. Tag and push the tag: `git tag v0.9.1 && git push origin v0.9.1`.
+3. Tag and push the tag: `git tag v0.9.2 && git push origin v0.9.2`.
    The installers workflow builds the three installers and publishes the
    release.
 
@@ -94,3 +94,16 @@ macOS, M4, 24 GB, no provider. The scenario got as far as step 3.
   `RUN: sed -n` rather than READ.
 
 Next: the whole scenario on a 30B coder or with a provider key.
+
+## Seen on 2026-10-21
+
+Linux (Arch, KDE Plasma on Wayland), an RTX 4070, 5060 Ti and 3060, 0.9.2.
+
+- **gpt-oss-20b (GGUF, CUDA).** The budgeting app planned in 18 seconds and
+  built in 2 minutes: 4 tasks, 3 files, the README task routed to Writing.
+  Two rows typed into the preview showed in the table and the chart. Still
+  open: "make the header blue" looped on `RUN: sed -n` and a grep for
+  "green" until its rounds ran out; naming the file and the property worked.
+- **LFM2.5-1.2B as delegator** sent a CSS change to the Writing seat.
+- **Qwen3.8-27B (Q8_0)** split across the three cards with Dedicated VRAM
+  only, and answered.

@@ -35,6 +35,10 @@ opens on Linux with NVIDIA's driver on Wayland.
 - **Reading text off pictures** on Linux without tesseract uses RapidOCR 3
   with onnxruntime. The package it used before does not install on Python
   3.13 or newer.
+- **A plan with one item where a list goes is read.** A small model that
+  wrote `"after": 1` stopped the build with "'int' object is not iterable",
+  and `"files": "index.html"` came apart into letters. One item is a list of
+  one now, and a task number written as digits counts.
 - **A runtime that cannot be compiled says what is missing.** A Vulkan build
   on a machine without the Vulkan headers said "cmake exited with status 1".
   It now says CMake could not find Vulkan, and names the packages to install.
