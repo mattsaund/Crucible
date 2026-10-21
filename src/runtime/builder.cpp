@@ -488,7 +488,24 @@ bool RuntimeBuilder::run_command(const std::vector<std::string>& argv,
         return false;
     }
     if (status != 0) {
-        fail(argv[0] + " exited with status " + std::to_string(status));
+        // "cmake exited with status 1" is all the exit says, and the line that
+        // explains it is a screen above. What CMake could not find is the one
+        // a person can fix, with the packages the backend needs from here.
+        std::string why = argv[0] + " exited with status " + std::to_string(status);
+        std::string missing;
+        BackendKind kind = BackendKind::Cpu;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            missing = missing_from_log(log_);
+            kind    = progress_.kind;
+        }
+        if (!missing.empty()) {
+            why = "cmake could not find " + missing + " on this machine";
+            if (const std::string hint = install_hint(backend_info(kind)); !hint.empty()) {
+                why += ".  Install it with:  " + hint;
+            }
+        }
+        fail(why);
         return false;
     }
     return true;
@@ -888,6 +905,23 @@ void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces,
             break;
         }
     }
+}
+
+std::string missing_from_log(const std::vector<std::string>& log) {
+    static constexpr std::string_view kSays = "Could NOT find ";
+    std::string missing;
+    for (const std::string& line : log) {
+        const std::size_t at = line.find(kSays);
+        if (at == std::string::npos) {
+            continue;
+        }
+        std::string name = line.substr(at + kSays.size());
+        name = name.substr(0, name.find_first_of(" (:"));
+        if (!name.empty()) {
+            missing = name;
+        }
+    }
+    return missing;
 }
 
 }  // namespace crucible

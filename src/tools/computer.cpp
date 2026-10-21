@@ -378,12 +378,13 @@ $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult]
 $result.Lines | ForEach-Object { $_.Text }
 )PS";
 #else
-/// RapidOCR in the kit's Python, for a Linux machine without tesseract.
+/// RapidOCR in the kit's Python, for a Linux machine without tesseract. Its
+/// log goes to stderr, which run() reads with the text, so it is turned down.
 constexpr const char* kRapidOcrScript =
     "import sys\n"
-    "from rapidocr_onnxruntime import RapidOCR\n"
-    "result, _ = RapidOCR()(sys.argv[1])\n"
-    "print('\\n'.join(line[1] for line in (result or [])))\n";
+    "from rapidocr import RapidOCR\n"
+    "result = RapidOCR(params={'Global.log_level': 'critical'})(sys.argv[1])\n"
+    "print('\\n'.join(result.txts or ()))\n";
 #endif
 
 bool ocr_available() {

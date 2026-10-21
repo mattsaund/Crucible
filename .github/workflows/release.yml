@@ -26,7 +26,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Configure
         run: >
@@ -65,7 +65,7 @@ jobs:
           /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible --version
           hdiutil detach /tmp/crucible-dmg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Crucible-macOS
           path: dist/Crucible-macOS.dmg
@@ -75,7 +75,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Configure
         run: >
@@ -108,7 +108,7 @@ jobs:
                   "/O$PWD\dist" packaging\windows\crucible.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Crucible-Windows
           path: dist/Crucible-Setup.exe
@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # WebKitGTK is what the interface is drawn in; the rest is what the
       # AppImage needs to carry.
@@ -151,7 +151,7 @@ jobs:
       - name: The AppImage runs
         run: ./dist/Crucible-x86_64.AppImage --appimage-extract-and-run --version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Crucible-Linux
           path: dist/Crucible-x86_64.AppImage
@@ -162,11 +162,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/**/*
           # Published rather than left a draft: pushing the tag is the

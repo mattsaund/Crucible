@@ -42,7 +42,7 @@ jobs:
           - { platform: macos-arm64, runs-on: macos-latest,  backend: cpu }
           - { platform: macos-arm64, runs-on: macos-latest,  backend: metal }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # The tag is the contract between this workflow and the binary that will
       # load what it produces, so it is read from the same file the build reads
@@ -72,49 +72,78 @@ jobs:
       # newest, which is the only pin that does not rot.
       - name: Vulkan SDK
         if: matrix.backend == 'vulkan'
-        uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        uses: jakoch/install-vulkan-sdk-action@v1.7.0
         with:
           install_runtime: true
           cache: true
           stripdown: true
 
-      # 13.3 rather than 12.9, and not by preference.
-      #
-      # 12.9 was the wider choice: it emits real code for Blackwell and asks
-      # less of the driver. It also refuses to compile here -- the Windows image
-      # ships Visual Studio 18 with MSVC 14.51, and 12.9's host_config.h stops
-      # at "unsupported Microsoft Visual Studio version". nvcc offers
-      # -allow-unsupported-compiler to force it, which is a reasonable thing to
-      # do to your own machine and the wrong thing to do to a binary other
-      # people will download: the flag's own warning is that it may cause
-      # compilation failure, and a miscompiled matmul does not announce itself.
-      #
-      # So: a toolkit that supports the host compiler it is given. The cost is
-      # that the shipped module wants a driver from the 580 series or newer, and
-      # a machine older than that falls back to compiling -- which is what it
-      # did before any of this existed.
-      #
-      # Two steps because the two platforms want different things of the same
-      # action. On Windows the subset has to include the Visual Studio
-      # integration -- without it cmake finds the toolkit, reports "CUDA Toolkit
-      # found", and then stops at "No CUDA toolset found" when it tries to
-      # compile with it. On Linux the sub-package names are apt's rather than
-      # the installer's, and asking for the installer's names failed apt
-      # outright, so that one takes the whole toolkit and the extra minutes.
-      # The whole toolkit, not a subset.
-      #
-      # Both platforms were given a hand-written sub-package list and both
-      # failed on it, differently: apt has its own names for them, and on
-      # Windows a 13.x subset that looks complete leaves out crt/host_config.h,
-      # which every single .cu file includes. Picking the right names is a
-      # round trip through CI each time it is wrong, and the whole toolkit is a
-      # few minutes on a job that already takes half an hour.
-      - name: CUDA toolkit
+      # The CUDA release, read from the file the binary is compiled from: the
+      # runtime is built with it, and Crucible fetches NVIDIA's cuBLAS for the
+      # same release to run it with.
+      - name: The CUDA release
         if: matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.36
-        with:
-          cuda: '13.3.1'
-          method: network
+        shell: bash
+        run: |
+          release="$(grep -m1 'kRelease' include/crucible/runtime/cuda_libraries.hpp \
+                     | sed -E 's/.*"([0-9.]+)".*/\1/')"
+          test -n "$release"
+          echo "CUDA_RELEASE=$release" >> "$GITHUB_ENV"
+          echo "using CUDA $release"
+
+      # The newest CUDA, 13.4. CUDA 13 wants a driver from the 580 series or
+      # newer, and a machine older than that falls back to compiling, which is
+      # what it did before any of this existed. 12.9 asked less of the driver,
+      # and refused to compile here: the Windows image's Visual Studio is newer
+      # than its host_config.h allows, and forcing it past that with
+      # -allow-unsupported-compiler is a bet that a miscompiled matmul would
+      # announce itself.
+      #
+      # Straight from NVIDIA rather than through an action. The one used
+      # before (Jimver/cuda-toolkit) stops at 13.3.1: from 13.4 the Windows
+      # installers have a new name, and it does not know it yet.
+      #
+      # The whole toolkit, not a subset. Both platforms were once given a
+      # hand-written list of sub-packages and both failed on it, differently:
+      # apt has its own names for them, and on Windows a 13.x subset that looks
+      # complete leaves out crt/host_config.h, which every .cu file includes.
+      - name: CUDA toolkit (Linux)
+        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        run: |
+          curl --location --fail --silent --show-error --remote-name \
+               https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          minor="${CUDA_RELEASE%.*}"
+          sudo apt-get install -y "cuda-toolkit-${minor/./-}=${CUDA_RELEASE}-1"
+          echo "/usr/local/cuda-${minor}/bin" >> "$GITHUB_PATH"
+          echo "CUDA_PATH=/usr/local/cuda-${minor}" >> "$GITHUB_ENV"
+          "/usr/local/cuda-${minor}/bin/nvcc" --version
+
+      # The network installer, silent and whole: -s with no sub-packages named
+      # is what the action ran for 13.3.1. Its folder becomes CUDA_PATH, and if
+      # the installer put nvcc somewhere else, that is found and used instead.
+      - name: CUDA toolkit (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $installer = Join-Path $env:RUNNER_TEMP 'cuda_network.exe'
+          $url = "https://developer.download.nvidia.com/compute/cuda/$env:CUDA_RELEASE/network_installers/cuda_$($env:CUDA_RELEASE)_windows_x86_64_network.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $run = Start-Process -FilePath $installer -ArgumentList '-s' -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "the CUDA installer exited with $($run.ExitCode)" }
+          $minor = ($env:CUDA_RELEASE -split '\.')[0..1] -join '.'
+          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$minor"
+          if (-not (Test-Path "$root\bin\nvcc.exe")) {
+            $nvcc = Get-ChildItem 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA' -Recurse -Filter nvcc.exe |
+                    Select-Object -First 1
+            if (-not $nvcc) { throw 'the installer finished and there is no nvcc.exe' }
+            $root = Split-Path (Split-Path $nvcc.FullName)
+          }
+          "CUDA_PATH=$root" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$root\bin\nvcc.exe" --version
 
       # The same flags src/runtime/builder.cpp uses, with two differences that
       # come from building for somebody else's machine rather than this one:
@@ -183,7 +212,7 @@ jobs:
           ls -la dist
           echo "ASSET=$name" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: runtime-${{ matrix.backend }}-${{ matrix.platform }}
           path: dist/*.tar.gz
@@ -194,14 +223,14 @@ jobs:
     if: always() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       # Whatever built. A backend whose job failed is simply not published, and
       # the app compiles that one the way it always has.
       - name: Attach
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: artifacts/**/*.tar.gz
           draft: true

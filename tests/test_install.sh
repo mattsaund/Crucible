@@ -1291,17 +1291,17 @@ echo
 echo "  a downloaded CUDA runtime brings NVIDIA's libraries with it"
 
 # The module links cudart and cuBLAS of one CUDA major version, and the app
-# fetches them from NVIDIA by release. The two numbers live in two files; if
-# they drift, the libraries fetched are not the ones the module asks for, and
-# it fails to load exactly as it did before they were fetched at all.
-cuda_matches() {
-    local workflow app
-    workflow="$(grep -m1 -E "cuda: '[0-9.]+'" "$RT" | sed -E "s/.*cuda: '([0-9.]+)'.*/\1/")"
-    app="$(grep -m1 'kRelease' "$ROOT/include/crucible/runtime/cuda_libraries.hpp" \
-           | sed -E 's/.*"([0-9.]+)".*/\1/')"
-    [ -n "$workflow" ] && [ "$workflow" = "$app" ]
+# fetches them from NVIDIA by release. If the two drifted, the libraries fetched
+# would not be the ones the module asks for, and it would fail to load exactly
+# as it did before they were fetched at all. So the workflow does not name a
+# release of its own: it reads the app's.
+cuda_release() {
+    grep -m1 'kRelease' "$ROOT/include/crucible/runtime/cuda_libraries.hpp" \
+        | grep -qE '"[0-9]+\.[0-9]+\.[0-9]+"'
 }
-check     "the libraries come from the CUDA release the module was built with" cuda_matches
+check     "the app names the CUDA release it fetches libraries from" cuda_release
+check     "the libraries come from the CUDA release the module was built with" \
+          grep -q "kRelease' include/crucible/runtime/cuda_libraries.hpp" "$RT"
 check     "they are fetched when a CUDA runtime is installed" \
           grep -q 'cuda_libraries::fetch' "$ROOT/src/runtime/prebuilt.cpp"
 check     "and loaded before the module that needs them" \

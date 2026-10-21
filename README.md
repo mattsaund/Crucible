@@ -64,7 +64,7 @@ Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `--no-trainer`,
 
 **Updating:** Settings → About → **Update now**, or run the installer again.
 Crucible checks GitHub once a day and says when there is one. Config, models
-and history are kept. Versions are tagged `v0.9.1`; what
+and history are kept. Versions are tagged `v0.9.2`; what
 changed is in [CHANGELOG.md](CHANGELOG.md).
 
 **Uninstall:** `crucible --uninstall`. It asks before deleting models. If the

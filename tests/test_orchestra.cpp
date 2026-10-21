@@ -91,12 +91,60 @@ TEST(every_platform_crucible_ships_on_has_a_pinned_python) {
     const std::optional<lab::python::Build> build = lab::python::build_here();
     CHECK(build.has_value());
     if (build) {
-        CHECK_EQ(build->version, "3.12.15");
+        CHECK_EQ(build->version, "3.14.9");
         CHECK_EQ(build->sha256.size(), 64u);
         CHECK(build->url.rfind("https://github.com/astral-sh/python-build-standalone/", 0) == 0);
         CHECK(build->bytes > 10'000'000u);
     }
 #endif
+}
+
+TEST(a_venv_made_from_another_python_is_found_out) {
+    // CI names an interpreter of its own, which the check rightly leaves
+    // alone; this is about Crucible's own, so the name is put aside meanwhile.
+    struct PutAside {
+        std::string value;
+        bool        had = false;
+        PutAside() {
+            if (const char* now = std::getenv("CRUCIBLE_PYTHON"); now != nullptr) {
+                value = now;
+                had   = true;
+            }
+            unset_env("CRUCIBLE_PYTHON");
+        }
+        ~PutAside() {
+            if (had) {
+                set_env("CRUCIBLE_PYTHON", value);
+            } else {
+                unset_env("CRUCIBLE_PYTHON");
+            }
+        }
+    } aside;
+
+    TempDir dir;
+    const ScopedDataHome data(dir.path());
+    const std::optional<lab::python::Build> build = lab::python::build_here();
+    if (!build) {
+        return;
+    }
+    const auto venv = [&](const std::string& name, const std::filesystem::path& home,
+                          const std::string& version_line) {
+        const std::filesystem::path place = dir.path() / name;
+        std::filesystem::create_directories(place);
+        std::ofstream(place / "pyvenv.cfg") << "home = " << home.string()
+                                            << "\ninclude-system-site-packages = false\n"
+                                            << version_line << "\n";
+        return place;
+    };
+    const std::filesystem::path ours = lab::python::root() / "bin";
+    CHECK(lab::python::made_from_another_python(venv("old", ours, "version = 3.12.15")));
+    CHECK(lab::python::made_from_another_python(venv("virtualenv", ours, "version_info = 3.12.15.final.0")));
+    CHECK(!lab::python::made_from_another_python(venv("same", ours, "version = " + build->version)));
+    // Somebody else's Python is not Crucible's to judge, and no venv is not a stale one.
+    CHECK(!lab::python::made_from_another_python(venv("system", dir.path() / "elsewhere", "version = 3.12.15")));
+    CHECK(!lab::python::made_from_another_python(dir.path() / "nothing"));
+    set_env("CRUCIBLE_PYTHON", "python3");
+    CHECK(!lab::python::made_from_another_python(venv("named", ours, "version = 3.12.15")));
 }
 
 TEST(a_child_can_be_written_to_and_its_errors_kept_apart) {

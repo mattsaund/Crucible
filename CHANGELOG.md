@@ -6,6 +6,35 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.2 (2026-10-21)
+
+Everything Crucible stands on, brought up to the newest.
+
+- **llama.cpp b11799**, from b10678: the models and fixes of more than a
+  thousand builds. The runtimes are built from the same tag, so a Crucible
+  that updates fetches its runtimes again on its first start.
+- **CUDA 13.4.3**, from 13.3.1, for the CUDA runtime Crucible downloads and
+  for the NVIDIA libraries it fetches to run it with. It still wants a driver
+  from the 580 series or newer.
+- **Python 3.14.9**, from 3.12.15. Routing, cooks, PYTHON blocks and
+  training run on it. 3.14 rather than 3.15, which is out, because PyTorch has
+  no wheels for 3.15 yet. A training environment made on the old Python is
+  rebuilt on the first start, and so is the picture reader on Linux, rather
+  than left in place starting and importing nothing.
+- **PyTorch 2.14 on CUDA 13.2** for fine-tuning, with transformers 5,
+  datasets 5 and peft 0.21. A machine whose newest card is older than Turing
+  gets the CUDA 12.6 build, which still has kernels for it, and so does one on
+  a driver older than 580; the CUDA 12.8 build if that card is a Blackwell.
+- **Reading text off pictures** on Linux without tesseract uses RapidOCR 3
+  with onnxruntime. The package it used before does not install on Python
+  3.13 or newer.
+- **A runtime that cannot be compiled says what is missing.** A Vulkan build
+  on a machine without the Vulkan headers said "cmake exited with status 1".
+  It now says CMake could not find Vulkan, and names the packages to install.
+- **CI** installs CUDA straight from NVIDIA: the action it used stops at
+  13.3.1, and 13.4 renamed the Windows installers. The actions are at their
+  newest versions, and the tests run on Python 3.14.
+
 ## 0.9.1 — 2026-10-11
 
 A hotfix for icons.

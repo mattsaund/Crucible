@@ -16,7 +16,7 @@ JetBrains Mono's license requires, since the font is inside the binary.
 
 | project | version | license | what it does here |
 |---|---|---|---|
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b10678` | MIT | loads GGUF models and runs inference |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b11799` | MIT | loads GGUF models and runs inference |
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file, and is the API's encoder |
 | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | `2.304` | SIL OFL 1.1 | the interface typeface, compiled in rather than looked for |
 | [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the interface in the platform's own webview |
@@ -151,7 +151,7 @@ CUDA runtime removes them too.
 
 Routing, the cook loop and the training environment run on a Python that
 Crucible fetches on its first start (or with `crucible --install-python`):
-a [CPython](https://www.python.org/) 3.12 build from the
+a [CPython](https://www.python.org/) 3.14 build from the
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
 project, at a version and SHA-256 compiled into Crucible, unpacked into its
 data folder. CPython is under the

@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # WebKitGTK: Crucible is a window and draws it in the platform's own
       # more. macOS and Windows already have what it needs; Linux packages it.
@@ -54,9 +54,9 @@ jobs:
       # A Python for the tests that start the orchestrator, named outright: on
       # Windows `python3` can be the Store's placeholder, which is on PATH and
       # only prints that Python is not installed.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: Unit tests
         env:
@@ -85,7 +85,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Run from inside the checkout, install.sh builds that checkout rather
       # than fetching main -- so this installs the commit being tested. --yes

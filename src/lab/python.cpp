@@ -3,6 +3,7 @@
 // See python.hpp.
 #include "crucible/lab/python.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -23,13 +24,14 @@ namespace {
 
 using json = nlohmann::json;
 
-// python-build-standalone's build of 2026-10-03: CPython 3.12.15. 3.12 rather
-// than the newest because it is the version every wheel the trainer installs
-// -- torch, bitsandbytes, mlx -- is published for on every platform.
-constexpr const char* kVersion = "3.12.15";
+// python-build-standalone's build of 2026-10-21: CPython 3.14.9. The newest
+// Python that every wheel Crucible installs is published for on every
+// platform: torch, sentencepiece, onnxruntime and mlx all have 3.14 wheels,
+// and none of them has 3.15 ones yet.
+constexpr const char* kVersion = "3.14.9";
 constexpr const char* kRelease =
-    "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/"
-    "cpython-3.12.15%2B20261003-";
+    "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/"
+    "cpython-3.14.9%2B20261021-";
 
 std::atomic<int> g_installing{0};
 
@@ -53,20 +55,20 @@ std::optional<Build> build_here() {
         return Build{kVersion, std::string(kRelease) + triple + "-install_only.tar.gz", bytes, sha256};
     };
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
-    return make("x86_64-pc-windows-msvc", 46509797,
-                "4b6f0beebbb695a0f3ea237b8c3eaa5bd424f47a7bc25b2fbe3a43390c770f08");
+    return make("x86_64-pc-windows-msvc", 50270697,
+                "60739023ce2d9dee1dfde665c73bc61735cd8ecc5e0277345f1dc0ba6c0fc9ba");
 #elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
-    return make("aarch64-apple-darwin", 25146462,
-                "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213");
+    return make("aarch64-apple-darwin", 26834117,
+                "226d696642a8a53d03b4d5b255b1c319b1575a6d44bd723a953c9f507755e36a");
 #elif defined(__APPLE__) && defined(__x86_64__)
-    return make("x86_64-apple-darwin", 24850741,
-                "a8fd7a91852f19b6d959793ef41fad048631ccb2a334a9ecdf573255298f7978");
+    return make("x86_64-apple-darwin", 26931969,
+                "600cf336dd007e7c72318214fd0708a56c555b516964175df4a748e4ff0487a2");
 #elif defined(__linux__) && defined(__x86_64__)
-    return make("x86_64-unknown-linux-gnu", 66924371,
-                "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5");
+    return make("x86_64-unknown-linux-gnu", 76270309,
+                "dfa4c5a40c47f338f41658017be550c72247c391e6bfb1fa4da03ebc8451abdf");
 #elif defined(__linux__) && defined(__aarch64__)
-    return make("aarch64-unknown-linux-gnu", 52330698,
-                "95c01982c9fcb9d95b0acfdb5eb8a6e0099dd11edf062314a474228d93f2b765");
+    return make("aarch64-unknown-linux-gnu", 58711403,
+                "847895ba727440b012207bb0192282d7e182eb991ae5c7bb5c35c6a12a99e732");
 #else
     return std::nullopt;
 #endif
@@ -112,6 +114,73 @@ bool installed() {
 }
 
 bool installing() { return g_installing.load() > 0; }
+
+namespace {
+
+/// "3.12.15" or "3.12.15.final.0" -> "3.12". Empty for anything else.
+std::string minor_version(const std::string& version) {
+    const std::size_t first = version.find('.');
+    if (first == std::string::npos) {
+        return {};
+    }
+    const std::size_t second = version.find('.', first + 1);
+    return version.substr(0, second);
+}
+
+/// `inner` is `outer` or inside it, both made canonical first.
+bool inside(const std::filesystem::path& inner, const std::filesystem::path& outer) {
+    std::error_code ec;
+    const std::filesystem::path a = std::filesystem::weakly_canonical(inner, ec);
+    const std::filesystem::path b = std::filesystem::weakly_canonical(outer, ec);
+    const auto mismatch = std::mismatch(b.begin(), b.end(), a.begin(), a.end());
+    return !b.empty() && mismatch.first == b.end();
+}
+
+}  // namespace
+
+bool made_from_another_python(const std::filesystem::path& venv) {
+    if (const char* chosen = std::getenv("CRUCIBLE_PYTHON"); chosen != nullptr && *chosen != '\0') {
+        return false;
+    }
+    const std::optional<Build> build = build_here();
+    std::ifstream in(venv / "pyvenv.cfg");
+    if (!build || !in) {
+        return false;
+    }
+    // pyvenv.cfg is "key = value" lines: `home` is the folder of the
+    // interpreter it was made from, and `version` (or `version_info`, as
+    // virtualenv writes it) that interpreter's version.
+    std::string home;
+    std::string version;
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos) {
+            continue;
+        }
+        std::string key   = line.substr(0, equals);
+        std::string value = line.substr(equals + 1);
+        const auto trim = [](std::string& text) {
+            while (!text.empty() && (text.back() == ' ' || text.back() == '\r' || text.back() == '\t')) {
+                text.pop_back();
+            }
+            while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+                text.erase(0, 1);
+            }
+        };
+        trim(key);
+        trim(value);
+        if (key == "home") {
+            home = value;
+        } else if (key == "version" || (key == "version_info" && version.empty())) {
+            version = value;
+        }
+    }
+    if (home.empty() || version.empty() || !inside(home, root())) {
+        return false;
+    }
+    return minor_version(version) != minor_version(build->version);
+}
 
 bool install(const std::function<void(const Progress&)>& on_progress, std::string& error) {
     struct Busy {

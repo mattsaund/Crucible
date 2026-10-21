@@ -25,7 +25,7 @@ namespace crucible::lab::python {
 
 /// The build of CPython this platform gets.
 struct Build {
-    std::string   version;   ///< "3.12.15"
+    std::string   version;   ///< "3.14.9"
     std::string   url;
     std::uint64_t bytes = 0; ///< the archive's size, which is how a download measures itself
     std::string   sha256;
@@ -46,6 +46,14 @@ bool installed();
 
 /// The version installed, or empty.
 std::string installed_version();
+
+/// Whether the virtual environment at `venv` was made from Crucible's Python
+/// at another minor version than the one pinned now. A venv belongs to the
+/// interpreter it was made from: once Crucible's Python moves from 3.12 to
+/// 3.14, a venv made from 3.12 still starts, and imports nothing it installed.
+/// False for a venv made from any other Python, which is not Crucible's to
+/// judge, and when CRUCIBLE_PYTHON names the interpreter.
+bool made_from_another_python(const std::filesystem::path& venv);
 
 /// Where a download or an unpack has got to.
 struct Progress {

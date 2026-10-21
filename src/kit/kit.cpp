@@ -339,7 +339,7 @@ std::vector<Piece> pieces() {
         {"node", "Node.js", "running and testing JavaScript projects", 50U << 20},
         {"browser", "A headless browser", "reading pages drawn by script, and pictures of pages", 100U << 20},
         {"git", "Git", "version control", 40U << 20},
-        {"ocr", "Reading text off pictures", "for models that read text only", 90U << 20},
+        {"ocr", "Reading text off pictures", "for models that read text only", 136U << 20},
     };
 }
 
@@ -347,7 +347,12 @@ fs::path dir() { return paths::data_dir() / "kit"; }
 
 bool installed(const std::string& id) {
     std::error_code ec;
-    return fs::exists(marker(id), ec);
+    if (!fs::exists(marker(id), ec)) {
+        return false;
+    }
+    // The text reader is a venv of Crucible's Python, and stops working when
+    // that Python moves to a new version.
+    return id != "ocr" || !lab::python::made_from_another_python(dir() / id);
 }
 
 std::vector<Piece> missing() {
@@ -509,8 +514,10 @@ bool install(const std::string& id, const std::function<void(std::uint64_t, std:
 #else
         const fs::path python = place / "bin" / "python";
 #endif
+        // rapidocr with onnxruntime as its engine, which it leaves to be named.
+        // The older rapidocr_onnxruntime stops at Python 3.12.
         if (!run({python.string(), "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check",
-                  "rapidocr_onnxruntime"}, said)) {
+                  "rapidocr>=3,<4", "onnxruntime>=1.20,<2"}, said)) {
             error = "could not install the text reader: " + said;
             return false;
         }

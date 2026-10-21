@@ -154,4 +154,10 @@ private:
     std::unique_ptr<util::Subprocess>  child_;
 };
 
+/// What a failed configure could not find, read off CMake's own words in its
+/// log: "Could NOT find Vulkan (missing: Vulkan_INCLUDE_DIR)" gives "Vulkan".
+/// Empty when no such line is there. The last one wins, being the one that
+/// stopped the configure.
+std::string missing_from_log(const std::vector<std::string>& log);
+
 }  // namespace crucible

@@ -4,6 +4,8 @@
 // file turns out to be, and the resource monitor.
 #include "test_helpers.hpp"
 
+#include "crucible/runtime/builder.hpp"
+
 // ---------------------------------------------------------------------------
 // Backends
 // ---------------------------------------------------------------------------
@@ -86,6 +88,21 @@ TEST(the_install_hint_names_a_package_manager_this_machine_has) {
     // tools, which Homebrew itself requires, so anyone who could run the
     // suggestion already has what it would install.
     CHECK(install_hint(backend_info(BackendKind::Metal)).empty());
+}
+
+TEST(a_failed_configure_names_what_cmake_could_not_find) {
+    // As this machine's Vulkan configure said it, before vulkan-headers.
+    const std::vector<std::string> log{
+        "-- Found OpenMP: TRUE (found version \"5.2\")",
+        "CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:290 (message):",
+        "  Could NOT find Vulkan (missing: Vulkan_INCLUDE_DIR) (found version \"\")",
+        "-- Configuring incomplete, errors occurred!",
+    };
+    CHECK_EQ(missing_from_log(log), std::string("Vulkan"));
+    CHECK(missing_from_log({"-- Configuring done", "error: something else entirely"}).empty());
+    // The last one is the one that stopped it.
+    CHECK_EQ(missing_from_log({"  Could NOT find OpenSSL", "  Could NOT find CUDAToolkit: nvcc"}),
+             std::string("CUDAToolkit"));
 }
 
 TEST(ggml_registry_names_map_onto_backends_whatever_their_case) {

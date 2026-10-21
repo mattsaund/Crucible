@@ -43,10 +43,10 @@ constexpr int kMinMinor = 10;
 /// Interpreters to try, newest first.
 ///
 /// Named versions before the bare name: `python3` on a distribution that has
-/// moved on can be 3.13 before torch has wheels for it, and the machine
-/// usually also has the 3.12 that does.
+/// moved on can be 3.15 before torch has wheels for it, and the machine
+/// usually also has the 3.14 that does.
 const char* const kCandidates[] = {
-    "python3.12", "python3.11", "python3.10", "python3.13", "python3", "python",
+    "python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python3", "python",
 };
 
 std::string trimmed(std::string text) {
@@ -98,40 +98,59 @@ int capability_from(const std::string& text) {
     return major * 10 + minor;
 }
 
-/// The newest NVIDIA card in the machine, as a compute capability, or 0.
-int newest_capability() {
+/// The newest NVIDIA card in the machine and the driver it runs on.
+struct Cards {
+    int newest = 0;   ///< a compute capability: 120 for 12.0, 0 when unknown
+    int driver = 0;   ///< the driver's major version: 615 for 615.78.08, 0 when unknown
+};
+
+Cards cards_here() {
+    Cards cards;
     if (!util::on_path("nvidia-smi")) {
-        return 0;
+        return cards;
     }
     int status = -1;
     const std::string reply = capture(
-        {"nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"}, status);
+        {"nvidia-smi", "--query-gpu=compute_cap,driver_version", "--format=csv,noheader"}, status);
     if (status != 0) {
-        return 0;
+        return cards;
     }
-    int         best = 0;
     std::string line;
     for (std::istringstream lines(reply); std::getline(lines, line);) {
-        best = std::max(best, capability_from(line));
+        const std::size_t comma = line.find(',');
+        cards.newest = std::max(cards.newest, capability_from(line.substr(0, comma)));
+        if (comma != std::string::npos) {
+            cards.driver = std::atoi(line.c_str() + comma + 1);
+        }
     }
-    return best;
+    return cards;
 }
 
-/// Which PyTorch build to take, by what the cards need.
+/// Which PyTorch build to take, by what the cards and their driver need.
 ///
 /// This is not a detail. A torch wheel carries compiled kernels for a fixed
-/// list of architectures, and a card newer than the list is not slow, it is
-/// unusable -- `torch.cuda.is_available()` still says true, the import still
-/// works, and the first kernel launch fails. Blackwell (sm_120) needs the
-/// CUDA 12.8 build; everything up to Hopper is served by 12.4, which is the
-/// older and better-tested one and so the default.
+/// list of architectures, and a card outside the list is not slow, it is
+/// unusable: `torch.cuda.is_available()` still says true, the import still
+/// works, and the first kernel launch fails. (Measured on an RTX 5060 Ti with
+/// a wheel that stopped at sm_90: it warned, then quietly ran everything on
+/// the other two cards in the machine.)
 ///
-/// Measured here on an RTX 5060 Ti: the 12.4 wheel reports an arch list
-/// ending at sm_90 and warns that the card is not compatible, then quietly
-/// runs everything on the other two cards in the machine.
+/// The CUDA 13.2 build is the newest, with kernels from Turing (sm_75) to
+/// Blackwell (sm_120). CUDA 13 has none for the cards before Turing, and it
+/// needs a driver from the 580 series or newer. So a machine whose newest
+/// card is older than Turing takes the CUDA 12.6 build, and one on an older
+/// driver takes 12.6 too, or 12.8 when its newest card is a Blackwell, which
+/// 12.6 cannot run. Training uses the first card, which is the fastest one.
 std::string cuda_index() {
-    return newest_capability() >= 100 ? "https://download.pytorch.org/whl/cu128"
-                                      : "https://download.pytorch.org/whl/cu124";
+    const Cards cards = cards_here();
+    if (cards.newest > 0 && cards.newest < 75) {
+        return "https://download.pytorch.org/whl/cu126";
+    }
+    if (cards.driver > 0 && cards.driver < 580) {
+        return cards.newest >= 100 ? "https://download.pytorch.org/whl/cu128"
+                                   : "https://download.pytorch.org/whl/cu126";
+    }
+    return "https://download.pytorch.org/whl/cu132";
 }
 
 std::string now_stamp() {
@@ -249,19 +268,22 @@ std::vector<Step> plan(Flavor flavor) {
     if (flavor == Flavor::Mlx) {
         steps.push_back({"MLX", {"mlx>=0.18,<1", "mlx-lm>=0.19,<1"}, ""});
     } else {
+        // 2.9 is the first torch with wheels for Python 3.14.
         steps.push_back({flavor == Flavor::Cuda ? "PyTorch (CUDA)" : "PyTorch",
-                         {"torch>=2.4,<3"},
+                         {"torch>=2.9,<3"},
                          flavor == Flavor::Cuda
                              ? cuda_index()
                              : "https://download.pytorch.org/whl/cpu"});
     }
 
+    // 4.56 is the first transformers that takes `dtype`, which the trainer
+    // passes; 5 is the newest major, and the one it is tested against.
     steps.push_back({"Transformers",
-                     {"transformers>=4.44,<5", "accelerate>=0.33,<2",
+                     {"transformers>=4.56,<6", "accelerate>=1.0,<2",
                       "safetensors>=0.4,<1", "sentencepiece>=0.2,<1",
-                      "protobuf>=4,<6"},
+                      "protobuf>=4,<8"},
                      ""});
-    steps.push_back({"Datasets", {"datasets>=2.20,<4"}, ""});
+    steps.push_back({"Datasets", {"datasets>=2.20,<6"}, ""});
 
     if (flavor != Flavor::Mlx) {
         steps.push_back({"LoRA", {"peft>=0.12,<1"}, ""});
@@ -351,9 +373,9 @@ std::string python_hint() {
         return {};
     }
 #if defined(_WIN32)
-    return "install Python 3.12 from python.org, or: winget install Python.Python.3.12";
+    return "install Python 3.14 from python.org, or: winget install Python.Python.3.14";
 #elif defined(__APPLE__)
-    return "install Python 3.12: brew install python@3.12";
+    return "install Python 3.14: brew install python@3.14";
 #else
     if (util::on_path("apt-get")) {
         return "sudo apt-get install python3 python3-venv python3-pip";
@@ -384,7 +406,10 @@ std::string python_hint() {
 /// imports work.
 bool looks_installed() {
     std::error_code ec;
-    return std::filesystem::exists(python(), ec) && std::filesystem::exists(script(), ec);
+    // One made from the Python Crucible had before is not installed: it would
+    // start and import nothing, so the first start builds it again.
+    return std::filesystem::exists(python(), ec) && std::filesystem::exists(script(), ec)
+        && !python::made_from_another_python(venv_dir());
 }
 
 Status status() {
@@ -396,6 +421,10 @@ Status status() {
         return out;
     }
     out.present = true;
+    if (python::made_from_another_python(venv_dir())) {
+        out.note = "made for an older Python, reinstall";
+        return out;
+    }
 
     if (std::filesystem::exists(manifest_file(), ec)) {
         std::ifstream in(manifest_file());

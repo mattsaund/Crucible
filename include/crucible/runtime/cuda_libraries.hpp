@@ -32,9 +32,9 @@
 namespace crucible::cuda_libraries {
 
 /// The CUDA release the published module was built with, and so the release
-/// its libraries are fetched from. Must agree with the `cuda:` version in
-/// .github/workflows/runtimes.yml -- tests/test_install.sh checks that it does.
-inline constexpr std::string_view kRelease = "13.3.1";
+/// its libraries are fetched from. .github/workflows/runtimes.yml reads it from
+/// this line to choose the toolkit it builds with, so the two cannot drift.
+inline constexpr std::string_view kRelease = "13.4.3";
 
 /// Where they are kept: a folder of its own beside the modules.
 std::filesystem::path dir();

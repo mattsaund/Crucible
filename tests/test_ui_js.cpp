@@ -239,7 +239,7 @@ state.runtimes = { loadable: true, directory: '/data/runtimes', bytes: 5e8, runt
     buildable: false, blocker: 'glslc is not installed', modules: [] }] };
 state.build = { phase: 'compiling', running: true, finished: false, percent: 0.4, step: 'ggml-cuda.cu',
                 label: 'compiling 40%', error: '', log: ['[40%] Building'], log_file: '/data/build.log', backend: 'cuda' };
-state.trainer = { ready: false, present: true, flavor: 'cuda', python: '3.12', torch: '2.6', installed_at: '2026-10-01',
+state.trainer = { ready: false, present: true, flavor: 'cuda', python: '3.14', torch: '2.14', installed_at: '2026-10-01',
                   bytes: 6e9, note: 'bitsandbytes will not import', directory: '/data/trainer',
                   usable_gpus: ['RTX 4070'], unusable_gpus: ['RTX 5060 Ti'] };
 state.flavors = [{ id: 'cuda', note: 'NVIDIA', download: 3e9, installed: 7e9, suggested: true, steps: ['PyTorch (CUDA)'] },
@@ -554,14 +554,14 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
     const std::string drawn = page().eval(
         "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
         " setup: {running: true, items: ["
-        "  {id: 'python', label: 'Python 3.12.15', state: 'done', detail: '', download: 66924371},"
+        "  {id: 'python', label: 'Python 3.14.9', state: 'done', detail: '', download: 76270309},"
         "  {id: 'runtime-cuda', label: 'CUDA runtime', state: 'working', detail: 'downloading',"
         "   progress: 0.4, download: 0},"
         "  {id: 'trainer', label: 'Training environment (cuda)', state: 'waiting', detail: '',"
         "   download: 3000000000}]}});"
         " const out = views.chat(); state.snapshot = was; return out; })()");
     CHECK(drawn.find("Setting up") != std::string::npos);
-    CHECK(drawn.find("Python 3.12.15") != std::string::npos);
+    CHECK(drawn.find("Python 3.14.9") != std::string::npos);
     CHECK(drawn.find("width:40%") != std::string::npos);        // measured, so a bar
     CHECK(drawn.find("Try again") == std::string::npos);        // nothing failed
     CHECK(drawn.find("Ask anything") != std::string::npos);     // and the box still works
@@ -569,7 +569,7 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
     const std::string failed = page().eval(
         "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
         " setup: {running: false, items: ["
-        "  {id: 'python', label: 'Python 3.12.15', state: 'failed',"
+        "  {id: 'python', label: 'Python 3.14.9', state: 'failed',"
         "   detail: 'Python could not be downloaded: no route to host', download: 1}]}});"
         " const out = views.chat(); state.snapshot = was; return out; })()");
     CHECK(failed.find("no route to host") != std::string::npos);
