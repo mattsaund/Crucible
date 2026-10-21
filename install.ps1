@@ -740,7 +740,10 @@ Visual Studio Build Tools, then run this again:
         Write-Host ''
         Step-Begin 'Installing compute runtimes'
         & (Join-Path $binDir 'crucible.exe') --install-runtimes
-        if ($LASTEXITCODE -eq 0) {
+        # 2 is "already in place", which is what an update finds when
+        # llama.cpp has not moved. Read as a failure, it warned on every such
+        # update.
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
             $runtimesReady = $true
         } else {
             Write-Host ''
@@ -757,7 +760,8 @@ Visual Studio Build Tools, then run this again:
         $trainerArgs = @('--install-trainer')
         if ($TrainerFlavor) { $trainerArgs += @('--trainer-flavor', $TrainerFlavor) }
         & (Join-Path $binDir 'crucible.exe') @trainerArgs
-        if ($LASTEXITCODE -eq 0) {
+        # 2 is "already in place", as it is for the runtimes.
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
             $trainerReady = $true
         } else {
             Write-Host ''

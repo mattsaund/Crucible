@@ -938,6 +938,31 @@ check     "the Windows installer does the same" \
 check     "and takes -NoRuntimes" \
           grep -q -- "NoRuntimes" "$ROOT/install.ps1"
 
+# An update usually finds the runtimes and the fine-tuner already in place, and
+# the program says so with exit code 2. Read as a failure, every update over a
+# current install warned that both were missing.
+fake_crucible_exits() {
+    mkdir -p "$TMP/prefix/bin"
+    printf '#!/bin/sh\nexit %s\n' "$1" > "$TMP/prefix/bin/crucible"
+    chmod +x "$TMP/prefix/bin/crucible"
+}
+ready_after() {   # install function, the variable it sets, the exit code to fake
+    local fn="$1" var="$2"
+    fake_crucible_exits "$3"
+    ( PREFIX="$TMP/prefix"; INSTALL_RUNTIMES=1; INSTALL_TRAINER=1; TRAINER_FLAVOR=""
+      "$fn" > /dev/null 2>&1; printf '%s' "${!var}" )
+}
+check_eq "runtimes already in place count as ready" \
+         "$(ready_after install_runtimes RUNTIMES_READY 2)" "1"
+check_eq "and so does a fine-tuner already in place" \
+         "$(ready_after install_trainer TRAINER_READY 2)" "1"
+check_eq "a runtime that failed does not" \
+         "$(ready_after install_runtimes RUNTIMES_READY 1)" "0"
+check_eq "nor does a fine-tuner that failed" \
+         "$(ready_after install_trainer TRAINER_READY 1)" "0"
+check_eq "the Windows installer reads 2 the same way, for both" \
+         "$(grep -c 'LASTEXITCODE -eq 0 -or \$LASTEXITCODE -eq 2' "$ROOT/install.ps1")" "2"
+
 # The program's own SDK advice is what replaced all of it: refuse before the
 # build rather than fail inside it, and name the command for the package
 # manager this machine actually has.

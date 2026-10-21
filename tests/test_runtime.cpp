@@ -175,6 +175,51 @@ TEST(a_runtime_built_against_another_llama_cpp_is_reported_as_stale) {
     CHECK(!status_for(BackendKind::Cpu).stale);
 }
 
+TEST(a_stale_runtime_stays_closed_at_startup) {
+    // ggml turns a module from another llama.cpp away, but a module can stay
+    // in memory once opened, and the new one downloaded over it gets that copy
+    // back. Opened at startup, an update's runtimes did not load until a
+    // restart.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    std::filesystem::create_directories(runtimes);
+    for (const char* id : {"vulkan", "cpu"}) {
+        std::ofstream out(runtimes / (std::string(module_prefix()) + id + std::string(module_suffix())));
+        out << "not really a module";
+    }
+    const auto opened = [](BackendKind kind) {
+        for (const BackendKind listed : RuntimeRegistry::loadable()) {
+            if (listed == kind) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    {
+        std::ofstream manifest(runtimes / "manifest.json");
+        manifest << R"({"vulkan":{"llama_tag":"b0001"},"cpu":{"llama_tag":")"
+                 << RuntimeStatus::required_llama_tag() << R"("}})";
+    }
+    CHECK(!opened(BackendKind::Vulkan));
+    CHECK(opened(BackendKind::Cpu));
+
+    // Unrecorded is "cannot tell", and a runtime nobody can judge still loads.
+    {
+        std::ofstream manifest(runtimes / "manifest.json");
+        manifest << "{}";
+    }
+    CHECK(opened(BackendKind::Vulkan));
+
+    // The GPUs first, then the CPU: the order ggml lists devices in.
+    const std::vector<BackendKind> order = RuntimeRegistry::loadable();
+    CHECK_EQ(order.size(), std::size_t{2});
+    CHECK_EQ(static_cast<int>(order.front()), static_cast<int>(BackendKind::Vulkan));
+    CHECK_EQ(static_cast<int>(order.back()), static_cast<int>(BackendKind::Cpu));
+}
+
 TEST(the_cpu_backend_is_the_one_every_other_runtime_needs) {
     // llama.cpp throws "no CPU backend found" whatever GPU is installed, which
     // is why the builder brings this one along with a CUDA or Vulkan install.

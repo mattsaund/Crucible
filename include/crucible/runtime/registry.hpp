@@ -90,6 +90,16 @@ public:
     /// settings screen is what fills this directory.
     static void load_all();
 
+    /// The backends load_all opens, in the order it opens them: every one
+    /// installed, except a runtime built against another llama.cpp.
+    ///
+    /// That one stays closed. ggml turns it away, but a module can stay in
+    /// memory once opened (on Linux CUDA and Vulkan always do), and opening
+    /// the same path again hands back that copy. So the first start after an
+    /// update opened the old modules, downloaded the new ones over them, and
+    /// could not load those until Crucible was restarted.
+    static std::vector<BackendKind> loadable();
+
     /// Register a runtime that was installed while Crucible was already running,
     /// so a backend built from the settings screen can be used without a
     /// restart.

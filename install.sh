@@ -1634,7 +1634,11 @@ install_runtimes() {
     progress_end
     printf '\n'
     step "Installing compute runtimes"
-    if "$PREFIX/bin/crucible" --install-runtimes; then
+    # 2 is "already in place", which is what an update finds when llama.cpp
+    # has not moved. Read as a failure, it warned on every such update.
+    local status=0
+    "$PREFIX/bin/crucible" --install-runtimes || status=$?
+    if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
         RUNTIMES_READY=1
     else
         RUNTIMES_READY=0
@@ -1658,7 +1662,10 @@ install_trainer() {
     progress_end
     printf '\n'
     step "Setting up the fine-tuner"
-    if "$PREFIX/bin/crucible" "${args[@]}"; then
+    # 2 is "already in place", as it is for the runtimes.
+    local status=0
+    "$PREFIX/bin/crucible" "${args[@]}" || status=$?
+    if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
         TRAINER_READY=1
     else
         TRAINER_READY=0

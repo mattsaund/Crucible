@@ -6,6 +6,20 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.3 (2026-10-21)
+
+The first start after an update runs models again.
+
+- **Runtimes load on the first start after an update.** Updating from 0.9.1,
+  Crucible opened the old runtimes at startup, and this llama.cpp turned them
+  away. It then downloaded the new ones and could not load those either: a
+  module stays in memory once opened, so the new file at the same path got
+  the old copy back. No model ran until a restart. A runtime built against
+  another llama.cpp now stays closed until its replacement is in.
+- **Running the installer again over a current install** no longer warns
+  that the runtimes and the fine-tuner are missing. It read "already in
+  place" as a failure.
+
 ## 0.9.2 (2026-10-21)
 
 Everything Crucible stands on, brought up to the newest, and a window that

@@ -49,6 +49,21 @@ needs more nudging.
 
 Note what failed and how long each step took.
 
+## Before a release that moves llama.cpp: an update
+
+The first start after an update replaces every runtime. Start the new build
+on a data folder the way the last release left it:
+
+1. Unpack the last release's `runtime-*-<its tag>.tar.gz` for this machine
+   into `~/.local/share/crucible/runtimes` under a scratch `HOME`, with
+   NVIDIA's libraries in `runtimes/cuda`.
+2. Write `runtimes/manifest.json` naming that tag for each backend:
+   `{"cpu": {"llama_tag": "b10678"}, "cuda": {"llama_tag": "b10678"}}`.
+3. Start the new build with that `HOME`. In `crucible.log`, every runtime
+   says `loaded ... backend` after its download, with no restart.
+
+`crucible --install-runtimes` does the same without a window.
+
 ## Where to look when something goes wrong
 
 | what | where |
@@ -74,7 +89,7 @@ Exits non-zero when the turn or the build failed.
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
 2. Push to `main` and wait for CI to pass on all three systems.
-3. Tag and push the tag: `git tag v0.9.2 && git push origin v0.9.2`.
+3. Tag and push the tag: `git tag v0.9.3 && git push origin v0.9.3`.
    The installers workflow builds the three installers and publishes the
    release.
 
@@ -107,3 +122,7 @@ Linux (Arch, KDE Plasma on Wayland), an RTX 4070, 5060 Ti and 3060, 0.9.2.
 - **LFM2.5-1.2B as delegator** sent a CSS change to the Writing seat.
 - **Qwen3.8-27B (Q8_0)** split across the three cards with Dedicated VRAM
   only, and answered.
+- **Updating from 0.9.1**, after the release: the first start loaded no
+  runtime until a restart, in the window and in the installer. Every check
+  above ran on fresh installs, which cannot show it. Fixed in 0.9.3, and the
+  update test above is what finds it.

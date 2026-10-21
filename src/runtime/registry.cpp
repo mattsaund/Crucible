@@ -165,6 +165,18 @@ json read_manifest(const std::filesystem::path& file) {
     return parsed.is_object() ? parsed : json::object();
 }
 
+/// Built against another llama.cpp than this binary, by the manifest's word.
+/// An unrecorded tag is "cannot tell", not "wrong": a manifest can be lost
+/// without the modules being any less valid.
+bool stale_in(const json& manifest, BackendKind kind) {
+    const auto entry = manifest.find(std::string(backend_info(kind).id));
+    if (entry == manifest.end() || !entry->is_object()) {
+        return false;
+    }
+    const std::string tag = entry->value("llama_tag", "");
+    return !tag.empty() && tag != RuntimeStatus::required_llama_tag();
+}
+
 }  // namespace
 
 namespace {
@@ -275,8 +287,32 @@ void RuntimeRegistry::load_all() {
     // NVIDIA's libraries first, when Crucible fetched them: the CUDA module
     // names them as dependencies and would otherwise not load at all.
     cuda_libraries::preload();
-    const std::string dir = paths::runtimes_dir().string();
-    ggml_backend_load_all_from_path(dir.c_str());
+    // Backend by backend, not ggml_backend_load_all_from_path, which opens
+    // every module in the folder, a stale one included. See loadable().
+    for (const BackendKind kind : loadable()) {
+        std::string error;   // ggml logs why a module would not load
+        activate(kind, error);
+    }
+    // The one thing ggml's loader did besides the folder.
+    if (const char* extra = std::getenv("GGML_BACKEND_PATH"); extra != nullptr && *extra != '\0') {
+        ggml_backend_load(extra);
+    }
+}
+
+std::vector<BackendKind> RuntimeRegistry::loadable() {
+    const auto installed = modules_in(paths::runtimes_dir());
+    const json manifest  = read_manifest(manifest_file());
+
+    std::vector<BackendKind> result;
+    // ggml's order, which is the order the devices are listed in: the GPUs,
+    // then the CPU.
+    for (const BackendKind kind :
+         {BackendKind::Cuda, BackendKind::Metal, BackendKind::Vulkan, BackendKind::Cpu}) {
+        if (installed.count(kind) != 0 && !stale_in(manifest, kind)) {
+            result.push_back(kind);
+        }
+    }
+    return result;
 }
 
 std::vector<RuntimeStatus> RuntimeRegistry::scan() {
@@ -326,23 +362,21 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
             }
         }
 
-        if (status.files.size() > 1) {
-            // Asked of the modules themselves, the same way activation asks:
-            // each exports a score and ggml takes the highest. Reading it here
-            // costs a dlopen per module and is what lets the list say which of
-            // the fourteen is the one doing the work.
-            status.preferred = best_module(status.files);
-        }
-
         if (const auto entry = manifest.find(std::string(info.id)); entry != manifest.end()) {
             status.llama_tag = entry->value("llama_tag", "");
             status.built_at  = entry->value("built_at", "");
             status.source    = entry->value("source", "");
         }
-        // An unrecorded tag is "cannot tell", not "wrong": a manifest can be
-        // lost without the modules being any less valid.
-        status.stale = status.installed && !status.llama_tag.empty() &&
-                       status.llama_tag != RuntimeStatus::required_llama_tag();
+        status.stale = status.installed && stale_in(manifest, info.kind);
+
+        if (status.files.size() > 1 && !status.stale) {
+            // Asked of the modules themselves, the same way activation asks:
+            // each exports a score and ggml takes the highest. Reading it here
+            // costs a dlopen per module and is what lets the list say which of
+            // the fourteen is the one doing the work. Not of a stale runtime,
+            // whose modules stay closed: see loadable().
+            status.preferred = best_module(status.files);
+        }
 
         // What the build needs, checked before the button is offered rather
         // than discovered five minutes into a log.
