@@ -278,7 +278,12 @@ TEST(python_and_a_fenced_type_take_a_block_and_git_keeps_its_quotes) {
     const std::vector<std::string> args = tools::git::split_arguments("commit -m \"add the parser\" --no-verify");
     CHECK_EQ(args.size(), std::size_t{4});
     CHECK_EQ(args[2], std::string("add the parser"));
+#if defined(_WIN32)
+    // A backslash is a path's on Windows, so it escapes nothing.
+    CHECK_EQ(tools::git::split_arguments("log 'a b' c\\ d").size(), std::size_t{4});
+#else
     CHECK_EQ(tools::git::split_arguments("log 'a b' c\\ d").size(), std::size_t{3});
+#endif
 }
 
 TEST(the_screen_verbs_parse_and_a_word_that_starts_with_a_verb_is_not_one) {

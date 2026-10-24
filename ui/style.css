@@ -244,8 +244,12 @@ h2 {
 .code-head .copy.done .copy-done { display: inline; }
 .code-head .copy.done { color: var(--flame); }
 .code-body { overflow-x: auto; }
-.code-body pre { margin: 0; }
-.code-body .code-text { padding: .9rem 1rem 1rem; }
+/* The block is the box. Without this a reply's own `.md pre`, later in the
+   file, drew a second frame inside it with a gap under the code. */
+.code .code-text {
+  margin: 0; border: 0; border-radius: 0; background: none;
+  padding: .9rem 1rem 1rem; overflow: visible;
+}
 .code-text code { white-space: pre; }
 /* A file being created: the whole block is an addition. */
 .code.code-add .code-body { background: rgba(46, 107, 71, .14); }

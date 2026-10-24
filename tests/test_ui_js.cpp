@@ -1091,6 +1091,19 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     CHECK(here.find("MLX does not run on Windows") != std::string::npos);
 }
 
+TEST(a_model_moved_into_a_subfolder_is_shown_as_itself_not_as_missing) {
+    const std::string drawn = page().eval(
+        "(function () { var m = state.models; state.models = { directory: '/m', display: '/m',"
+        "  models: [{ name: 'Huggingface/GGUF/gpt-oss-20b.gguf', bytes: 1000, format: 'gguf' }] };"
+        "  var out = modelSelect('gpt-oss-20b.gguf', '', {}) + '|' + modelSelect('gone.gguf', '', {});"
+        "  state.models = m; return out; })()");
+    const std::string moved = drawn.substr(0, drawn.find('|'));
+    const std::string gone  = drawn.substr(drawn.find('|') + 1);
+    CHECK(moved.find("value=\"Huggingface/GGUF/gpt-oss-20b.gguf\" selected") != std::string::npos);
+    CHECK(moved.find("not in the models folder") == std::string::npos);
+    CHECK(gone.find("not in the models folder") != std::string::npos);
+}
+
 TEST(a_load_that_does_not_say_how_far_along_it_is_turns_rather_than_counts) {
     const std::string spinning = page().eval("ring(-1)");
     CHECK(spinning.find("animateTransform") != std::string::npos);

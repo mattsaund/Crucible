@@ -570,6 +570,43 @@ TEST(a_card_the_priority_order_held_back_is_used_when_the_last_one_overflows) {
     CHECK_EQ(placed, 20);
 }
 
+TEST(a_layer_moved_between_cards_is_weighed_as_the_one_that_moves) {
+    // A 33 GB model of 0.7 GB layers on a 12, a 16 and a 12 GB card, the first
+    // driving a desktop. The last card was a little over, and the rebalance
+    // took one unit from it for the middle card, weighing the move as the
+    // 0.25 GB output at the end of its range. What moves down is the first
+    // unit of the range, a 0.7 GB layer, and the middle card it went to had
+    // room for the output but not the layer. The VRAM check then refused a
+    // model that loads.
+    const std::vector<ComputeDevice> gpus{
+        fake_gpu(0, "desktop", 7'550'000'000ULL),
+        fake_gpu(1, "large", 16'650'000'000ULL),
+        fake_gpu(2, "last", 12'480'000'000ULL),
+    };
+    ModelFit fit;
+    fit.per_card     = 512ULL * 1024 * 1024;
+    fit.output_extra = 307'494'912ULL;
+    fit.units.assign(2, 63'000'000ULL);              // two dense layers
+    fit.units.insert(fit.units.end(), 47, 700'000'000ULL);
+    fit.units.push_back(252'000'000ULL);             // the output
+    for (const std::uint64_t unit : fit.units) {
+        fit.resident += unit;
+    }
+
+    const GpuPlan plan = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, fit);
+    CHECK_EQ(plan.units.size(), std::size_t{3});
+    // The middle card stays inside what it can hold.
+    CHECK(static_cast<std::uint64_t>(plan.units[1]) * 700'000'000ULL <=
+          usable_memory(gpus[1], fit.per_card + kCardHeadroom));
+    CHECK_EQ(plan.units[0], 11);
+    CHECK_EQ(plan.units[1], 22);
+    CHECK_EQ(plan.units[2], 17);
+    const std::vector<int> actual = llama_cpp_assignment(plan.split, static_cast<int>(fit.units.size()));
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        CHECK_EQ(actual[i], plan.units[i]);
+    }
+}
+
 TEST(the_priority_card_takes_the_most_layers) {
     // Equal cards, so the only thing that can decide which carries more is the
     // order the user put them in.

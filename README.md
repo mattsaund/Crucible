@@ -141,6 +141,8 @@ ___
 - The corner of the right-hand panel shows the local models in memory, and the
   frontier model in use: tokens, cost at list prices, rate limits, context.
 
+![The Models tab: a repository's quantizations, each marked by how it fits](docs/images/models.png)
+
 ### Tools
 
 Every model, local or not, gets the same tools in a trusted folder:

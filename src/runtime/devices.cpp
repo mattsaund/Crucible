@@ -241,53 +241,66 @@ std::vector<std::uint64_t> usage_of(const std::vector<int>& counts,
 /// unit short of its limit and the last card inherits all of the slack at once.
 ///
 /// So the greedy pass is followed by this, which only ever moves a unit from a
-/// card that is over its capacity to one with room for it. It stops when
-/// nothing is over, or when no card can take what is left -- which means the
-/// model does not fit, and saying so is the VRAM check's job, not this one's.
+/// card that is over its capacity, and only when no card that had room ends up
+/// without it. It stops when nothing is over, or when no move helps -- which
+/// means the model does not fit, and saying so is the VRAM check's job, not
+/// this one's.
+///
+/// A move is judged by what every card holds after it, not by the unit it
+/// seems to move. Units are dealt out in index order, so one less for a card
+/// and one more for another shifts every boundary between the two: moving
+/// down, the unit that changes hands is the first of the card's range, and
+/// each card in between trades a unit for its neighbor's. Taking the last unit
+/// as the one that moves put a 0.7 GB layer on a full card in place of the
+/// 0.25 GB output it thought it was moving, and refused a 33 GB model that
+/// three cards held.
 void rebalance(std::vector<int>& counts,
                const std::vector<std::uint64_t>& units,
                const std::vector<std::uint64_t>& capacity) {
+    const auto over_of = [&](const std::vector<std::uint64_t>& used, std::size_t device) {
+        return used[device] > capacity[device] ? used[device] - capacity[device] : 0;
+    };
+
     for (std::size_t guard = 0; guard <= units.size(); ++guard) {
         const std::vector<std::uint64_t> used = usage_of(counts, units);
-
-        std::size_t   from = counts.size();
-        std::uint64_t worst = 0;
+        std::uint64_t over = 0;
         for (std::size_t device = 0; device < counts.size(); ++device) {
-            if (counts[device] > 0 && used[device] > capacity[device] &&
-                used[device] - capacity[device] > worst) {
-                worst = used[device] - capacity[device];
-                from  = device;
-            }
+            over += over_of(used, device);
         }
-        if (from == counts.size()) {
+        if (over == 0) {
             return;  // everything fits
         }
 
-        // The unit that would move is the last one in that card's range.
-        std::size_t end = 0;
-        for (std::size_t device = 0; device <= from; ++device) {
-            end += static_cast<std::size_t>(counts[device]);
-        }
-        const std::uint64_t moving = units[std::min(end, units.size()) - 1];
-
-        std::size_t   into = counts.size();
-        std::uint64_t best = 0;
-        for (std::size_t device = 0; device < counts.size(); ++device) {
-            if (device == from || capacity[device] <= used[device]) {
+        std::vector<int> best;
+        std::uint64_t    best_over = over;
+        for (std::size_t from = 0; from < counts.size(); ++from) {
+            if (counts[from] == 0 || over_of(used, from) == 0) {
                 continue;
             }
-            const std::uint64_t room = capacity[device] - used[device];
-            if (room >= moving && room > best) {
-                best = room;
-                into = device;
+            for (std::size_t into = 0; into < counts.size(); ++into) {
+                if (into == from) {
+                    continue;
+                }
+                std::vector<int> moved = counts;
+                --moved[from];
+                ++moved[into];
+                const std::vector<std::uint64_t> after = usage_of(moved, units);
+                std::uint64_t after_over = 0;
+                bool          crowds     = false;
+                for (std::size_t device = 0; device < counts.size(); ++device) {
+                    after_over += over_of(after, device);
+                    crowds = crowds || over_of(after, device) > over_of(used, device);
+                }
+                if (!crowds && after_over < best_over) {
+                    best      = std::move(moved);
+                    best_over = after_over;
+                }
             }
         }
-        if (into == counts.size()) {
-            return;  // nowhere it would fit; the model is too large for the machine
+        if (best.empty()) {
+            return;  // no move helps; the model is too large for the machine
         }
-
-        --counts[from];
-        ++counts[into];
+        counts = std::move(best);
     }
 }
 

@@ -34,6 +34,12 @@ since 0.8.6.
 - **A model this llama.cpp cannot run says so.** Loading flint said "Too
   large for the cards?" to somebody with every layer on the GPU; it was a
   model llama.cpp did not know yet. What llama.cpp said is what is said now.
+- **A model that fits on the cards loads.** flint (33 GB) was refused on
+  three cards with 36 GB free. The plan moved a 0.7 GB layer onto the card
+  that was full, taking it for the 0.25 GB output, and the check set 512 MiB
+  aside per card for buffers that take 130 to 180 MB. When the estimate says
+  no now, llama.cpp is asked what the load would really take, without
+  loading it.
 - **An update built from source builds the new llama.cpp.** The build folder
   remembered the tag it was first configured with and went on building that.
 - **Code blocks** are drawn the way a chat draws them: the language and a

@@ -27,10 +27,16 @@
 #include <regex>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <ggml-backend.h>
 #include <llama.h>
+// llama.cpp's staging header, for llama_get_memory_breakdown: the one place it
+// says what a load would put on each card. Its own words are "breaking changes
+// are allowed", which costs little here: the llama.cpp tag is pinned, so a
+// change shows up as a compile error at the upgrade that brings it.
+#include <llama-ext.h>
 
 #if defined(CRUCIBLE_HAS_MTMD)
 #include <mtmd.h>
@@ -158,6 +164,23 @@ llama_split_mode split_mode_from_string(const std::string& name) {
     if (name == "row")    { return LLAMA_SPLIT_MODE_ROW; }
     if (name == "tensor") { return LLAMA_SPLIT_MODE_TENSOR; }
     return LLAMA_SPLIT_MODE_LAYER;
+}
+
+/// Bytes, with enough figures that two different amounts do not read the same.
+/// "would put 15.5 GB on a card with 15.5 GB free" says nothing.
+std::pair<std::string, std::string> two_amounts(std::uint64_t a, std::uint64_t b) {
+    std::string first  = format::bytes(a);
+    std::string second = format::bytes(b);
+    if (first == second) {
+        const auto gb = [](std::uint64_t bytes) {
+            char text[32];
+            std::snprintf(text, sizeof text, "%.2f GB", static_cast<double>(bytes) / (1ULL << 30));
+            return std::string(text);
+        };
+        first  = gb(a);
+        second = gb(b);
+    }
+    return {first, second};
 }
 
 /// Will this model fit in the free memory of the cards it would land on?
@@ -313,9 +336,9 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
             continue;
         }
         const std::string where = gpu->description.empty() ? gpu->name : gpu->description;
-        return "would put " + format::bytes(wants) + " on " + where + ", which has "
-             + format::bytes(gpu->memory_free) + " free. Lower \"Context\", or turn "
-               "off \"Use dedicated VRAM only\"";
+        const auto [put, free] = two_amounts(wants, gpu->memory_free);
+        return "would put " + put + " on " + where + ", which has " + free
+             + " free. Lower \"Context\", or turn off \"Use dedicated VRAM only\"";
     }
 
     if (needed <= available) {
@@ -425,7 +448,127 @@ int resolve_threads(int configured) {
     return hardware > 1 ? static_cast<int>(hardware / 2) : 1;
 }
 
+/// The llama.cpp model parameters a load of `params` uses on `gpus`. `split`
+/// is where the tensor split they point at lives, so it has to outlive the
+/// load.
+llama_model_params model_params_for(const ModelParams& params,
+                                    const std::vector<ComputeDevice>& gpus,
+                                    std::vector<float>& split) {
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = params.n_gpu_layers;
+    model_params.split_mode   = split_mode_from_string(params.split_mode);
+    // Translated at the boundary: Crucible plans in ggml device-index space --
+    // what /devices prints and what the priority order names -- and llama.cpp
+    // reads an array indexed by position among the GPUs it selected, sized to
+    // llama_max_devices(). See llama_tensor_split.
+    split = llama_tensor_split(gpus, params.tensor_split);
+    if (!split.empty()) {
+        model_params.tensor_split = split.data();
+    }
+    model_params.main_gpu = llama_main_gpu(gpus, params.main_gpu);
 
+    // Keep the weights off the host. `no_host` drops the pinned staging buffer
+    // llama.cpp would otherwise keep in RAM for transfers to the card.
+    model_params.no_host = params.no_host;
+    return model_params;
+}
+
+llama_context_params context_params_for(const ModelParams& params) {
+    llama_context_params context_params = llama_context_default_params();
+    context_params.n_ctx           = static_cast<std::uint32_t>(std::max(0, params.n_ctx));
+    context_params.n_batch         = static_cast<std::uint32_t>(std::max(1, params.n_batch));
+    context_params.n_threads       = resolve_threads(params.n_threads);
+    context_params.n_threads_batch = context_params.n_threads;
+    context_params.flash_attn_type = params.flash_attn ? LLAMA_FLASH_ATTN_TYPE_AUTO
+                                                       : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    return context_params;
+}
+
+/// What a load of `params` would put on each card, by ggml device index, in
+/// llama.cpp's own figures.
+///
+/// A dry run: with no_alloc, llama.cpp places every tensor, sizes the cache
+/// and reserves the compute graph exactly as the load will, and allocates
+/// none of it. Half a second for a 33 GB model, against the minute the load
+/// takes. Empty when the dry run could not be made -- an architecture this
+/// llama.cpp does not know, say -- and the real load then says why.
+std::vector<std::uint64_t> measured_need(const ModelParams& params,
+                                         const std::vector<ComputeDevice>& gpus) {
+    std::vector<float> split;
+    llama_model_params model_params = model_params_for(params, gpus, split);
+    model_params.no_alloc  = true;
+    model_params.load_mode = LLAMA_LOAD_MODE_NONE;
+    llama_model* model = llama_model_load_from_file(params.path.c_str(), model_params);
+    if (model == nullptr) {
+        return {};
+    }
+    llama_context* ctx = llama_init_from_model(model, context_params_for(params));
+    if (ctx == nullptr) {
+        llama_model_free(model);
+        return {};
+    }
+    std::vector<std::uint64_t> need(ggml_backend_dev_count(), 0);
+    for (const auto& [type, bytes] : llama_get_memory_breakdown(ctx)) {
+        if (ggml_backend_buft_is_host(type)) {
+            continue;   // system memory, not a card's
+        }
+        const ggml_backend_dev_t device = ggml_backend_buft_get_device(type);
+        for (std::size_t i = 0; i < need.size(); ++i) {
+            if (ggml_backend_dev_get(i) == device) {
+                need[i] += bytes.total();
+                break;
+            }
+        }
+    }
+    llama_free(ctx);
+    llama_model_free(model);
+    return need;
+}
+
+/// What a backend takes on a card beyond the buffers llama.cpp reports, which
+/// is the one thing a dry run cannot see: the pool its kernels draw scratch
+/// space from, cuBLAS's workspace, its graphs. Measured on NVIDIA cards,
+/// 2026-10-23, through a 1024-token prompt and a reply: Vulkan took 45 MB a
+/// card with a 33 GB model, CUDA 14 to 110 MB with gpt-oss-20b and a 1.2B.
+/// CUDA's own context, 130 to 160 MB, is not in that: it exists before the
+/// free memory is read, so the figure already leaves it out. About twice
+/// the worst seen.
+std::uint64_t runtime_allowance(const ComputeDevice& gpu) {
+    const std::string backend = format::to_lower(gpu.backend);
+    if (backend.find("vulkan") != std::string::npos) {
+        return 128ULL << 20;
+    }
+    return 256ULL << 20;   // CUDA, and the ones not measured: Metal, ROCm, SYCL
+}
+
+/// vram_shortfall, answered from a dry run instead of from the header.
+std::string measured_shortfall(const std::vector<std::uint64_t>& need,
+                               const std::vector<ComputeDevice>& gpus,
+                               std::uint64_t held, const std::string& holder) {
+    for (const ComputeDevice& gpu : gpus) {
+        // A card that reports no memory at all cannot be judged; one that
+        // reports none free is full.
+        const auto index = static_cast<std::size_t>(gpu.index);
+        if (index >= need.size() || need[index] == 0 || gpu.memory_total == 0) {
+            continue;
+        }
+        const std::uint64_t wants = need[index] + runtime_allowance(gpu);
+        // The same margin vram_shortfall keeps for a desktop that moves.
+        const std::uint64_t reserve = 128ULL << 20;
+        const std::uint64_t room    = gpu.memory_free > reserve ? gpu.memory_free - reserve : 0;
+        if (wants <= room) {
+            continue;
+        }
+        const auto [put, free] = two_amounts(wants, gpu.memory_free);
+        const std::string where = gpu.description.empty() ? gpu.name : gpu.description;
+        std::string out = "would put " + put + " on " + where + ", which has " + free + " free. ";
+        if (held > 0 && !holder.empty()) {
+            out += holder + " holds " + format::bytes(held) + " of the cards. ";
+        }
+        return out + "Lower \"Context\", or turn off \"Use dedicated VRAM only\"";
+    }
+    return {};
+}
 
 }  // namespace
 
@@ -667,8 +810,19 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         const std::string   holder =
             role == Role::Expert ? (experts_.empty() ? "the delegator" : "the models in use")
                                  : "the resident experts";
-        if (const std::string shortfall = vram_shortfall(params.path, params, held, holder);
-            !shortfall.empty()) {
+        std::string shortfall = vram_shortfall(params.path, params, held, holder);
+        if (!shortfall.empty()) {
+            // The estimate allows wide for what the header cannot say, and on a
+            // model that only just fits that is the difference: it set 512 MiB
+            // aside on every card for buffers a dry run put at 130 to 180 MB,
+            // and refused a 33 GB model that three cards held with half a
+            // gigabyte to spare on each. So before saying no, ask llama.cpp.
+            const std::vector<ComputeDevice> cards = gpu_devices();
+            if (const std::vector<std::uint64_t> need = measured_need(params, cards); !need.empty()) {
+                shortfall = measured_shortfall(need, cards, held, holder);
+            }
+        }
+        if (!shortfall.empty()) {
             error = std::filesystem::path(params.path).filename().string() + " " + shortfall;
             return nullptr;
         }
@@ -676,31 +830,16 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
 
     ProgressBridge bridge{&progress, &cancel, -1.0F, false};
 
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = params.n_gpu_layers;
-    model_params.split_mode   = split_mode_from_string(params.split_mode);
+    // `split` has to outlive the load call: the parameters point into it.
+    const std::vector<ComputeDevice> gpus = gpu_devices();
+    std::vector<float>               split;
+    llama_model_params model_params = model_params_for(params, gpus, split);
     model_params.progress_callback = progress_trampoline;
     model_params.progress_callback_user_data = &bridge;
-    // Translated at the boundary: Crucible plans in ggml device-index space --
-    // what /devices prints and what the priority order names -- and llama.cpp
-    // reads an array indexed by position among the GPUs it selected, sized to
-    // llama_max_devices(). See llama_tensor_split.
-    //
-    // The vector has to outlive the load call, which is why it is here rather
-    // than in the expression.
-    const std::vector<ComputeDevice> gpus  = gpu_devices();
-    const std::vector<float>         split = llama_tensor_split(gpus, params.tensor_split);
-    if (!split.empty()) {
-        model_params.tensor_split = split.data();
-    }
-    model_params.main_gpu = llama_main_gpu(gpus, params.main_gpu);
 
-    // Keep the weights off the host. `no_host` drops the pinned staging buffer
-    // llama.cpp would otherwise keep in RAM for transfers to the card, and
-    // direct I/O reads the file straight to the device instead of through the
+    // Direct I/O reads the file straight to the device instead of through the
     // operating system's page cache -- which would otherwise hold a second,
     // full-size copy of every model in RAM long after it was uploaded.
-    model_params.no_host = params.no_host;
     if (params.direct_io && direct_io_safe(gpus)) {
         model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
     }
@@ -740,15 +879,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         return nullptr;
     }
 
-    llama_context_params context_params = llama_context_default_params();
-    context_params.n_ctx           = static_cast<std::uint32_t>(std::max(0, params.n_ctx));
-    context_params.n_batch         = static_cast<std::uint32_t>(std::max(1, params.n_batch));
-    context_params.n_threads       = resolve_threads(params.n_threads);
-    context_params.n_threads_batch = context_params.n_threads;
-    context_params.flash_attn_type = params.flash_attn ? LLAMA_FLASH_ATTN_TYPE_AUTO
-                                                       : LLAMA_FLASH_ATTN_TYPE_DISABLED;
-
-    llama_context* ctx = llama_init_from_model(model, context_params);
+    llama_context* ctx = llama_init_from_model(model, context_params_for(params));
     if (ctx == nullptr) {
         llama_model_free(model);
         error = "could not create a context for " + params.path

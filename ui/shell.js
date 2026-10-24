@@ -80,13 +80,16 @@ function expertName(id) {
 /// The value is "provider|model" for a provider's and the file name
 /// otherwise, which `splitModel` takes apart again.
 function modelSelect(selected, provider, extra, localOnly) {
-  const chosen = provider ? `${provider}|${selected}` : (selected || '');
+  const files = state.models ? state.models.models : [];
+  const known = new Set(files.flatMap((m) => [m.name, m.path]));
+  // A bare name the folder has in a subfolder is that file: what the seat
+  // loads (config's resolve_model_ref looks for it), so what it shows.
+  const moved = !provider && selected && !known.has(selected) && !/[\\/]/.test(selected)
+    ? files.find((m) => m.name.split('/').pop() === selected) : null;
+  const chosen = provider ? `${provider}|${selected}` : moved ? moved.name : (selected || '');
   const option = (value, label, title) =>
     `<option value="${escape(value)}"${value === chosen ? ' selected' : ''}${
       title ? ` title="${escape(title)}"` : ''}>${escape(label)}</option>`;
-
-  const files = state.models ? state.models.models : [];
-  const known = new Set(files.flatMap((m) => [m.name, m.path]));
 
   let html = option('', '(none)');
   // The delegator scores every seat with llama.cpp, so it has to be a GGUF;
@@ -115,7 +118,7 @@ function modelSelect(selected, provider, extra, localOnly) {
   // A file the seat names that is not in the folder -- set before there was
   // one folder, or since moved. Still offered, so the dropdown shows what is
   // configured rather than quietly showing "(none)".
-  if (selected && !provider && !known.has(selected)) {
+  if (selected && !provider && !known.has(selected) && !moved) {
     html += option(selected, `${fileName(selected)}  (not in the models folder)`);
   }
   return `<select${attrs(extra)}>${html}</select>`;
