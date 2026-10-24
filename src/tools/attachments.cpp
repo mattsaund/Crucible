@@ -45,8 +45,13 @@ bool read_file(const std::filesystem::path& path, std::string& out, std::uintmax
     if (!in) {
         return false;
     }
-    out.assign(static_cast<std::size_t>(limit), '\0');
-    in.read(out.data(), static_cast<std::streamsize>(limit));
+    // Sized to the file, not to the limit: a page of notes does not cost
+    // sixty-four megabytes of zeroes to read.
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    const std::uintmax_t want = ec ? limit : std::min(size, limit);
+    out.assign(static_cast<std::size_t>(want), '\0');
+    in.read(out.data(), static_cast<std::streamsize>(want));
     out.resize(static_cast<std::size_t>(in.gcount()));
     return true;
 }
@@ -466,21 +471,10 @@ std::string program_output(const std::vector<std::string>& argv) {
     if (argv.empty() || !util::on_path(argv.front())) {
         return {};
     }
-    util::Subprocess child;
-    std::string      error;
-    if (!child.start(argv, {}, {}, error)) {
-        return {};
-    }
-    std::string out;
-    std::string line;
-    while (child.read_line(line)) {
-        out += line;
-        out += '\n';
-        if (out.size() > kMaxRead) {
-            break;
-        }
-    }
-    return child.wait() == 0 ? out : std::string();
+    // A deadline, and no more kept than a document is read to: a converter
+    // that hangs on a crafted file, or prints without end, ends here.
+    const util::Ran ran = util::run(argv, {}, {}, 120, {}, kMaxRead);
+    return ran.started && !ran.timed_out && ran.status == 0 ? ran.output : std::string();
 }
 
 /// The printable runs in a file nothing here can parse: an old binary Word
@@ -556,7 +550,7 @@ std::string extract(const std::filesystem::path& path, std::string& note) {
                 text = detail::pdf_text(bytes);
             }
             if (text.find_first_not_of(" \n\t\f") == std::string::npos) {
-                note = "no text could be read from it -- a scanned page is a picture of text, "
+                note = "no text could be read from it: a scanned page is a picture of text, "
                        "and an encrypted one cannot be read";
             }
             return text;
@@ -588,7 +582,7 @@ std::string extract(const std::filesystem::path& path, std::string& note) {
             }
 #endif
             if (text.find_first_not_of(" \n\t") == std::string::npos) {
-                note = "read roughly -- this is an old binary Office format";
+                note = "read roughly: this is an old binary Office format";
                 text = strings_of(bytes);
             }
             return text;
@@ -635,15 +629,23 @@ std::string inflate(std::string_view data, bool zlib) {
     if (data.empty()) {
         return {};
     }
-    std::size_t out_size = 0;
-    void* out = tinfl_decompress_mem_to_heap(data.data(), data.size(), &out_size,
-                                             zlib ? TINFL_FLAG_PARSE_ZLIB_HEADER : 0);
-    if (out == nullptr) {
-        return {};
-    }
-    std::string result(static_cast<const char*>(out), out_size);
-    mz_free(out);
-    return result;
+    // A few kilobytes can say "a gigabyte of zeroes": what comes out stops
+    // at the most a document is read to. A stream cut short, which PDFs
+    // often have, gives what there was of it.
+    std::string out;
+    std::size_t in_size = data.size();
+    tinfl_decompress_mem_to_callback(
+        data.data(), &in_size,
+        [](const void* buffer, int length, void* user) -> int {
+            auto* kept = static_cast<std::string*>(user);
+            if (length < 0 || kept->size() + static_cast<std::size_t>(length) > kMaxRead) {
+                return 0;
+            }
+            kept->append(static_cast<const char*>(buffer), static_cast<std::size_t>(length));
+            return 1;
+        },
+        &out, zlib ? TINFL_FLAG_PARSE_ZLIB_HEADER : 0);
+    return out;
 }
 
 std::string ooxml_text(std::string_view xml, std::string_view run_tag, std::string_view paragraph_tag) {
@@ -1316,7 +1318,7 @@ Composed compose(const std::vector<Attachment>& attachments, std::size_t budget,
                               + "\n[end of the picture's words]\n\n";
                 } else {
                     out.text += "[A picture was attached: " + name + ". This model reads text only and "
-                                "cannot see it -- say so if the question depends on it.]\n\n";
+                                "cannot see it. Say so if the question depends on it.]\n\n";
                 }
                 continue;
             }

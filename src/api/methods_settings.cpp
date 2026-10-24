@@ -17,6 +17,7 @@
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/fonts.hpp"
 
 namespace crucible::api {
 namespace {
@@ -394,11 +395,18 @@ Reply update_progress(const json&, Host& host) {
                      {"error", progress.error}});
 }
 
+/// The font families installed, for the Font setting. A lookup, because on
+/// Linux the answer is fontconfig's, from a process of its own.
+Reply fonts(const json&, const Scene&) {
+    return good(json(util::installed_font_families()));
+}
+
 void settings_methods(std::vector<Method>& table) {
     table.push_back({"config",       nullptr, config});
     table.push_back({"config.set",   nullptr, config_set});
     table.push_back({"models",       models, nullptr});
     table.push_back({"devices",      devices, nullptr});
+    table.push_back({"fonts",        fonts, nullptr});
     table.push_back({"about",        about, nullptr});
     table.push_back({"self.source",  nullptr, self_source});
     table.push_back({"self.rebuild", nullptr, self_rebuild});

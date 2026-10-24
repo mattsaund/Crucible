@@ -398,11 +398,25 @@ void remember_project(const std::filesystem::path& root) {
     }
     const Project project = Project::at(root);
 
+    // Every one remembered stays remembered, there or not: a project on a
+    // drive that is not plugged in today is listed again when it is. The
+    // list shown is what is there (recent_projects); the file is all of it.
     std::vector<std::string> paths{project.root.string()};
-    for (const Project& previous : recent_projects(32)) {
-        if (previous.root != project.root) {
-            paths.push_back(previous.root.string());
+    try {
+        std::ifstream in(recent_file());
+        json doc;
+        if (in) {
+            in >> doc;
         }
+        if (doc.is_array()) {
+            for (const json& entry : doc) {
+                if (entry.is_string() && std::filesystem::path(entry.get<std::string>()) != project.root) {
+                    paths.push_back(entry.get<std::string>());
+                }
+            }
+        }
+    } catch (const json::exception&) {
+        // a corrupt list is started again from this one
     }
     if (paths.size() > 32) {
         paths.resize(32);
@@ -521,7 +535,12 @@ bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
         stored_turns.push_back(turn_to_json(turn));
     }
     if (stored_turns.empty()) {
-        return true;  // nothing worth a file yet
+        // Nothing worth a file: none yet, or the last turn was just deleted --
+        // and then the file that still holds it goes too, or the turn came
+        // back the next time the chat was opened.
+        std::error_code gone;
+        std::filesystem::remove(session_file(session_id_), gone);
+        return true;
     }
 
     std::error_code ec;
@@ -546,18 +565,9 @@ bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
     // Write beside the target and rename, so an interrupted save cannot leave
     // a truncated session behind in place of a good one.
     const std::filesystem::path target = session_file(session_id_);
-    const std::filesystem::path temp   = target.string() + ".tmp";
-    {
-        std::ofstream out(temp, std::ios::trunc);
-        if (!out) {
-            error = "could not write " + temp.string();
-            return false;
-        }
-        out << document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) << '\n';
-    }
-    std::filesystem::rename(temp, target, ec);
-    if (ec) {
-        error = "could not replace " + target.string() + ": " + ec.message();
+    if (!util::write_file_atomically(
+            target, document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + '\n',
+            error)) {
         return false;
     }
 
@@ -674,22 +684,8 @@ bool SessionStore::rename(const std::string& id, const std::string& name, std::s
         return false;
     }
     document["name"] = name;
-    const std::filesystem::path temp = file.string() + ".tmp";
-    {
-        std::ofstream out(temp, std::ios::trunc);
-        if (!out) {
-            error = "could not write " + temp.string();
-            return false;
-        }
-        out << document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) << '\n';
-    }
-    std::error_code ec;
-    std::filesystem::rename(temp, file, ec);
-    if (ec) {
-        error = "could not replace " + file.string() + ": " + ec.message();
-        return false;
-    }
-    return true;
+    return util::write_file_atomically(
+        file, document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + '\n', error);
 }
 
 std::vector<SessionSummary> recent_chats(std::size_t limit) {

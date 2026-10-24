@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // The JIT model host: owns every llama.cpp resource and enforces the rule that
-// makes Crucible's memory budget work -- the small router stays resident, and an
-// expert is freed before the next one is loaded. Unless somebody is using it:
-// see engine/leases.hpp, and `keep` below.
+// makes Crucible's memory budget work -- an expert is freed before the next one
+// is loaded, unless somebody is using it (see engine/leases.hpp, and `keep`
+// below). The router is held until the engine lets it go: kept loaded, or, on
+// demand, freed while an expert works and brought back after.
 #pragma once
 
 #include <atomic>
@@ -43,8 +44,7 @@ public:
     ModelHost(const ModelHost&)            = delete;
     ModelHost& operator=(const ModelHost&) = delete;
 
-    /// Load the router and keep it resident for the rest of the session.
-    /// Idempotent.
+    /// Load the router and hold it until release_router(). Idempotent.
     ///
     /// `cancel` is polled while the weights upload and stops the load where it
     /// stands. It may be empty for a load nothing is allowed to interrupt.
@@ -98,10 +98,12 @@ public:
     /// an MLX model's folder, or a file whose header would not read.
     static std::uint64_t estimate_bytes(const ModelParams& params);
 
-    /// Free the delegator, if any. The expert is untouched.
+    /// Free the delegator, if any. The experts are untouched.
     ///
-    /// Only for "keep delegator loaded" being off: the caller must have dropped
-    /// whatever was holding the LoadedModel first. See Engine::resolve.
+    /// Between routes with "keep delegator loaded" off, and for Eject, a
+    /// changed runtime and changed loading settings: the caller must have
+    /// dropped whatever was holding the LoadedModel first. See
+    /// Engine::release_router.
     void release_router();
 
     /// The machine-wide GPU settings, used to re-plan every model's split
@@ -112,10 +114,10 @@ public:
     /// experts are resident -- one, unless several are in use at once.
     std::uint64_t resident_bytes() const;
 
-    /// The expert most recently asked for, and its model. Null when none is
-    /// resident.
+    /// The expert most recently asked for, or nothing when none is resident.
     std::optional<ExpertId> loaded_expert() const;
-    LoadedModel*            expert() const;
+
+    /// The delegator, or null when it is not loaded.
     LoadedModel*            router() const { return router_.get(); }
 
     /// How many experts are resident.

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.9.3
+    VERSION     0.9.4
     DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
     LANGUAGES   C CXX)
 
@@ -109,13 +109,9 @@ add_library(crucible_core STATIC
     src/util/format.cpp
     src/util/diff.cpp
     src/util/platform.cpp
-    # Reading code before drawing it: the lexer that colors a block, and the
-    # reader that works out whether it is a diff and what to number each line.
-    # In the core rather than in one of the faces because both draw code, and a
-    # terminal that colors it differently from a window is two programs.
-    # How big the desktop app draws itself. In the core rather than the desktop
-    # app because the Mac is the case that went wrong, and from a Linux machine
-    # a unit test is the only place it can be checked.
+    src/util/fonts.cpp
+    src/market/hub.cpp
+    src/market/downloads.cpp
     src/util/resources.cpp
     src/util/http.cpp
     src/util/workers.cpp
@@ -204,6 +200,7 @@ add_library(crucible_core STATIC
     src/api/methods_project.cpp
     src/api/methods_roster.cpp
     src/api/methods_settings.cpp
+    src/api/methods_market.cpp
     src/api/methods_install.cpp
     src/api/methods_lab.cpp
     src/api/methods_source.cpp
@@ -230,9 +227,12 @@ if(TARGET mtmd)
     target_compile_definitions(crucible_core PRIVATE CRUCIBLE_HAS_MTMD)
 endif()
 # ShellExecuteW: opening a program Crucible made as the person's own, not as
-# a child of Crucible's. See src/tools/apps.cpp.
+# a child of Crucible's. See src/tools/apps.cpp. GDI and CoreText: the fonts
+# installed, for the Font setting. See src/util/fonts.cpp.
 if(WIN32)
-    target_link_libraries(crucible_core PRIVATE shell32)
+    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32)
+elseif(APPLE)
+    target_link_libraries(crucible_core PRIVATE "-framework CoreText" "-framework CoreFoundation")
 endif()
 
 # The orchestrator package, compiled in. See src/orchestra/package.cpp.
@@ -379,6 +379,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_build.cpp
         tests/test_source.cpp
         tests/test_kit.cpp
+        tests/test_market.cpp
         tests/test_mcp.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
@@ -388,6 +389,11 @@ if(CRUCIBLE_BUILD_TESTS)
     if(CRUCIBLE_JSC_FOUND AND CRUCIBLE_RENDER_CPP)
         target_sources(crucible_tests PRIVATE tests/test_ui_js.cpp
                        ${CRUCIBLE_RENDER_CPP} ${CRUCIBLE_WEBUI_CPP})
+        add_dependencies(crucible_tests crucible_page)
+        if(CRUCIBLE_KATEX_JS_CPP)
+            target_sources(crucible_tests PRIVATE ${CRUCIBLE_KATEX_JS_CPP})
+            target_compile_definitions(crucible_tests PRIVATE CRUCIBLE_HAS_KATEX_JS)
+        endif()
         target_include_directories(crucible_tests PRIVATE ${JSC_INCLUDE_DIRS})
         target_link_libraries(crucible_tests PRIVATE ${JSC_LIBRARIES})
         target_link_directories(crucible_tests PRIVATE ${JSC_LIBRARY_DIRS})
@@ -484,6 +490,7 @@ endif()
 # is what any other way of driving it would share.
 if(CRUCIBLE_HAS_WEBVIEW AND CRUCIBLE_WEBUI_CPP)
     target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP})
+    add_dependencies(crucible crucible_page)
     target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
     target_link_libraries(crucible PRIVATE webview::core_static)
     # The page draws in the same typeface the window did and shows the same

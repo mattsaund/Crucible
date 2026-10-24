@@ -658,16 +658,18 @@ done
 
 # Same defaults, same problem, one layer down: a CPU runtime built on a Mac
 # would otherwise emit ggml-metal and ggml-blas alongside it.
-# The desktop app's typeface is compiled in, not looked for. A missing font must
-# downgrade to a system face rather than fail the build.
-check     "the interface font is fetched and pinned" \
-          grep -q 'CRUCIBLE_FONT_TAG' "$HERE/../cmake/CrucibleDependencies.cmake"
-check     "a font that will not fetch does not break the build" \
-          grep -q 'CRUCIBLE_FONTS_EMBEDDED OFF' \
+# The interface has no typeface of its own: the system's, or the one the Font
+# setting names. Math is KaTeX, compiled in, and a KaTeX that will not fetch
+# must leave math as its TeX rather than fail the build.
+check_not "no interface font is compiled in" \
+          grep -q 'CRUCIBLE_FONT_TAG\|JetBrains' "$HERE/../cmake/CrucibleDependencies.cmake"
+check     "KaTeX is fetched and pinned" \
+          grep -q 'URL_HASH SHA256=966d9c85' "$HERE/../cmake/CrucibleDependencies.cmake"
+check     "a KaTeX that will not embed does not break the build" \
+          grep -q 'math will show as its TeX source' \
           "$HERE/../cmake/CrucibleDependencies.cmake"
-check     "the app knows whether it has one" \
-          grep -q 'CRUCIBLE_HAS_EMBEDDED_FONT' \
-          "$HERE/../cmake/CrucibleDependencies.cmake"
+check     "the window knows whether it has KaTeX" \
+          grep -q 'CRUCIBLE_HAS_KATEX' "$HERE/../src/gui/window.cpp"
 
 echo
 echo "  Windows"
@@ -1274,12 +1276,19 @@ check     "and the app builds the same name" \
           grep -q '"runtime-" + std::string(backend_info(kind).id)' "$ROOT/src/runtime/prebuilt.cpp"
 check     "the workflow reads the tag from the file the build reads" \
           grep -q "CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake" "$RT"
-# Shipping somebody else's CUDA build means shipping no NVIDIA redistributable:
-# static cudart, so the module needs a driver and nothing else.
-check     "the shipped CUDA module links cudart statically" \
+# Static cudart is asked for; ggml-cuda links cudart and cuBLAS shared anyway,
+# and the app fetches NVIDIA's libraries beside the module (cuda_libraries).
+check     "the CUDA module asks for cudart statically" \
           grep -q 'CMAKE_CUDA_RUNTIME_LIBRARY=Static' "$RT"
-check     "it covers the architectures people actually have" \
-          grep -q 'CMAKE_CUDA_ARCHITECTURES=86-real' "$RT"
+# llama.cpp's own list of architectures, Turing to Blackwell. An override
+# that began at Ampere left every RTX 20 and GTX 16 failing at its first
+# kernel, and the app has to know which list a download was built with.
+check_not "it builds the architectures llama.cpp chooses" \
+          grep -q 'CMAKE_CUDA_ARCHITECTURES' "$RT"
+check     "and a CUDA download records which kernels it has" \
+          grep -q 'kCudaKernels' "$ROOT/include/crucible/runtime/prebuilt.hpp"
+check     "which the CUDA asset's name says, read from that header" \
+          grep -q "kCudaKernels = " "$RT"
 # One backend failing to build must not take the others with it.
 check     "a failed backend does not block the rest" \
           grep -q 'fail-fast: false' "$RT"

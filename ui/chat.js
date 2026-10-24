@@ -35,7 +35,7 @@ function turnMeta(turn) {
   if (turn.tokens_per_second > 0) bits.push(`${turn.tokens_per_second.toFixed(1)} tok/s`);
   if (turn.prompt_tokens > 0) bits.push(`${compact(turn.prompt_tokens)} in`);
   if (turn.output_tokens > 0) bits.push(`${compact(turn.output_tokens)} out`);
-  if (turn.canceled) bits.push('-- stopped');
+  if (turn.canceled) bits.push('stopped');
   return bits.length ? `<div class="meta">${apart(...bits.map(escape))}</div>` : '';
 }
 
@@ -44,7 +44,7 @@ function turnMeta(turn) {
 /// because a write to your project is not a footnote to the sentence that
 /// follows it.
 function turnActions(turn) {
-  return (turn.actions || []).map((a) => `<div class="act"><span class="act-dot">·</span> ${
+  return (turn.actions || []).map((a) => `<div class="act">${
     escape(a.summary)}${pictureChip(a.picture)}${actionBody(a)}</div>`).join('');
 }
 
@@ -169,12 +169,6 @@ function turnsView(turns, from) {
 
 const OPENERS = ['What is in this project?', 'Explain a file to me', 'Find and fix a failing test'];
 
-/// What stands between this window and a first answer, or -- when nothing
-/// does -- somewhere to start.
-///
-/// One thing at a time, in the order they have to be fixed: there is no point
-/// saying a model is missing to somebody who has not got a runtime to load
-/// it with. Each names the one button that fixes it.
 /// What Crucible is fetching for itself, while it is: its Python, the
 /// runtimes, the training environment. Shown above whatever the empty view
 /// says, not instead of it -- a chat works as soon as Python and a runtime are
@@ -206,6 +200,12 @@ function setupView() {
 
 actions['setup-retry'] = () => guard(() => call('setup.retry'));
 
+/// What stands between this window and a first answer, or -- when nothing
+/// does -- somewhere to start.
+///
+/// One thing at a time, in the order they have to be fixed: there is no point
+/// saying a model is missing to somebody who has not got a runtime to load
+/// it with. Each names the one button that fixes it.
 function readiness(ready) {
   const s = state.snapshot;
   const getting = setupView();
@@ -346,7 +346,10 @@ actions['route-pick'] = (item) => {
   remember.set('route', state.route);
   state.menu = null;
   render();
+  // Loaded now, not when the first prompt to it is sent.
+  call('route.pick', { expert: routeTarget(), load: true }).catch(() => {});
 };
+
 actions['effort-pick'] = (item) => {
   state.menu = null;
   // Said at once; the setting is written behind it.
@@ -413,9 +416,9 @@ function composerView(options) {
       <form class="composer" data-submit="send" data-mode="${mode}">
         <div class="box${disabled ? ' shut' : ''}">
           ${disabled ? '' : attachTiles(mode)}
-          <textarea id="prompt" data-draft data-key="composer-key" data-input="composer-grow"
+          <textarea id="prompt" data-draft data-sized data-key="composer-key" data-input="composer-grow"
                     rows="${state.composerRows}" placeholder="${escape(hint)}" autocomplete="off"
-                    spellcheck="false" ${disabled ? 'disabled' : ''}></textarea>
+                    spellcheck="false" ${disabled ? 'disabled' : ''}>${escape(state.drafts[mode] || '')}</textarea>
           <div class="box-bar">
             ${attachButton(mode, disabled || asking)}
             ${routePicker(mode, disabled || asking)}
@@ -461,6 +464,26 @@ views.chat = () => {
 
 // --- what a person can do here ------------------------------------------------------------
 
+/// What is typed, kept by the page rather than only by the box: a box is
+/// redrawn new whenever the view changes, and with it went whatever was
+/// half written. Per mode, since Chat and Build each have their own.
+function keepDraft(mode, text) { state.drafts[mode] = text; }
+
+/// Clear the box for a send, and put the words back if the send failed.
+async function sending(mode, box, text, work) {
+  box.value = '';
+  keepDraft(mode, '');
+  growComposer(box);
+  try {
+    await work();
+  } catch (error) {
+    keepDraft(mode, text);
+    const now = document.getElementById('prompt');
+    if (now && !now.value) { now.value = text; growComposer(now); }
+    throw error;
+  }
+}
+
 actions.send = (form) => {
   const box = form.querySelector('textarea');
   const text = box.value.trim();
@@ -473,9 +496,7 @@ actions.send = (form) => {
   // whatever the build is doing.
   if (mode === 'build' && building) {
     if (s.cook.state !== 'asking' || !text) return;
-    box.value = '';
-    growComposer(box);
-    return guard(() => call('cook.answer', { answer: text }));
+    return guard(() => sending(mode, box, text, () => call('cook.answer', { answer: text })));
   }
   if (mode !== 'build' && s.busy) return;
   const files = state.attached[mode] || [];
@@ -484,27 +505,26 @@ actions.send = (form) => {
   if (!text && (mode === 'build' || !files.length)) return;
   const attachments = attachmentsFor(mode);
   if (!attachments) {
-    state.error = 'still reading what is attached -- a moment';
+    state.error = 'Still reading the attachments';
     return render();
   }
-  box.value = '';
-  growComposer(box);
   if (mode === 'build') {
-    return guard(async () => {
+    return guard(() => sending(mode, box, text, async () => {
       await call('build.start', { directive: text, attachments, expert: routeTarget() });
       state.attached.build = [];
       state.buildPane = 'agents';
       state.open.task = null;
-    });
+    }));
   }
   state.follow = true;
-  return guard(async () => {
+  return guard(() => sending(mode, box, text, async () => {
     // A slash and a name for this prompt wins over the menu's choice.
     const asked = pinned(text);
     if (!asked.expert && routeTarget()) asked.expert = routeTarget();
-    await call('submit', Object.assign(asked, { attachments }));
+    // The menu's choice goes too, slash or not: it is what stays loaded.
+    await call('submit', Object.assign(asked, { attachments, route: routeTarget() }));
     state.attached.chat = [];
-  });
+  }));
 };
 
 /// "/physics why is the sky blue" sends the question straight to Physics.
@@ -535,17 +555,24 @@ actions['composer-key'] = (box, event) => {
   }
 };
 
-/// Grow the box to fit what is in it, up to a third of the window.
+/// Grow the box to fit what is in it, up to a third of the window, and never
+/// below the rows the splitter asked for.
 function growComposer(box) {
   box.style.height = 'auto';
-  box.style.height = `${Math.min(box.scrollHeight + 2, window.innerHeight / 3)}px`;
+  const asked = box.offsetHeight;
+  const fits = box.scrollHeight + box.offsetHeight - box.clientHeight;
+  box.style.height = `${Math.max(asked, Math.min(fits, window.innerHeight / 3))}px`;
 }
-actions['composer-grow'] = (box) => growComposer(box);
+actions['composer-grow'] = (box) => {
+  if (box.form) keepDraft(box.form.dataset.mode, box.value);
+  growComposer(box);
+};
 
 actions.opener = (chip) => {
   const box = document.getElementById('prompt');
   if (!box || box.disabled) return;
   box.value = chip.textContent;
+  if (box.form) keepDraft(box.form.dataset.mode, box.value);
   growComposer(box);
   box.focus();
 };
@@ -596,6 +623,19 @@ function showJump() {
 }
 
 // --- after each draw -------------------------------------------------------------------------
+
+/// Size the box when it is new -- another view's, or a draft come back --
+/// and when the splitter has changed how many rows it starts at. Typing
+/// sizes it as it goes (composer-grow).
+let sizedBox = null;
+let sizedRows = 0;
+afterDraw.push(() => {
+  const box = document.getElementById('prompt');
+  if (!box || (box === sizedBox && state.composerRows === sizedRows)) return;
+  sizedBox = box;
+  sizedRows = state.composerRows;
+  growComposer(box);
+});
 
 /// Follow the bottom of the transcript, but only for somebody who is there.
 ///

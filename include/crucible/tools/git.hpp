@@ -21,6 +21,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,21 +41,25 @@ bool available();
 bool gh_available();
 
 /// Run git with `args` in `root`. `timeout_seconds` bounds it; a push over a
-/// slow link is allowed its minutes, a status is not.
+/// slow link is allowed its minutes, a status is not. `stop`, when given,
+/// ends it sooner.
 Output run(const std::filesystem::path& root, const std::vector<std::string>& args,
-           int timeout_seconds = 120);
+           int timeout_seconds = 120, const std::function<bool()>& stop = {});
 
 /// Run gh with `args` in `root`. Fails in words when gh is not installed.
 Output run_gh(const std::filesystem::path& root, const std::vector<std::string>& args,
-              int timeout_seconds = 300);
+              int timeout_seconds = 300, const std::function<bool()>& stop = {});
 
 /// Split a line an expert wrote into arguments the way a shell would, with
 /// quotes respected -- so `commit -m "add the parser"` is three arguments
-/// and not five -- and without a shell, so nothing in it is interpreted.
+/// and not five -- and without a shell, so nothing in it is interpreted. On
+/// Windows a backslash is a path's, not an escape.
 std::vector<std::string> split_arguments(std::string_view line);
 
-/// An argument that would move git out of the project, or empty.
-std::string escaping_argument(const std::vector<std::string>& args);
+/// An argument that would move git out of the project, or empty: -C or
+/// --git-dir before the command, or a clone, init or worktree put outside
+/// `root` (when given).
+std::string escaping_argument(const std::vector<std::string>& args, const std::filesystem::path& root = {});
 
 /// Whether `root` is inside a git repository.
 bool is_repo(const std::filesystem::path& root);

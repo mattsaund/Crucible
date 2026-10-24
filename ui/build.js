@@ -137,7 +137,7 @@ function taskFiles(build, index) {
 }
 
 /// The chosen agent's work: what it was asked, what it did, what it said.
-function agentWork(build, chosen) {
+function agentWork(build, chosen, live = true) {
   const tasks = build.tasks || [];
   const task = tasks.find((t) => t.index === chosen);
   const steps = (build.steps || []).filter((s) => taskOf(s) === chosen);
@@ -159,7 +159,10 @@ function agentWork(build, chosen) {
       ${plan.check ? `<div class="hint">check: <code>${escape(plan.check)}</code></div>` : ''}
       ${plan.ship ? `<div class="hint">ship: <code>${escape(plan.ship)}</code></div>` : ''}</div>`;
   }
-  return `<div class="work">${head}${taskFiles(build, chosen)}${cookSteps(steps, 0)}${latestFile(build, chosen)}</div>`;
+  // The latest file only for the build on the Build view: it is read from
+  // there, and a past build in History waited on "Reading..." for good.
+  return `<div class="work">${head}${taskFiles(build, chosen)}${cookSteps(steps, 0)}${
+    live ? latestFile(build, chosen) : ''}</div>`;
 }
 
 /// The file the chosen agent last wrote, as it is now: clicking an agent
@@ -302,6 +305,12 @@ actions['tree-refresh'] = () => { state.tree = null; render(); loadTree(); };
 actions['tree-none'] = () => {};
 actions['file-open'] = (button) => guard(async () => {
   const path = button.dataset.path;
+  const was = state.open.file;
+  if (was && was.editing && was.draft !== was.content && was.path !== path) {
+    const discard = await confirmIt({ title: `Unsaved changes to ${was.path}`, body: 'Discard them?',
+                                      yes: 'Discard', no: 'Keep' });
+    if (!discard) return;
+  }
   state.open.file = { path, loading: true };
   if (state.view === 'build') state.buildPane = 'code';
   render();
@@ -342,7 +351,9 @@ actions['editor-key'] = (box, event) => {
     box.value = box.value.slice(0, at) + '    ' + box.value.slice(box.selectionEnd);
     box.selectionStart = box.selectionEnd = at + 4; actions['editor-change'](box); }
   if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
-    event.preventDefault(); actions['editor-save']();
+    // As the Save button: not while something is writing to the project.
+    event.preventDefault();
+    if (!state.snapshot.busy) actions['editor-save']();
   }
 };
 actions['editor-save'] = () => guard(async () => {
@@ -361,8 +372,7 @@ function sourcePane() {
   if (!project.open) return '<div class="empty"><div class="empty-label">No project open.</div></div>';
   const s = state.source;
   if (!s) return '<div class="status" style="padding:1rem">Reading...</div>';
-  if (!s.git) return `<div class="empty"><div class="empty-label">git is not installed</div>
-      <div class="status">Crucible runs the git on this machine, and there is none.</div></div>`;
+  if (!s.git) return '<div class="empty"><div class="empty-label">git is not installed</div></div>';
   const busy = !!state.snapshot.busy || state.ship.running;
   if (!s.repo) {
     return `<div class="empty"><div class="empty-label quiet">Not a repository yet</div>
@@ -388,7 +398,7 @@ function sourcePane() {
         ${s.remote ? `<button class="action small" data-act="git-pull" ${busy ? 'disabled' : ''}>Pull</button>
                       <button class="action small" data-act="git-push" ${busy ? 'disabled' : ''}>Push</button>`
                    : s.gh ? `<button class="action small" data-act="git-publish" ${busy ? 'disabled' : ''}>Publish to GitHub</button>`
-                   : '<span class="hint" title="Install gh, GitHub\'s command line, to publish from here">no gh</span>'}</div>
+                   : '<span class="hint" title="Needs gh">no gh</span>'}</div>
       <div class="caption" style="margin-top:1rem">CHANGES</div>
       <div class="changes-list">${changes}</div>
       <form class="row" data-submit="git-commit" style="margin-top:.6rem">
@@ -404,7 +414,7 @@ function sourcePane() {
         <button class="action" ${busy ? 'disabled' : ''}>Run</button></form>
       ${state.gitOutput ? codeBlock(state.gitOutput, 'shell') : ''}
       <div class="caption" style="margin-top:1.4rem">SHIP</div>
-      <div class="hint">Package it, then tag a release${s.gh ? ' on GitHub' : ' (gh is needed for a GitHub release)'}.</div>
+      <div class="hint">Package, then release${s.gh ? ' on GitHub' : ' (needs gh)'}.</div>
       <form class="row" data-submit="ship-package" style="margin-top:.5rem">
         <input id="ship-command" data-draft value="${escape(ship.command || plan.ship || '')}"
                placeholder="the command that packages it: npm run build, cargo build --release..." aria-label="Package command"
@@ -418,7 +428,6 @@ function sourcePane() {
         <button class="action" ${busy || !s.gh ? 'disabled' : ''}>Release</button></form>
       ${ship.url ? `<div class="hint">Released: ${escape(ship.url)}</div>` : ''}
       <div class="row" style="margin-top:.8rem">
-        <span class="hint">A page of the project can be made a program that opens like any other.</span>
         <button class="action small" data-act="build-pane" data-pane="preview">Make it an app</button></div>
     </div>`;
 }
@@ -436,14 +445,22 @@ function ciView() {
     rows.length ? rows.join('') : '<div class="status">No runs yet.</div>'}`;
 }
 
-async function loadSource() {
-  if (!(state.snapshot.project || {}).open) return;
+/// What git says of the project. CI is asked of GitHub, which takes its
+/// time, only when the pane is opened or refreshed: not after every step of
+/// a build. One look at a time.
+let sourceLoading = false;
+async function loadSource(withCi = true) {
+  if (!(state.snapshot.project || {}).open || sourceLoading) return;
+  sourceLoading = true;
   try {
     state.source = await call('git.status');
     if (state.source.repo) state.log = (await call('git.log')).commits; else state.log = null;
     // CI only where there is some to ask about: a GitHub remote, and gh.
-    state.ci = state.source.gh && /github\.com/.test(state.source.remote || '') ? await call('git.ci') : null;
+    const hasCi = state.source.gh && /github\.com/.test(state.source.remote || '');
+    if (!hasCi) state.ci = null;
+    else if (withCi) state.ci = await call('git.ci');
   } catch (error) { state.error = error.message; }
+  sourceLoading = false;
   render();
 }
 
@@ -473,7 +490,7 @@ actions['git-pull'] = () => guard(async () => { await call('git.pull'); state.sn
 actions['git-publish'] = async () => {
   const project = state.snapshot.project || {};
   const sure = await confirmIt({ title: `Publish ${project.name} to GitHub?`,
-    body: 'A private repository under your account, through gh, with everything committed so far.',
+    body: 'Private, under your account.',
     yes: 'Publish', no: 'Cancel' });
   if (!sure) return;
   await guard(async () => {
@@ -527,7 +544,6 @@ views.build = () => {
   else if (state.buildPane === 'preview') body = previewView();
   else body = build ? buildBody(build)
     : readiness(`<div class="empty"><div class="empty-label quiet">Give it a directive</div>
-        <div class="status">It plans, gives each task to an expert, builds, checks, and writes it up.</div>
         <div class="chips">${BUILD_OPENERS.map((text) => `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`);
   const edit = s.pending_edit && state.buildPane === 'agents' ? pendingEdit(s.pending_edit) : '';
   // The switcher sits above the scroller, not inside it: a long build's
@@ -594,12 +610,14 @@ onSnapshot.push(() => {
   buildRunning = !!(build && build.running);
   if (state.open.taskFile) state.open.taskFile.stale = true;
   // What changed since the last look: a page, a stylesheet or a script.
-  const fresh = build ? (build.steps || []).slice(-Math.max(0, steps - buildSteps)) : [];
+  // slice(-0) is the whole list: no new steps is none, not all of them.
+  const added = Math.max(0, steps - buildSteps);
+  const fresh = build && added ? (build.steps || []).slice(-added) : [];
   buildSteps = steps;
   const touchedPage = fresh.some((step) => (step.changed || []).some((f) => /\.(html?|css|js|svg|png|jpe?g|gif)$/i.test(f)));
   if (state.view === 'build') {
     if (state.buildPane === 'code') loadTree();
-    if (state.buildPane === 'source') loadSource();
+    if (state.buildPane === 'source' && (added || finished)) loadSource(false);
     if (state.buildPane === 'preview' && (touchedPage || finished)) refreshPreview();
     // A build that has just made or changed a page shows it, from the
     // agents' pane: what was built is the thing to look at now. Not from a

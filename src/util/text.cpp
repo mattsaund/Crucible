@@ -161,5 +161,29 @@ std::string console_to_utf8(std::string_view text) {
     return scrub_utf8(text);
 }
 
+std::string powershell_literal(std::string_view text) {
+    std::string out = "'";
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '\'') {
+            out += "''";
+            continue;
+        }
+        // U+2018 to U+201B are E2 80 98 to E2 80 9B in UTF-8.
+        if (static_cast<unsigned char>(c) == 0xE2 && i + 2 < text.size()
+            && static_cast<unsigned char>(text[i + 1]) == 0x80
+            && static_cast<unsigned char>(text[i + 2]) >= 0x98
+            && static_cast<unsigned char>(text[i + 2]) <= 0x9B) {
+            const std::string_view quote = text.substr(i, 3);
+            out += quote;
+            out += quote;
+            i += 2;
+            continue;
+        }
+        out += c;
+    }
+    return out + "'";
+}
+
 }  // namespace crucible::detail
 

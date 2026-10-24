@@ -28,33 +28,9 @@ namespace {
 /// it printed. `status` is its exit code, or -1 when it could not start.
 std::string run(const std::vector<std::string>& argv, int& status, int timeout = 30,
                 const std::vector<std::string>& env = {}) {
-    util::Subprocess child;
-    std::string error;
-    status = -1;
-    if (!child.start(argv, {}, env, error)) {
-        return error;
-    }
-    std::atomic<bool> finished{false};
-    std::thread watchdog([&] {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout);
-        while (!finished.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (std::chrono::steady_clock::now() >= deadline) {
-                child.terminate();
-                return;
-            }
-        }
-    });
-    std::string out;
-    std::string line;
-    while (child.read_line(line)) {
-        out += line;
-        out += '\n';
-    }
-    status = child.wait();
-    finished.store(true, std::memory_order_relaxed);
-    watchdog.join();
-    return crucible::detail::console_to_utf8(out);
+    const util::Ran ran = util::run(argv, {}, env, timeout);
+    status = ran.started ? ran.status : -1;
+    return ran.started ? crucible::detail::console_to_utf8(ran.output) : ran.error;
 }
 
 std::string lower(std::string_view text) {
@@ -86,6 +62,7 @@ Outcome done(std::string summary) {
     return out;
 }
 
+#if defined(__APPLE__)
 /// A JavaScript string literal, for the JXA that macOS runs.
 std::string js_string(std::string_view text) {
     std::string out = "\"";
@@ -101,19 +78,11 @@ std::string js_string(std::string_view text) {
     }
     return out + "\"";
 }
+#endif
 
 #if defined(_WIN32)
-/// A PowerShell single-quoted literal: only the quote needs doubling.
-std::string ps_string(std::string_view text) {
-    std::string out = "'";
-    for (const char c : text) {
-        out += c;
-        if (c == '\'') {
-            out += '\'';
-        }
-    }
-    return out + "'";
-}
+/// A PowerShell single-quoted literal. See text.hpp.
+std::string ps_string(std::string_view text) { return crucible::detail::powershell_literal(text); }
 #endif
 
 #if defined(__APPLE__)
@@ -129,7 +98,7 @@ Outcome jxa(const std::string& script, std::string summary) {
         std::string why = trimmed(out);
         if (why.find("not allowed") != std::string::npos || why.find("1002") != std::string::npos
             || why.find("assistive") != std::string::npos) {
-            why += " -- allow Crucible under System Settings, Privacy & Security, Accessibility";
+            why += ". Allow Crucible under System Settings, Privacy & Security, Accessibility";
         }
         return failed("could not control the computer: " + (why.empty() ? "osascript failed" : why));
     }
@@ -292,7 +261,7 @@ std::string screenshot_tool(std::string& why) {
             return tool;
         }
     }
-    why = "no screenshot program is installed -- grim (Wayland), gnome-screenshot, spectacle, "
+    why = "no screenshot program is installed: grim (Wayland), gnome-screenshot, spectacle, "
           "scrot or ImageMagick's import would do";
     return {};
 #endif
@@ -311,7 +280,7 @@ std::string input_tool(std::string& why) {
     if (util::on_path("ydotool")) {
         return "ydotool";
     }
-    why = "no program to drive the mouse and keyboard is installed -- xdotool (X11) or "
+    why = "no program to drive the mouse and keyboard is installed: xdotool (X11) or "
           "ydotool (Wayland)";
     return {};
 #endif
@@ -412,7 +381,7 @@ std::string read_text(const std::filesystem::path& picture, std::string& why) {
     } else if (const std::filesystem::path python = kit::ocr_python(); !python.empty()) {
         text = run({python.string(), "-I", "-c", kRapidOcrScript, picture.string()}, status, 120);
     } else {
-        why = "nothing on this machine reads the words in a picture yet -- Crucible fetches a reader "
+        why = "nothing on this machine reads the words in a picture yet. Crucible fetches a reader "
               "as it starts, or install tesseract";
         return {};
     }
@@ -466,7 +435,7 @@ Outcome screenshot(const std::filesystem::path& file, int max_side, int display)
     if (status != 0 || !std::filesystem::exists(file, ec)) {
         std::string why = trimmed(out);
         return failed("could not take a screenshot: " + (why.empty() ? "screencapture failed" : why)
-                      + " -- allow Crucible under System Settings, Privacy & Security, Screen Recording");
+                      + ". Allow Crucible under System Settings, Privacy & Security, Screen Recording");
     }
     if (max_side > 0) {
         // sips is part of macOS, and shrinks in place.

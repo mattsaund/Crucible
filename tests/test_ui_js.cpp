@@ -25,6 +25,10 @@ extern const unsigned char kRenderJs[];
 extern const unsigned int  kRenderJs_size;
 extern const unsigned char kPageHtml[];
 extern const unsigned int  kPageHtml_size;
+#if defined(CRUCIBLE_HAS_KATEX_JS)
+extern const unsigned char kKatexJs[];
+extern const unsigned int  kKatexJs_size;
+#endif
 }  // namespace crucible::gui::web
 
 namespace {
@@ -50,20 +54,28 @@ private:
     JSStringRef ref_;
 };
 
-/// One context with render.js already evaluated in it.
+/// render.js, as compiled in.
+std::string render_source() {
+    return std::string(reinterpret_cast<const char*>(crucible::gui::web::kRenderJs),
+                       crucible::gui::web::kRenderJs_size);
+}
+
+/// One context with scripts already evaluated in it: render.js, and KaTeX
+/// ahead of it for the math tests.
 ///
 /// Built once: the tables in that file are the same every time and parsing
 /// them per assertion would be the slowest part of this suite.
 class Engine {
 public:
-    Engine() : ctx_(JSGlobalContextCreate(nullptr)) {
-        const std::string source(reinterpret_cast<const char*>(crucible::gui::web::kRenderJs),
-                                 crucible::gui::web::kRenderJs_size);
-        const Str   script(source);
-        JSValueRef  thrown = nullptr;
-        JSEvaluateScript(ctx_, script, nullptr, nullptr, 0, &thrown);
-        if (thrown != nullptr) {
-            loaded_error_ = to_text(thrown);
+    explicit Engine(const std::vector<std::string>& sources = {render_source()})
+        : ctx_(JSGlobalContextCreate(nullptr)) {
+        for (const std::string& source : sources) {
+            const Str  script(source);
+            JSValueRef thrown = nullptr;
+            JSEvaluateScript(ctx_, script, nullptr, nullptr, 0, &thrown);
+            if (thrown != nullptr && loaded_error_.empty()) {
+                loaded_error_ = to_text(thrown);
+            }
         }
     }
     ~Engine() { JSGlobalContextRelease(ctx_); }
@@ -105,6 +117,16 @@ Engine& js() {
     return engine;
 }
 
+#if defined(CRUCIBLE_HAS_KATEX_JS)
+/// render.js with KaTeX loaded first, the order the page loads them in.
+Engine& js_math() {
+    static Engine engine({std::string(reinterpret_cast<const char*>(crucible::gui::web::kKatexJs),
+                                      crucible::gui::web::kKatexJs_size),
+                          render_source()});
+    return engine;
+}
+#endif
+
 /// Every script in the page, in the order it loads them.
 ///
 /// The page is one document by the time it is compiled in -- see
@@ -137,6 +159,7 @@ const char* const kNoBrowser = R"JS(
 var window = this;
 window.addEventListener = function () {};
 var document = {
+  compatMode: 'CSS1Compat',
   addEventListener: function () {},
   getElementById: function () { return null; },
   querySelector: function () { return null; },
@@ -436,7 +459,7 @@ TEST(every_view_draws_before_anything_has_been_fetched) {
     // name, no config, nothing fetched. Every view has to have something to
     // say in it, because every view can be the first one drawn.
     CHECK_EQ(drawn("topView()"), "ok");
-    for (const char* view : {"chat", "build", "create", "history", "settings"}) {
+    for (const char* view : {"chat", "build", "create", "history", "settings", "models"}) {
         const std::string result = drawn(std::string("views.") + view + "()");
         CHECK_EQ(result, "ok");
     }
@@ -448,6 +471,66 @@ TEST(every_view_draws_before_anything_has_been_fetched) {
     // is the right-hand panel's, not the top bar's.
     CHECK(page().eval("topView()").find("open-project") == std::string::npos);
     CHECK(page().eval("views.chat()").find("id=\"prompt\"") != std::string::npos);
+}
+
+TEST(the_models_tab_draws_a_search_a_choice_and_downloads) {
+    const std::string set = page().eval(R"(
+      state.market = { query: 'qwen', format: 'gguf', sort: 'likes', loading: false, more: false,
+        error: '', asked: 1, next: 'https://huggingface.co/api/models?cursor=x', option: 'Q4_K_M',
+        selected: 'unsloth/Qwen3.8-27B-GGUF', readme: '# Qwen\n\nA <b>model</b>. $E=mc^2$',
+        results: [
+          { id: 'unsloth/Qwen3.8-27B-GGUF', author: 'unsloth', name: 'Qwen3.8-27B-GGUF', downloads: 5751118,
+            likes: 5294, updated: '2026-08-20T12:04:25.000Z', params_b: 27.3, vision: true, tools: true,
+            reasoning: true, gated: false },
+          { id: 'x/<script>-GGUF', author: 'x', name: '<script>-GGUF', downloads: 0, likes: 0, updated: '',
+            params_b: 0, vision: false, tools: false, reasoning: false, gated: true } ],
+        detail: { id: 'unsloth/Qwen3.8-27B-GGUF', author: 'unsloth', name: 'Qwen3.8-27B-GGUF', format: 'gguf',
+          downloads: 5751118, likes: 5294, updated: '2026-08-20T12:04:25.000Z', params_b: 27.3,
+          architecture: 'qwen35', context: 262144, license: 'apache-2.0', base_model: 'Qwen/Qwen3.8-27B',
+          vision: true, tools: true, reasoning: true, gated: false,
+          machine: { vram: 4e10, ram: 5e10, gpus: 3, apple: false },
+          options: [
+            { name: 'Q4_K_M', repo: 'unsloth/Qwen3.8-27B-GGUF', bytes: 17e9, files: 2, fit: 'gpu', here: false, recommended: true },
+            { name: 'Q8_0', repo: 'unsloth/Qwen3.8-27B-GGUF', bytes: 3e10, files: 2, fit: 'partial', here: true },
+            { name: 'BF16', repo: 'unsloth/Qwen3.8-27B-GGUF', bytes: 6e10, files: 3, fit: 'large', here: false } ] } };
+      state.snapshot.downloads = [
+        { id: 'unsloth/Qwen3.8-27B-GGUF:Q4_K_M', repo: 'unsloth/Qwen3.8-27B-GGUF', option: 'Q4_K_M', format: 'gguf',
+          folder: '/m/unsloth/Qwen3.8-27B-GGUF', total: 17e9, done: 4e9, rate: 5e7, state: 'running', error: '' },
+        { id: 'a/b:Q2_K', repo: 'a/b', option: 'Q2_K', format: 'gguf', folder: '/m/a/b', total: 1e9, done: 2e8,
+          rate: 0, state: 'failed', error: 'not enough space: 1 GB needed, 0 B free' } ];
+      state.menu = 'market-option';
+      'set')");
+    CHECK_EQ(set, std::string("set"));
+    CHECK_EQ(drawn("views.models()"), "ok");
+    const std::string html = page().eval("views.models()");
+    // The choice, whether it will run, and what is on its way.
+    CHECK(html.find("Fits on GPU") != std::string::npos);
+    CHECK(html.find("Partial offload") != std::string::npos);
+    CHECK(html.find("Too large") != std::string::npos);
+    CHECK(html.find("Most likes") != std::string::npos);
+    CHECK(html.find("data-act=\"market-cancel\"") != std::string::npos);
+    CHECK(html.find("not enough space") != std::string::npos);
+    CHECK(html.find("title=\"Suggested\"") != std::string::npos);
+    // A name from the hub is text, and a README's HTML is not markup.
+    CHECK(html.find("<script>-GGUF") == std::string::npos);
+    CHECK(html.find("&lt;script&gt;-GGUF") != std::string::npos);
+    CHECK(html.find("<b>model</b>") == std::string::npos);
+    page().eval("state.market = null; state.menu = null; state.snapshot.downloads = []; 'reset'");
+}
+
+TEST(a_readme_is_tidied_into_what_the_page_draws) {
+    const std::string out = page().eval(
+        "tidyReadme('\\n---\\nlicense: mit\\n---\\n\\n[![logo](a.png)](https://x)\\n"
+        "    Indented by its HTML\\n  - a nested item\\n> [!NOTE]\\n> Said.\\n<img src=x onerror=alert(1)>')");
+    // Front matter after a blank line, a link with only a picture in it, and
+    // the HTML: gone.
+    CHECK(out.find("license") == std::string::npos);
+    CHECK(out.find("[](") == std::string::npos);
+    CHECK(out.find("<img") == std::string::npos);
+    // Indentation the HTML gave is not a code block; a nested item keeps it.
+    CHECK(out.find("\nIndented by its HTML") != std::string::npos || out.rfind("Indented by its HTML", 0) == 0);
+    CHECK(out.find("  - a nested item") != std::string::npos);
+    CHECK(out.find("> **Note**") != std::string::npos);
 }
 
 TEST(every_view_draws_a_session_with_everything_in_it) {
@@ -719,7 +802,7 @@ TEST(the_drop_overlay_says_where_a_drop_goes_or_why_it_cannot) {
                          + "('build', function () { var s = state.snapshot.cook.state;"
                            " state.snapshot.cook.state = 'working'; var why = dropTarget().why;"
                            " state.snapshot.cook.state = s; return why; })"),
-             "A build is running -- drop it on Chat, or wait for the build");
+             "A build is running. Drop it on Chat, or wait");
     CHECK_EQ(page().eval(std::string(on) + "('chat', function () { return dropTarget().mode; })"), "chat");
     const char* const without_cook =
         "(function (what) { var cook = state.snapshot.cook, view = state.view;"
@@ -860,7 +943,7 @@ TEST(with_no_project_the_box_is_open_and_nothing_is_said_about_it) {
     CHECK(chat.find("Ask anything") != std::string::npos);
     CHECK(chat.find("This chat gets a scratch folder") == std::string::npos);
     CHECK(chat.find("placeholder=\"Ask it something\"") != std::string::npos);
-    CHECK(chat.find("id=\"prompt\" data-draft data-key=\"composer-key\" data-input=\"composer-grow\"") != std::string::npos);
+    CHECK(chat.find("id=\"prompt\" data-draft data-sized data-key=\"composer-key\" data-input=\"composer-grow\"") != std::string::npos);
     CHECK(chat.find("open a project to start") == std::string::npos);
 }
 
@@ -1178,20 +1261,18 @@ TEST(a_table_ends_where_its_rows_do) {
               "</table><p>back to prose</p>"));
 }
 
-TEST(a_code_block_says_what_it_is_and_numbers_its_lines) {
-    // The header and the gutter are what make a block readable: a model that
-    // says "line 12" is talking about something that has to be findable.
+TEST(a_code_block_says_what_it_is_and_can_be_copied) {
+    // What language at the top, a Copy button beside it, and the code alone:
+    // no gutter of numbers, no count of lines.
     const std::string call = "markdown('```python\\na = 1\\nb = 2\\n```')";
     CHECK(has(call, "<span class=\"lang\">python</span>"));
-    CHECK(has(call, "2 lines"));
-    CHECK(has(call, "code-gutter"));
-    // The gutter counts the lines of code, not the fence.
-    CHECK_EQ(js().eval(call + ".match(/code-gutter[^>]*>([^<]*)</)[1]"), "1\n2");
     CHECK(has(call, "data-act=\"copy\""));
-}
-
-TEST(one_line_of_code_is_one_line) {
-    CHECK(has("markdown('```\\nonly\\n```')", "1 line<"));
+    CHECK(has(call, ">Copy</span>"));
+    CHECK(!has(call, "code-gutter"));
+    CHECK(!has(call, "2 lines"));
+    // The code is the fence's lines and nothing else.
+    CHECK_EQ(js().eval(call + ".match(/<code>([\\s\\S]*)<\\/code>/)[1].replace(/<[^>]*>/g, '')"),
+             "a = 1\nb = 2");
 }
 
 TEST(a_fenced_block_is_code_all_the_way_to_its_close) {
@@ -1245,6 +1326,111 @@ TEST(text_with_no_markdown_in_it_survives_unchanged) {
     const std::string plain = "Water boils at 100 C. That is 212 F, at sea level.";
     CHECK_EQ(js().eval("markdown(" + lit(plain) + ")"), "<p>" + plain + "</p>");
 }
+
+TEST(a_fence_written_any_way_people_write_one_is_code_and_never_hangs) {
+    // ```c++ once matched neither the fence nor the paragraph, and the loop
+    // that reads the lines never moved on: the window stopped mid-reply, and
+    // again every time that chat was opened.
+    for (const char* src : {"```c++\nint x;\n```", "```c#\nvar x;\n```", "``` python\nx = 1\n```",
+                            "````\ncode\n````", "```js title=x\nlet a;\n```", "> ```c++\n> int x;",
+                            "~~~\nplain\n~~~", "text\n```c+"}) {
+        const std::string html = js().eval("markdown(" + nlohmann::json(src).dump() + ")");
+        CHECK(html.find("class=\"code\"") != std::string::npos);
+    }
+    CHECK_EQ(js().eval(R"(markdown('# Heading\r\ntext'))"), "<h1>Heading</h1><p>text</p>");
+    CHECK(js().eval(R"(markdown('```c++\nint x;\n```'))").find("c++") != std::string::npos);
+    // A fence closes at a line of its own mark, at least as long: a ```bash
+    // inside a ````markdown block is part of the block, not its end.
+    const std::string nested = js().eval(R"(markdown('````markdown\n```bash\nls\n```\n````\nafter'))");
+    CHECK(nested.find("```bash") != std::string::npos);
+    CHECK(nested.find("<p>after</p>") != std::string::npos);
+}
+
+TEST(math_without_katex_shows_its_tex) {
+    // A build that could not fetch KaTeX, and this file loaded on its own:
+    // the formula is still found and shown as what it says, not as markup.
+    const std::string html = js().eval(R"(markdown('Energy is $E = mc^2$.'))");
+    CHECK(html.find("<code class=\"math-source\">E = mc^2</code>") != std::string::npos);
+    CHECK(html.find("katex") == std::string::npos);
+}
+
+#if defined(CRUCIBLE_HAS_KATEX_JS)
+TEST(katex_loads_ahead_of_render_js) {
+    CHECK(js_math().load_error().empty());
+    if (!js_math().load_error().empty()) {
+        std::printf("      %s\n", js_math().load_error().c_str());
+    }
+    CHECK_EQ(js_math().eval("typeof katex.renderToString"), "function");
+}
+
+TEST(math_is_typeset_in_a_line_and_on_lines_of_its_own) {
+    auto has = [](const std::string& html, const char* what) {
+        return html.find(what) != std::string::npos;
+    };
+    const std::string line = js_math().eval(R"(markdown('Energy is $E = mc^2$ and \\(\\pi r^2\\) too.'))");
+    CHECK(has(line, "class=\"katex\""));
+    CHECK(has(line, "<annotation encoding=\"application/x-tex\">E = mc^2</annotation>"));
+    CHECK(has(line, "<annotation encoding=\"application/x-tex\">\\pi r^2</annotation>"));
+
+    const std::string block = js_math().eval(R"(markdown('So:\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nDone.'))");
+    CHECK(has(block, "<div class=\"math\">"));
+    CHECK(has(block, "katex-display"));
+    CHECK(has(block, "<p>Done.</p>"));
+
+    const std::string brackets = js_math().eval(R"(markdown('\\[\n\\sum_{n=1}^\\infty \\frac{1}{n^2}\n\\]'))");
+    CHECK(has(brackets, "<div class=\"math\">"));
+    const std::string aligned = js_math().eval(R"(markdown('\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}'))");
+    CHECK(has(aligned, "<div class=\"math\">"));
+    CHECK(!has(aligned, "katex-error"));
+}
+
+TEST(a_dollar_that_is_money_stays_money) {
+    // Pandoc's rule: "$5, or $10" is two prices, not a formula reading
+    // "5, or ". Code keeps its dollars, and \$ is a dollar sign.
+    const std::string money = js_math().eval(R"(markdown('It costs $5, or $10 with tax.'))");
+    CHECK_EQ(money, "<p>It costs $5, or $10 with tax.</p>");
+    CHECK_EQ(js_math().eval(R"(markdown('Set $HOME and $PATH first.'))"),
+             "<p>Set $HOME and $PATH first.</p>");
+    CHECK_EQ(js_math().eval(R"(markdown('Use `$x$` as is.'))"), "<p>Use <code>$x$</code> as is.</p>");
+    CHECK_EQ(js_math().eval(R"(markdown('Price \\$5 and \\$10.'))"), "<p>Price $5 and $10.</p>");
+}
+
+TEST(math_is_not_emphasis_and_emphasis_can_hold_math) {
+    // In $a_1 + b_2$ the underscores are subscripts. Lifted out before the
+    // emphasis runs, so they do not become italics -- and bold around a
+    // formula still holds it.
+    const std::string html = js_math().eval(R"(markdown('Sum $a_1 + b_2$ and *this* stays.'))");
+    std::size_t ems = 0;
+    for (std::size_t at = html.find("<em>"); at != std::string::npos; at = html.find("<em>", at + 1)) {
+        ++ems;
+    }
+    CHECK_EQ(ems, std::size_t{1});
+    CHECK(html.find("<em>this</em>") != std::string::npos);
+    const std::string bold = js_math().eval(R"(markdown('**The value $x$ is 3**'))");
+    CHECK(bold.find("<strong>The value <span class=\"katex\">") != std::string::npos);
+}
+
+TEST(a_formula_still_arriving_shows_its_tex_until_it_closes) {
+    // Drawn half-written, it would flash red with every token.
+    const std::string open = js_math().eval(R"(markdown('Here:\n\n$$\n\\frac{a}{'))");
+    CHECK(open.find("<pre class=\"math-pending\">$$\n\\frac{a}{</pre>") != std::string::npos);
+    CHECK(open.find("katex") == std::string::npos);
+    // A stray $$ with a long reply after it is text, not a formula that
+    // swallowed the rest of the answer.
+    std::string stray = "$$";
+    for (int i = 0; i < 80; ++i) {
+        stray += "\\nline";
+    }
+    const std::string text = js_math().eval("markdown('" + stray + "')");
+    CHECK(text.find("math-pending") == std::string::npos);
+}
+
+TEST(a_formula_that_will_not_parse_is_shown_not_thrown) {
+    const std::string html = js_math().eval(R"(markdown('Broken $\\frac{1}{$ here.'))");
+    CHECK(html.find("katex-error") != std::string::npos);
+    CHECK(html.find("here.") != std::string::npos);
+}
+#endif
 
 TEST(markdown_never_lets_a_tag_through_from_the_model) {
     // A reply is text that chose some emphasis, not a document that brings
@@ -1453,7 +1639,8 @@ TEST(a_new_file_is_shown_whole_and_marked_as_an_addition) {
     // The language comes from the extension, since nothing else says.
     CHECK(has(call, "<span class=\"lang\">python</span>"));
     CHECK(has(call, "code-add"));
-    CHECK(has(call, "2 lines"));
+    // Both of its lines, whole.
+    CHECK_EQ(js().eval(call + ".split('print(').length - 1"), "2");
     CHECK(has(call, "id=\"edit-yes\""));
     CHECK(has(call, "id=\"edit-no\""));
 }

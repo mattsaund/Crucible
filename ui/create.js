@@ -305,7 +305,7 @@ function teachPicker(r) {
         <button class="action" data-act="wz-teach" data-path="${escape(t.path)}" data-name="${escape(t.name)}"
                 ${r.data.some((d) => d.id === t.path) ? 'disabled' : ''}>Add</button>
       </div>`).join('')}</div>
-    <div class="hint" style="margin-top:.4rem">What a provider's model did here, as question-and-answer records with the files it wrote.</div>`;
+    <div class="hint" style="margin-top:.4rem">A provider's work here, as records.</div>`;
 }
 actions['wz-teach'] = (e) => wizardTake('data',
   { source: 'local', id: e.dataset.path, path: e.dataset.path, label: `${e.dataset.name} (from builds)` }, 0);

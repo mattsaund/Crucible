@@ -119,8 +119,18 @@ function pageGeneral(c) {
       <div class="hint">Picks the expert. Local only.</div></div>
     ${setting('routing.keep_delegator_loaded', 'Keep loaded between prompts', 'bool', 'Uses more memory.')}
     ${setting('routing.min_confidence', 'Confidence floor', 'slider',
-      'Below this, the default expert answers.', { min: 0, max: 1, step: 0.01 })}`;
+      'Below this, the default expert answers.', { min: 0, max: 1, step: 0.01 })}
+
+    <h2 style="margin-top:1.8rem">APPEARANCE</h2>
+    <div class="field"><label for="ui-font">Font</label>
+      <input id="ui-font" list="ui-fonts" data-change="ui-font" spellcheck="false" autocomplete="off"
+             placeholder="System" value="${escape((c.ui && c.ui.font) || '')}">
+      <datalist id="ui-fonts">${(state.fonts || [])
+        .map((family) => `<option value="${escape(family)}"></option>`).join('')}</datalist>
+      <div class="hint">Empty for the system font.</div></div>`;
 }
+
+actions['ui-font'] = (e) => configure({ ui: { font: e.value.trim() } });
 
 actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value).model } });
 async function setModelsDir(path) {
@@ -592,9 +602,6 @@ function pageTools(c) {
   return `<h1>Tools</h1>
     <h2>PROJECT</h2>
     <p class="lede">${project.open ? escape(project.root) : 'None open.'}</p>
-    <div class="hint" style="margin-bottom:1rem">In a trusted folder an expert can list, read and write files, run
-      commands in any shell, run Python, use git${state.source && state.source.gh ? ' and gh' : ''}, and leave a
-      server running.</div>
     ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider', '',
       { min: 5, max: 900, step: 5 })}
     ${processes.length ? `<div class="field"><label>Running now</label>${processes.map((p) => `<div class="order-row">
@@ -603,7 +610,7 @@ function pageTools(c) {
         <button class="action" data-act="process-stop" data-name="${escape(p.name)}">Stop</button></div>`).join('')}</div>` : ''}
 
     <h2 style="margin-top:1.8rem">THE WEB</h2>
-    ${setting('tools.web_search', 'Web search and pages', 'bool', 'Lets experts search and read pages. Sends what they ask for out.')}
+    ${setting('tools.web_search', 'Web search and pages', 'bool', 'Searches leave this machine.')}
     ${searching ? `
       ${setting('tools.search_provider', 'Search with', 'choice', provider === 'duckduckgo' ? 'No key needed.' : '',
         [['duckduckgo', 'DuckDuckGo'], ['wikipedia', 'Wikipedia'], ['searxng', 'searxng'], ['brave', 'Brave']])}
@@ -616,11 +623,7 @@ function pageTools(c) {
 
     <h2 style="margin-top:1.8rem">THIS COMPUTER</h2>
     ${setting('tools.computer_control', 'Let experts use this computer', 'bool',
-      'Screenshots, the mouse and the keyboard, as you. Nothing bounds a click the way a folder bounds a file.')}
-    ${at(c, 'tools.computer_control') ? `<div class="hint" style="margin-top:-.8rem;margin-bottom:1.4rem">
-      On a Mac the first screenshot and the first click ask for Screen Recording and Accessibility under
-      System Settings, Privacy &amp; Security. On Linux, xdotool and a screenshot tool are needed. A model that
-      reads text only is given the words off each screenshot.</div>` : ''}
+      'Screenshots, mouse and keyboard, as you.')}
     ${kitView()}
     ${mcpView(c)}`;
 }
@@ -643,8 +646,7 @@ function mcpView(c) {
         <button class="action" data-act="mcp-remove" data-index="${i}">Remove</button></div>`;
   };
   return `<h2 style="margin-top:1.8rem">MCP SERVERS</h2>
-    <div class="hint" style="margin-bottom:.8rem">Programs that offer tools to every expert -- GitHub, a
-      database, a design tool. Each runs as you, like a command does.</div>
+    <div class="hint" style="margin-bottom:.8rem">Programs that give every expert tools. Each runs as you.</div>
     ${servers.length ? `<div class="field">${servers.map(row).join('')}</div>` : ''}
     <form class="row" data-submit="mcp-add" style="gap:.4rem;flex-wrap:wrap">
       <input id="mcp-name" data-draft placeholder="name: github" aria-label="Server name" style="flex:0 0 9rem"
@@ -715,8 +717,7 @@ function kitView() {
       <span class="status">${p.fetched ? 'fetched by Crucible' : p.missing ? 'missing' : 'this machine has its own'}</span>
     </div>`;
   return `<h2 style="margin-top:1.8rem">WHAT EXPERTS USE</h2>
-    <div class="hint" style="margin-bottom:.8rem">Programs an expert reaches for. What this machine lacks,
-      Crucible fetches into its own folder and nowhere else.</div>
+    <div class="hint" style="margin-bottom:.8rem">Missing ones go in Crucible's own folder.</div>
     <div class="field">${kit.pieces.map(row).join('')}</div>
     ${missing.length ? `<button class="action" data-act="kit-fetch">Fetch what is missing (${
       missing.map((p) => escape(p.label)).join(', ')})</button>` : ''}`;
@@ -745,20 +746,20 @@ function pageBuild(c) {
         ${seated.map((e) => `<option value="${escape(e.id)}"${at(c, 'build.architect') === e.id ? ' selected' : ''}>${
           escape(e.name)}${e.provider ? ` (${escape(e.provider)})` : ''}</option>`).join('')}
       </select>
-      <div class="hint">Writes the plan and the write-up. A frontier model does this best.</div></div>
+      <div class="hint">Writes the plan.</div></div>
     ${setting('build.confirm_plan', 'Show me the plan before it starts', 'bool', '')}
 
     <h2 style="margin-top:1.8rem">NEW AGENTS</h2>
     <div class="field"><label for="worker-model">Model for a seat a build makes</label>
       ${modelSelect(at(c, 'build.worker_model') || '', at(c, 'build.worker_provider') || '',
         { id: 'worker-model', 'data-change': 'worker-model' })}
-      <div class="hint">When no expert fits a task, the build adds one on this model and keeps it. None: use the experts there are.</div></div>
+      <div class="hint">For tasks no expert fits.</div></div>
 
     <h2 style="margin-top:1.8rem">THE RUN</h2>
     ${setting('build.split', 'Frontier models for the large tasks, local ones for the small', 'bool',
-      'When there are both. Saves a provider\'s tokens on the work a model here does as well.')}
+      'Saves provider tokens.')}
     ${setting('build.agents', 'Agents at once', 'slider',
-      'Tasks that do not wait on each other work side by side. A provider takes any number; a model on this machine, one agent at a time.',
+      'A model on this machine takes one at a time.',
       { min: 1, max: 8, step: 1 })}
     ${setting('build.auto_commit', 'Commit after each task', 'bool', 'Starts a repository when there is none.')}
     ${setting('build.rounds_per_task', 'Rounds per task', 'slider', 'Before the build moves on without it.',
@@ -780,15 +781,12 @@ function selfView() {
   if (!me.found) {
     return `<h2 style="margin-top:1.8rem">CRUCIBLE'S OWN SOURCE</h2>
       <p class="lede">${escape(me.why || 'Not found.')}</p>
-      <div class="hint">To have Crucible work on itself, clone its source and run it from there -- the
-        one-line installer does both -- or name a checkout here.</div>
+      <div class="hint">Clone Crucible's source, or choose a checkout.</div>
       <div class="row" style="margin-top:.6rem"><button class="action" data-act="self-choose">Choose its folder</button></div>`;
   }
   const status = me.rebuilding ? 'Rebuilding...' : me.status === 0 ? 'Built.' : me.status > 0 ? 'The build failed.' : '';
   return `<h2 style="margin-top:1.8rem">CRUCIBLE'S OWN SOURCE</h2>
     <p class="lede">${escape(me.root)}</p>
-    <div class="hint">Open it as a project and give a build a directive about Crucible itself; then rebuild,
-      and start the Crucible that was built in place of this one.</div>
     <div class="row" style="margin-top:.6rem">
       <button class="action" data-act="self-open">Open it as a project</button>
       <button class="action" data-act="self-rebuild" ${me.rebuilding ? 'disabled' : ''}>Rebuild</button>
@@ -816,7 +814,12 @@ actions['self-choose'] = () => guard(async () => {
 
 /// Follow a rebuild until it ends.
 async function watchRebuild() {
-  state.self = await call('self.source');
+  try {
+    state.self = await call('self.source');
+  } catch (error) {
+    state.error = error.message;
+    return render();
+  }
   render();
   if (state.self.rebuilding) setTimeout(watchRebuild, 1500);
 }
@@ -846,8 +849,8 @@ function pageAbout() {
     ${setting('ui.check_updates', 'Check for new versions', 'bool', 'Daily, from GitHub.')}
     ${selfView()}
     <h2 style="margin-top:1.8rem">WHAT LEAVES THIS MACHINE</h2>
-    <p class="lede">The version check, web searches, first-start downloads, base models for
-      training, and prompts to providers.</p>
+    <p class="lede">The version check, web searches, model searches and downloads, first-start
+      downloads, base models for training, and prompts to providers.</p>
     <h2 style="margin-top:1.8rem">FILES</h2>
     <div class="runtime-detail" style="border:0;padding:0">${files.map(([label, path]) =>
       `<div><span>${label}</span>${escape(path)}</div>`).join('')}</div>
@@ -863,7 +866,7 @@ const updating = () => ['asking', 'downloading', 'starting'].includes((state.upd
 function updateLine() {
   const p = state.updating;
   if (!p || p.phase === 'idle') {
-    return '<p class="lede">Downloads it, closes Crucible, installs it and opens it again.</p>';
+    return '<p class="lede">Crucible restarts to install it.</p>';
   }
   if (p.phase === 'failed') return `<p class="bad">${escape(p.error)}</p>`;
   if (p.phase === 'downloading') {
@@ -874,7 +877,11 @@ function updateLine() {
 
 /// Follow an update until Crucible closes for it, or it fails.
 async function watchUpdate() {
-  state.updating = await call('update.progress');
+  try {
+    state.updating = await call('update.progress');
+  } catch (error) {
+    state.updating = { phase: 'failed', error: error.message };
+  }
   render();
   if (updating()) setTimeout(watchUpdate, 700);
 }
@@ -911,6 +918,7 @@ views.settings = () => {
 /// the pages share most of it, and none of it holds up the others.
 entering.settings = () => {
   need('models', 'models');
+  need('fonts', 'fonts');
   need('providers', 'providers');
   // Asked again every time, not kept from the start: the empty chat asks at
   // startup, before the engine has loaded any runtime, and that answer --

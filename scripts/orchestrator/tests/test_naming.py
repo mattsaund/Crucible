@@ -59,6 +59,8 @@ class Core:
         self.asked.append((method, params))
         if method == "delegator.ready":
             return {"available": self.available}
+        if method == "delegator.done":
+            return {}
         if method == "delegator.generate":
             return {"text": self.text}
         raise AssertionError(method)
@@ -70,12 +72,15 @@ class Through(unittest.TestCase):
         self.assertEqual(naming.name_session(core, {"excerpt": "Question: how fast\nAnswer: 7.7 km/s"}),
                          {"name": "Orbital speed"})
         self.assertEqual(core.asked[1][1]["max_tokens"], 24)
+        # Not worth a load over the expert chosen in the box.
+        self.assertEqual(core.asked[0], ("delegator.ready", {"optional": True}))
 
     def test_no_delegator_means_the_opening_words(self):
         core = Core("", available=False)
         self.assertEqual(naming.name_session(core, {"excerpt": "Question: how fast is the ISS"}),
                          {"name": "How fast is the ISS"})
-        self.assertEqual([m for m, _ in core.asked], ["delegator.ready"])
+        # Opened and closed, and nothing generated between.
+        self.assertEqual([m for m, _ in core.asked], ["delegator.ready", "delegator.done"])
 
     def test_examples_are_written_for_a_new_expert(self):
         core = Core("What is the torque on a bolt?\nHow do I size a beam?")

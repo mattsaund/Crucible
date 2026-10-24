@@ -23,6 +23,7 @@
 
 #include "crucible/config/paths.hpp"
 #include "crucible/runtime/cuda_libraries.hpp"
+#include "crucible/runtime/prebuilt.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -78,6 +79,13 @@ std::map<BackendKind, std::vector<std::filesystem::path>> modules_in(
         if (entry.is_directory()) {
             continue;
         }
+        // A module moved aside while it was loaded (place_module): gone once
+        // nothing has it open, which is any start after the one that moved it.
+        if (entry.path().extension() == ".old") {
+            std::error_code ignored;
+            std::filesystem::remove(entry.path(), ignored);
+            continue;
+        }
         if (const std::optional<BackendKind> kind = kind_of_module(entry.path())) {
             found[*kind].push_back(entry.path());
         }
@@ -114,9 +122,10 @@ std::map<BackendKind, int> registered_devices() {
 /// The CPU backend ships as one module per x86-64 feature level and only one
 /// of them may be loaded, so the choice is ggml's own: each module exports
 /// `ggml_backend_score`, which returns 0 when the CPU cannot run it and a
-/// higher number the more of the machine it uses. ggml does this at startup
-/// inside ggml_backend_load_all_from_path; a runtime installed later has to
-/// have it done for it.
+/// higher number the more of the machine it uses. ggml's own loader,
+/// ggml_backend_load_all_from_path, would ask it; Crucible loads backend by
+/// backend (see load_all), so it is asked here, at startup and for a runtime
+/// installed later alike.
 ///
 /// dlopen here is a probe, not a load: the winner is closed again and handed
 /// to ggml_backend_load, which is the call that registers it.
@@ -172,6 +181,18 @@ bool stale_in(const json& manifest, BackendKind kind) {
     const auto entry = manifest.find(std::string(backend_info(kind).id));
     if (entry == manifest.end() || !entry->is_object()) {
         return false;
+    }
+    // A CUDA runtime downloaded before the published one had kernels for
+    // Turing: the right llama.cpp, and nothing an RTX 20 can run. On the
+    // cards it did have kernels for, it is as good as a new one. See
+    // prebuilt::kCudaKernels.
+    if (kind == BackendKind::Cuda && entry->value("source", "") == "downloaded") {
+        const auto kernels = entry->find("kernels");
+        if ((kernels == entry->end() || !kernels->is_number_integer()
+             || kernels->get<int>() < prebuilt::kCudaKernels)
+            && !prebuilt::old_cuda_kernels_run_here()) {
+            return true;
+        }
     }
     const std::string tag = entry->value("llama_tag", "");
     return !tag.empty() && tag != RuntimeStatus::required_llama_tag();
@@ -274,7 +295,7 @@ bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
     }
     if (ggml_backend_load(best.string().c_str()) == nullptr) {
         error = "could not load " + best.filename().string() +
-                " -- see the Crucible log";
+                " (see the Crucible log)";
         return false;
     }
     return true;
@@ -412,25 +433,36 @@ bool RuntimeRegistry::remove(BackendKind kind, std::string& error) {
         return false;
     }
 
-    std::error_code ec;
+    // The first thing that went wrong is the one said: a later file that
+    // went without trouble does not make it as if it had not happened.
+    std::error_code failed;
     for (const std::filesystem::path& file : found->second) {
         // Take any versioned aliases with it. Crucible no longer produces them
         // (see cmake/CrucibleUnversion.cmake), but a runtime built by an older
         // one has libggml-cuda.so.0 and libggml-cuda.so.0.9.4 sitting beside
         // the module, and those would be left behind as several hundred
         // megabytes of orphan.
+        std::vector<std::filesystem::path> going;
+        std::error_code listing;
         for (const std::filesystem::directory_entry& entry :
-             std::filesystem::directory_iterator(file.parent_path(), ec)) {
+             std::filesystem::directory_iterator(file.parent_path(), listing)) {
             const std::string name = entry.path().filename().string();
-            if (name.rfind(file.filename().string(), 0) == 0) {
-                std::filesystem::remove(entry.path(), ec);
+            if (name.rfind(file.filename().string(), 0) == 0 && entry.path().extension() != ".old") {
+                going.push_back(entry.path());
+            }
+        }
+        for (const std::filesystem::path& one : going) {
+            std::error_code ec;
+            if (!retire_module(one, ec) && !failed) {
+                failed = ec;
             }
         }
     }
-    if (ec) {
-        error = "could not remove " + std::string(info.name) + ": " + ec.message();
+    if (failed) {
+        error = "could not remove " + std::string(info.name) + ": " + failed.message();
         return false;
     }
+    std::error_code ec;
 
     json manifest = read_manifest(manifest_file());
     manifest.erase(std::string(info.id));
@@ -446,6 +478,46 @@ bool RuntimeRegistry::remove(BackendKind kind, std::string& error) {
         cuda_libraries::remove();
     }
     return true;
+}
+
+bool place_module(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
+    ec.clear();
+    std::filesystem::rename(from, to, ec);
+#if defined(_WIN32)
+    if (ec && std::filesystem::exists(to)) {
+        // Loaded, so not to be replaced: moved aside, which Windows allows of
+        // a DLL in use, and the new one put where it was.
+        std::filesystem::path aside = to;
+        aside += ".old";
+        std::error_code moved;
+        std::filesystem::remove(aside, moved);
+        std::filesystem::rename(to, aside, moved);
+        if (!moved) {
+            ec.clear();
+            std::filesystem::rename(from, to, ec);
+        }
+    }
+#endif
+    return !ec;
+}
+
+bool retire_module(const std::filesystem::path& file, std::error_code& ec) {
+    ec.clear();
+    if (std::filesystem::remove(file, ec) || !ec) {
+        return true;
+    }
+#if defined(_WIN32)
+    std::filesystem::path aside = file;
+    aside += ".old";
+    std::error_code moved;
+    std::filesystem::remove(aside, moved);
+    std::filesystem::rename(file, aside, moved);
+    if (!moved) {
+        ec.clear();
+        return true;
+    }
+#endif
+    return false;
 }
 
 }  // namespace crucible

@@ -48,6 +48,10 @@ TEST(an_asset_name_carries_the_backend_the_platform_and_the_tag) {
     // another one from ever being asked for.
     const std::string tag(RuntimeStatus::required_llama_tag());
     CHECK(name.find(tag) != std::string::npos);
+    // CUDA's says which kernels it has, so one published before them, under
+    // the same llama.cpp, is never taken for it.
+    CHECK(name.find(tag + "-k" + std::to_string(prebuilt::kCudaKernels) + ".tar.gz") != std::string::npos);
+    CHECK(prebuilt::asset_name(BackendKind::Cpu).find("-k") == std::string::npos);
 }
 
 TEST(each_backend_asks_for_its_own_asset) {

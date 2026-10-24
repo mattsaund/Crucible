@@ -131,9 +131,10 @@ function splitModel(value) {
 
 const TABS = [
   ['chat',    'Chat',    'Ask one question'],
-  ['build',   'Build',   'Give it a directive: it plans, delegates, builds and ships'],
+  ['build',   'Build',   'Plan and build'],
   ['create',  'Create',  'Fine-tune an expert'],
   ['history', 'History', 'Past builds and conversations'],
+  ['models',  'Models',  'Download models'],
 ];
 
 function topView() {
@@ -369,7 +370,7 @@ function seatTip(e) {
               : e.model ? e.model + (e.phase === 'missing' ? '  (missing)' : '')
               : 'no model yet';
   return `${e.blurb ? e.blurb + '\n' : ''}${where}${
-    e.made ? '\nMade by a build for work nobody on the roster fitted' : ''}`;
+    e.made ? '\nMade by a build' : ''}`;
 }
 
 /// The task an expert has in the build that is running, when it has one --
@@ -446,7 +447,7 @@ function sideView() {
     const busy = working(e.id);
     return `<button class="${classes.join(' ')}" data-act="seat-open" data-expert="${escape(e.id)}"
         data-phase="${(i === linked || busy) && e.phase !== 'loading' ? 'active' : e.phase}"
-        title="${escape(busy ? e.name + ' is working on task ' + (busy.index + 1) + ': ' + busy.title + ' -- click to see it'
+        title="${escape(busy ? e.name + ' is on task ' + (busy.index + 1) + ': ' + busy.title
                              : seatTip(e))}">
       <span class="dot"></span><span class="name">${escape(e.name)}</span>
       ${e.provider ? `<span class="cloud" title="Answered by ${escape(e.provider)}">${ICONS.cloud}</span>` : ''}
@@ -461,8 +462,7 @@ function sideView() {
   // its work. Here rather than only in the Build view, so what is at work
   // is in sight from whichever view is open.
   const build = state.snapshot.cook;
-  const agents = build ? `<h2 class="experts-head agents-head"
-        title="The build's agents: the architect, and one for each task. Click one to see its work.">AGENTS</h2>
+  const agents = build ? `<h2 class="experts-head agents-head">AGENTS</h2>
       ${agentRows(build, agentShown(build))}` : '';
 
   // What the program last said stays on the line until something else is:
@@ -593,7 +593,7 @@ actions.gear = () => enter(state.view === 'settings' ? (state.lastView || 'chat'
 
 function shortcuts(event) {
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-  const tab = { 1: 'chat', 2: 'build', 3: 'create', 4: 'history' }[event.key];
+  const tab = { 1: 'chat', 2: 'build', 3: 'create', 4: 'history', 5: 'models' }[event.key];
   if (tab) { event.preventDefault(); enter(tab); }
   if (event.key === ',') { event.preventDefault(); actions.gear(); }
   // Attach, from wherever the box is. Not over a dialog: the box is not

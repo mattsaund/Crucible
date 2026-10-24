@@ -444,6 +444,11 @@ struct UiConfig {
     /// program was built from: a checkout somebody pointed it at, so that
     /// Crucible can be built on like any other project. See self_source.hpp.
     std::string source_dir;
+
+    /// The family the interface is drawn in, by name: anything installed on
+    /// the machine. Empty means the system's own font. Code stays in the
+    /// system's monospace unless the chosen family is one; see ui/base.js.
+    std::string font;
 };
 
 /// The whole config file.

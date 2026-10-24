@@ -221,8 +221,8 @@ function appStrip() {
         <button class="action" type="submit" ${p.making.busy || !p.making.can ? 'disabled' : ''}>${
           p.making.busy ? 'Making it...' : 'Make it'}</button>
         <button class="action" type="button" data-act="app-cancel" ${p.making.busy ? 'disabled' : ''}>Cancel</button>
-        <span class="status">${p.making.can ? `It goes in ${where}, and keeps its data between uses.`
-          : 'This Crucible has no app runner beside it -- reinstall Crucible to make apps.'}</span>
+        <span class="status">${p.making.can ? `It goes in ${where}.`
+          : 'No app runner. Reinstall Crucible to make apps.'}</span>
       </form>`;
   }
   if (p.made) {
@@ -233,7 +233,7 @@ function appStrip() {
   }
   if (p.stale) {
     return `<div class="row app-strip">
-        <span class="status">The build has changed the page since it was shown.</span>
+        <span class="status">Changed by the build.</span>
         <button class="action" data-act="preview-reload">Show it now</button>
       </div>`;
   }
@@ -247,7 +247,7 @@ function tuneView() {
   const e = p.picked;
   if (!e) {
     return `<div class="tune"><div class="caption">TUNE</div>
-      <div class="status">${p.picking ? 'Click an element in the page.' : 'Pick an element to change its spacing, type and color.'}</div>
+      <div class="status">${p.picking ? 'Click an element in the page.' : 'Pick an element.'}</div>
       ${p.changes.length ? tuneChanges() : ''}</div>`;
   }
   const rows = TUNE_PROPS.map(([prop, label, kind]) => {
@@ -257,10 +257,10 @@ function tuneView() {
     if (kind === 'color') {
       return `<div class="tune-row"><label for="${id}">${label}</label>
         <input type="color" id="${id}" value="${escape(hexOf(current))}" data-input="tune-set" data-prop="${prop}" data-follow>
-        <input class="tune-text" value="${escape(current)}" data-change="tune-set" data-prop="${prop}" aria-label="${label} value" data-draft></div>`;
+        <input class="tune-text" value="${escape(current)}" data-change="tune-set" data-prop="${prop}" aria-label="${label} value"></div>`;
     }
     return `<div class="tune-row"><label for="${id}">${label}</label>
-      <input id="${id}" value="${escape(current)}" data-change="tune-set" data-prop="${prop}" data-draft spellcheck="false">
+      <input id="${id}" value="${escape(current)}" data-change="tune-set" data-prop="${prop}" spellcheck="false">
       ${['padding', 'margin', 'gap', 'font-size', 'border-radius', 'letter-spacing', 'line-height'].includes(prop)
         ? `<button class="icon" data-act="tune-nudge" data-prop="${prop}" data-by="-1" title="Less" aria-label="Less ${label}">&minus;</button>
            <button class="icon" data-act="tune-nudge" data-prop="${prop}" data-by="1" title="More" aria-label="More ${label}">+</button>` : ''}
@@ -269,7 +269,7 @@ function tuneView() {
   return `<div class="tune"><div class="caption">TUNE</div>
     <div class="tune-what"><strong>${escape(e.tag)}</strong> <span class="status">${escape(e.selector)}</span>
       ${e.text ? `<div class="hint">"${escape(e.text)}"</div>` : ''}
-      ${e.box ? `<div class="hint">${e.box.w} × ${e.box.h} px</div>` : ''}</div>
+      ${e.box ? `<div class="hint">${Number(e.box.w) || 0} × ${Number(e.box.h) || 0} px</div>` : ''}</div>
     <div class="tune-rows">${rows}</div>
     ${tuneChanges()}</div>`;
 }
@@ -298,7 +298,7 @@ function tunePrompt() {
   // Said as work to do in the file, not a question about it: a small model
   // asked only to "make these changes" answers with a snippet and stops.
   return `Edit the project so that ${p.page} shows these style changes. Read ${p.page} first, change the style where it lives (the stylesheet it uses, or the markup when the style is inline), and write the changed file back with everything else exactly as it was:\n${
-    lines.join('\n')}\nUse the same units the file already uses where that is sensible. Do not just show the change -- make it in the file, and then say which file you changed.`;
+    lines.join('\n')}\nUse the same units the file already uses where that is sensible. Do not just show the change: make it in the file, and then say which file you changed.`;
 }
 
 // --- what a person can do here ------------------------------------------------------
@@ -428,8 +428,11 @@ actions['app-make'] = () => guard(async () => {
   p.making = { name: got.name || 'App', busy: false, can: got.can !== false };
   p.made = null;
   render();
-  const box = document.getElementById('app-name');
-  if (box) { box.focus(); box.select(); }
+  // After the draw render() asked for, which is where the box comes from.
+  requestAnimationFrame(() => {
+    const box = document.getElementById('app-name');
+    if (box) { box.focus(); box.select(); }
+  });
 });
 actions['app-cancel'] = () => { state.preview.making = null; render(); };
 actions['app-package'] = (form) => guard(async () => {
@@ -478,7 +481,13 @@ function previewMessage(m) {
     render();
   }
 }
-window.addEventListener('message', (event) => previewMessage(event.data || {}));
+// Only from the preview, and only what can be read as a message: anything
+// can post to this window, and what a page says is drawn into it.
+window.addEventListener('message', (event) => {
+  const frame = previewFrame();
+  if (!frame || event.source !== frame.contentWindow) return;
+  if (event.data && typeof event.data === 'object') previewMessage(event.data);
+});
 
 /// What the preview fetches when its pane opens: the pages there are.
 function enterPreview() {

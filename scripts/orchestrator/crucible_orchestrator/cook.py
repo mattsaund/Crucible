@@ -474,7 +474,7 @@ class Cook:
                     # Nobody could take it: the expert that had it carries on --
                     # a worse specialist finishing the job beats no job. Seated
                     # again, since its model may have been freed for the other.
-                    self.note("note", after.error + " -- carrying on with " + before.name, ok=False)
+                    self.note("note", after.error + ". Carrying on with " + before.name, ok=False)
                     again = seat_decision(core, self.params, self.roster,
                                           routing.Decision(before.id, 1.0, routing.PINNED, "carrying on"))
                     if not again.ok:
@@ -616,6 +616,19 @@ class Cook:
                     journal["outcome"] = (call or {}).get("argument") or answer
                     break
 
+                # A write still waits for a yes when Auto is off: finishing up
+                # is not a way around asking.
+                if (call.get("kind") in ("write", "edit") and not core.flags().get("auto_edits")
+                        and not (core.call("edit.ask", call) or {}).get("approved", False)):
+                    if self.canceled():
+                        break
+                    self.note("note", "you declined the edit to " + call.get("argument", ""), ok=False)
+                    instruction = ("The user declined that edit, so the file is unchanged. "
+                                   "Anything else that must be repaired before this is left "
+                                   "alone? If not, reply DONE: and a short account of what you "
+                                   "changed.")
+                    continue
+
                 started = time.monotonic()
                 result = self.run_tool(call)
                 self.note(call.get("kind", ""), result.get("summary", ""),
@@ -640,10 +653,10 @@ class Cook:
             journal["outcome"] = (
                 "interrupted" if interrupted
                 else "stopped: the expert kept answering without taking an action. Its replies "
-                     "are not in the form a cook needs -- a different model may follow it better"
+                     "are not in the form a cook needs. A different model may follow it better"
                 if stalled
-                else "stopped: the expert repeated the same action without making progress -- "
-                     "a larger model may be needed for this goal"
+                else "stopped: the expert repeated the same action without making progress. "
+                     "A larger model may be needed for this goal"
                 if looping
                 else "finished")
         journal["ended_unix"] = int(time.time())

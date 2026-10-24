@@ -7,11 +7,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
 #
 # Installs the program: the build toolchain, a compile, `crucible` on your
-# PATH, an application entry for it, and the directories it keeps its files in.
-# Nothing else. No compute runtime and no models -- Crucible manages its own
-# runtimes from the settings screen, on the machine that will run them, so an
-# installer that guessed at a GPU SDK was doing work the program does better
-# and asking questions it does not need the answers to.
+# PATH, an application entry for it, and the directories it keeps its files in;
+# then, by asking the program itself, its own Python, the compute runtimes this
+# machine can use, and the fine-tuning environment. No models.
 #
 # Safe to re-run: it upgrades in place.
 
@@ -25,10 +23,9 @@ BRANCH="main"
 # The desktop application. Built by default: Crucible is two faces over one
 # engine, and someone who runs the one-line install should get both of them.
 #
-# It needs a little from the system beyond a compiler -- on Linux,
-# a handful of X11 development headers, a few megabytes in total, which this
-# installs. There is no falling back to a terminal build any more: the window
-# is the program.
+# It needs a little from the system beyond a compiler -- on Linux, WebKitGTK
+# and its development headers, which this installs. There is no falling back
+# to a terminal build any more: the window is the program.
 #
 # Accepted and ignored: --gui and --no-gui chose between the window and the
 # terminal face beside it. That face is gone, and a script still passing
@@ -553,27 +550,23 @@ usage() {
     cat <<EOF
 usage: install.sh [options]
 
-  Installs the program and nothing else: crucible, an application entry for it,
-  and the directories it keeps its files in. Compute runtimes are not an
-  installer's business -- Crucible builds one on demand from its settings
-  screen, on the machine that will run it.
+  Builds and installs Crucible: the program, an application entry, its own
+  Python, the compute runtimes this machine can use, and the fine-tuning
+  environment.
 
-  --prefix DIR     install location (default: /usr/local with sudo,
-                   otherwise ~/.local)
+  --prefix DIR     install location (default: ~/.local, or /usr/local as root)
   --branch NAME    git branch to build (default: main)
   --jobs N         parallel build jobs (default: all cores)
-  --gui, --no-gui  accepted and ignored. Crucible is one program and it is the
-                   window; the terminal face these chose between is gone.
+  --gui, --no-gui  accepted and ignored
   --no-deps        do not install system packages
-  --no-runtimes    skip the compute backends. Add them later from the
-                   settings screen, or with: crucible --install-runtimes
-  --no-trainer     skip the Python environment for fine-tuning (several
-                   gigabytes). Add it later with: crucible --install-trainer
-  --trainer-flavor cuda|cpu|mlx -- which training stack to install
-                   (default: whatever the hardware says)
+  --no-runtimes    skip the compute runtimes
+                   (later: crucible --install-runtimes)
+  --no-trainer     skip the fine-tuning environment, several GB
+                   (later: crucible --install-trainer)
+  --trainer-flavor cuda, cpu or mlx: which training stack
+                   (default: what the hardware says)
   -y, --yes        assume yes; never prompt
-  --check          report what would be installed, then exit without
-                   changing anything
+  --check          say what would be installed, change nothing
   --uninstall      remove Crucible and everything it installed: the program,
                    the libraries, the application entry, the config, the
                    folder-trust list, the models, the runtimes and the history
@@ -585,8 +578,8 @@ usage: install.sh [options]
 examples:
   curl -fsSL $RAW_URL | bash
   curl -fsSL $RAW_URL | bash -s -- --uninstall
-  ./install.sh --prefix ~/.local
-  ./install.sh --prefix /opt/crucible
+  bash install.sh --prefix ~/.local
+  bash install.sh --prefix /opt/crucible
 EOF
 }
 
@@ -770,7 +763,10 @@ pkg_install() {
                   > "$PKG_LOG" 2>&1 || status=$? ;;
         brew)   brew install "$@"                          > "$PKG_LOG" 2>&1 || status=$? ;;
         dnf)    $SUDO dnf install -y -q "$@"                > "$PKG_LOG" 2>&1 || status=$? ;;
-        pacman) $SUDO pacman -Sy --needed --noconfirm "$@"  > "$PKG_LOG" 2>&1 || status=$? ;;
+        # -S, not -Sy: refreshing the package lists without upgrading is the
+        # partial upgrade Arch says never to do, and can pull in a webkit2gtk
+        # built against newer libraries than the rest of the system has.
+        pacman) $SUDO pacman -S --needed --noconfirm "$@"   > "$PKG_LOG" 2>&1 || status=$? ;;
         zypper) $SUDO zypper --non-interactive install -y "$@" > "$PKG_LOG" 2>&1 || status=$? ;;
         *)      spinner_stop; warn "cannot install $* automatically"; return 1 ;;
     esac
@@ -781,6 +777,7 @@ pkg_install() {
     else
         warn "package installation failed:"
         tail -8 "$PKG_LOG" >&2 || true
+        [ "$PKG" = "pacman" ] && info "if a package was not found, update first:  sudo pacman -Syu"
     fi
     rm -f "$PKG_LOG"
     return "$status"
@@ -1112,8 +1109,13 @@ locate_source() {
     if [ -d "$SRC_DIR/.git" ]; then
         PHASE_LABEL="updating $SRC_DIR"
         spinner_start
-        git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH" --quiet >/dev/null 2>&1
-        git -C "$SRC_DIR" checkout --quiet FETCH_HEAD >/dev/null 2>&1
+        # Said and stopped, not stopped: under `set -e` an offline fetch ended
+        # the install here, behind the spinner, with nothing on the screen.
+        if ! git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH" --quiet >/dev/null 2>&1 \
+           || ! git -C "$SRC_DIR" checkout --quiet FETCH_HEAD >/dev/null 2>&1; then
+            spinner_stop
+            die "could not update $SRC_DIR from $REPO_URL. Check the connection and try again."
+        fi
         spinner_stop
         ok "updated to latest $BRANCH"
     else
@@ -1390,10 +1392,18 @@ build_and_install() {
     make_app_bundle
     if [ "$(uname -s)" != "Darwin" ] \
        && [ -f "$PREFIX/share/applications/crucible.desktop" ]; then
-        command -v update-desktop-database >/dev/null 2>&1 \
-            && update-desktop-database "$PREFIX/share/applications" >/dev/null 2>&1
-        command -v gtk-update-icon-cache >/dev/null 2>&1 \
-            && gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" >/dev/null 2>&1
+        # As whoever installed: a prefix that took sudo to write takes it for
+        # its caches too. And never fatal -- under `set -e` a cache tool that
+        # failed ended the install right here, before Python, the runtimes
+        # and the summary, and without a word.
+        local as=""
+        [ -w "$PREFIX/share/applications" ] || as="$SUDO"
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            $as update-desktop-database "$PREFIX/share/applications" >/dev/null 2>&1 || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            $as gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true
+        fi
         ok "added Crucible to the application menu"
     fi
 
@@ -1504,7 +1514,7 @@ uninstall() {
             [ "$seen" = "$p" ] && { settled=1; break; }
         done
         [ "$settled" = 1 ] && continue
-        for name in crucible crucible-routebench; do
+        for name in crucible crucible-routebench crucible-app; do
             [ -e "$p/bin/$name" ] && sweep+=("$p/bin/$name")
         done
         # llama.cpp's shared libraries, the application-menu entry and its
@@ -1550,7 +1560,7 @@ uninstall() {
     # Say what survived rather than claiming success over the top of it.
     local left=0 leftover
     for p in "${prefixes[@]}"; do
-        for name in crucible crucible-routebench; do
+        for name in crucible crucible-routebench crucible-app; do
             [ -e "$p/bin/$name" ] && { warn "still present: $p/bin/$name"; left=1; }
         done
         [ -e "$p/lib/crucible" ] && { warn "still present: $p/lib/crucible"; left=1; }
@@ -1594,25 +1604,12 @@ path_advice() {
 }
 
 # --------------------------------------------------------------------------
-# The fine-tuner's Python environment
+# What the program fetches for itself: its Python, the runtimes, the trainer
 # --------------------------------------------------------------------------
-# Done by the program rather than here. `crucible --install-trainer` drives
-# the same code the settings screen does, which means one implementation of
-# "fetch Crucible's Python, make a venv, resolve the right torch" instead of
-# one here, one in PowerShell and one in C++ that could disagree about what
-# "installed" means.
-#
-# Never fatal. A machine with no Python, a proxy that blocks PyPI, a disk that
-# fills up -- none of those are a reason to fail an install of a program that
-# runs models perfectly well without a trainer. It says what happened and
-# names the command that tries again.
-# The compute backends. Quick -- tens of megabytes over the wire -- so it runs
-# before the trainer, and a machine that gives up partway through the big
-# download still ends up able to run a model.
 # Crucible's own Python, which routing and cooks run on -- and the trainer is
 # built from. Always, --no-trainer or not: without it no prompt is routed.
-# Tens of megabytes, so it goes first. Never fatal either: the window fetches
-# it on first start if this could not.
+# Tens of megabytes, so it goes first. Never fatal: the window fetches it on
+# first start if this could not.
 install_python() {
     progress_end
     printf '\n'
@@ -1628,6 +1625,9 @@ install_python() {
     return 0
 }
 
+# The compute backends. Quick -- tens of megabytes over the wire -- so it runs
+# before the trainer, and a machine that gives up partway through the big
+# download still ends up able to run a model.
 install_runtimes() {
     [ "$INSTALL_RUNTIMES" = 1 ] || { muted "skipping the compute runtimes (--no-runtimes)"; return 0; }
 
@@ -1649,6 +1649,16 @@ install_runtimes() {
     return 0
 }
 
+# The fine-tuner's Python environment. Done by the program rather than here:
+# `crucible --install-trainer` drives the same code the settings screen does,
+# which means one implementation of "fetch Crucible's Python, make a venv,
+# resolve the right torch" instead of one here, one in PowerShell and one in
+# C++ that could disagree about what "installed" means.
+#
+# Never fatal. A machine with no Python, a proxy that blocks PyPI, a disk that
+# fills up -- none of those are a reason to fail an install of a program that
+# runs models perfectly well without a trainer. It says what happened and
+# names the command that tries again.
 install_trainer() {
     [ "$INSTALL_TRAINER" = 1 ] || { muted "skipping the fine-tuner (--no-trainer)"; return 0; }
 
@@ -1733,8 +1743,6 @@ run_check() {
     info "libraries  : $PREFIX/lib/crucible"
     info "config     : $CONFIG_DIR"
     info "models     : $MODELS_DIR"
-    muted "No compute runtime is installed. Crucible builds one on demand from"
-    muted "its settings screen, on the machine that will run it."
     printf '\n'
     exit 0
 }

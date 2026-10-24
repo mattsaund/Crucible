@@ -113,7 +113,7 @@ std::string describe(const Tool& tool) {
         }
     }
     if (!args.empty()) {
-        line += " -- " + args;
+        line += " (" + args + ")";
     }
     return line;
 }
@@ -335,7 +335,7 @@ std::shared_ptr<Client> Hub::client_for(const std::string& name, std::string& er
         const std::lock_guard<std::mutex> lock(mutex_);
         const auto found = servers_.find(name);
         if (found == servers_.end() || !found->second.config.enabled) {
-            error = "there is no MCP server called " + name + " -- Settings, Tools lists them";
+            error = "there is no MCP server called " + name + " (Settings, Tools lists them)";
             return nullptr;
         }
         if (found->second.client && found->second.client->running()) {

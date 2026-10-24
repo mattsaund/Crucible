@@ -213,6 +213,14 @@ TEST(each_call_is_read_the_way_its_tool_reads_arguments) {
     // A file that itself holds a fence is written with the other delimiter.
     CHECK(harmony_call_line("write", R"({"path": "R.md", "content": "```\ncode\n```"})")
               .find("<<<") != std::string::npos);
+    // An edit is an EDIT: what was there and what goes instead. As a WRITE,
+    // the changed lines alone replaced the whole file.
+    CHECK_EQ(harmony_call_line("functions.edit_file",
+                               R"({"path": "a.py", "old_str": "x = 1", "new_str": "x = 2"})"),
+             std::string("EDIT: a.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE"));
+    CHECK(harmony_call_line("functions.edit_file", R"({"path": "a.py", "text": "x = 2"})").empty());
+    // A body already in the protocol passes through, EDIT included.
+    CHECK_EQ(harmony_call_line("functions.run", "EDIT: a.py"), std::string("EDIT: a.py"));
 }
 
 TEST(utf8_lengths_are_read_from_the_lead_byte) {

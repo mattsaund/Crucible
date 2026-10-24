@@ -202,7 +202,7 @@ bool fetch(std::string& error, const std::function<void(std::string)>& say) {
     }
 #if !defined(_WIN32)
     if (!util::on_path("xz")) {
-        error = "xz is needed to unpack the CUDA libraries -- install the xz-utils package";
+        error = "xz is needed to unpack the CUDA libraries: install the xz-utils package";
         return false;
     }
 #endif
@@ -257,7 +257,7 @@ bool fetch(std::string& error, const std::function<void(std::string)>& say) {
             return false;
         }
         if (archive.size != 0 && std::filesystem::file_size(local, ec) != archive.size) {
-            error = file_name + " arrived the wrong size -- the download was cut short";
+            error = file_name + " arrived the wrong size (the download was cut short)";
             clean();
             return false;
         }

@@ -46,8 +46,10 @@ class ScriptedCore:
 
     def __init__(self, replies, stop_after=None, auto_edits=True, answers=None, check_ok=True,
                  can_make=False, make_ok=True, confirm_plan=False, git=True, repo=False, agents=1,
-                 listing=".:\n  (empty)\n"):
+                 listing=".:\n  (empty)\n", approve=True):
         self.replies = list(replies)
+        self.approve = approve
+        self.asked_edit = []
         self.listing = listing
         self.agents = agents
         self.lock = threading.RLock()
@@ -99,6 +101,8 @@ class ScriptedCore:
             return {"stop": stop, "cancel": False, "running": True, "auto_edits": self.auto_edits}
         if method == "delegator.ready":
             return {"available": False}
+        if method == "delegator.done":
+            return {}
         if method == "seat.take":
             self.seats.append(params["expert"])
             self.handles += 1
@@ -127,7 +131,8 @@ class ScriptedCore:
             return {"ok": True, "output": "ran " + params["kind"], "summary": params["kind"] + " "
                     + params["argument"], "detail": "", "changed": changed}
         if method == "edit.ask":
-            return {"approved": True}
+            self.asked_edit.append(params["argument"])
+            return {"approved": self.approve}
         if method == "cook.await_answer":
             return {"answer": self.answers.pop(0) if self.answers else "go"}
         if method == "cook.publish":
@@ -351,6 +356,16 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(journal["tasks"][0]["state"], "stopped")
         self.assertEqual([t["state"] for t in journal["tasks"][1:]], ["skipped", "skipped"])
         self.assertEqual(journal["outcome"], "left it running")
+
+    def test_the_finishing_pass_asks_before_it_writes_when_auto_is_off(self):
+        # Stop mid-task, then the architect's finishing pass: with Auto off its
+        # WRITE is put to the person like any other, and a no leaves it unwritten.
+        core = ScriptedCore([plan_text(), "READ: todo.py", "READ: todo.py",
+                             "WRITE: todo.py\n```\nx = 1\n```", "DONE: left it running"],
+                            stop_after=3, auto_edits=False, approve=False)
+        build.run(core, params(core))
+        self.assertIn("todo.py", core.asked_edit)
+        self.assertNotIn(("write", "todo.py"), [(k, a) for k, a, *_ in core.ran])
 
     def test_a_question_in_a_task_is_answered(self):
         core = ScriptedCore([plan_text(), "ASK: sqlite or json?", "DONE: json", "DONE: json", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"],

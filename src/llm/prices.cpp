@@ -193,7 +193,9 @@ std::optional<Price> find(const std::string& endpoint, const std::string& model)
         std::ifstream in(list_file());
         const json document = json::parse(in, nullptr, /*allow_exceptions=*/false);
         if (document.is_object()) {
-            for (const auto& [name, entry] : document.value("models", json::object()).items()) {
+            // Held here: the loop would otherwise walk a copy already gone.
+            const json models = document.value("models", json::object());
+            for (const auto& [name, entry] : models.items()) {
                 Price price;
                 price.input       = entry.value("input", 0.0);
                 price.output      = entry.value("output", 0.0);

@@ -13,20 +13,24 @@
 #include "crucible/app/setup_runtimes.hpp"
 #include "crucible/kit/kit.hpp"
 #include "crucible/lab/python.hpp"
+#include "crucible/market/downloads.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
-#include "crucible/util/http.hpp"
 
 namespace crucible {
 namespace {
 
-bool runtime_installed(BackendKind kind) {
-    for (const RuntimeStatus& status : RuntimeRegistry::scan()) {
+bool runtime_installed(BackendKind kind, const std::vector<RuntimeStatus>& scanned) {
+    for (const RuntimeStatus& status : scanned) {
         if (status.kind == kind && status.installed && !status.stale && status.missing.empty()) {
             return true;
         }
     }
     return false;
+}
+
+bool runtime_installed(BackendKind kind) {
+    return runtime_installed(kind, RuntimeRegistry::scan());
 }
 
 void breathe() { std::this_thread::sleep_for(std::chrono::milliseconds(250)); }
@@ -94,8 +98,11 @@ void Setup::start() {
                              "routing and cooks run on it", -1.0F, build->bytes});
         }
     }
+    // One look at the runtimes folder for all of them: this runs before the
+    // window is up.
+    const std::vector<RuntimeStatus> scanned = RuntimeRegistry::scan();
     for (const BackendKind kind : runtimes_wanted_here()) {
-        if (!runtime_installed(kind)) {
+        if (!runtime_installed(kind, scanned)) {
             const BackendInfo& info = backend_info(kind);
             items.push_back({std::string("runtime-") + std::string(info.id),
                              std::string(info.name) + " runtime", Item::State::Waiting,
@@ -257,36 +264,21 @@ void Setup::run() {
                 model  = *model_;
                 folder = models_dir_;
             }
-            std::error_code ec;
-            std::filesystem::create_directories(folder, ec);
-            const std::filesystem::path part = folder / (model.file + ".part");
-            const std::filesystem::path done = folder / model.file;
-            std::atomic<bool> finished{false};
-            bool        fetched = false;
+            // The Models tab's fetch: a part file carried on from after a
+            // dropped line or a closed window, given up on only when it stops
+            // moving. Stopping here keeps the part for the next start.
             std::string why;
-            std::thread fetch([&] {
-                fetched = util::http::download(model.url(), part, 7200, why);
-                finished.store(true);
-            });
-            while (!finished.load()) {
-                std::error_code size_ec;
-                const std::uintmax_t got = std::filesystem::file_size(part, size_ec);
-                const std::uint64_t  have = size_ec ? 0 : static_cast<std::uint64_t>(got);
-                update(i, Item::State::Working,
-                       "downloading " + format::bytes(have) + " of " + format::bytes(model.bytes),
-                       model.bytes > 0 ? std::min(1.0F, static_cast<float>(have) / static_cast<float>(model.bytes))
-                                       : -1.0F);
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            fetch.join();
-            if (fetched) {
-                std::filesystem::rename(part, done, ec);
-                fetched = !ec;
-                if (ec) {
-                    why = ec.message();
-                }
-            } else {
-                std::filesystem::remove(part, ec);
+            const bool  fetched = market::fetch(
+                model.url(), folder / model.file, model.bytes, "",
+                [&](std::uint64_t have) {
+                    update(i, Item::State::Working,
+                           "downloading " + format::bytes(have) + " of " + format::bytes(model.bytes),
+                           model.bytes > 0 ? std::min(1.0F, static_cast<float>(have) / static_cast<float>(model.bytes))
+                                           : -1.0F);
+                },
+                [this] { return stop_.load(); }, why);
+            if (stop_.load()) {
+                break;
             }
             if (fetched) {
                 const std::lock_guard<std::mutex> lock(mutex_);

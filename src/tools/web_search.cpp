@@ -364,7 +364,7 @@ std::vector<SearchResult> search(const std::string& query, const SearchSettings&
                                  std::string& error) {
     error.clear();
     if (!settings.enabled) {
-        error = "web search is off -- turn it on in Settings, under Tools";
+        error = "web search is off: turn it on in Settings, Tools";
         return {};
     }
     const std::string url = request_url(query, settings);

@@ -4,12 +4,13 @@
 //
 // Three scopes, because they answer different questions:
 //   turn    -- how fast was that reply?          (tok/s, shown as it streams)
-//   session -- what has this conversation cost?  (since Crucible started)
+//   session -- what has this conversation cost?  (from its first message)
 //   project -- what has this codebase cost?      (across every session, ever)
 //
-// Nothing here is billed -- Crucible runs locally. The numbers are for
-// understanding: which expert is slow, whether an answer is about to run out
-// of context, and how much work a project has actually taken.
+// None of this is a bill. What a provider's model costs is counted where its
+// requests go, in llm/spend.hpp. These numbers are for understanding: which
+// expert is slow, whether an answer is about to run out of context, and how
+// much work a project has actually taken.
 #pragma once
 
 #include <cstdint>

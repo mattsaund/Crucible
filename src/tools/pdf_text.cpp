@@ -718,6 +718,9 @@ class Reader {
 public:
     explicit Reader(const Document& doc) : doc_(doc) {}
 
+    /// How many form drawings a whole document may make.
+    static constexpr int kMaxForms = 4000;
+
     void page(const Obj* page) {
         const Obj* resources = inherited(page, "Resources");
         const Obj* contents  = page->get("Contents");
@@ -934,7 +937,10 @@ private:
                 const Obj* ref = xobjects != nullptr ? xobjects->get(operands.back().text) : nullptr;
                 const Stored* form = doc_.stored(ref);
                 const Obj* subtype = form != nullptr ? form->value.get("Subtype") : nullptr;
-                if (form != nullptr && subtype != nullptr && subtype->text == "Form") {
+                // Forms drawn by forms: depth is limited, and so is the total,
+                // or a form that draws the next a thousand times, six deep, is
+                // a file that never finishes being read.
+                if (form != nullptr && subtype != nullptr && subtype->text == "Form" && ++forms_ <= kMaxForms) {
                     const Obj* inner = doc_.resolve(form->value.get("Resources"));
                     run(decode(*form), inner != nullptr ? inner : resources, depth + 1);
                 }
@@ -950,6 +956,7 @@ private:
     double              last_y_      = 0.0;
     double              last_end_    = 0.0;
     double              last_height_ = 0.0;
+    int                 forms_       = 0;   ///< form drawings so far; see kMaxForms
 };
 
 /// Tidy what came out: spaces at line ends, runs of blank lines.

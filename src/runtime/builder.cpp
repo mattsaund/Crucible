@@ -116,7 +116,9 @@ std::vector<std::string> cache_flags() {
 bool cpu_installed() {
     for (const RuntimeStatus& runtime : RuntimeRegistry::scan()) {
         if (runtime.kind == BackendKind::Cpu) {
-            return runtime.installed;
+            // A stale one is not loaded (see RuntimeRegistry::loadable), so it
+            // does not count: a GPU build that left the CPU out left no CPU.
+            return runtime.installed && !runtime.stale;
         }
     }
     return false;
@@ -172,13 +174,7 @@ int capability_from(std::string_view text) {
 /// to llama.cpp's defaults -- a slow build is a far better failure than a
 /// module this machine cannot run.
 std::string detected_cuda_architectures() {
-    std::vector<int> present;
-    for (const std::string& line :
-         ask({"nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"})) {
-        if (const int capability = capability_from(line); capability > 0) {
-            present.push_back(capability);
-        }
-    }
+    const std::vector<int> present = nvidia_capabilities();
 
     // "compute_50", "compute_52", ... one per line.
     std::vector<int> targetable;
@@ -252,6 +248,20 @@ endif()
 }
 
 }  // namespace
+
+std::vector<int> nvidia_capabilities() {
+    std::vector<int> present;
+    if (!util::on_path("nvidia-smi")) {
+        return present;
+    }
+    for (const std::string& line :
+         ask({"nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"})) {
+        if (const int capability = capability_from(line); capability > 0) {
+            present.push_back(capability);
+        }
+    }
+    return present;
+}
 
 std::string cuda_architectures(const std::vector<int>& present,
                                const std::vector<int>& targetable) {
@@ -515,8 +525,24 @@ bool RuntimeBuilder::ensure_source(std::string& error) {
     const std::filesystem::path src = paths::runtime_src_dir();
     std::error_code ec;
 
+    // The tree says which llama.cpp it is. One fetched for another tag -- an
+    // older Crucible's -- was built as if it were this one and stamped this
+    // one's tag, which is the mismatch stale detection exists to catch: so
+    // it is fetched again, and the build trees made from it go with it.
+    const std::filesystem::path marker = src / ".crucible-llama-tag";
     if (std::filesystem::exists(src / "CMakeLists.txt", ec)) {
-        return true;
+        std::string held;
+        if (std::ifstream in(marker); in) {
+            std::getline(in, held);
+        }
+        if (held == CRUCIBLE_LLAMA_TAG) {
+            return true;
+        }
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::directory_iterator(paths::runtime_build_dir(), ec)) {
+            std::filesystem::remove_all(entry.path(), ec);
+        }
+        ec.clear();
     }
 
     set_phase(BuildProgress::Phase::FetchingSource, "cloning llama.cpp " CRUCIBLE_LLAMA_TAG);
@@ -574,6 +600,9 @@ bool RuntimeBuilder::ensure_source(std::string& error) {
         error = "could not fetch llama.cpp " CRUCIBLE_LLAMA_TAG;
         return false;
     }
+    if (std::ofstream out(marker); out) {
+        out << CRUCIBLE_LLAMA_TAG << '\n';
+    }
     return true;
 }
 
@@ -588,12 +617,19 @@ void RuntimeBuilder::run(BackendKind kind) {
     // and the compile is what happens next.
     {
         std::vector<std::filesystem::path> landed;
+        std::string                        why;
         set_phase(BuildProgress::Phase::FetchingSource, "looking for a prebuilt runtime");
         const bool got = prebuilt::try_install(
             kind, paths::runtimes_dir(), landed,
             [this](std::string note) {
                 set_phase(BuildProgress::Phase::FetchingSource, std::move(note));
-            });
+            },
+            why);
+        if (!got && !why.empty()) {
+            fail(why);
+            running_.store(false);
+            return;
+        }
         if (got && !landed.empty()) {
             // The CPU backend rides along with every GPU one, and a prebuilt
             // GPU archive carries only its own module -- so the CPU runtime is
@@ -842,7 +878,7 @@ void RuntimeBuilder::run(BackendKind kind) {
         std::filesystem::copy_file(entry.path(), staged,
                                    std::filesystem::copy_options::overwrite_existing, ec);
         if (!ec) {
-            std::filesystem::rename(staged, final_path, ec);
+            place_module(staged, final_path, ec);
         }
         if (ec) {
             std::error_code cleanup_ec;
@@ -878,11 +914,15 @@ void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces,
     }
     const std::string built_at = iso_date_now();
     for (const BackendKind produced : produces) {
-        manifest[std::string(backend_info(produced).id)] = {
+        json entry = {
             {"llama_tag", CRUCIBLE_LLAMA_TAG},
             {"built_at", built_at},
             {"source", std::string(how)},
         };
+        if (produced == BackendKind::Cuda && how == "downloaded") {
+            entry["kernels"] = prebuilt::kCudaKernels;
+        }
+        manifest[std::string(backend_info(produced).id)] = std::move(entry);
     }
     if (std::ofstream out(manifest_path); out) {
         out << manifest.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
@@ -911,6 +951,13 @@ std::string missing_from_log(const std::vector<std::string>& log) {
     static constexpr std::string_view kSays = "Could NOT find ";
     std::string missing;
     for (const std::string& line : log) {
+        // "-- Could NOT find Git" is a status line, about a package the build
+        // can do without: llama.cpp looks for Git and OpenMP every time. The
+        // one that stopped it is in a CMake Error, indented, never after "--".
+        if (const std::size_t first = line.find_first_not_of(" \t");
+            first != std::string::npos && line.compare(first, 3, "-- ") == 0) {
+            continue;
+        }
         const std::size_t at = line.find(kSays);
         if (at == std::string::npos) {
             continue;

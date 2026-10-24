@@ -3,13 +3,11 @@
 // Driving git and gh. See git.hpp.
 #include "crucible/tools/git.hpp"
 
-#include <atomic>
 #include <algorithm>
 #include <cstdlib>
-#include <chrono>
 #include <sstream>
-#include <thread>
 
+#include "crucible/tools/workshop.hpp"
 #include "crucible/util/subprocess.hpp"
 #include "crucible/util/text.hpp"
 
@@ -18,43 +16,24 @@ namespace {
 
 /// Run `argv` in `root` and keep what it printed, killing it after `timeout`.
 ///
-/// The same watchdog the workshop's RUN uses, and for the same reason:
-/// read_line blocks, which keeps the output in order, so the deadline has to
-/// come from outside the read.
+/// With the deadline every command an expert runs has: util::run.
 Output run_program(const std::filesystem::path& root, const std::vector<std::string>& argv,
-                   int timeout_seconds) {
-    Output out;
-    util::Subprocess child;
-    std::string error;
-    if (!child.start(argv, root, {}, error)) {
-        out.error = "could not run " + argv.front() + ": " + error;
+                   int timeout_seconds, const std::function<bool()>& stop = {}) {
+    Output          out;
+    const util::Ran ran = util::run(argv, root, {}, timeout_seconds, stop);
+    if (!ran.started) {
+        out.error = "could not run " + argv.front() + ": " + ran.error;
         return out;
     }
-    std::atomic<bool> finished{false};
-    std::atomic<bool> timed_out{false};
-    std::thread watchdog([&] {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
-        while (!finished.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (std::chrono::steady_clock::now() >= deadline) {
-                timed_out.store(true, std::memory_order_relaxed);
-                child.terminate();
-                return;
-            }
-        }
-    });
-    std::string line;
-    while (child.read_line(line)) {
-        out.text += line;
-        out.text += '\n';
-    }
-    out.status = child.wait();
-    finished.store(true, std::memory_order_relaxed);
-    watchdog.join();
-    out.text = crucible::detail::console_to_utf8(out.text);
-    if (timed_out.load(std::memory_order_relaxed)) {
+    out.status = ran.status;
+    out.text   = crucible::detail::console_to_utf8(ran.output);
+    if (ran.timed_out) {
         out.error = argv.front() + " took longer than " + std::to_string(timeout_seconds)
                   + " seconds and was stopped";
+        return out;
+    }
+    if (ran.stopped) {
+        out.error = "stopped";
         return out;
     }
     out.ok = out.status == 0;
@@ -119,11 +98,13 @@ std::vector<std::string> split_arguments(std::string_view line) {
             in_word = true;
             continue;
         }
+#if !defined(_WIN32)
         if (c == '\\' && i + 1 < line.size()) {
             current += line[++i];
             in_word = true;
             continue;
         }
+#endif
         if (c == ' ' || c == '\t') {
             if (in_word) {
                 out.push_back(current);
@@ -141,43 +122,77 @@ std::vector<std::string> split_arguments(std::string_view line) {
     return out;
 }
 
-std::string escaping_argument(const std::vector<std::string>& args) {
-    for (const std::string& arg : args) {
-        if (arg == "-C" || arg.rfind("--git-dir", 0) == 0 || arg.rfind("--work-tree", 0) == 0
-            || arg.rfind("-C", 0) == 0) {
+std::string escaping_argument(const std::vector<std::string>& args, const std::filesystem::path& root) {
+    // Git's own options come before the command, and these move it to another
+    // repository. After the command, -C is the command's: log's copy
+    // detection, commit's message from another commit.
+    std::size_t command = args.size();
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string& arg = args[i];
+        if (arg.empty() || arg.front() != '-') {
+            command = i;
+            break;
+        }
+        if (arg.rfind("-C", 0) == 0 || arg.rfind("--git-dir", 0) == 0 || arg.rfind("--work-tree", 0) == 0) {
             return arg;
         }
+        if (arg == "-c" || arg == "--namespace" || arg == "--exec-path" || arg == "--config-env") {
+            ++i;   // and its value
+        }
+    }
+    if (root.empty() || command >= args.size()) {
+        return {};
+    }
+    // What a command makes goes somewhere: a clone, a new repository or a
+    // worktree outside the project is not the project's to make.
+    std::vector<std::string> operands;
+    for (std::size_t i = command + 1; i < args.size(); ++i) {
+        if (!args[i].empty() && args[i].front() != '-') {
+            operands.push_back(args[i]);
+        }
+    }
+    const std::string& name = args[command];
+    std::string made;
+    if (name == "clone" && operands.size() >= 2) {
+        made = operands[1];
+    } else if (name == "init" && !operands.empty()) {
+        made = operands[0];
+    } else if (name == "worktree" && operands.size() >= 2 && operands[0] == "add") {
+        made = operands[1];
+    }
+    if (!made.empty() && !resolve_in_root(root, made)) {
+        return made;
     }
     return {};
 }
 
 Output run(const std::filesystem::path& root, const std::vector<std::string>& args,
-           int timeout_seconds) {
+           int timeout_seconds, const std::function<bool()>& stop) {
     Output out;
     if (!available()) {
         out.error = "git is not installed on this machine";
         return out;
     }
-    if (const std::string bad = escaping_argument(args); !bad.empty()) {
+    if (const std::string bad = escaping_argument(args, root); !bad.empty()) {
         out.error = "\"" + bad + "\" would take git outside the project, and is not allowed";
         return out;
     }
     std::vector<std::string> argv{"git"};
     argv.insert(argv.end(), args.begin(), args.end());
-    return run_program(root, argv, timeout_seconds);
+    return run_program(root, argv, timeout_seconds, stop);
 }
 
 Output run_gh(const std::filesystem::path& root, const std::vector<std::string>& args,
-              int timeout_seconds) {
+              int timeout_seconds, const std::function<bool()>& stop) {
     Output out;
     if (!gh_available()) {
-        out.error = "gh, GitHub's command line, is not installed -- it is what talks to GitHub. "
+        out.error = "gh, GitHub's command line, is not installed. It is what talks to GitHub. "
                     "https://cli.github.com";
         return out;
     }
     std::vector<std::string> argv{"gh"};
     argv.insert(argv.end(), args.begin(), args.end());
-    return run_program(root, argv, timeout_seconds);
+    return run_program(root, argv, timeout_seconds, stop);
 }
 
 bool is_repo(const std::filesystem::path& root) {

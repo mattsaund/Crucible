@@ -14,6 +14,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -81,6 +82,15 @@ public:
     /// Whatever is needed comes back on the next prompt.
     void release_all();
 
+    /// Where the box sends prompts from now on: one expert, or the delegator
+    /// (nullopt). With `load`, that one is loaded now, so the first prompt
+    /// to it does not wait for it. With the delegator on demand, an expert
+    /// chosen here also stays loaded between prompts while the delegator
+    /// stays away: nothing is routed while it is chosen, and the two
+    /// together would leave the expert less of the cards. Said again with
+    /// every prompt, without `load`; only a change stops a load under way.
+    void choose(std::optional<ExpertId> seat, bool load);
+
     /// Drop every loaded model and load the router again.
     ///
     /// For when the hardware under Crucible changed: a model picks its devices
@@ -142,9 +152,10 @@ public:
     /// Seats builds have made since this was last called, and clears them.
     ///
     /// An outbox like take_written_examples, for the same reason: the build
-    /// runs on the worker and the seat is already on the engine's own roster
-    /// so the next task can use it, but the config file and the settings
-    /// screen are the session's, and it folds these in when it is woken.
+    /// runs on a thread of its own and the seat is already on the engine's
+    /// own roster so the next task can use it, but the config file and the
+    /// settings screen are the session's, and it folds these in when it is
+    /// woken.
     std::vector<MadeSeat> take_made_seats();
 
     /// Programs experts have left running: START's processes. The window
@@ -260,8 +271,9 @@ private:
     void handle(const Request& request);
 
     /// Load the delegator model, when one is set. A failure is said on the
-    /// delegator's row, and routing goes on keywords until it loads.
-    void load_router();
+    /// delegator's row, and routing goes on keywords until it loads. `cancel`
+    /// is whose Stop ends the load: the chat's when none is given.
+    void load_router(const CancelCallback& cancel = {});
 
     /// Have the delegator loaded and waiting, whichever mode it is in.
     ///
@@ -284,20 +296,48 @@ private:
 
     /// Make sure the delegator is loaded, freeing an expert nobody is using
     /// first if there is no room for both. A no-op when it is already there,
-    /// or none is set. Call with host_mutex_ held.
-    void ensure_router();
+    /// or none is set. Call with host_mutex_ held. `cancel` as load_router's.
+    void ensure_router(const CancelCallback& cancel = {});
 
-    /// Drop the delegator. Only called with "keep delegator loaded" off.
+    /// Drop the delegator: between routes when "keep delegator loaded" is
+    /// off, and in either mode for Eject, a changed runtime and changed
+    /// loading settings. Call with host_mutex_ held.
     void release_router();
+
+    /// release_router() for the two places that free the delegator on their
+    /// own -- an expert about to load, a build's seat taken -- which must not
+    /// do it in the middle of somebody else's route. Takes host_mutex_; call
+    /// without it.
+    void release_router_between_routes();
     void do_apply_config(Config config);
     void do_write_examples(const ExpertId& id);
+
+    /// The model file of the expert chosen in the box (see choose()), when
+    /// one is chosen and it is a model on this machine; else empty.
+    std::string chosen_path() const;
+    mutable std::mutex      chosen_mutex_;
+    std::optional<ExpertId> chosen_;
+
+    /// Loads for choose(), on a thread of their own rather than in the
+    /// queue: a prompt sent while one runs is on the screen at once, waiting
+    /// on the load instead of hidden behind it. The latest choice wins, and
+    /// one made while an earlier is loading stops that load. The worker
+    /// joins it before the models go.
+    void prepare_loop();
+    void do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice);
+    std::thread                prepare_thread_;
+    std::mutex                 prepare_mutex_;
+    std::condition_variable    prepare_wanted_;
+    std::optional<ExpertId>    prepare_seat_;        ///< under prepare_mutex_
+    std::uint64_t              prepare_asked_ = 0;   ///< under prepare_mutex_: loads asked for
+    std::atomic<std::uint64_t> choices_{0};          ///< how many times the choice has changed
     void do_name_session(const Request& request);
 
     // --- the orchestrator ----------------------------------------------------
     //
     // Routing and the cook loop are Python, in a process of their own: see
     // orchestra/link.hpp. They ask the core for what only the core may do, and
-    // it answers here, on this thread -- the one that owns the models.
+    // it answers here, on threads of the link's own: see serve().
 
     /// Answer one of the orchestrator's requests. Throws with the reason when
     /// it cannot be answered, which goes back to the orchestrator as an error.
@@ -315,7 +355,7 @@ private:
 
     /// Have Crucible's Python, waiting for it while it is being downloaded.
     /// False, with `error` saying why, when it is not coming.
-    bool wait_for_python(std::string& error);
+    bool wait_for_python(std::string& error, const CancelCallback& cancel = {});
 
     orchestra::Link orchestra_;
 
@@ -420,9 +460,12 @@ private:
     tools::mcp::Hub                 mcp_;
     std::thread                     mcp_thread_;
     std::mutex                      mcp_mutex_;   ///< warm_mcp is called from two threads
+    bool                            mcp_warming_ = false;   ///< under mcp_mutex_
+    bool                            warm_again_  = false;   ///< under mcp_mutex_: a newer config came
 
     /// Hand the MCP servers in `config` to the hub and start them, on
-    /// mcp_thread_. Any thread.
+    /// mcp_thread_. Any thread, and never waits for a warm-up already going:
+    /// that one goes round again for the newer configuration.
     void warm_mcp(const Config& config);
 
     /// The project's history folder, for what a build records of its agents'
@@ -474,6 +517,18 @@ private:
     /// scoring. Never held while an expert generates -- a lease keeps that
     /// model in memory, and the model takes its own turns.
     std::mutex host_mutex_;
+
+    /// Routes under way. A route is several calls -- delegator.ready, then a
+    /// format and a score for each order -- and each takes host_mutex_ on its
+    /// own, so the delegator freed between two of them failed the route:
+    /// delegator.ready opens one, delegator.done closes it, and the automatic
+    /// frees wait for them. Changed under host_mutex_. `routes_touched_ms_`
+    /// is when a route last said anything, so one that never closed -- an
+    /// orchestrator that died halfway -- stops counting after a minute.
+    std::atomic<int>          routes_open_{0};
+    std::atomic<std::int64_t> routes_touched_ms_{0};
+    std::mutex                routes_mutex_;
+    std::condition_variable   routes_done_;
 
     /// Which local models are in use. See leases.hpp.
     Leases leases_;
@@ -568,10 +623,12 @@ private:
     bool ask_about_edit(const tools::ToolCall& call, const tools::WorkshopSettings& workshop,
                         const CancelCallback& cancel);
 
-    /// The answer to an edit, handed across from the UI thread.
+    /// The answer to an edit, handed across from the UI thread. Kept only
+    /// while one is being asked: see approve_edit.
     std::mutex                   edit_mutex_;
     std::condition_variable      edit_answered_;
     std::optional<bool>          edit_approved_;
+    bool                         edit_asking_ = false;
 
     /// The answer to a question a cook asked, handed across from the UI thread.
     std::mutex                   cook_answer_mutex_;

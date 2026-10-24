@@ -633,7 +633,7 @@ std::string describe_failure(const Provider& provider, int status, const std::st
         out += ": " + said;
     }
     if (status == 401 || status == 403) {
-        out += "  -- check it in Settings, Providers";
+        out += " (check it in Settings, Providers)";
     }
     return out;
 }
@@ -665,7 +665,7 @@ public:
     ChatResult chat(const ChatRequest& request, const ChatSink& sink) override {
         ChatResult result;
         if (provider_.kind == "anthropic" && provider_.resolved_key().empty()) {
-            result.error = provider_.label() + " has no API key -- add one in Settings, "
+            result.error = provider_.label() + " has no API key: add one in Settings, "
                            "Providers, or set ANTHROPIC_API_KEY";
             return result;
         }
@@ -733,6 +733,13 @@ private:
             if (facts_known_ || provider_.kind != "anthropic") {
                 return;
             }
+            // A listing that did not answer is not asked again for a minute:
+            // each round of a turn would otherwise wait out its timeout.
+            if (asked_at_ != std::chrono::steady_clock::time_point{}
+                && std::chrono::steady_clock::now() - asked_at_ < std::chrono::minutes(1)) {
+                return;
+            }
+            asked_at_ = std::chrono::steady_clock::now();
         }
         // Asked without the lock held: two agents starting at once may both
         // ask, which costs a second listing, where holding the lock across a
@@ -941,9 +948,10 @@ private:
     Flight&        flight_;
     spend::Ledger* ledger_ = nullptr;   ///< null for a server on this machine
 
-    mutable std::mutex learned_;   ///< guards the three below
+    mutable std::mutex learned_;   ///< guards the four below
     ModelFacts         facts_;
     bool               facts_known_ = false;
+    std::chrono::steady_clock::time_point asked_at_{};   ///< when the listing was last asked for
     Quirks             quirks_;
 
     bool       serial_ = false;   ///< one request at a time; see the class comment
@@ -1019,7 +1027,7 @@ ChatModel* Hub::model(const ModelParams& params, std::string& error) {
     }
     if (provider == nullptr) {
         error = "this expert is answered by a provider called \"" + params.provider
-              + "\", and there is none -- add it in Settings, Providers";
+              + "\", and there is none: add it in Settings, Providers";
         return nullptr;
     }
     const std::string key = provider->id + '\n' + params.model;
@@ -1082,7 +1090,7 @@ std::vector<std::string> list_models(const Provider& provider, std::string& erro
     }
     std::vector<std::string> ids = detail::model_ids(response.body);
     if (ids.empty()) {
-        error = provider.label() + " answered, but not with a list of models -- "
+        error = provider.label() + " answered, but not with a list of models: "
                 "name the model by hand";
     }
     return ids;

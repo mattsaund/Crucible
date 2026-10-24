@@ -61,7 +61,8 @@ public:
 
     std::vector<ProcessInfo> list();
 
-    /// How much output is kept per process. Older lines fall off the front.
+    /// How much output is kept per process, at least. Older lines fall off
+    /// the front, a kKeepBytes at a time rather than one line at a time.
     static constexpr std::size_t kKeepBytes = 256 * 1024;
 
 private:
@@ -76,8 +77,9 @@ private:
         std::chrono::steady_clock::time_point started;
     };
 
+    /// Shared, so one being read from (logs, list) outlives being stopped.
     std::mutex                                     mutex_;   ///< guards the map
-    std::map<std::string, std::unique_ptr<Entry>>  entries_;
+    std::map<std::string, std::shared_ptr<Entry>>  entries_;
     int                                            next_ = 0;
 };
 

@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           tag="$(grep -m1 'CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake \
-                 | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:]]+).*/\1/')"
+                 | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
           test -n "$tag"
           echo "LLAMA_TAG=$tag" >> "$GITHUB_ENV"
           echo "using llama.cpp $tag"
@@ -148,11 +148,15 @@ jobs:
       # The same flags src/runtime/builder.cpp uses, with two differences that
       # come from building for somebody else's machine rather than this one:
       #
-      #  - the CUDA architectures are a list rather than the cards present.
-      #    Ampere, Ada and Blackwell cover what people are running; the PTX for
-      #    the newest lets a card past it start at all.
-      #  - cudart is linked statically, so the module carries no NVIDIA
-      #    redistributable and needs only a driver.
+      #  - the CUDA architectures are llama.cpp's own list for a build that is
+      #    not native: kernels for the cards people run (Ampere, Ada,
+      #    Blackwell) and PTX from Turing up for the rest. The list once began
+      #    at Ampere, and every RTX 20 and GTX 16 failed at its first kernel;
+      #    prebuilt::kCudaKernels counts which list a download has.
+      #  - cudart is asked for statically, but ggml-cuda links it and cuBLAS
+      #    as shared libraries all the same: the module needs libcudart and
+      #    libcublas beside the driver, which is why the app fetches NVIDIA's
+      #    libraries with it (src/runtime/cuda_libraries.hpp).
       # Windows CUDA builds through Ninja rather than Visual Studio.
       #
       # The VS generator compiles CUDA through MSBuild, which needs the toolkit's
@@ -180,7 +184,6 @@ jobs:
             vulkan) flags+=(-DGGML_VULKAN=ON -DGGML_CPU=OFF -DGGML_METAL=OFF) ;;
             metal)  flags+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_CPU=OFF) ;;
             cuda)   flags+=(-DGGML_CUDA=ON -DGGML_CPU=OFF -DGGML_METAL=OFF
-                            -DCMAKE_CUDA_ARCHITECTURES=86-real\;89-real\;120-real\;120-virtual
                             -DCMAKE_CUDA_RUNTIME_LIBRARY=Static) ;;
           esac
           if [ "${{ matrix.backend }}" = "cuda" ] && [ "${{ runner.os }}" = "Windows" ]; then
@@ -207,7 +210,16 @@ jobs:
           done
           ls -la out
           test "$(ls out | wc -l)" -gt 0
-          name="runtime-${{ matrix.backend }}-${{ matrix.platform }}-${LLAMA_TAG}.tar.gz"
+          # CUDA's name says which kernels it has: prebuilt::kCudaKernels, read
+          # from the header the binary is compiled from.
+          suffix=""
+          if [ "${{ matrix.backend }}" = cuda ]; then
+            kernels="$(grep -m1 'kCudaKernels = ' include/crucible/runtime/prebuilt.hpp \
+                       | sed -E 's/.*kCudaKernels = ([0-9]+).*/\1/')"
+            test -n "$kernels"
+            suffix="-k$kernels"
+          fi
+          name="runtime-${{ matrix.backend }}-${{ matrix.platform }}-${LLAMA_TAG}${suffix}.tar.gz"
           tar -czf "dist/$name" -C out .
           ls -la dist
           echo "ASSET=$name" >> "$GITHUB_ENV"

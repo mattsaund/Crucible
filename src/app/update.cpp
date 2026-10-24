@@ -384,7 +384,7 @@ Installer::~Installer() {
 bool Installer::start(std::function<void()> launched, std::string& error) {
     const Install install = install_here();
     if (asset_for(install).empty() || target_of(install).empty()) {
-        error = "this Crucible was built from source -- update it with: " + std::string(update_command());
+        error = "this Crucible was built from source. Update it with: " + std::string(update_command());
         return false;
     }
     const std::lock_guard<std::mutex> lock(mutex_);

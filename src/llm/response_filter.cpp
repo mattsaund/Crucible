@@ -101,9 +101,14 @@ bool looks_like_channel(std::string_view name) {
     return false;
 }
 
-/// The protocol's own verbs, as a line would begin with them.
-constexpr std::array<std::string_view, 9> kVerbs{{
-    "LIST", "READ", "WRITE", "RUN", "SEARCH", "ASK", "NOTE", "DONE", "HANDOFF",
+/// The protocol's own verbs, as a line would begin with them: every one the
+/// workshop reads (tools::tool_kind_name). A body already in the protocol is
+/// passed through as it is, and one missing here -- EDIT was -- was mistaken
+/// for something to translate.
+constexpr std::array<std::string_view, 26> kVerbs{{
+    "LIST", "READ", "WRITE", "EDIT", "FIND", "RENDER", "TOOL", "RUN", "SEARCH", "ASK", "NOTE",
+    "DONE", "HANDOFF", "FETCH", "GIT", "GH", "PYTHON", "START", "STOP", "LOGS", "SCREENSHOT",
+    "CLICK", "MOVE", "TYPE", "KEY", "SCROLL",
 }};
 
 bool starts_with_verb(std::string_view text) {
@@ -191,7 +196,20 @@ std::string harmony_call_line(std::string_view recipient, std::string_view raw_b
         std::string path = !plain.empty() ? plain : field({"path", "dir", "directory"});
         return "LIST: " + (path.empty() ? std::string(".") : path);
     }
-    if (is({"write", "write_file", "create_file", "save", "save_file", "edit", "edit_file"})) {
+    if (is({"edit", "edit_file", "str_replace", "replace"})) {
+        // A change in place: what was there and what goes there instead, as
+        // the workshop's own EDIT block. Not a WRITE -- a WRITE of "text"
+        // that was only the changed lines replaced the whole file with them.
+        const std::string path   = field({"path", "file", "filename", "file_path"});
+        const std::string before = field({"old_str", "old_string", "old", "search", "find"});
+        const std::string after  = field({"new_str", "new_string", "new", "replace", "replacement"});
+        if (path.empty() || before.empty()) {
+            return {};
+        }
+        return "EDIT: " + path + "\n<<<<<<< SEARCH\n" + before + "\n=======\n" + after
+             + "\n>>>>>>> REPLACE";
+    }
+    if (is({"write", "write_file", "create_file", "save", "save_file"})) {
         const std::string path    = field({"path", "file", "filename", "file_path"});
         const std::string content = field({"content", "contents", "text", "body", "data"});
         if (path.empty()) {

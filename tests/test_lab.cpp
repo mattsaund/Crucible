@@ -361,6 +361,8 @@ TEST(a_size_in_a_model_name_is_read_from_the_right) {
     CHECK_EQ(hub::parameters_from_name("Qwen2.5-7B-Instruct"), 7.0);
     CHECK_EQ(hub::parameters_from_name("HuggingFaceTB/SmolLM-135M"), 0.135);
     CHECK_EQ(hub::parameters_from_name("google/gemma-2-2b-it"), 2.0);
+    CHECK_EQ(hub::parameters_from_name("mlx-community/Qwen3.8-27B-4bit"), 27.0);
+    CHECK_EQ(hub::parameters_from_name("lmstudio-community/Qwen3.8-27B-MLX-8bit"), 27.0);
     // A version number is not a size, and reading left to right made Llama 3.2
     // a three-billion model.
     CHECK_EQ(hub::parameters_from_name("meta/Llama-3.2"), 0.0);

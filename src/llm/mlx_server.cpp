@@ -117,7 +117,7 @@ std::string unavailable() {
     }
     answer = probe.wait() == 0
                  ? std::string()
-                 : "Crucible's Python environment has no MLX in it -- it is installed with "
+                 : "Crucible's Python environment has no MLX in it. It is installed with "
                    "the training environment on a Mac with Apple Silicon";
     return answer;
 #endif

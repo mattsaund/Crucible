@@ -38,9 +38,6 @@ namespace crucible {
 /// how `/cook fix the tests` is told apart from `/cook 30m fix the tests`.
 std::optional<int> parse_duration_seconds(std::string_view text);
 
-/// "1h 20m", "45m", "30s" -- a duration as it is shown on screen.
-std::string format_duration(std::chrono::seconds seconds);
-
 /// Where a cook is in its life.
 enum class CookState {
     Idle,      ///< nothing is cooking

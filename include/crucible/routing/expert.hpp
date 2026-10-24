@@ -4,9 +4,8 @@
 // The roster used to be an enum of nine subjects fixed at compile time. It is
 // now a list the user owns: New expert adds a seat, Eject removes
 // one, and everything the delegator sees -- its labels, its system prompt, its
-// worked examples -- is generated from whatever is currently in the list. The
-// nine that ship are still there, but as defaults rather than as the shape of
-// the program.
+// worked examples -- is generated from whatever is currently in the list. None
+// ship: see Roster::bare.
 #pragma once
 
 #include <cstddef>
@@ -52,8 +51,9 @@ struct Expert {
     /// scores 96% and reaches every seat.
     ///
     /// For a user-made expert these are written by the delegator itself at
-    /// creation time -- see `example_request_prompt`. A description is what a
-    /// person can be asked for; two well-chosen example questions is not.
+    /// creation time -- see Engine::write_examples, and `examples_prompt` in
+    /// the orchestrator's naming.py. A description is what a person can be
+    /// asked for; two well-chosen example questions is not.
     std::vector<std::string> examples;
 
     /// Whole words that mark this expert's territory, for the model-free
@@ -110,11 +110,6 @@ public:
     /// screen and by the delegator when it writes examples for a new expert.
     bool update(const ExpertId& id, const Expert& replacement);
 
-    // --- everything the delegator sees, generated from the list above ------
-
-
-
-
 private:
     std::vector<Expert> experts_;
 };
@@ -148,7 +143,5 @@ std::string make_expert_tag(std::string_view name, const std::vector<std::string
 /// keyword router matches whole words and scores by count, so a list containing
 /// "the" scores every prompt ever written.
 std::vector<std::string> derive_keywords(std::string_view name, std::string_view blurb);
-
-
 
 }  // namespace crucible

@@ -13,8 +13,9 @@ include(FetchContent)
 
 # --- embedding a source file into the binary -----------------------------
 #
-# Three things are compiled in from files someone edits: the trainer script,
-# the interface's page, and the third-party notices. A custom command
+# Several things are compiled in from files someone edits: the trainer script,
+# the orchestrator, the interface's page, the window's mark and the
+# third-party notices. A custom command
 # rather than execute_process, because execute_process runs at configure time
 # -- so editing one of them and rebuilding did nothing until cmake was rerun,
 # which is a very quiet way to spend an hour wondering why an edit had no
@@ -35,10 +36,19 @@ endfunction()
 
 find_package(Threads REQUIRED)
 
-set(CRUCIBLE_LLAMA_TAG b11799     CACHE STRING "llama.cpp git tag to build against")
+# The llama.cpp this version is made for. Not a cache variable: a build folder
+# kept across an update -- the installer's is the checkout's own -- remembered
+# the tag it was first configured with and went on building that one. The
+# override below builds against another. (runtimes.yml reads the tag from the
+# first line here that names it.)
+set(CRUCIBLE_LLAMA_TAG b11846)
+set(CRUCIBLE_LLAMA_TAG_OVERRIDE "" CACHE STRING "llama.cpp git tag to build against instead of this version's")
+if(CRUCIBLE_LLAMA_TAG_OVERRIDE)
+    set(CRUCIBLE_LLAMA_TAG ${CRUCIBLE_LLAMA_TAG_OVERRIDE})
+endif()
 set(CRUCIBLE_JSON_TAG  v3.12.0    CACHE STRING "nlohmann/json git tag to build against")
 set(CRUCIBLE_WEBVIEW_TAG 0.12.0   CACHE STRING "webview git tag for the web interface")
-set(CRUCIBLE_FONT_TAG  2.304      CACHE STRING "JetBrains Mono release to compile into the binary")
+set(CRUCIBLE_KATEX_TAG 0.19.0     CACHE STRING "KaTeX release the page draws math with")
 
 # ---------------------------------------------------------------------------
 # Symlink-free shared libraries
@@ -150,14 +160,11 @@ if(_webview_ok)
     set(CRUCIBLE_HAS_WEBVIEW ON)
     message(STATUS "web interface: building against the system webview")
 endif()
-# --- the window's mark ----------------------------------------------------
+
+# --- generated sources ------------------------------------------------------
 #
-# The flame in the corner of the window, and the same artwork the application
-# icon is made from. Compiled in for the same reason the font is: looking for
-# it on disk at runtime would mean an install layout and a search path for a
-# picture.
-#
-# Raw RGBA rather than the PNG, because nothing in Crucible can decode a PNG --
+# What the build makes from the files it compiles in -- crucible_embed's
+# sources, above, and the bundled page -- goes here.
 set(CRUCIBLE_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${CRUCIBLE_GENERATED_DIR})
 
@@ -193,12 +200,137 @@ if(EXISTS ${CRUCIBLE_TRAINER_PY})
                    kFinetunePy crucible::lab::embedded trainer_script)
 endif()
 
+# --- math ------------------------------------------------------------------
+#
+# KaTeX is how the page draws math, and it comes as a script, a stylesheet and
+# twenty fonts. The script and the stylesheet are inlined into the page like
+# the page's own (see BundlePage.cmake); the fonts go in as bytes, and the
+# window turns them into @font-face rules. The stylesheet's own rules for them
+# point at files beside it, which do not exist inside a binary, so they are
+# taken out here.
+#
+# The interface itself has no typeface of its own: it is drawn in the
+# machine's, or in whichever one the Font setting names.
+#
+# Fetched and pinned like everything else, and embedded at configure time
+# rather than build time: the inputs never change, so there is nothing for a
+# dependency rule to track. A font that will not embed is a warning, not a
+# failed build: the page then shows math as its TeX source.
+FetchContent_Declare(katex
+    URL      https://github.com/KaTeX/KaTeX/releases/download/v${CRUCIBLE_KATEX_TAG}/katex.tar.gz
+    URL_HASH SHA256=966d9c85655081cca9a57e8a1d667f13f96b1c85c3f93655a8acef74c4ce3875
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(katex)
+
+set(CRUCIBLE_FONT_DIR ${CMAKE_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${CRUCIBLE_FONT_DIR})
+
+# Embed one file as `symbol` in `name_space`, unless it already is.
+function(crucible_embed_now source generated symbol name_space ok_var)
+    set(${ok_var} ON PARENT_SCOPE)
+    if(EXISTS "${generated}" AND NOT "${source}" IS_NEWER_THAN "${generated}")
+        return()
+    endif()
+    execute_process(COMMAND ${CMAKE_COMMAND}
+        "-DIN=${source}" "-DOUT=${generated}" "-DSYMBOL=${symbol}" "-DNAMESPACE=${name_space}"
+        -P ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/EmbedBinary.cmake
+        RESULT_VARIABLE _status)
+    if(NOT _status EQUAL 0)
+        set(${ok_var} OFF PARENT_SCOPE)
+    endif()
+endfunction()
+
+set(CRUCIBLE_FONT_SOURCES "")
+
+# KaTeX's fonts, and a table of them: the family, weight and style of each
+# are in its file name, the same way KaTeX's stylesheet spells them out --
+# KaTeX_Main-BoldItalic is KaTeX_Main at 700, italic.
+set(CRUCIBLE_KATEX_DIR ${CRUCIBLE_FONT_DIR}/vendor)
+file(MAKE_DIRECTORY ${CRUCIBLE_KATEX_DIR})
+file(GLOB _katex_fonts "${katex_SOURCE_DIR}/fonts/KaTeX_*.woff2")
+list(SORT _katex_fonts)
+set(CRUCIBLE_KATEX_EMBEDDED OFF)
+if(_katex_fonts AND EXISTS "${katex_SOURCE_DIR}/katex.min.js")
+    set(CRUCIBLE_KATEX_EMBEDDED ON)
+    set(_declarations "")
+    set(_rows "")
+    set(_n 0)
+    foreach(_font IN LISTS _katex_fonts)
+        get_filename_component(_name "${_font}" NAME_WE)            # KaTeX_Main-BoldItalic
+        string(REGEX MATCH "^KaTeX_([A-Za-z0-9]+)-([A-Za-z]+)$" _parts "${_name}")
+        set(_family "KaTeX_${CMAKE_MATCH_1}")
+        set(_variant "${CMAKE_MATCH_2}")
+        set(_weight 400)
+        set(_italic false)
+        if(_variant MATCHES "Bold")
+            set(_weight 700)
+        endif()
+        if(_variant MATCHES "Italic")
+            set(_italic true)
+        endif()
+        crucible_embed_now("${_font}" ${CRUCIBLE_FONT_DIR}/katex_font_${_n}.cpp
+                           kFont${_n} crucible::gui::katex _embedded)
+        if(NOT _embedded)
+            set(CRUCIBLE_KATEX_EMBEDDED OFF)
+            break()
+        endif()
+        list(APPEND CRUCIBLE_FONT_SOURCES ${CRUCIBLE_FONT_DIR}/katex_font_${_n}.cpp)
+        string(APPEND _declarations
+            "extern const unsigned char kFont${_n}[];\nextern const unsigned int kFont${_n}_size;\n")
+        string(APPEND _rows "    {\"${_family}\", ${_weight}, ${_italic}, kFont${_n}, kFont${_n}_size},\n")
+        math(EXPR _n "${_n} + 1")
+    endforeach()
+endif()
+if(CRUCIBLE_KATEX_EMBEDDED)
+    file(CONFIGURE OUTPUT ${CRUCIBLE_FONT_DIR}/katex_fonts.cpp CONTENT
+"// Generated by cmake/CrucibleDependencies.cmake from KaTeX ${CRUCIBLE_KATEX_TAG}. Do not edit.
+#include \"katex_fonts.hpp\"
+
+namespace crucible::gui::katex {
+@_declarations@
+const Face kFaces[] = {
+@_rows@};
+const unsigned int kFaceCount = ${_n}u;
+}  // namespace crucible::gui::katex
+" @ONLY)
+    list(APPEND CRUCIBLE_FONT_SOURCES ${CRUCIBLE_FONT_DIR}/katex_fonts.cpp)
+
+    # The page's half: the script as it ships, and the stylesheet without the
+    # rules that point at files. Two of KaTeX's own additions with it: copying
+    # a formula copies its TeX rather than the letters it is drawn with, and
+    # mhchem, for the \ce{H2O} chemistry is written in.
+    configure_file("${katex_SOURCE_DIR}/katex.min.js" ${CRUCIBLE_KATEX_DIR}/katex.min.js COPYONLY)
+    configure_file("${katex_SOURCE_DIR}/contrib/copy-tex.min.js" ${CRUCIBLE_KATEX_DIR}/copy-tex.min.js COPYONLY)
+    configure_file("${katex_SOURCE_DIR}/contrib/mhchem.min.js" ${CRUCIBLE_KATEX_DIR}/mhchem.min.js COPYONLY)
+    file(READ "${katex_SOURCE_DIR}/katex.min.css" _katex_css)
+    string(REGEX REPLACE "@font-face{[^}]*}" "" _katex_css "${_katex_css}")
+    # Verbatim, and only when it changed, so the page is not rebundled on
+    # every configure.
+    set(_was "")
+    if(EXISTS ${CRUCIBLE_KATEX_DIR}/katex.css)
+        file(READ ${CRUCIBLE_KATEX_DIR}/katex.css _was)
+    endif()
+    if(NOT _was STREQUAL _katex_css)
+        file(WRITE ${CRUCIBLE_KATEX_DIR}/katex.css "${_katex_css}")
+    endif()
+else()
+    message(WARNING "KaTeX could not be embedded; math will show as its TeX source")
+    file(REMOVE ${CRUCIBLE_KATEX_DIR}/katex.min.js ${CRUCIBLE_KATEX_DIR}/katex.css
+                ${CRUCIBLE_KATEX_DIR}/copy-tex.min.js ${CRUCIBLE_KATEX_DIR}/mhchem.min.js)
+endif()
+
+if(CRUCIBLE_KATEX_EMBEDDED)
+    add_library(crucible_fonts STATIC ${CRUCIBLE_FONT_SOURCES})
+    target_include_directories(crucible_fonts PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../src/gui)
+    target_compile_definitions(crucible_fonts PUBLIC CRUCIBLE_HAS_KATEX)
+endif()
+
 # --- third-party notices -------------------------------------------------
 #
 # Compiled in, because they have to travel with the thing they are notices
 # for. A dmg, an exe and an AppImage each carry the binary and not the source
-# tree, and JetBrains Mono's license requires its notice to accompany the font
-# wherever the font goes -- and the font goes inside the binary.
+# tree, and the licenses of what is compiled in -- KaTeX among them -- want
+# their notices to go wherever the code goes.
 set(CRUCIBLE_NOTICES_TXT ${CMAKE_CURRENT_LIST_DIR}/../packaging/licenses/NOTICES.txt)
 set(CRUCIBLE_NOTICES_CPP "")
 if(EXISTS ${CRUCIBLE_NOTICES_TXT})
@@ -232,17 +364,26 @@ set(CRUCIBLE_UI_FILES
     ${CRUCIBLE_UI_DIR}/build.js
     ${CRUCIBLE_UI_DIR}/create.js
     ${CRUCIBLE_UI_DIR}/history.js
+    ${CRUCIBLE_UI_DIR}/models.js
     ${CRUCIBLE_UI_DIR}/settings.js)
 set(CRUCIBLE_WEBUI_CPP  "")
 set(CRUCIBLE_RENDER_CPP "")
 if(EXISTS ${CRUCIBLE_UI_DIR}/index.html)
     set(CRUCIBLE_PAGE_HTML ${CRUCIBLE_GENERATED_DIR}/page.html)
+    # What index.html names under vendor/ comes from the build folder: KaTeX,
+    # prepared above. Without it the page is bundled without math.
+    set(_vendor_files "")
+    if(CRUCIBLE_KATEX_EMBEDDED)
+        set(_vendor_files ${CRUCIBLE_KATEX_DIR}/katex.min.js ${CRUCIBLE_KATEX_DIR}/katex.css
+                          ${CRUCIBLE_KATEX_DIR}/copy-tex.min.js ${CRUCIBLE_KATEX_DIR}/mhchem.min.js)
+    endif()
     add_custom_command(
         OUTPUT  ${CRUCIBLE_PAGE_HTML}
         COMMAND ${CMAKE_COMMAND}
                 -DIN=${CRUCIBLE_UI_DIR}/index.html -DOUT=${CRUCIBLE_PAGE_HTML}
+                -DVENDOR=${CRUCIBLE_KATEX_DIR}
                 -P ${CMAKE_CURRENT_LIST_DIR}/BundlePage.cmake
-        DEPENDS ${CRUCIBLE_UI_FILES} ${CMAKE_CURRENT_LIST_DIR}/BundlePage.cmake
+        DEPENDS ${CRUCIBLE_UI_FILES} ${_vendor_files} ${CMAKE_CURRENT_LIST_DIR}/BundlePage.cmake
         COMMENT "Bundling the interface"
         VERBATIM)
     crucible_embed(CRUCIBLE_WEBUI_CPP ${CRUCIBLE_PAGE_HTML}
@@ -255,6 +396,20 @@ if(EXISTS ${CRUCIBLE_UI_DIR}/render.js)
     crucible_embed(CRUCIBLE_RENDER_CPP ${CRUCIBLE_UI_DIR}/render.js
                    kRenderJs crucible::gui::web web_render)
 endif()
+# And KaTeX beside it, so the tests can draw math with the script the page has.
+set(CRUCIBLE_KATEX_JS_CPP "")
+if(CRUCIBLE_KATEX_EMBEDDED)
+    crucible_embed(CRUCIBLE_KATEX_JS_CPP ${CRUCIBLE_KATEX_DIR}/katex.min.js
+                   kKatexJs crucible::gui::web web_katex)
+endif()
+
+# One target makes them. The window and the tests both compile the page, and
+# two targets that list a custom command's output each run that command --
+# under make, at the same time: one compiled the page while the other was
+# halfway through writing it, and the array came out empty. Both depend on
+# this instead, so it is made once, first.
+add_custom_target(crucible_page
+    DEPENDS ${CRUCIBLE_WEBUI_CPP} ${CRUCIBLE_RENDER_CPP} ${CRUCIBLE_KATEX_JS_CPP})
 
 # Those same functions, run by the tests in the engine that will run them for
 # real. JavaScriptCore ships with WebKitGTK, so on a Linux machine that can
@@ -282,59 +437,6 @@ elseif(UNIX)
             set(CRUCIBLE_JSC_FOUND ON)
         endif()
     endif()
-endif()
-
-# --- the interface font -------------------------------------------------
-#
-# JetBrains Mono, compiled in rather than looked for. A font is the one
-# asset the program cannot draw for itself, and searching for it at runtime
-# would mean an install layout and a search path for a typeface -- the same
-# machinery the flame mark avoids by being vector shapes. Three faces, which
-# is what rendering markdown needs: prose, **bold**, and *italic*.
-#
-# Fetched and pinned like everything else. If the download fails the build
-# still works and the app falls back to whatever monospace face the system
-# has, because a missing typeface is not a reason to have no program.
-FetchContent_Declare(jetbrains_mono
-    URL      https://github.com/JetBrains/JetBrainsMono/releases/download/v${CRUCIBLE_FONT_TAG}/JetBrainsMono-${CRUCIBLE_FONT_TAG}.zip
-    URL_HASH SHA256=6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-FetchContent_MakeAvailable(jetbrains_mono)
-
-set(CRUCIBLE_FONT_DIR ${CMAKE_BINARY_DIR}/generated)
-file(MAKE_DIRECTORY ${CRUCIBLE_FONT_DIR})
-
-set(CRUCIBLE_FONT_SOURCES "")
-set(CRUCIBLE_FONTS_EMBEDDED ON)
-foreach(_face Regular Bold Italic)
-    string(TOLOWER ${_face} _symbol)
-    set(_ttf ${jetbrains_mono_SOURCE_DIR}/fonts/ttf/JetBrainsMono-${_face}.ttf)
-    set(_cpp ${CRUCIBLE_FONT_DIR}/font_${_symbol}.cpp)
-    if(NOT EXISTS ${_ttf})
-        message(WARNING "JetBrains Mono ${_face} not found; the desktop app will "
-                        "fall back to a system font")
-        set(CRUCIBLE_FONTS_EMBEDDED OFF)
-        break()
-    endif()
-    # Configure time, not build time: the input never changes, so there is
-    # nothing for a dependency rule to track.
-    if(NOT EXISTS ${_cpp} OR ${_ttf} IS_NEWER_THAN ${_cpp})
-        execute_process(COMMAND ${CMAKE_COMMAND}
-            -DIN=${_ttf} -DOUT=${_cpp} -DSYMBOL=k${_face}
-            -P ${CMAKE_CURRENT_LIST_DIR}/EmbedBinary.cmake
-            RESULT_VARIABLE _embed_status)
-        if(NOT _embed_status EQUAL 0)
-            message(WARNING "could not embed JetBrains Mono ${_face}")
-            set(CRUCIBLE_FONTS_EMBEDDED OFF)
-            break()
-        endif()
-    endif()
-    list(APPEND CRUCIBLE_FONT_SOURCES ${_cpp})
-endforeach()
-
-if(CRUCIBLE_FONTS_EMBEDDED)
-    add_library(crucible_fonts STATIC ${CRUCIBLE_FONT_SOURCES})
-    target_compile_definitions(crucible_fonts PUBLIC CRUCIBLE_HAS_EMBEDDED_FONT)
 endif()
 
 # The flame in the corner of the window. The SVG rather than the raw RGBA the

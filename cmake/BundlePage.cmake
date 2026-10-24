@@ -23,18 +23,39 @@ endif()
 get_filename_component(_dir "${IN}" DIRECTORY)
 file(READ "${IN}" _page)
 
+# Where a reference is read from. ui/ for the page's own files; VENDOR for
+# what index.html names under vendor/ -- KaTeX, which the build prepares
+# rather than the repository carrying. A vendor file that is not there is
+# left out, and the page does without it: a build that could not fetch KaTeX
+# shows math as its TeX source, which is not a reason to fail the build.
+function(_bundle_source name out_var)
+    if(name MATCHES "^vendor/(.*)$")
+        if(DEFINED VENDOR AND EXISTS "${VENDOR}/${CMAKE_MATCH_1}")
+            set(${out_var} "${VENDOR}/${CMAKE_MATCH_1}" PARENT_SCOPE)
+        else()
+            set(${out_var} "" PARENT_SCOPE)
+        endif()
+        return()
+    endif()
+    if(NOT EXISTS "${_dir}/${name}")
+        message(FATAL_ERROR "ui/index.html names ${name}, which is not there")
+    endif()
+    set(${out_var} "${_dir}/${name}" PARENT_SCOPE)
+endfunction()
+
 # <link rel="stylesheet" href="x.css">  ->  <style> ... </style>
 while(TRUE)
     string(REGEX MATCH "<link rel=\"stylesheet\" href=\"([^\"]+)\">" _tag "${_page}")
     if(NOT _tag)
         break()
     endif()
-    set(_file "${_dir}/${CMAKE_MATCH_1}")
-    if(NOT EXISTS "${_file}")
-        message(FATAL_ERROR "ui/index.html names ${CMAKE_MATCH_1}, which is not there")
+    _bundle_source("${CMAKE_MATCH_1}" _file)
+    if(_file)
+        file(READ "${_file}" _text)
+        string(REPLACE "${_tag}" "<style>\n${_text}</style>" _page "${_page}")
+    else()
+        string(REPLACE "${_tag}" "" _page "${_page}")
     endif()
-    file(READ "${_file}" _text)
-    string(REPLACE "${_tag}" "<style>\n${_text}</style>" _page "${_page}")
 endwhile()
 
 # <script src="x.js"></script>  ->  <script> ... </script>
@@ -43,15 +64,17 @@ while(TRUE)
     if(NOT _tag)
         break()
     endif()
-    set(_file "${_dir}/${CMAKE_MATCH_1}")
-    if(NOT EXISTS "${_file}")
-        message(FATAL_ERROR "ui/index.html names ${CMAKE_MATCH_1}, which is not there")
+    set(_name "${CMAKE_MATCH_1}")
+    _bundle_source("${_name}" _file)
+    if(_file)
+        file(READ "${_file}" _text)
+        # The file's name, so a syntax error reported against the bundle can be
+        # traced back to the file it came from.
+        string(REPLACE "${_tag}" "<script>\n// ---- ${_name} ----\n${_text}</script>"
+               _page "${_page}")
+    else()
+        string(REPLACE "${_tag}" "" _page "${_page}")
     endif()
-    file(READ "${_file}" _text)
-    # The file's name, so a syntax error reported against the bundle can be
-    # traced back to the file it came from.
-    string(REPLACE "${_tag}" "<script>\n// ---- ${CMAKE_MATCH_1} ----\n${_text}</script>"
-           _page "${_page}")
 endwhile()
 
 file(WRITE "${OUT}" "${_page}")

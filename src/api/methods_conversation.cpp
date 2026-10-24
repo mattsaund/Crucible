@@ -89,12 +89,34 @@ Reply submit(const json& params, Host& host) {
             return bad(refused);
         }
     }
+    // What the box is set to send to, said with every prompt: the engine
+    // keeps that expert loaded between prompts. See Engine::choose.
+    const auto route = params.find("route");
+    if (route != params.end() && route->is_string()) {
+        const std::string id = route->get<std::string>();
+        host.engine()->choose(id.empty() ? std::nullopt : std::optional<ExpertId>(id), false);
+    }
     // An expert named here skips routing, which is what `/physics ...` does.
     // An empty one is not an error: it is the normal case, and it means "let
     // the delegator decide".
     const auto expert = params.value("expert", std::string{});
     host.engine()->submit(prompt, expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
                           std::move(attachments));
+    return good();
+}
+
+/// Where the box sends prompts: one expert, or the delegator (empty). With
+/// "load", which is the default, that one is loaded now rather than when the
+/// first prompt to it is sent. See Engine::choose.
+Reply route_pick(const json& params, Host& host) {
+    if (host.engine() == nullptr) {
+        return no_engine();
+    }
+    const auto expert = params.find("expert");
+    const auto load   = params.find("load");
+    const std::string id = expert != params.end() && expert->is_string() ? expert->get<std::string>() : "";
+    host.engine()->choose(id.empty() ? std::nullopt : std::optional<ExpertId>(id),
+                          load == params.end() || !load->is_boolean() || load->get<bool>());
     return good();
 }
 
@@ -438,6 +460,7 @@ Reply recents(const json& params, const Scene& scene) {
 void conversation_methods(std::vector<Method>& table) {
     table.push_back({"snapshot",     nullptr, snapshot});
     table.push_back({"submit",       nullptr, submit});
+    table.push_back({"route.pick",   nullptr, route_pick});
     table.push_back({"attach.inspect", attach_inspect, nullptr});
     table.push_back({"attach.image", attach_image, nullptr});
     table.push_back({"attach.store", attach_store, nullptr});

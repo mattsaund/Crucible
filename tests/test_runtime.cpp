@@ -103,6 +103,11 @@ TEST(a_failed_configure_names_what_cmake_could_not_find) {
     // The last one is the one that stopped it.
     CHECK_EQ(missing_from_log({"  Could NOT find OpenSSL", "  Could NOT find CUDAToolkit: nvcc"}),
              std::string("CUDAToolkit"));
+    // Status lines are not it: llama.cpp looks for Git and OpenMP every time,
+    // and a compile that failed for another reason was told to install Git.
+    CHECK(missing_from_log({"-- Could NOT find Git (missing: GIT_EXECUTABLE)",
+                            "-- Could NOT find OpenMP_C (missing: OpenMP_C_FLAGS)",
+                            "error: 'x' was not declared in this scope"}).empty());
 }
 
 TEST(ggml_registry_names_map_onto_backends_whatever_their_case) {

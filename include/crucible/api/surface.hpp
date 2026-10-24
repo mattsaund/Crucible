@@ -42,6 +42,9 @@ namespace crucible {
 namespace self {
 class Rebuild;
 }
+namespace market {
+class Downloads;
+}
 class Setup;
 }  // namespace crucible
 
@@ -79,6 +82,9 @@ public:
 
     /// A rebuild of Crucible's own source. See app/self_source.hpp.
     virtual self::Rebuild*         rebuild() { return nullptr; }
+
+    /// Models on their way from the Models tab. See market/downloads.hpp.
+    virtual market::Downloads*     downloads() { return nullptr; }
 
     /// Updating to the newest release in place. See app/update.hpp.
     virtual update::Installer*     updater() { return nullptr; }

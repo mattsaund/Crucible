@@ -47,4 +47,11 @@ std::string scrub_utf8(std::string_view text);
 /// is scrubbed.
 std::string console_to_utf8(std::string_view text);
 
+/// `text` as a PowerShell single-quoted literal, quotes included. Nothing in
+/// one is expanded -- no `$(...)`, no variables -- and the only character
+/// that ends it is a quote, doubled here to be a quote. PowerShell counts the
+/// curly ones as quotes too (U+2018 to U+201B), so "don’t" would have ended
+/// the string and the rest been read as script; they are doubled as well.
+std::string powershell_literal(std::string_view text);
+
 }  // namespace crucible::detail

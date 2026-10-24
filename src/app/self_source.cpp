@@ -82,6 +82,14 @@ Source find(const fs::path& chosen) {
 }
 
 Rebuild::~Rebuild() {
+    // The window is closing: the build is not waited for.
+    stopping_.store(true);
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (step_ != nullptr) {
+            step_->terminate();
+        }
+    }
     if (worker_.joinable()) {
         worker_.join();
     }
@@ -130,17 +138,27 @@ bool Rebuild::start(const Source& source, std::string& error) {
                 line += " " + part;
             }
             add(line);
+            if (stopping_.load()) {
+                return 130;
+            }
             util::Subprocess child;
-            std::string error;
-            if (!child.start(argv, cwd, {}, error)) {
-                add(error);
+            std::string why;
+            if (!child.start(argv, cwd, {}, why)) {
+                add(why);
                 return 127;
+            }
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                step_ = &child;
             }
             std::string out;
             while (child.read_line(out)) {
                 add(out);
             }
-            return child.wait();
+            const int status = child.wait();
+            const std::lock_guard<std::mutex> lock(mutex_);
+            step_ = nullptr;
+            return status;
         };
         int status = 0;
         std::error_code ec;
@@ -163,28 +181,12 @@ bool Rebuild::start(const Source& source, std::string& error) {
 bool restart(const Source& source, std::string& error) {
     std::error_code ec;
     if (!fs::exists(source.program, ec)) {
-        error = source.program.string() + " is not there -- rebuild first";
+        error = source.program.string() + " is not there: rebuild first";
         return false;
     }
-    // Its own session, so closing this program does not take the new one.
-#if defined(_WIN32)
-    util::Subprocess child;
-    if (!child.start({"cmd", "/c", "start", "", source.program.string()}, source.program.parent_path(), {}, error)) {
-        return false;
-    }
-    child.wait();
-#else
-    // A subshell put in the background: the new program is the shell's
-    // grandchild, handed to the system when the shell exits, and outlives
-    // this one. (A Mac has no setsid to do it the other way.)
-    util::Subprocess child;
-    if (!child.start({"/bin/sh", "-c", "(\"$0\" >/dev/null 2>&1 </dev/null &)", source.program.string()},
-                     source.program.parent_path(), {}, error)) {
-        return false;
-    }
-    child.wait();
-#endif
-    return true;
+    // A program of its own, so closing this one does not take the new one:
+    // on Windows a child of this one is in its job, and goes with it.
+    return util::start_detached({source.program.string()}, error);
 }
 
 }  // namespace crucible::self

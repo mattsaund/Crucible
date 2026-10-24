@@ -151,7 +151,9 @@ Reply runtime_build(const json& params, Host& host) {
 /// Deleting one. The modules are files in a directory Crucible owns, and a
 /// runtime that is wrong -- built against another llama.cpp, or for a card
 /// that has since gone -- is otherwise only removable by hand.
-Reply runtime_remove(const json& params, Host& host) {
+/// A lookup, on a worker: a runtime's build tree and NVIDIA's libraries are
+/// gigabytes, and deleting them on the window's thread froze it.
+Reply runtime_remove(const json& params, const Scene&) {
     const std::optional<BackendKind> kind =
         backend_from_id(params.value("backend", std::string{}));
     if (!kind) {
@@ -161,8 +163,6 @@ Reply runtime_remove(const json& params, Host& host) {
     if (!RuntimeRegistry::remove(*kind, error)) {
         return bad(error.empty() ? "could not remove it" : error);
     }
-    host.say(std::string(backend_info(*kind).name)
-             + " was removed -- it stays loaded until Crucible is restarted");
     return good(json{{"removed", true}});
 }
 
@@ -310,11 +310,11 @@ Reply trainer_progress(const json&, Host& host) {
 /// trained with it is touched: a finished model is a file somewhere else.
 Reply trainer_remove(const json&, Host& host) {
     if (host.trainer() != nullptr && host.trainer()->progress().running()) {
-        return bad("a training run is using it -- stop that first");
+        return bad("a training run is using it: stop that first");
     }
     if (host.trainer_installer() != nullptr
         && host.trainer_installer()->progress().running()) {
-        return bad("it is being installed -- cancel that first");
+        return bad("it is being installed: cancel that first");
     }
     std::string error;
     if (!lab::pyenv::remove(error)) {
@@ -342,7 +342,7 @@ void install_methods(std::vector<Method>& table) {
     table.push_back({"runtime.cancel",   nullptr, runtime_cancel});
     table.push_back({"runtime.dismiss",  nullptr, runtime_dismiss});
     table.push_back({"runtime.progress", nullptr, runtime_progress});
-    table.push_back({"runtime.remove",   nullptr, runtime_remove});
+    table.push_back({"runtime.remove",   runtime_remove, nullptr});
     table.push_back({"trainer",          trainer, nullptr});
     table.push_back({"trainer.flavors",  trainer_flavors, nullptr});
     table.push_back({"trainer.install",  nullptr, trainer_install});

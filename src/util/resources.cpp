@@ -3,16 +3,13 @@
 // See resources.hpp.
 #include "crucible/util/resources.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <system_error>
-#include <utility>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -23,22 +20,6 @@
 
 namespace crucible::util {
 namespace {
-
-/// How often the machine is read.
-///
-/// Set by what the reading costs rather than by what would be nice. Starting
-/// nvidia-smi means fork(), and fork() copies the page tables of a process that
-/// has a model mapped into it: measured at 0.4 ms with nothing loaded and
-/// 6.9 ms with an 11 GB expert resident, rising with the model. Two and a half
-/// seconds keeps that under a third of a percent of one core while still being
-/// often enough to watch video memory fill during a load.
-///
-/// Reading the memory from ggml instead would cost nothing at all, and is the
-/// obvious improvement -- except that ggml's device registry is written by the
-/// engine thread as backends are loaded, and reading it from here would be a
-/// race. A separate process has no such problem, which is most of why this one
-/// is a separate process.
-constexpr auto kInterval = std::chrono::milliseconds(2500);
 
 constexpr std::uint64_t kKib = 1024;
 
@@ -72,66 +53,7 @@ std::string read_file(const std::filesystem::path& path) {
     return buffer.str();
 }
 
-/// The processor package temperature, in whole degrees, or -1.
-///
-/// hwmon first, because that is where a modern kernel puts it and the name
-/// says which sensor it is. The thermal zones are the fallback for kernels or
-/// platforms that only expose it there.
-int cpu_temperature() {
-    static constexpr std::array<std::string_view, 4> kWanted{
-        {"coretemp", "k10temp", "zenpower", "cpu_thermal"}};
-
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator("/sys/class/hwmon", ec)) {
-        const std::string name = std::string(trim(read_file(entry.path() / "name")));
-        if (std::find(kWanted.begin(), kWanted.end(), name) == kWanted.end()) {
-            continue;
-        }
-        std::uint64_t milli = 0;
-        if (to_number(read_file(entry.path() / "temp1_input"), milli)) {
-            return static_cast<int>(milli / 1000);
-        }
-    }
-
-    ec.clear();
-    for (const auto& entry : std::filesystem::directory_iterator("/sys/class/thermal", ec)) {
-        if (trim(read_file(entry.path() / "type")) != "x86_pkg_temp") {
-            continue;
-        }
-        std::uint64_t milli = 0;
-        if (to_number(read_file(entry.path() / "temp"), milli)) {
-            return static_cast<int>(milli / 1000);
-        }
-    }
-    return -1;
-}
-
-/// Every GPU nvidia-smi can see. Empty on a machine without it, which is not an
-/// error -- it is a machine with no NVIDIA card.
-std::vector<ResourceSample> read_gpus() {
-    std::vector<ResourceSample> gpus;
-    if (!on_path("nvidia-smi")) {
-        return gpus;
-    }
-    Subprocess child;
-    std::string error;
-    if (!child.start({"nvidia-smi",
-                      "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu",
-                      "--format=csv,noheader,nounits"},
-                     {}, /*extra_env=*/{}, error)) {
-        return gpus;
-    }
-    std::string line;
-    while (child.read_line(line)) {
-        ResourceSample sample;
-        if (parse_gpu_line(line, sample)) {
-            gpus.push_back(std::move(sample));
-        }
-    }
-    child.wait();
-    return gpus;
-}
-
+#if !defined(_WIN32)
 /// One `sysctl -n <name>`, as a string. Empty on anything but macOS, and on a
 /// Mac where the key does not exist.
 std::string sysctl_value(const char* name) {
@@ -171,89 +93,6 @@ std::string output_of(const std::vector<std::string>& argv) {
         text += '\n';
     }
     return child.wait() == 0 ? text : std::string{};
-}
-
-/// The processor and its memory, on macOS.
-///
-/// Reported as one row rather than two, because on Apple silicon that is the
-/// truth: the GPU and the processor share one pool, and drawing a separate
-/// "vram" line for the same bytes would be inventing a distinction the hardware
-/// does not make. Temperature is left unknown -- reading it needs
-/// `powermetrics`, which needs root, and a monitor that asks for a password is
-/// worse than one that shows a dash.
-bool read_macos_cpu(ResourceSample& sample) {
-    const std::string name = sysctl_value("machdep.cpu.brand_string");
-    if (name.empty()) {
-        return false;
-    }
-    sample.name = name;
-
-    std::uint64_t total = 0;
-    if (!to_number(sysctl_value("hw.memsize"), total) || total == 0) {
-        return false;
-    }
-    std::uint64_t page_size = 0;
-    if (!to_number(sysctl_value("hw.pagesize"), page_size) || page_size == 0) {
-        page_size = 4096;
-    }
-    sample.total = total;
-    parse_vm_stat(output_of({"vm_stat"}), page_size, total, sample.used);
-    return true;
-}
-
-#if defined(_WIN32)
-/// Memory and processor time from the Windows APIs.
-///
-/// The Linux path reads /proc and the macOS path shells out to sysctl and
-/// vm_stat; Windows answers both questions in-process, which is cheaper than
-/// either. GetSystemTimes returns cumulative counters like /proc/stat does, so
-/// the same two-reading rule applies and the caller's first pass reports none.
-bool read_windows_cpu(ResourceSample& sample) {
-    MEMORYSTATUSEX memory{};
-    memory.dwLength = sizeof(memory);
-    if (::GlobalMemoryStatusEx(&memory) == 0) {
-        return false;
-    }
-    sample.total = memory.ullTotalPhys;
-    sample.used  = memory.ullTotalPhys - memory.ullAvailPhys;
-
-    // A name, from the registry key every Windows has had since NT.
-    HKEY key = nullptr;
-    if (::RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                        "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                        0, KEY_READ, &key) == ERROR_SUCCESS) {
-        char  name[256] = {};
-        DWORD size      = sizeof(name);
-        DWORD type      = 0;
-        if (::RegQueryValueExA(key, "ProcessorNameString", nullptr, &type,
-                               reinterpret_cast<LPBYTE>(name), &size) == ERROR_SUCCESS) {
-            sample.name = trim(name);
-        }
-        ::RegCloseKey(key);
-    }
-    if (sample.name.empty()) {
-        sample.name = "processor";
-    }
-    return true;
-}
-
-/// Cumulative idle and total processor ticks, the counterpart of /proc/stat.
-bool read_windows_times(std::uint64_t& busy, std::uint64_t& total) {
-    FILETIME idle{};
-    FILETIME kernel{};
-    FILETIME user{};
-    if (::GetSystemTimes(&idle, &kernel, &user) == 0) {
-        return false;
-    }
-    const auto ticks = [](const FILETIME& value) {
-        return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32)
-             | value.dwLowDateTime;
-    };
-    // Kernel time already includes idle, which is why it is subtracted rather
-    // than added: "busy" is everything that was not idling.
-    total = ticks(kernel) + ticks(user);
-    busy  = total - ticks(idle);
-    return true;
 }
 #endif
 
@@ -493,84 +332,6 @@ std::string parse_cpu_name(std::string_view cpuinfo) {
         return std::string(trim(tidy));
     }
     return {};
-}
-
-ResourceMonitor::~ResourceMonitor() { stop(); }
-
-void ResourceMonitor::start(std::function<void()> on_change) {
-    if (running_.exchange(true)) {
-        return;
-    }
-    on_change_ = std::move(on_change);
-    worker_    = std::thread([this] { run(); });
-}
-
-void ResourceMonitor::stop() {
-    running_.store(false);
-    if (worker_.joinable()) {
-        worker_.join();
-    }
-}
-
-ResourceSnapshot ResourceMonitor::snapshot() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return latest_;
-}
-
-void ResourceMonitor::run() {
-    const std::string cpu_name = parse_cpu_name(read_file("/proc/cpuinfo"));
-
-    while (running_.load()) {
-        ResourceSnapshot next;
-        next.ready = true;
-        next.gpus  = read_gpus();
-
-        // Linux first, because /proc is the cheap answer and reading it costs
-        // no subprocess at all. Where there is no /proc, ask macOS the same
-        // three questions through sysctl.
-        if (parse_meminfo(read_file("/proc/meminfo"), next.cpu.used, next.cpu.total)) {
-            next.cpu.name          = cpu_name.empty() ? "processor" : cpu_name;
-            next.cpu.temperature_c = cpu_temperature();
-#if defined(_WIN32)
-        } else if (read_windows_cpu(next.cpu)) {
-            // Windows exposes no processor temperature without a driver, so
-            // that column stays empty rather than guessing.
-#endif
-        } else if (!read_macos_cpu(next.cpu)) {
-            next.cpu.name = cpu_name.empty() ? "processor" : cpu_name;
-        }
-
-        // A percentage of processor time needs two readings, so the first pass
-        // reports none rather than reporting the average since boot.
-        std::uint64_t busy  = 0;
-        std::uint64_t total = 0;
-        bool have_times = parse_stat(read_file("/proc/stat"), busy, total);
-#if defined(_WIN32)
-        have_times = have_times || read_windows_times(busy, total);
-#endif
-        if (have_times && total > last_total_) {
-            if (last_total_ != 0) {
-                const std::uint64_t span = total - last_total_;
-                next.cpu.busy_percent =
-                    static_cast<int>(((busy - last_busy_) * 100 + span / 2) / span);
-            }
-            last_busy_  = busy;
-            last_total_ = total;
-        }
-
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            latest_ = std::move(next);
-        }
-        if (on_change_) {
-            on_change_();
-        }
-
-        // Woken in short steps so that quitting does not wait out the interval.
-        for (int slept = 0; slept < 25 && running_.load(); ++slept) {
-            std::this_thread::sleep_for(kInterval / 25);
-        }
-    }
 }
 
 }  // namespace crucible::util

@@ -152,8 +152,9 @@ constexpr std::string_view kExeSuffix = "";
 /// The other programs this install put beside the binary.
 ///
 /// `crucible` is not the whole install. `crucible-routebench` is the developer
-/// tool, placed in the same bin/ by the same install component and useless once
-/// the libraries under it are gone. `crucible-gui` is not installed any more --
+/// tool, and `crucible-app` the program a made app runs in (copied into each
+/// app, so none of them needs this one), both placed in the same bin/ by the
+/// same install component and useless once the libraries under it are gone. `crucible-gui` is not installed any more --
 /// the window is `crucible` itself -- but it was, and an install that predates
 /// the rename still has it sitting there. Both are swept for the same reason:
 /// leaving either behind puts a program on PATH that can only fail, and makes a
@@ -164,7 +165,7 @@ std::vector<std::filesystem::path> companion_programs(const std::filesystem::pat
         return found;
     }
     const std::filesystem::path dir = binary.parent_path();
-    for (const std::string_view name : {"crucible-gui", "crucible-routebench"}) {
+    for (const std::string_view name : {"crucible-gui", "crucible-routebench", "crucible-app"}) {
         std::filesystem::path candidate =
             dir / (std::string(name) + std::string(kExeSuffix));
         std::error_code ec;

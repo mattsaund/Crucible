@@ -56,7 +56,7 @@ std::string describe(const pyenv::Status& status) {
         return "not installed";
     }
     if (!status.ready) {
-        return "installed but not usable -- " + status.note;
+        return "installed but not usable: " + status.note;
     }
     std::string line = std::string(pyenv::flavor_id(status.flavor));
     if (!status.torch_version.empty()) {

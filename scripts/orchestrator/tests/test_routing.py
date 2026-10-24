@@ -178,6 +178,8 @@ class FakeCore:
         self.calls.append(method)
         if method == "delegator.ready":
             return {"available": self.available, "path": "/models/delegator.gguf"}
+        if method == "delegator.done":
+            return {}
         if method == "delegator.format":
             # The last user message is the question; the format is the model's.
             listed = params["messages"][0]["content"].split("\n\n", 1)[1].split("\n")[0]
@@ -215,6 +217,23 @@ class Delegator(unittest.TestCase):
         self.assertEqual((out.expert, out.source), ("physics", routing.MODEL))
         expected = 1.0 / (1.0 + 5 * math.exp(-5.0))
         self.assertAlmostEqual(out.confidence, expected, places=6)
+
+    def test_a_delegator_lost_halfway_routes_on_keywords_and_is_let_go(self):
+        # Freed between two calls by a build taking a seat, it failed the
+        # route outright. The route carries on by keywords now, and closes
+        # what it opened either way.
+        class Lost(FakeCore):
+            def call(self, method, params=None):
+                if method == "delegator.score":
+                    self.calls.append(method)
+                    raise RuntimeError("the delegator is not loaded")
+                return super().call(method, params)
+        core = Lost(lambda q, labels: [0.0] * len(labels))
+        out = routing.route(core, request("what holds a satellite in orbit"))
+        self.assertEqual(out.expert, "physics")
+        self.assertIn("used keywords", out.detail)
+        self.assertEqual(core.calls[-1], "delegator.done")
+        self.assertEqual(core.calls.count("delegator.ready"), core.calls.count("delegator.done"))
 
     def test_the_measured_lean_is_taken_out(self):
         # A delegator that says Mathematics to nothing at all is leaning; a

@@ -4,11 +4,14 @@
 //
 // Two responsibilities that must not be separated: redirecting llama.cpp's
 // logging away from stderr (nobody is reading it there), and enforcing
-// the rule that makes Crucible's memory budget work -- the small delegator stays
-// resident, and at most one large expert is loaded at any moment.
+// the rule that makes Crucible's memory budget work -- an expert nobody is
+// using is freed before the next one is loaded, and one somebody is using
+// stays, with the next loaded beside it only when there is room. See
+// engine/leases.hpp.
 //
-// Every function here must be called from the same thread. Crucible runs it on
-// the engine worker so the UI never blocks behind a model load.
+// One call at a time: the engine holds a lock around every one, whichever of
+// its threads makes it, and none of them is the UI's, so the window never
+// blocks behind a model load.
 #include "crucible/llm/model_host.hpp"
 
 #include "crucible/util/text.hpp"
@@ -21,8 +24,10 @@
 #include <fstream>
 #include <mutex>
 #include <random>
+#include <regex>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include <ggml-backend.h>
 #include <llama.h>
@@ -51,9 +56,18 @@ namespace {
 std::mutex   g_log_mutex;
 std::ofstream g_log_stream;
 
+/// The errors llama.cpp has reported on this thread since a load began: what
+/// a failed load says went wrong, which its return value does not. A few,
+/// because the useful one -- "unknown model architecture" -- is followed by
+/// one that only says the load failed.
+thread_local std::vector<std::string> t_errors;
+
 void log_to_file(ggml_log_level level, const char* text, void* /*user_data*/) {
     if (text == nullptr) {
         return;
+    }
+    if (level == GGML_LOG_LEVEL_ERROR && t_errors.size() < 8) {
+        t_errors.emplace_back(text);
     }
     const std::lock_guard<std::mutex> lock(g_log_mutex);
     if (!g_log_stream.is_open()) {
@@ -68,6 +82,29 @@ void log_to_file(ggml_log_level level, const char* text, void* /*user_data*/) {
     }
     g_log_stream << tag << " | " << text;
     g_log_stream.flush();
+}
+
+/// Why a load failed, in llama.cpp's words: its "error loading model" line
+/// when it wrote one, else its first error. Empty when it said nothing.
+std::string load_failure() {
+    std::string reason;
+    for (const std::string& line : t_errors) {
+        const std::size_t at = line.find("error loading model: ");
+        if (at != std::string::npos) {
+            reason = line.substr(at + 21);
+            break;
+        }
+    }
+    if (reason.empty() && !t_errors.empty()) {
+        reason = t_errors.front();
+        if (const std::size_t colon = reason.find(": "); colon != std::string::npos && colon < 48) {
+            reason.erase(0, colon + 2);   // the function that said it
+        }
+    }
+    while (!reason.empty() && (reason.back() == '\n' || reason.back() == ' ')) {
+        reason.pop_back();
+    }
+    return reason;
 }
 
 /// Bridges llama.cpp's C progress callback to the std::functions the caller
@@ -277,7 +314,7 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
         }
         const std::string where = gpu->description.empty() ? gpu->name : gpu->description;
         return "would put " + format::bytes(wants) + " on " + where + ", which has "
-             + format::bytes(gpu->memory_free) + " free -- lower \"Context\", or turn "
+             + format::bytes(gpu->memory_free) + " free. Lower \"Context\", or turn "
                "off \"Use dedicated VRAM only\"";
     }
 
@@ -303,9 +340,9 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
         where += (gpu->description.empty() ? gpu->name : gpu->description);
     }
 
-    std::string advice = " -- lower \"Context\", or turn off \"Use dedicated VRAM only\"";
+    std::string advice = ". Lower \"Context\", or turn off \"Use dedicated VRAM only\"";
     if (held > 0 && !holder.empty()) {
-        advice = " -- " + holder + " holds " + format::bytes(held) + " of it. Lower "
+        advice = ". " + holder + " holds " + format::bytes(held) + " of it. Lower "
                  "\"Context\", or turn off \"Use dedicated VRAM only\"";
     }
 
@@ -425,7 +462,8 @@ ModelHost::ModelHost(std::filesystem::path log_path) {
     // Bring the loadable runtimes in before llama.cpp initializes, so the
     // devices they provide are there from the first model load. A fresh
     // install has none: Crucible ships no backends, and this does nothing until
-    // one has been built from the settings screen.
+    // one has been installed -- by the installer, by the window's setup when it
+    // starts, or from the settings screen.
     RuntimeRegistry::load_all();
 
     llama_backend_init();
@@ -467,10 +505,6 @@ std::optional<ExpertId> ModelHost::loaded_expert() const {
         return std::nullopt;
     }
     return experts_.back().id;
-}
-
-LoadedModel* ModelHost::expert() const {
-    return experts_.empty() ? nullptr : experts_.back().model.get();
 }
 
 std::uint64_t ModelHost::estimate_bytes(const ModelParams& params) {
@@ -602,7 +636,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // backend found" from somewhere deep in the loader, which is a true
     // statement about ggml and a useless one about what to do next.
     if (ggml_backend_dev_count() == 0) {
-        error = "no runtime installed -- install one in Settings, Runtimes";
+        error = "no runtime installed: install one in Settings, Runtimes";
         return nullptr;
     }
 
@@ -671,6 +705,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
     }
 
+    t_errors.clear();
     llama_model* model = llama_model_load_from_file(params.path.c_str(), model_params);
     if (model == nullptr) {
         // Stopped on purpose is not a failure, and must not be reported as one:
@@ -680,15 +715,27 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
             error = "stopped";
             return nullptr;
         }
-        error = "llama.cpp could not load " + params.path
-              + " (see the Crucible log for details)";
-        // The most likely reason, and the one the user can act on. With every
-        // layer pinned to the GPU there is no partial offload to fall back on,
-        // so a model that no longer fits fails outright rather than quietly
-        // running part of itself on the processor -- which is the whole point
-        // of the setting, but is worth saying when it is what just happened.
-        if (params.gpu_only) {
-            error += ". Too large for the card? Turn off \"Keep every layer on the GPU\"";
+        const std::string said = load_failure();
+        const std::string file = std::filesystem::path(params.path).filename().string();
+        // A model newer than this llama.cpp is not one that is too large,
+        // whatever the settings: saying so sent somebody looking at memory.
+        static const std::regex unknown(R"(unknown model architecture: '([^']+)')");
+        std::smatch kind;
+        if (std::regex_search(said, kind, unknown)) {
+            error = file + " is a " + kind[1].str() + " model, which this Crucible's llama.cpp cannot run yet";
+            return nullptr;
+        }
+        error = "llama.cpp could not load " + file + (said.empty() ? std::string() : ": " + said)
+              + " (see the Crucible log)";
+        // With every layer pinned to the GPU there is no partial offload to
+        // fall back on, so a model that no longer fits fails outright rather
+        // than quietly running part of itself on the processor -- which is
+        // the whole point of the setting, but is worth saying when memory is
+        // what llama.cpp ran out of.
+        const bool memory = said.empty() || said.find("alloc") != std::string::npos
+                         || said.find("memory") != std::string::npos;
+        if (params.gpu_only && memory) {
+            error += ". Too large for the cards? Turn off \"Keep every layer on the GPU\"";
         }
         return nullptr;
     }

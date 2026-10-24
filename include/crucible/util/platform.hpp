@@ -18,6 +18,7 @@
 #include <ctime>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace crucible::util {
@@ -76,5 +77,11 @@ void hide_folder(const std::filesystem::path& folder);
 /// how anyone describes running a project and splitting the string would break
 /// all three. See tools/workshop.hpp for what that does and does not confine.
 std::vector<std::string> shell_command(const std::string& command);
+
+/// Write `text` to `file` whole or not at all: beside it first, checked once
+/// closed -- a full disk fails the writing, not the opening -- and renamed
+/// over it only then. A save that is interrupted or refused leaves the old
+/// file as it was, rather than a truncated one in its place.
+bool write_file_atomically(const std::filesystem::path& file, std::string_view text, std::string& error);
 
 }  // namespace crucible::util

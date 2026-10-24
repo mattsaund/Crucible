@@ -488,7 +488,7 @@ Reply kit_fetch(const json&, Host& host) {
         return bad("this Crucible has no setup to fetch with");
     }
     if (setup->running()) {
-        return bad("already fetching -- see the card at the top of the chat");
+        return bad("already fetching: see the card at the top of the chat");
     }
     setup->start();
     return good();

@@ -225,9 +225,7 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
     const std::uint64_t ssm_inner = first_or(unsigned_values(gguf, key("ssm.inner_size")), 0);
     const std::uint64_t ssm_state = first_or(unsigned_values(gguf, key("ssm.state_size")), 0);
 
-    shape.layers    = static_cast<std::uint32_t>(layers);
-    shape.train_ctx = static_cast<std::uint32_t>(
-        first_or(unsigned_values(gguf, key("context_length")), 0));
+    shape.layers = static_cast<std::uint32_t>(layers);
 
     // The vocabulary, for the logits buffer. Its size is the length of the
     // token list rather than a key of its own in most files.

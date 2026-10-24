@@ -32,8 +32,9 @@ std::filesystem::path log_file();
 /// installing or uninstalling a runtime means.
 std::filesystem::path runtimes_dir();
 
-/// data_dir()/runtime-src -- the llama.cpp checkout GPU runtimes are built
-/// from. Seeded by install.sh, and cloned on demand if it is missing.
+/// data_dir()/runtime-src -- the llama.cpp source GPU runtimes are built
+/// from. Fetched by the first build that needs it, and again when it is for
+/// another llama.cpp than this binary's. See RuntimeBuilder::ensure_source.
 std::filesystem::path runtime_src_dir();
 
 /// data_dir()/runtime-build -- scratch build trees, one per backend. Safe to

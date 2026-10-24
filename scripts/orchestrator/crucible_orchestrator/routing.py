@@ -337,6 +337,16 @@ def apply_policy(decision, roster, seats, routing):
     return decision
 
 
+def let_go(core):
+    """Close what delegator.ready opened. Between the two the core does not
+    free the delegator for anybody else, so every ready is followed by this,
+    whatever happened in between."""
+    try:
+        core.call("delegator.done")
+    except Exception:   # the core is going away; there is nothing to close
+        pass
+
+
 def route(core, request):
     """The whole decision, from a request the core sends: see `handle_route`."""
     roster = Roster(request.get("roster"))
@@ -352,12 +362,19 @@ def route(core, request):
         return apply_policy(decision, roster, seats, routing)
 
     ready = core.call("delegator.ready") or {}
-    if ready.get("available"):
-        calibration = float(request.get("calibration", CALIBRATION))
-        decision = ModelRouter(core, roster, ready.get("path", ""), calibration,
-                               request.get("method", "")).route(prompt)
-    else:
-        decision = keyword_route(prompt, roster)
+    try:
+        if ready.get("available"):
+            calibration = float(request.get("calibration", CALIBRATION))
+            try:
+                decision = ModelRouter(core, roster, ready.get("path", ""), calibration,
+                                       request.get("method", "")).route(prompt)
+            except Exception as error:   # the delegator could not be had after all
+                decision = keyword_route(prompt, roster)
+                decision.detail = "delegator failed (" + str(error) + "), used keywords"
+        else:
+            decision = keyword_route(prompt, roster)
+    finally:
+        let_go(core)
     return apply_policy(decision, roster, seats, routing)
 
 
@@ -367,13 +384,16 @@ def explain(core, request):
     that is taking it away."""
     roster = Roster(request.get("roster"))
     ready = core.call("delegator.ready") or {}
-    if not ready.get("available"):
-        raise ValueError("there is no delegator to explain")
-    calibration = float(request.get("calibration", CALIBRATION))
-    router = ModelRouter(core, roster, ready.get("path", ""), calibration, request.get("method", ""))
-    order = router.orders[0]
-    bias = router.bias(order)
-    raw = router.score(request.get("prompt") or "", order, cancelable=False)
+    try:
+        if not ready.get("available"):
+            raise ValueError("there is no delegator to explain")
+        calibration = float(request.get("calibration", CALIBRATION))
+        router = ModelRouter(core, roster, ready.get("path", ""), calibration, request.get("method", ""))
+        order = router.orders[0]
+        bias = router.bias(order)
+        raw = router.score(request.get("prompt") or "", order, cancelable=False)
+    finally:
+        let_go(core)
     if not isinstance(raw, list):
         raise ValueError("the delegator could not score that prompt")
     return {"labels": router.labels, "raw": raw, "bias": bias,

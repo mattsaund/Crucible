@@ -125,14 +125,17 @@ std::string render(const std::string& page, const std::filesystem::path& out, in
                    int timeout_seconds) {
     const std::string browser = browser_here();
     if (browser.empty()) {
-        return "there is no browser to draw it with yet -- Crucible fetches one as it starts";
+        return "there is no browser to draw it with yet. Crucible fetches one as it starts";
     }
     std::error_code ec;
     std::filesystem::create_directories(out.parent_path(), ec);
     std::filesystem::remove(out, ec);
     const std::filesystem::path profile = std::filesystem::temp_directory_path() / "crucible-render";
     std::filesystem::create_directories(profile, ec);
-    const std::string ext = out.extension().string();
+    std::string ext = out.extension().string();
+    for (char& c : ext) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
     std::vector<std::string> argv{browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
                                   "--disable-extensions", "--hide-scrollbars", "--mute-audio",
                                   "--user-data-dir=" + profile.string(), "--virtual-time-budget=4000"};
@@ -167,17 +170,15 @@ std::string render(const std::string& page, const std::filesystem::path& out, in
             still = 0;
         }
         last = size;
-        if (!child.running() && size > 0) {
-            break;
-        }
-        if (!child.running() && size == 0) {
-            still = -1;
+        // Ended: with a picture, or having drawn nothing, which no amount of
+        // waiting changes.
+        int status = 0;
+        if (child.try_wait(status)) {
+            still = size > 0 ? still : -1;
             break;
         }
     }
-    if (child.running()) {
-        child.terminate();
-    }
+    child.terminate();
     child.wait();
     if (!std::filesystem::exists(out, ec) || std::filesystem::file_size(out, ec) == 0) {
         return "the browser drew nothing" + std::string(still < 0 ? "" : " in time");

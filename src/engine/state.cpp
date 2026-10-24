@@ -125,7 +125,9 @@ void AppState::configure_seats(const Config& config) {
 
 void AppState::set_resident(std::optional<ExpertId> id) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    // Demote whoever was previously lit; only one expert is ever resident.
+    // Demote whoever was previously lit. Several experts can be in memory at
+    // once (see Snapshot::local_models), but only the one most recently asked
+    // for is lit.
     for (SeatState& seat : seats_) {
         if (seat.phase == SeatPhase::Active) {
             seat.phase = SeatPhase::Dormant;
@@ -168,11 +170,6 @@ void AppState::set_linked(std::optional<ExpertId> id) {
 void AppState::set_cook(std::shared_ptr<const Cook> cook) {
     const std::lock_guard<std::mutex> lock(mutex_);
     cook_ = std::move(cook);
-}
-
-std::shared_ptr<const Cook> AppState::cook() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return cook_;
 }
 
 void AppState::set_delegator_ready(bool ready) {
@@ -312,11 +309,6 @@ void AppState::set_context_used(int used, int size) {
     const std::lock_guard<std::mutex> lock(mutex_);
     context_used_ = used;
     context_size_ = size;
-}
-
-std::shared_ptr<const PendingEdit> AppState::pending_edit() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return pending_edit_;
 }
 
 void AppState::cancel_turn(std::size_t turn) {

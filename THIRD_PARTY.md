@@ -11,22 +11,19 @@ Fetched at build time by `cmake/CrucibleDependencies.cmake`, pinned to exact
 tags. No third-party source is vendored into this repository.
 
 `crucible --licenses` prints the full notices for everything below, so they
-travel with the program rather than only with the source — which is what
-JetBrains Mono's license requires, since the font is inside the binary.
+travel with the program rather than only with the source, as their licenses
+ask.
 
 | project | version | license | what it does here |
 |---|---|---|---|
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b11799` | MIT | loads GGUF models and runs inference |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b11846` | MIT | loads GGUF models and runs inference |
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file, and is the API's encoder |
-| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | `2.304` | SIL OFL 1.1 | the interface typeface, compiled in rather than looked for |
 | [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the interface in the platform's own webview |
 | [miniz](https://github.com/richgel999/miniz) | `3.1.2` | MIT | opens the zip inside a `.docx`, `.xlsx`, `.pptx` or OpenDocument file attached to a prompt, and inflates a PDF's streams |
+| [KaTeX](https://github.com/KaTeX/KaTeX) | `0.19.0` | MIT | draws math in replies; its script, stylesheet and fonts are compiled in |
 
-One of these is not MIT, which is worth stating plainly rather than leaving a
-reader to notice. JetBrains Mono is under the SIL Open Font License, which
-requires its copyright notice and license to accompany the font wherever the
-font goes. The font goes inside the binary — it is handed to the interface as
-a data URI — so the notice does too.
+The interface has no typeface of its own: it is drawn in the system's font,
+or in whichever installed one is named in **Settings → General**.
 
 Dear ImGui and GLFW were here until the interface moved to the platform's own
 webview. Neither is linked any more and both are gone from the build.
@@ -219,9 +216,9 @@ PyTorch on an NVIDIA machine has always meant, and it is worth being explicit
 that Crucible asking pip for `torch` is what puts them there. The CPU and MLX
 flavors pull in none of them.
 
-**Models are not covered by any of this.** Crucible ships no model weights and
-downloads none of its own. Whatever GGUF files you put in your models
-directory carry their own licenses, which are between you and whoever trained
-them -- and so does any base model a fine-tune starts from, which the trainer
-downloads from Huggingface on your instruction and under whatever terms that
-repository sets.
+**Models are not covered by any of this.** Crucible ships no model weights.
+What it downloads, it downloads when asked: a starter model on a machine with
+none (Apache-2.0), and what is chosen in the Models tab, from Hugging Face.
+Those, the files you put in your models folder yourself, and any base model a
+fine-tune starts from carry their own licenses, between you and whoever
+trained them, under whatever terms each repository sets.

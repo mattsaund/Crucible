@@ -11,6 +11,7 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
+#include <regex>
 #include <system_error>
 #include <utility>
 
@@ -67,7 +68,19 @@ std::filesystem::path resolve_model_ref(const std::filesystem::path& models_dir,
     }
     // Anything else, including "subfolder/model.gguf", is relative to the
     // models directory.
-    return models_dir / path;
+    const std::filesystem::path direct = models_dir / path;
+    // A bare name that is not at the top: the folder was tidied into
+    // subfolders after the seat was set. Looked for by name, as deep as the
+    // catalog looks, rather than every seat reading as missing.
+    std::error_code ec;
+    if (is_bare_name(reference) && !std::filesystem::exists(direct, ec)) {
+        for (const ModelFile& file : scan_models(models_dir)) {
+            if (file.path.filename() == path) {
+                return file.path;
+            }
+        }
+    }
+    return direct;
 }
 
 namespace {
@@ -78,6 +91,33 @@ namespace {
 /// is where an MLX model fetched by mlx_lm lands. An MLX model is a folder,
 /// and is listed whole, never looked inside.
 constexpr int kDeepest = 3;
+
+/// For part `n` of a split GGUF -- "x-00002-of-00003.gguf" -- its number and
+/// how many there are; {0, 0} for a GGUF in one piece.
+std::pair<int, int> split_part(const std::string& name) {
+    static const std::regex split(R"(-(\d{5})-of-(\d{5})\.gguf$)", std::regex::icase);
+    std::smatch match;
+    if (!std::regex_search(name, match, split)) {
+        return {0, 0};
+    }
+    return {std::stoi(match[1].str()), std::stoi(match[2].str())};
+}
+
+/// A split GGUF's size: every part of it in the folder.
+std::uintmax_t split_bytes(const std::filesystem::path& first, int parts) {
+    const std::string name = first.filename().string();
+    const std::size_t at = name.size() - std::string("-00001-of-00000.gguf").size();
+    std::uintmax_t total = 0;
+    char number[32];
+    for (int part = 1; part <= parts; ++part) {
+        std::snprintf(number, sizeof number, "-%05d-of-%05d", part, parts);
+        std::error_code ec;
+        const std::uintmax_t size = std::filesystem::file_size(
+            first.parent_path() / (name.substr(0, at) + number + name.substr(at + 15)), ec);
+        total += ec ? 0 : size;
+    }
+    return total;
+}
 
 void scan_into(const std::filesystem::path& root, const std::filesystem::path& relative, int depth,
                std::vector<ModelFile>& found) {
@@ -93,10 +133,17 @@ void scan_into(const std::filesystem::path& root, const std::filesystem::path& r
         std::error_code entry_ec;
         const std::filesystem::path inside = relative / leaf;
         if (it->is_regular_file(entry_ec) && !entry_ec && has_gguf_extension(it->path())) {
+            // A model split in parts is one model, named by its first part,
+            // which is the one llama.cpp is given: it finds the rest beside it.
+            const auto [part, parts] = split_part(leaf);
+            if (part > 1) {
+                continue;
+            }
             ModelFile file;
             file.name  = inside.generic_string();
             file.path  = it->path();
-            file.bytes = std::filesystem::file_size(it->path(), entry_ec);
+            file.bytes = parts > 1 ? split_bytes(it->path(), parts)
+                                   : std::filesystem::file_size(it->path(), entry_ec);
             if (entry_ec) {
                 file.bytes = 0;
             }

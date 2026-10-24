@@ -35,6 +35,10 @@
 
 namespace crucible {
 
+/// The compute capability of each NVIDIA card here, as 89 for 8.9, from
+/// nvidia-smi. Empty when there is none, or nvidia-smi cannot say.
+std::vector<int> nvidia_capabilities();
+
 /// Which CUDA architectures a build should target, given the compute
 /// capabilities `present` in the machine and the ones `targetable` by the
 /// installed nvcc. Both are written the way CMake writes them: 8.9 is 89.

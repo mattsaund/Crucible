@@ -67,6 +67,8 @@ class ScriptedCore:
             return {"stop": stop, "cancel": False, "running": True, "auto_edits": self.auto_edits}
         if method == "delegator.ready":
             return {"available": False}
+        if method == "delegator.done":
+            return {}
         if method == "seat.take":
             self.seats.append(params["expert"])
             return {"ok": True}
@@ -132,6 +134,15 @@ class Loop(unittest.TestCase):
         # The first thing it was shown is what is in the project.
         self.assertEqual(core.ran[0], ("list", "."))
         self.assertIn("Here is what is in the project", core.prompts[0][-1]["content"])
+
+    def test_the_finishing_pass_asks_before_it_writes_when_auto_is_off(self):
+        # Stop, then the finishing pass: with Auto off its WRITE is put to
+        # the person like any other, and a no leaves the file alone.
+        core = ScriptedCore(["READ: a.py", "WRITE: a.py\n```\nx = 1\n```", "DONE: tidied"],
+                            stop_after=1, auto_edits=False, approve=False)
+        cook.run(cook.Core(core), params())
+        self.assertIn("a.py", core.asked_edit)
+        self.assertNotIn(("write", "a.py"), core.ran)
 
     def test_the_account_of_what_was_done_survives_a_trim(self):
         core = ScriptedCore(["WRITE: a.py\n```\nx = 1\n```", "DONE: wrote a"], stop_after=3)

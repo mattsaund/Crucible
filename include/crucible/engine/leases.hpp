@@ -41,8 +41,7 @@ public:
         Lease& operator=(const Lease&) = delete;
         ~Lease();
 
-        bool               held() const { return owner_ != nullptr; }
-        const std::string& key() const { return key_; }
+        bool held() const { return owner_ != nullptr; }
 
         /// End the hold now rather than when this goes out of scope.
         void release();

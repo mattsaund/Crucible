@@ -79,7 +79,8 @@ bool run(const std::vector<std::string>& argv, std::string& said, const fs::path
     return ok;
 }
 
-/// Fetch `url` to `to`, telling `progress` how much has arrived of `total`.
+/// Fetch `url` to `to`, telling `progress` how much has arrived of `total`,
+/// and ending the download when `cancel` says so.
 bool download(const std::string& url, const fs::path& to, std::uint64_t total,
               const std::function<void(std::uint64_t, std::uint64_t)>& progress,
               const std::function<bool()>& cancel, std::string& error) {
@@ -89,7 +90,7 @@ bool download(const std::string& url, const fs::path& to, std::uint64_t total,
     bool              fetched = false;
     std::string       why;
     std::thread fetch([&] {
-        fetched = util::http::download(url, to, 1800, why);
+        fetched = util::http::download(url, to, 1800, why, cancel);
         finished.store(true);
     });
     while (!finished.load()) {
@@ -97,10 +98,6 @@ bool download(const std::string& url, const fs::path& to, std::uint64_t total,
             std::error_code size_ec;
             const std::uintmax_t got = fs::file_size(to, size_ec);
             progress(size_ec ? 0 : static_cast<std::uint64_t>(got), total);
-        }
-        if (cancel && cancel()) {
-            // The download finishes in the background and is thrown away;
-            // http has no way to stop one request alone.
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }

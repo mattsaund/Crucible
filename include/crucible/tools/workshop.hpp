@@ -53,6 +53,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -174,6 +175,11 @@ struct WorkshopSettings {
     /// ToolsConfig::computer_control for why this is a switch of its own.
     bool computer_control = false;
 
+    /// The model a result goes back to sees pictures: a screenshot or a
+    /// picture READ is handed over as one, without its words read off it
+    /// first, which takes seconds a picture at a time.
+    bool sees_pictures = false;
+
     /// Crucible's own Python, for PYTHON. Empty when it is not installed,
     /// which the verb then says.
     std::filesystem::path python;
@@ -284,10 +290,22 @@ std::optional<std::string> edited_contents(const ToolCall& call, const WorkshopS
                                            std::string& error);
 
 /// Whether `path` -- relative, with forward slashes -- matches `glob`. `*`
-/// is any run within a name, `**` any run of names, `?` one character; a
-/// glob with no slash is matched against the file's name alone, so `*.css`
-/// finds every stylesheet wherever it is.
+/// is any run within a name, `**` any run of names, `?` one character,
+/// `{ts,tsx}` either; a glob with no slash is matched against the file's
+/// name alone, so `*.css` finds every stylesheet wherever it is.
 bool glob_matches(std::string_view glob, std::string_view path);
+
+/// A glob made ready once, for matching many paths against it.
+class Glob {
+public:
+    explicit Glob(std::string_view glob);
+    bool matches(std::string_view path) const;
+
+private:
+    bool       whole_path_ = false;   ///< it has a slash, so it is about the whole path
+    bool       valid_      = false;
+    std::regex pattern_;
+};
 
 /// Do it.
 ///

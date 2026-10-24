@@ -96,10 +96,6 @@ std::optional<int> parse_duration_seconds(std::string_view text) {
     return std::nullopt;
 }
 
-std::string format_duration(std::chrono::seconds seconds) {
-    return minutes_phrase(seconds);
-}
-
 std::string_view cook_state_name(CookState state) {
     switch (state) {
         case CookState::Working:   return "working";
@@ -391,14 +387,12 @@ bool CookLog::save(const Cook& cook, std::string& error) const {
         return false;
     }
 
-    const std::filesystem::path file = file_for(cook.id);
-    std::ofstream out(file);
-    if (!out) {
-        error = "could not write " + file.string();
-        return false;
-    }
-    out << cook_to_json(cook).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
-    return true;
+    // Whole or not at all: saved after every step, and a crash halfway
+    // through one used to leave a journal that would not parse, and the build
+    // went missing from History.
+    return util::write_file_atomically(
+        file_for(cook.id),
+        cook_to_json(cook).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + '\n', error);
 }
 
 std::vector<CookSummary> CookLog::list(std::size_t limit) const {

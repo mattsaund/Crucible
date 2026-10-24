@@ -209,7 +209,8 @@ struct Snapshot {
     /// loads or is let go, so a frame never waits on a load to find out.
     std::vector<LocalModel> local_models;
 
-    /// Tokens spent since Crucible started.
+    /// Tokens the conversation on screen has spent. See
+    /// AppState::set_session_usage.
     TokenUsage session_usage;
 
     /// Tokens this project has ever spent, loaded from disk at startup and
@@ -314,10 +315,6 @@ public:
     /// How full the context was on the last turn. See Snapshot::context_used.
     void set_context_used(int used, int size);
 
-    /// The edit waiting on an answer, without copying a whole snapshot to ask.
-    /// The terminal checks this on every keystroke.
-    std::shared_ptr<const PendingEdit> pending_edit() const;
-
     /// Close a turn the user stopped.
     ///
     /// Apart from fail_turn because a stop is not a failure: nothing went
@@ -347,7 +344,6 @@ public:
 
     /// Publish the cook in progress, or nothing when one ends.
     void set_cook(std::shared_ptr<const Cook> cook);
-    std::shared_ptr<const Cook> cook() const;
 
 private:
     /// Index of `id` in the current roster, or nullopt. Call with the lock

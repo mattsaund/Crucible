@@ -141,10 +141,11 @@ json cook_task_json(const CookTask& task) {
 
 /// The whole drawable state.
 ///
-/// Sent entire rather than as a diff. A snapshot is a few kilobytes, it is
-/// produced a few times a second rather than per token, and a diff protocol
-/// would buy some bandwidth across an in-process call in exchange for two
-/// sides that can disagree about what they are looking at.
+/// Sent entire rather than as a diff. A snapshot carries the whole transcript,
+/// which is why the window sends at most about thirty a second however often
+/// the engine wakes it (see Pusher in gui/window.cpp), and a diff protocol
+/// would buy some bandwidth between the program and its own page in exchange
+/// for two sides that can disagree about what they are looking at.
 json snapshot_to_json(const Snapshot& snapshot) {
     // Which platform this is, for the words the page uses about it: where a
     // program it makes is found, what a shortcut is called.

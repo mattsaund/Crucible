@@ -2,9 +2,9 @@
 //
 // crucible -- the entry point.
 //
-// Deliberately thin: parse the command line, deal with the folder trust gate,
-// then hand off. Everything interesting is somewhere else, and nearly all of it
-// is in crucible::core rather than in the window.
+// Deliberately thin: parse the command line, do whatever it asked for that
+// needs no window, then hand off. Everything interesting is somewhere else,
+// and nearly all of it is in crucible::core rather than in the window.
 
 #include <filesystem>
 #include <string>
@@ -72,17 +72,6 @@ int main(int argc, char** argv) {
                                            options.quiet);
     }
 
-    // No project, and so no folder question yet.
-    //
-    // Crucible used to open on a directory it chose: the shell's working
-    // directory from a terminal, the most recent project from the application
-    // menu. Both are guesses, and the menu one guessed wrong every time the
-    // launcher handed over `/` or the home directory -- a window would open on
-    // somewhere nobody meant to work, asking to be trusted with it.
-    //
-    // It opens on nothing instead. The top bar says No Project, the one button
-    // there is Open Project, and the folder question is asked when a folder is
-    // actually chosen -- by the same modal that has always guarded it.
     // From here on, a crash says where it happened. See crash.hpp.
     crucible::gui::crash::install(crucible::paths::data_dir() / "crash.log");
 
@@ -92,6 +81,18 @@ int main(int argc, char** argv) {
     std::vector<std::string> warnings = crucible::relocate::scratchpad();
     crucible::Config config = crucible::load_config(warnings);
 
+    // No project, and so no folder question yet.
+    //
+    // Crucible used to open on a directory it chose: the shell's working
+    // directory from a terminal, the most recent project from the application
+    // menu. Both are guesses, and the menu one guessed wrong every time the
+    // launcher handed over `/` or the home directory -- a window would open on
+    // somewhere nobody meant to work, asking to be trusted with it.
+    //
+    // It opens on nothing instead. A chat with no project works in a
+    // Scratchpad folder of its own, and the folder question is asked when a
+    // project is actually opened -- by the same modal that has always guarded
+    // it.
     crucible::gui::App app(std::move(config), std::move(warnings),
                            options.skip_trust);
     return app.run();

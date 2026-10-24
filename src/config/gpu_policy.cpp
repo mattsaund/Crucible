@@ -276,7 +276,7 @@ std::string apply_gpu_policy(Config& config) {
     // Name the model. The split is worked out per-model now, so a bare list of
     // percentages would be a fact about something the reader has to guess at.
     const std::string layout = describe_split(gpus, described);
-    return described_model.empty() ? layout : described_model + " -- " + layout;
+    return described_model.empty() ? layout : described_model + ": " + layout;
 }
 
 }  // namespace crucible

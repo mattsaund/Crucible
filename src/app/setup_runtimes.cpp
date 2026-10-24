@@ -10,6 +10,7 @@
 #include "crucible/config/paths.hpp"
 #include "crucible/runtime/backend.hpp"
 #include "crucible/runtime/builder.hpp"
+#include "crucible/runtime/prebuilt.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
@@ -66,6 +67,11 @@ std::vector<BackendKind> wanted_here() {
             // card this can use".
             continue;
         }
+        if (info.kind == BackendKind::Cuda && !prebuilt::cuda_cards_supported()) {
+            // A card before Turing has no kernels in the published CUDA
+            // runtime, and fails at the first one. Vulkan reaches it.
+            continue;
+        }
         // Metal where the platform has it, and Vulkan everywhere else it is
         // offered: it is the backend that covers AMD and Intel, and it is a
         // second way to reach an NVIDIA card when a driver update breaks the
@@ -120,7 +126,7 @@ int run_runtime_status() {
                   << (status.device_count == 1 ? "" : "s")
                   << "  " << format::bytes(status.bytes);
         if (status.stale) {
-            std::cout << "  (built against another llama.cpp -- reinstall it)";
+            std::cout << "  (built against another llama.cpp: reinstall it)";
         }
         std::cout << "\n";
     }

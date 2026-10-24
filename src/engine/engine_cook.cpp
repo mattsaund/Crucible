@@ -64,6 +64,7 @@ tools::ToolCall call_from(const json& params) {
     call.argument = params.value("argument", "");
     call.content  = params.value("content", "");
     call.shell    = params.value("shell", "");
+    call.unrun    = params.value("unrun", "");
     return call;
 }
 
@@ -102,10 +103,14 @@ tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) 
     workshop.enabled             = !root.empty();
     workshop.root                = root;
     workshop.allow_run           = !root.empty();
-    workshop.run_timeout_seconds = config_.tools.workshop_timeout;
-    // The rest of what an expert can reach, each behind its own switch.
-    workshop.web              = config_.tools.web_search;
-    workshop.computer_control = config_.tools.computer_control;
+    {
+        // Under the lock: Settings can be applied while a build reads these.
+        const std::lock_guard<std::mutex> lock(config_mutex_);
+        workshop.run_timeout_seconds = config_.tools.workshop_timeout;
+        // The rest of what an expert can reach, each behind its own switch.
+        workshop.web              = config_.tools.web_search;
+        workshop.computer_control = config_.tools.computer_control;
+    }
     workshop.python           = lab::python::installed() ? lab::python::interpreter()
                                                          : std::filesystem::path();
     workshop.scratch          = paths::scratch_dir();
@@ -118,7 +123,7 @@ std::string Engine::start_cook(std::string goal, int budget_seconds, std::filesy
                                std::vector<attach::Attachment> attachments,
                                std::optional<ExpertId> pinned, std::string kind) {
     if (cooking_.exchange(true)) {
-        return "a build is already running -- stop it, or wait for it to finish";
+        return "a build is already running: stop it, or wait for it to finish";
     }
     // The thread of the build before this one has finished -- cooking_ said
     // so -- and is joined here rather than when it ended, because a thread
@@ -158,7 +163,12 @@ std::string Engine::start_cook(std::string goal, int budget_seconds, std::filesy
         if (wake_) {
             wake_();
         }
-        tidy_models();
+        // A chat turn answering now tidies when it ends; doing it under it
+        // would load the delegator beside its expert and call it idle
+        // mid-sentence.
+        if (!busy_.load(std::memory_order_relaxed)) {
+            tidy_models();
+        }
     });
     return {};
 }
@@ -185,6 +195,14 @@ void Engine::cancel_cook() {
 }
 
 void Engine::answer_cook(std::string answer) {
+    {
+        // An answer to nothing -- a second Send, or one after the question
+        // was withdrawn -- is dropped, not kept for the next question.
+        const std::lock_guard<std::mutex> lock(cook_mutex_);
+        if (cook_.state != CookState::Asking) {
+            return;
+        }
+    }
     {
         const std::lock_guard<std::mutex> lock(cook_answer_mutex_);
         cook_answer_ = std::move(answer);
@@ -287,8 +305,7 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         // The delegator has done its routing, and an expert on this machine is
         // about to want every byte it was holding. See resolve().
         if (!config.routing.keep_delegator_loaded && !seat_params.remote()) {
-            const std::lock_guard<std::mutex> host(host_mutex_);
-            release_router();
+            release_router_between_routes();
         }
         state_.set_linked(id);
         if (wake_) {
@@ -380,9 +397,14 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
                         {"attempted", std::string(tools::tool_kind_name(
                                           tools::attempted_tool_call(answer, reasoning)))}};
         }
+        // All of it, because the orchestrator hands the call straight back to
+        // tools.run: without the shell, "RUN powershell:" ran under cmd, and
+        // without `unrun` a second call in the answer went unmentioned.
         return json{{"call", {{"kind", std::string(tools::tool_kind_name(call->kind))},
                               {"argument", call->argument},
-                              {"content", call->content}}},
+                              {"content", call->content},
+                              {"shell", call->shell},
+                              {"unrun", call->unrun}}},
                     {"attempted", "none"}};
     }
     if (method == "tools.run") {
@@ -390,10 +412,12 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         if (call.kind == tools::ToolKind::None) {
             throw std::runtime_error("no such tool: " + params.value("kind", std::string()));
         }
-        const tools::ToolResult result = tools::run_tool(call, cook_workshop_, cook_search_, cancel);
         // The pictures go with the next round of the seat whose tool made
         // them, when its model can see one.
         const std::shared_ptr<AgentSeat> seat = seat_named(params);
+        tools::WorkshopSettings workshop = cook_workshop_;
+        workshop.sees_pictures = seat && seat->held.model->sees_images();
+        const tools::ToolResult result = tools::run_tool(call, workshop, cook_search_, cancel);
         std::size_t pictures = 0;
         std::string output   = result.output;
         if (!result.pictures.empty()) {
@@ -422,7 +446,7 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         // same seat at once must make one seat.
         std::unique_lock<std::mutex> configuring(config_mutex_);
         if (config_.build.worker_model.empty()) {
-            return json{{"ok", false}, {"error", "no model is set for new agents -- Settings, Build"}};
+            return json{{"ok", false}, {"error", "no model is set for new agents (Settings, Build)"}};
         }
         if (name.empty()) {
             return json{{"ok", false}, {"error", "a seat needs a name"}};
@@ -571,9 +595,14 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         std::error_code ec;
         const std::filesystem::path dir = project_dir_ / "teach";
         std::filesystem::create_directories(dir, ec);
-        std::ofstream out(dir / (expert + ".jsonl"), std::ios::app);
+        const std::string line = record.dump(-1, ' ', false, json::error_handler_t::replace) + '\n';
+        // One at a time: a build's agents finish together, and two records
+        // appended at once came out interleaved, a line no reader can parse.
+        static std::mutex appending;
+        const std::lock_guard<std::mutex> one_at_a_time(appending);
+        std::ofstream out(dir / (expert + ".jsonl"), std::ios::app | std::ios::binary);
         if (out) {
-            out << record.dump(-1, ' ', false, json::error_handler_t::replace) << '\n';
+            out << line;
         }
         return json::object();
     }
@@ -601,7 +630,14 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         // and History see it. Saved after every step rather than at the end.
         const std::lock_guard<std::mutex> lock(cook_mutex_);
         const std::string kind = cook_.kind;
+        const bool        was_asking   = cook_.state == CookState::Asking;
+        const std::string was_question = cook_.question;
         cook_ = cook_from_json(params.value("cook", json::object()), cook_.id);
+        if (cook_.state == CookState::Asking && (!was_asking || cook_.question != was_question)) {
+            // A new question: nothing said before it is its answer.
+            const std::lock_guard<std::mutex> answer_lock(cook_answer_mutex_);
+            cook_answer_.reset();
+        }
         if (!params.value("cook", json::object()).contains("kind")) {
             cook_.kind = kind;   // a cook's journal does not say; the engine knows
         }
@@ -614,8 +650,16 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
     }
     if (method == "cook.await_answer") {
         // One question at a time: the journal holds one, the window shows
-        // one, and the answer typed is to that one.
-        const std::lock_guard<std::mutex> one_at_a_time(asking_mutex_);
+        // one, and the answer typed is to that one. Waited for in a way the
+        // build's Stop ends.
+        std::unique_lock<std::mutex> one_at_a_time(asking_mutex_, std::defer_lock);
+        while (!one_at_a_time.try_lock()) {
+            if (cook_stop_.load(std::memory_order_relaxed) || cook_cancel_.load(std::memory_order_relaxed)
+                || !running_.load(std::memory_order_relaxed)) {
+                return json{{"answer", nullptr}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         const std::optional<std::string> answer = await_cook_answer();
         return json{{"answer", answer ? json(*answer) : json(nullptr)}};
     }
@@ -692,7 +736,10 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     }
 
     std::string error;
-    if (wait_for_python(error)) {
+    const CancelCallback build_stopped = [this] {
+        return cook_cancel_.load(std::memory_order_relaxed) || cook_stop_.load(std::memory_order_relaxed);
+    };
+    if (wait_for_python(error, build_stopped)) {
         try {
             orchestra_.call(building ? "build.run" : "cook.run", request);
         } catch (const std::exception& e) {
@@ -727,7 +774,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             if (cook_.state == CookState::Failed && cook_.steps.empty()) {
                 state_.set_mood(Mood::Error, cook_.outcome);   // it never started
             } else {
-                state_.set_mood(Mood::Idle, (building ? "build finished -- " : "cook finished -- ")
+                state_.set_mood(Mood::Idle, (building ? "build finished: " : "cook finished: ")
                                                 + cook_.headline());
             }
         }

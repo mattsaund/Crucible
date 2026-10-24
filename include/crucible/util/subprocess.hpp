@@ -9,7 +9,10 @@
 // pipe, which can.
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -68,27 +71,32 @@ public:
     /// end of what it will be told.
     void close_input();
 
-    /// Read one line, without its newline. Returns false at end of output.
-    /// Blocks, so call it from the thread that is allowed to wait.
+    /// Read one line, without its newline. Returns false at end of output,
+    /// and soon after terminate(). Blocks, so call it from the thread that
+    /// is allowed to wait.
     bool read_line(std::string& line);
 
     /// Reap the child and return its exit status. A process killed by a signal
-    /// reports 128 + signal, matching what a shell would say.
+    /// reports 128 + signal, matching what a shell would say. A child asked to
+    /// stop -- terminate(), interrupt(), from any thread -- that is still
+    /// there three seconds later is killed, with everything it started.
     /// Safe to call more than once; later calls return the same status.
     int wait();
 
-    /// Ask the child to stop: SIGTERM, then SIGKILL if it is still there.
-    /// Returns immediately; call wait() afterwards to reap it.
+    /// Reap the child if it has ended, without waiting for it: true, with
+    /// its status, once it has.
+    bool try_wait(int& status);
+
+    /// Ask the child to stop, and stop reading it: read_line ends within a
+    /// moment even when something the child started holds the pipe open.
+    /// The pipe itself is left to the reader's thread, so this can be called
+    /// from another one. Returns immediately; call wait() afterwards.
     void terminate();
 
-    /// Signal the child to stop and touch nothing else.
-    ///
-    /// terminate() also closes the pipe, which is what unblocks a reader --
-    /// and is a second thread changing a descriptor the first is in the middle
-    /// of a read on. This only sends the signal: the child exits, its end of
-    /// the pipe closes, and the reader sees the end of the output the ordinary
-    /// way. The caller still has to keep this from racing wait(), which is the
-    /// one other thing that touches the process handle.
+    /// Signal the child to stop and touch nothing else: the reader sees the
+    /// end of the output the ordinary way, once the child has gone. The
+    /// caller keeps this from racing wait(), the one other thing that
+    /// touches the process handle.
     void interrupt();
 
     bool running() const;
@@ -109,7 +117,7 @@ private:
     void* read_    = nullptr;
     void* write_   = nullptr;   ///< the child's standard input, with Streams::input
 #else
-    int  pid_    = -1;
+    std::atomic<int> pid_{-1};   ///< read by interrupt() from any thread
     int  fd_     = -1;
     int  in_fd_  = -1;          ///< the child's standard input, with Streams::input
 #endif
@@ -117,7 +125,32 @@ private:
     bool reaped_ = false;
     std::string buffer_;   ///< holds a partial line between read_line() calls
     bool eof_    = false;
+    std::atomic<std::int64_t> stop_asked_ms_{0};   ///< when a stop was asked; 0 for never
+    std::atomic<bool>         abandoned_{false};   ///< terminate() was called: read no more
 };
+
+/// How a command run with run() ended, and what it printed.
+struct Ran {
+    bool        started   = false;
+    bool        timed_out = false;
+    bool        stopped   = false;   ///< `stop` said so
+    int         status    = -1;
+    std::string output;              ///< the start and the end of it, past `keep`
+    std::string error;               ///< why it did not start
+};
+
+/// Run `argv` to its end, or until `timeout_seconds` have passed, or until
+/// `stop` says so: the deadline and the Stop every command an expert runs
+/// needs, in one place. Past `keep` bytes, output is cut from the middle --
+/// how it started and how it ended are what a log is read for -- so a loop
+/// printing forever costs that much memory and no more.
+Ran run(const std::vector<std::string>& argv, const std::filesystem::path& cwd,
+        const std::vector<std::string>& extra_env, int timeout_seconds,
+        const std::function<bool()>& stop = {}, std::size_t keep = std::size_t{4} << 20);
+
+/// Stop every run() going and refuse new ones: for when the window closes,
+/// and nothing a command was run for is wanted any more.
+void stop_runs();
 
 /// True when `program` can be found on PATH. Used to turn a missing SDK into
 /// advice before a ten-minute build discovers the same thing.

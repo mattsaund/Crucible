@@ -77,6 +77,29 @@ TEST(a_malformed_field_warns_but_keeps_the_rest) {
     CHECK_EQ(config.expert("physics").n_ctx, 8192);
 }
 
+TEST(an_mcp_server_written_wrong_by_hand_is_read_as_far_as_it_goes) {
+    // "enabled" as a word and "env" as a list once threw out of the loader,
+    // and the program ended before its window opened, every time.
+    TempDir dir;
+    const auto file = dir.path() / "config.json";
+    {
+        std::ofstream out(file);
+        out << R"({ "tools": { "mcp": [
+          { "name": "files", "command": "npx", "enabled": "true", "env": ["A=1"], "args": "x" },
+          { "name": 5, "command": "npx" }
+        ] } })";
+    }
+    std::vector<std::string> warnings;
+    const Config config = load_config(file, warnings);
+    CHECK_EQ(config.tools.mcp.size(), std::size_t{1});
+    if (!config.tools.mcp.empty()) {
+        CHECK_EQ(config.tools.mcp.front().name, std::string("files"));
+        CHECK(config.tools.mcp.front().enabled);
+        CHECK(config.tools.mcp.front().env.empty());
+    }
+    CHECK(!warnings.empty());
+}
+
 TEST(unparseable_config_falls_back_instead_of_throwing) {
     TempDir dir;
     const auto file = dir.path() / "config.json";
@@ -116,6 +139,20 @@ TEST(bare_names_resolve_inside_the_models_directory) {
     CHECK(resolve_model_ref(dir, "").empty());
 }
 
+TEST(a_bare_name_moved_into_a_subfolder_is_still_found) {
+    TempDir dir;
+    std::filesystem::create_directories(dir.path() / "Huggingface" / "GGUF");
+    { std::ofstream out(dir.path() / "Huggingface" / "GGUF" / "gpt-oss-20b.gguf", std::ios::binary); out << "GGUF"; }
+    { std::ofstream out(dir.path() / "top.gguf", std::ios::binary); out << "GGUF"; }
+    // Tidied away after the seat named it: found where it went.
+    CHECK_EQ(resolve_model_ref(dir.path(), "gpt-oss-20b.gguf"),
+             dir.path() / "Huggingface" / "GGUF" / "gpt-oss-20b.gguf");
+    // Where it was named is where it is: no looking.
+    CHECK_EQ(resolve_model_ref(dir.path(), "top.gguf"), dir.path() / "top.gguf");
+    // Nowhere at all is still the path it would have had, to say is missing.
+    CHECK_EQ(resolve_model_ref(dir.path(), "gone.gguf"), dir.path() / "gone.gguf");
+}
+
 TEST(is_bare_name_distinguishes_a_file_from_a_path) {
     CHECK(is_bare_name("expert.gguf"));
     CHECK(!is_bare_name("/abs/expert.gguf"));
@@ -150,6 +187,28 @@ TEST(scanning_finds_only_gguf_files_in_name_order) {
         CHECK_EQ(found[1].name, std::string("zeta.gguf"));
         CHECK_EQ(found[0].bytes, std::uintmax_t{2000});
         CHECK(found[0].path.is_absolute() || found[0].path.string().find(dir.path().string()) == 0);
+    }
+}
+
+TEST(a_model_split_in_parts_is_one_model_named_by_its_first) {
+    // The Models tab fetches a big quantization as the parts it is published
+    // in. Each part was listed as a model of its own, and every one but the
+    // first will not load.
+    TempDir dir;
+    const auto touch = [&](const std::string& name, std::size_t bytes) {
+        std::ofstream out(dir.path() / name, std::ios::binary);
+        out << std::string(bytes, '\0');
+    };
+    touch("big-BF16-00001-of-00003.gguf", 1000);
+    touch("big-BF16-00002-of-00003.gguf", 2000);
+    touch("big-BF16-00003-of-00003.gguf", 3000);
+    touch("small.gguf", 10);
+
+    const std::vector<ModelFile> found = scan_models(dir.path());
+    CHECK_EQ(found.size(), std::size_t{2});
+    if (found.size() == 2) {
+        CHECK_EQ(found[0].name, std::string("big-BF16-00001-of-00003.gguf"));
+        CHECK_EQ(found[0].bytes, std::uintmax_t{6000});
     }
 }
 

@@ -35,29 +35,8 @@ constexpr std::uint64_t kGiB = 1024ULL * kMiB;
 constexpr std::size_t kMaxLogLines = 4000;
 constexpr std::size_t kTailLines   = 30;
 
-/// The lowest Python the training stack still publishes wheels for. Below it
-/// pip resolves happily and lands on versions from before any of this worked,
-/// which fails much later and much less clearly.
-constexpr int kMinMinor = 10;
-
-/// Interpreters to try, newest first.
-///
-/// Named versions before the bare name: `python3` on a distribution that has
-/// moved on can be 3.15 before torch has wheels for it, and the machine
-/// usually also has the 3.14 that does.
-const char* const kCandidates[] = {
-    "python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python3", "python",
-};
-
-std::string trimmed(std::string text) {
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) {
-        text.pop_back();
-    }
-    return text;
-}
-
 /// Run `argv` and return everything it printed, or nothing if it would not
-/// start. For the short questions -- what version are you, does this import.
+/// start. For the short questions -- which cards are these, does this import.
 std::string capture(const std::vector<std::string>& argv, int& status) {
     util::Subprocess child;
     std::string      error;
@@ -73,19 +52,6 @@ std::string capture(const std::vector<std::string>& argv, int& status) {
     }
     status = child.wait();
     return all;
-}
-
-/// "3.12.4" -> 12. Returns -1 for anything that is not a version.
-int minor_of(const std::string& version) {
-    const std::size_t first = version.find('.');
-    if (version.rfind("3.", 0) != 0 || first == std::string::npos) {
-        return -1;
-    }
-    try {
-        return std::stoi(version.substr(first + 1));
-    } catch (const std::exception&) {
-        return -1;
-    }
 }
 
 /// A compute capability as CMake and nvidia-smi write it: "12.0" is 120.
@@ -333,66 +299,6 @@ std::filesystem::path python() {
 #endif
 }
 
-std::filesystem::path host_python(std::string& version) {
-    version.clear();
-    std::string best_seen;
-    for (const char* name : kCandidates) {
-        if (!util::on_path(name)) {
-            continue;
-        }
-        int               status = -1;
-        const std::string reported = trimmed(capture(
-            {name, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"}, status));
-        if (status != 0 || reported.empty()) {
-            continue;
-        }
-        if (best_seen.empty()) {
-            best_seen = reported;
-        }
-        if (minor_of(reported) >= kMinMinor) {
-            // venv has to be there too. A Debian python3 without python3-venv
-            // is the common case, and finding out at `python -m venv` is a
-            // failure several steps after the one that could explain it.
-            int venv_status = -1;
-            capture({name, "-c", "import venv"}, venv_status);
-            if (venv_status != 0) {
-                best_seen = reported + " (no venv module)";
-                continue;
-            }
-            version = reported;
-            return std::filesystem::path(name);
-        }
-    }
-    version = best_seen;
-    return {};
-}
-
-std::string python_hint() {
-    std::string version;
-    if (!host_python(version).empty()) {
-        return {};
-    }
-#if defined(_WIN32)
-    return "install Python 3.14 from python.org, or: winget install Python.Python.3.14";
-#elif defined(__APPLE__)
-    return "install Python 3.14: brew install python@3.14";
-#else
-    if (util::on_path("apt-get")) {
-        return "sudo apt-get install python3 python3-venv python3-pip";
-    }
-    if (util::on_path("dnf")) {
-        return "sudo dnf install python3 python3-pip";
-    }
-    if (util::on_path("pacman")) {
-        return "sudo pacman -S python python-pip";
-    }
-    if (util::on_path("zypper")) {
-        return "sudo zypper install python3 python3-pip";
-    }
-    return "install Python 3.10 or newer, with its venv module";
-#endif
-}
-
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
@@ -522,7 +428,7 @@ Status status() {
         // the processor without saying so, which is the worst of the three
         // outcomes: hours instead of minutes, and no clue why.
         out.note = "this PyTorch has no kernels for " + out.unusable_gpus.front()
-                 + " -- reinstall to pick a build that does";
+                 + ". Reinstall to pick a build that does";
         return out;
     }
     out.ready = true;

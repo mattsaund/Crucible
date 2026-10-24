@@ -236,8 +236,8 @@ Fit estimate_fit(double parameters_b, Method method, std::uint64_t vram, std::ui
         return fit;
     }
     fit.note = method == Method::Lora
-                   ? "too big in sixteen bits -- QLoRA needs about a third of this"
-                   : "too big for this machine even at four bits -- pick a smaller base";
+                   ? "too big in sixteen bits. QLoRA needs about a third of this"
+                   : "too big for this machine even at four bits. Pick a smaller base";
     return fit;
 }
 

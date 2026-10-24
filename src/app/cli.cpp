@@ -90,7 +90,7 @@ Options parse_arguments(int argc, char** argv) {
             // should wait on GitHub to hear what this binary already knows.
             update::State state;
             if (update::read_cache(state) && update::newer_than_this(state)) {
-                std::cout << "  " << state.latest << " is available -- update with:\n"
+                std::cout << "  " << state.latest << " is available. Update with:\n"
                           << "  " << update::update_command() << "\n";
             }
             options.should_exit = true;

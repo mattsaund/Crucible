@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 //
-// The roster, and everything generated from it.
+// The roster, and the fields of a seat that are derived rather than asked for.
 //
 // The list is the single source of truth. The labels the delegator chooses
 // between, its system prompt, its worked examples, the keyword sets the
 // model-free router scores with, and the order experts appear in the panel
 // are all derived from it, so they cannot drift apart -- adding a seat adds it
-// everywhere, whether the seat came from the defaults below or from a user
-// filling in New expert a minute ago.
+// everywhere, whether a person filled in New expert a minute ago or a build
+// made it. The delegator's side is the orchestrator's, built from the roster
+// it is sent with each route: see scripts/orchestrator's routing.py.
 #include "crucible/routing/expert.hpp"
 #include "crucible/util/format.hpp"
 
@@ -176,10 +177,6 @@ bool Roster::update(const ExpertId& id, const Expert& replacement) {
     }
     return false;
 }
-
-// ---------------------------------------------------------------------------
-// What the delegator sees
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Deriving the fields a user is not asked for

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <system_error>
 #include <vector>
 
@@ -114,6 +115,33 @@ std::vector<std::string> shell_command(const std::string& command) {
 #else
     return {"/bin/sh", "-c", command};
 #endif
+}
+
+bool write_file_atomically(const std::filesystem::path& file, std::string_view text, std::string& error) {
+    const std::filesystem::path temp = file.string() + ".tmp";
+    std::error_code ignored;
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            error = "could not write " + temp.string();
+            return false;
+        }
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out.close();
+        if (!out) {
+            std::filesystem::remove(temp, ignored);
+            error = "could not write " + temp.string() + " (is the disk full?)";
+            return false;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp, file, ec);
+    if (ec) {
+        std::filesystem::remove(temp, ignored);
+        error = "could not replace " + file.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
 }
 
 }  // namespace crucible::util

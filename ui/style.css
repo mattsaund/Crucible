@@ -2,11 +2,11 @@
 
    How Crucible looks.
 
-   One palette, one typeface, and almost no decoration: near-black panels, a
-   single saturated color, and text in three weights of gray. The flame is the
-   only thing on the screen that is orange, so that whatever is orange is
-   where to look -- the seat that has the turn, the button that commits, the
-   bar that is filling.
+   One palette, the machine's own typeface, and almost no decoration:
+   near-black panels, a single saturated color, and text in three weights of
+   gray. The flame is the only thing on the screen that is orange, so that
+   whatever is orange is where to look -- the seat that has the turn, the
+   button that commits, the bar that is filling.
 
    Sizes are in rem so the whole interface follows the system's text size. */
 
@@ -25,7 +25,14 @@
   --text:       #ECECEC;
   --dim:        #8C8C92;
   --faint:      #5A5A60;
-  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* The machine's own fonts, unless the Font setting names one. --font is
+     the interface: the window sets it before the first draw, base.js when
+     the setting changes. --code is code, which follows the chosen family
+     only when that is monospaced, so code always lines up. */
+  --system-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --system-code: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font: var(--system-font);
+  --code: var(--system-code);
 
   /* Without this the platform draws its own form controls in the light
      theme -- a white dropdown in the middle of a near-black page -- and no
@@ -36,10 +43,13 @@
 html, body {
   margin: 0; height: 100%; overflow: hidden;
   background: var(--ink); color: var(--text);
-  font: 13px/1.6 var(--mono);
+  font: 13px/1.6 var(--font);
+  /* Numbers that change in place (a count, a rate) keep their width. */
+  font-variant-numeric: tabular-nums;
 }
 body { display: grid; grid-template-rows: auto 1fr; }
 button, input, select, textarea { font: inherit; color: var(--text); }
+pre, code, kbd, samp, .code, .diff, .code-editor-wrap { font-family: var(--code); }
 
 /* --- the bar across the top ------------------------------------------ */
 header {
@@ -211,37 +221,31 @@ h2 {
 /* What the program did, above the first turn. */
 
 /* --- a fenced block ----------------------------------------------------- */
+/* What language, a Copy button, a line under them, and the code: one box,
+   one color. */
 .code {
-  border: 1px solid var(--panel-edge); border-radius: 7px;
-  background: var(--panel); margin: 1.2rem 0; overflow: hidden;
+  border: 1px solid var(--panel-edge); border-radius: 10px;
+  background: var(--raised); margin: 1.2rem 0; overflow: hidden;
 }
 .code-head {
   display: flex; align-items: center; gap: .6rem;
-  padding: .5rem .9rem; color: var(--faint); font-size: .88em;
+  padding: .4rem .5rem .4rem 1rem; min-height: 2.5rem;
+  color: var(--dim); font-size: .88em; border-bottom: 1px solid var(--panel-edge);
 }
 .code-head .lang { color: var(--dim); }
-.code-head .code-count { margin-left: auto; }
+.code-head .code-count { margin-left: auto; color: var(--faint); }
 .code-head .copy {
-  background: none; border: 0; color: var(--faint); cursor: pointer;
-  padding: .2rem; display: flex; border-radius: 4px;
+  margin-left: auto; display: inline-flex; align-items: center; gap: .4rem;
+  background: var(--hover); border: 0; border-radius: 6px; padding: .3rem .65rem;
+  color: var(--dim); cursor: pointer; font: inherit;
 }
-.code-head .copy:hover { color: var(--text); background: var(--hover); }
+.code-head .copy:hover { color: var(--text); background: #26262E; }
+.code-head .copy .copy-done, .code-head .copy.done .copy-word { display: none; }
+.code-head .copy.done .copy-done { display: inline; }
 .code-head .copy.done { color: var(--flame); }
-
-/* The gutter and the code scroll as one, so a long line does not slide the
-   numbers off with it. */
-.code-body { display: flex; overflow-x: auto; background: var(--ink); }
-/* Both paddings set at the same specificity as the margin reset above
-   them. `.code-body pre` out-specifies a bare `.code-gutter`, so setting
-   the horizontal padding there alone lost to `padding: .7rem 0` and the
-   line numbers ended up flush against the code. */
+.code-body { overflow-x: auto; }
 .code-body pre { margin: 0; }
-.code-body .code-gutter {
-  flex: none; padding: .7rem .9rem;
-  color: var(--faint); text-align: right; user-select: none;
-  border-right: 1px solid var(--panel-edge);
-}
-.code-body .code-text { flex: 1; padding: .7rem .9rem; }
+.code-body .code-text { padding: .9rem 1rem 1rem; }
 .code-text code { white-space: pre; }
 /* A file being created: the whole block is an addition. */
 .code.code-add .code-body { background: rgba(46, 107, 71, .14); }
@@ -377,11 +381,6 @@ details.work[open] > summary { margin-bottom: .5rem; }
   max-width: 46rem;
 }
 .install .row { justify-content: space-between; align-items: center; }
-.bar {
-  height: 4px; border-radius: 2px; background: var(--raised);
-  margin: .7rem 0 .4rem; overflow: hidden;
-}
-.bar-fill { height: 100%; background: var(--flame); transition: width .3s ease; }
 .install-log {
   max-height: 12rem; overflow: auto; margin: .7rem 0 0;
   font-size: .85em; color: var(--dim); white-space: pre-wrap;
@@ -440,12 +439,7 @@ details.work[open] > summary { margin-bottom: .5rem; }
    write, flame for anything that ran, faint for the rest. */
 .kind-write, .kind-edit   { color: var(--flame-lit); }
 .kind-run                 { color: var(--flame); }
-.kind-error, .kind-failed { color: var(--error); }
-.step-detail {
-  margin: .4rem 0 0 5.2rem; padding: .6rem .8rem; overflow-x: auto;
-  background: var(--raised); border: 1px solid var(--panel-edge);
-  border-radius: 6px; color: #D4D7DD; max-height: 18rem;
-}
+.kind-failed { color: var(--error); }
 .bar {
   display: block; height: 6px; margin: .6rem 0;
   background: var(--panel-edge); border-radius: 3px; overflow: hidden;
@@ -527,6 +521,13 @@ input.crumbs:focus { border-color: var(--flame); color: var(--text); outline: no
 }
 .md pre code { background: none; padding: 0; }
 .md pre .lang { display: block; color: var(--faint); font-size: 11px; margin-bottom: .5rem; }
+/* Math. A formula wider than the reply scrolls rather than spilling past
+   it, and one still arriving shows its TeX until it closes. */
+.math { margin: .2rem 0 .9rem; overflow-x: auto; overflow-y: hidden; }
+.math .katex-display { margin: .3rem 0; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: .1rem 0; }
+.math-pending { color: var(--faint); margin: 0 0 .9rem; white-space: pre-wrap; }
+.math-source { color: var(--dim); }
 .md table { border-collapse: collapse; margin: 0 0 .9rem; }
 .md th, .md td { border: 1px solid var(--panel-edge); padding: .3rem .7rem; text-align: left; }
 .md th { color: var(--dim); font-weight: 400; }
@@ -633,7 +634,6 @@ aside h2.agents-head { padding-top: 1.4rem; }
 .chip.done { color: var(--text); }
 .turn-controls button.icon { border-radius: 4px; }
 .turn-controls button.icon:hover { background: var(--hover); }
-.act-dot { color: var(--faint); }
 .act .code { margin: .5rem 0 .8rem; }
 details.thought > div { color: var(--faint); font-style: italic; }
 .cook-here { border-left: 2px solid var(--panel-edge); padding-left: 1rem; }
@@ -985,3 +985,74 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
 .ci-run .ci-mark { display: inline-block; min-width: 6.5rem; color: var(--dim); }
 .ci-run[data-conclusion="success"] .ci-mark { color: var(--text); }
 .ci-run[data-conclusion="failure"] .ci-mark { color: var(--error); }
+
+/* --- Models: what Hugging Face has, and what is on its way ------------------------ */
+.market { display: grid; grid-template-columns: minmax(19rem, 2fr) minmax(0, 3fr); min-height: 0; height: 100%; }
+.market .spacer { flex: 1; }
+.market-list {
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 1.2rem 1rem 1rem 1.6rem; border-right: 1px solid var(--panel-edge);
+}
+.market-search {
+  flex: none; width: 100%; background: var(--raised); border: 1px solid var(--panel-edge);
+  border-radius: 6px; padding: .5rem .7rem;
+}
+.market-controls { margin: .7rem 0; }
+.market-controls .action { padding: .3rem .8rem; }
+/* The sort menu hangs below its button, at the column's right edge. */
+.popmenu.below { top: calc(100% + .35rem); bottom: auto; left: auto; right: 0; min-width: 13rem; }
+.segmented { display: flex; }
+.segmented .action { border-radius: 0; }
+.segmented .action:first-child { border-radius: 5px 0 0 5px; }
+.segmented .action:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+.market-results { overflow-y: auto; min-height: 0; flex: 1; margin: 0 -.4rem; }
+button.market-row {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  border-radius: 6px; padding: .55rem .6rem; color: var(--text); cursor: pointer; font: inherit;
+}
+button.market-row:hover { background: var(--hover); }
+button.market-row.here { background: var(--raised); }
+.market-row-head { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.market-row-head strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.market-row-meta { display: flex; gap: .8rem; color: var(--faint); margin-top: .1rem; }
+.market-row-meta .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.market-row-meta .when { flex: none; }
+.caps { display: flex; gap: .35rem; margin-left: auto; color: var(--dim); flex: none; }
+.cap, .market .hint svg, .market .status svg { vertical-align: -1px; }
+.market-detail { overflow-y: auto; min-height: 0; padding: 1.6rem 2.2rem; }
+.market-head h1 { color: var(--flame); font-size: 1.25em; font-weight: 400; margin: 0 0 .3rem; overflow-wrap: anywhere; }
+.facts { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; margin: .9rem 0; max-width: 46rem; }
+.fact .caption { color: var(--faint); font-size: 11px; letter-spacing: .06em; margin-right: .3rem; }
+.cap-chip { border: 1px solid var(--panel-edge); border-radius: 999px; padding: .1rem .6rem; color: var(--dim); }
+.market-choice-wrap { max-width: 46rem; margin-bottom: .7rem; }
+button.market-choice, .market-choices button {
+  display: flex; align-items: center; gap: .6rem; width: 100%; text-align: left; white-space: nowrap;
+}
+button.market-choice {
+  background: var(--raised); border: 1px solid var(--panel-edge); border-radius: 7px;
+  padding: .55rem .8rem; color: var(--text); cursor: pointer;
+}
+button.market-choice:hover, button.market-choice[aria-expanded="true"] { border-color: var(--dim); }
+button.market-choice .chev { color: var(--dim); flex: none; }
+.popmenu.market-choices { left: 0; right: 0; min-width: 0; max-height: 24rem; overflow-y: auto; }
+.market-choice .tag, .market-choices .tag { color: var(--faint); font-size: 11px; }
+.market-choice .size, .market-choices .size { min-width: 5rem; text-align: right; flex: none; }
+.market-choice strong, .market-choices strong { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.market-choices .fit { flex: none; }
+.popmenu .pick-mark svg { color: var(--flame); }
+.pick-mark { color: var(--flame); display: flex; }
+/* Whether it will run here. Green is reserved for this and for "allow":
+   orange stays the one place to look. */
+.fit { font-size: .85em; padding: .05rem .55rem; border-radius: 999px; white-space: nowrap; }
+.fit-good { color: #7BC497; background: rgba(46, 107, 71, .25); }
+.fit-some { color: var(--dim); background: var(--raised); }
+.fit-bad  { color: var(--error); background: rgba(122, 51, 44, .25); }
+.market-go { max-width: 46rem; margin-bottom: 1.2rem; }
+.downloads { margin-bottom: .8rem; }
+.download {
+  border: 1px solid var(--panel-edge); border-radius: 7px; padding: .5rem .7rem;
+  margin-bottom: .5rem; max-width: 46rem;
+}
+.download.failed { border-color: #7A332C; }
+.download .tag { color: var(--faint); font-size: 11px; }
+.readme { max-width: 46rem; }

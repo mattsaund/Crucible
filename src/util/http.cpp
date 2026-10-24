@@ -395,30 +395,39 @@ Response send(const Request& request) {
 }
 
 bool download(const std::string& url, const std::filesystem::path& to,
-              int timeout_seconds, std::string& error) {
+              int timeout_seconds, std::string& error, const std::function<bool()>& stop) {
     if (!available(error)) {
         return false;
     }
-    // On the command line, unlike everything above: a download is a public
-    // URL and a file name, and there is nothing in either to hide.
-    Subprocess child;
-    if (!child.start({"curl", "--location", "--fail", "--silent", "--show-error",
-                      "--retry", "2", "--retry-delay", "2",
-                      "--max-time", std::to_string(std::max(timeout_seconds, 1)),
-                      "--output", to.string(), url},
-                     {}, {}, error)) {
+    if (g_closed.load()) {
+        error = "stopped";
         return false;
     }
-    std::string last;
-    std::string line;
-    while (child.read_line(line)) {
-        if (!line.empty()) {
-            last = line;
-        }
+    // On the command line, unlike everything above: a download is a public
+    // URL and a file name, and there is nothing in either to hide. Stopped
+    // with the window, as every request is: a runtime half fetched is no
+    // reason for a program nobody can see to go on for half an hour.
+    const int seconds = std::max(timeout_seconds, 1);
+    const Ran ran = run({"curl", "--location", "--fail", "--silent", "--show-error",
+                         "--retry", "2", "--retry-delay", "2",
+                         "--max-time", std::to_string(seconds), "--output", to.string(), url},
+                        {}, {}, seconds + 30,
+                        [&stop] { return g_closed.load() || (stop && stop()); }, 64 * 1024);
+    if (!ran.started) {
+        error = ran.error;
+        return false;
     }
-    if (const int status = child.wait(); status != 0) {
-        error = last.empty() ? "the download failed (curl exited " + std::to_string(status) + ")"
-                             : last;
+    if (ran.stopped || ran.timed_out) {
+        error = ran.stopped ? "stopped" : "the download took too long";
+        return false;
+    }
+    if (ran.status != 0) {
+        std::string last = ran.output;
+        while (!last.empty() && (last.back() == '\n' || last.back() == '\r')) {
+            last.pop_back();
+        }
+        last = last.substr(last.find_last_of('\n') == std::string::npos ? 0 : last.find_last_of('\n') + 1);
+        error = last.empty() ? "the download failed (curl exited " + std::to_string(ran.status) + ")" : last;
         return false;
     }
     return true;

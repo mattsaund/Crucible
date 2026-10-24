@@ -37,6 +37,7 @@
 #include "crucible/lab/recipe.hpp"
 #include "crucible/lab/pyenv.hpp"
 #include "crucible/lab/trainer.hpp"
+#include "crucible/market/downloads.hpp"
 #include "crucible/runtime/builder.hpp"
 #include "crucible/session/store.hpp"
 #include "crucible/util/workers.hpp"
@@ -70,6 +71,7 @@ private:
     RuntimeBuilder*        runtime_builder() override { return &runtime_builder_; }
     lab::pyenv::Installer* trainer_installer() override { return &pyenv_installer_; }
     Setup*                 setup() override { return &setup_; }
+    market::Downloads*     downloads() override { return &downloads_; }
     self::Rebuild*         rebuild() override { return &rebuild_; }
     update::Installer*     updater() override { return &updater_; }
     void                   quit() override;
@@ -241,7 +243,13 @@ private:
                                  [this] { wake(); },
                                  [this] { if (engine_) { engine_->reload_models(); } }};
 
+    /// Models on their way from the Models tab. After the wake, so it is gone
+    /// before the wake is: its threads say how far they have got through it
+    /// until they stop. See market/downloads.hpp.
+    market::Downloads     downloads_{[this] { wake(); }};
+
     std::size_t persisted_turns_ = 0;
+    std::string save_error_;   ///< the last save that failed, said once
 
     /// A rebuild of Crucible's own source, when somebody asks for one. See
     /// app/self_source.hpp.

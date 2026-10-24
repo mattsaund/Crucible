@@ -70,6 +70,7 @@ void settings_methods(std::vector<Method>& table);      ///< the configuration a
 void install_methods(std::vector<Method>& table);       ///< runtimes and the trainer
 void lab_methods(std::vector<Method>& table);           ///< making an expert
 void source_methods(std::vector<Method>& table);        ///< the project's files, git, a preview, a build
+void market_methods(std::vector<Method>& table);        ///< models to download, and their downloads
 
 // --- shapes more than one file draws ----------------------------------------
 

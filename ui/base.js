@@ -23,7 +23,10 @@
 // only knows about this, which is what keeps the interface from growing a
 // second way to reach the engine.
 async function call(method, params) {
-  const reply = JSON.parse(await window.rpc(JSON.stringify({ method, params: params || {} })));
+  // The token tells the window this is the page and not a frame inside it
+  // (window.cpp, page_token).
+  const reply = JSON.parse(await window.rpc(JSON.stringify({ method, params: params || {} }),
+                                            window.crucibleToken || ''));
   if (!reply.ok) throw new Error(reply.error);
   return reply.result;
 }
@@ -41,6 +44,7 @@ const state = {
   // Fetched, and null until it has been.
   config: null, models: null, providers: null, runtimes: null, devices: null, recents: null,
   trainer: null, flavors: null, about: null, history: null, recipes: null, teach: null, kit: null, ci: null, mcp: null, self: null,
+  fonts: null,
 
   // Long jobs, as last reported.
   build: null, install: null, run: null,
@@ -65,6 +69,9 @@ const state = {
   // Where prompts go: '' for the delegator, or an expert's id. Kept in the
   // window's own storage, like the side menu's width.
   route: '',
+
+  // What is typed in each box and not yet sent. See keepDraft in chat.js.
+  drafts: { chat: '', build: '' },
 };
 
 const SIDEBAR_MIN = 13;     // rem; the narrowest it will rest at
@@ -195,7 +202,9 @@ function morph(from, to) {
     if (from.getAttribute(name) !== value) from.setAttribute(name, value);
   }
   for (const { name } of Array.from(from.attributes)) {
-    if (!to.hasAttribute(name)) from.removeAttribute(name);
+    // An element the page sizes (data-sized) keeps the size it was given:
+    // the markup never has it, and taking it away jumps the box on every draw.
+    if (!to.hasAttribute(name) && !(name === 'style' && from.hasAttribute('data-sized'))) from.removeAttribute(name);
   }
 
   const tag = from.tagName;
@@ -285,6 +294,43 @@ function draw() {
 
   for (const job of afterDraw) job();
 }
+
+// --- the Font setting ------------------------------------------------------------
+
+/// A family name as a CSS string, quotes and backslashes escaped.
+const cssString = (text) =>
+  '"' + String(text).replace(/[\\"]/g, '\\$&').replace(/[\u0000-\u001f<]/g, '') + '"';
+
+/// Whether `family` draws every letter the same width. Asked of the font
+/// itself: an i and an M side by side, ten of each. A family that is not
+/// installed falls back to the monospace named behind it, and counts.
+function monospaced(family) {
+  try {
+    const context = (monospaced.canvas ||= document.createElement('canvas')).getContext('2d');
+    if (!context) return false;
+    context.font = `20px ${cssString(family)}, monospace`;
+    return context.measureText('iiiiiiiiii').width === context.measureText('MMMMMMMMMM').width;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// The Font setting, applied: the interface in the chosen family with the
+/// system's font behind it for whatever it lacks, and code in it too when it
+/// is monospaced. Nothing chosen is the system's own fonts. The window puts
+/// the setting in place before the first draw (window.cpp); this keeps it
+/// current after, whichever way the config came.
+let fontShown = null;
+afterDraw.push(() => {
+  const family = ((state.config || {}).ui || {}).font || '';
+  const root = document.documentElement;
+  if (family === fontShown || !root || !root.style) return;
+  fontShown = family;
+  root.style.setProperty('--font',
+    family ? `${cssString(family)}, var(--system-font)` : 'var(--system-font)');
+  root.style.setProperty('--code', family && monospaced(family)
+    ? `${cssString(family)}, var(--system-code)` : 'var(--system-code)');
+});
 
 // --- following the bottom of a transcript -------------------------------------
 
@@ -471,7 +517,7 @@ async function pickPath(wanted) {
       // The window answers with an object, not with text to be parsed: this
       // is its own binding and not the surface, which answers in strings so
       // that a pipe can carry them.
-      const answer = await window.nativeDialog(wanted);
+      const answer = await window.nativeDialog(wanted, window.crucibleToken || '');
       if (answer && answer.supported) return answer.path || '';
     } catch (e) { /* no dialog after all: fall through to the page's own */ }
   }
@@ -489,7 +535,7 @@ async function pickPath(wanted) {
 async function pickPaths(wanted) {
   if (window.nativeDialog) {
     try {
-      const answer = await window.nativeDialog(wanted);
+      const answer = await window.nativeDialog(wanted, window.crucibleToken || '');
       if (answer && answer.supported) {
         return (answer.paths && answer.paths.length ? answer.paths : [answer.path]).filter(Boolean);
       }

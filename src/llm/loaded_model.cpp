@@ -2,10 +2,11 @@
 //
 // Generating text from a loaded model.
 //
-// The loop is deliberately plain: clear the KV cache, feed the whole prompt,
-// then sample a token at a time. Re-feeding the conversation each turn is
-// wasteful, but an expert swap invalidates the cache anyway, and correctness
-// here is worth more than the saving. Prefix reuse is a later optimization.
+// The loop is deliberately plain: feed the prompt, then sample a token at a
+// time. What the KV cache already holds of the prompt is kept rather than fed
+// again -- a conversation resends its whole history each turn, and all but the
+// newest exchange of it is already there. See reuse_prefix, and
+// LoadedModel::cached_ for why that bookkeeping is never a guess.
 #include "crucible/llm/loaded_model.hpp"
 
 #include <algorithm>
@@ -388,7 +389,11 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
 
     // --- prompt ingestion --------------------------------------------------
     const auto prompt_start = Clock::now();
-    const int batch_size = std::max(1, params.n_batch);
+    // No more than the context was made for. A model loaded before Batch was
+    // raised keeps its old context, and a larger chunk than that is an assert
+    // in llama_decode that ends the program.
+    const int batch_size =
+        std::max(1, std::min(params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
     for (std::size_t offset = reused; offset < tokens.size();
          offset += static_cast<std::size_t>(batch_size)) {
         if (cancel && cancel()) {
@@ -511,7 +516,7 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
         const mtmd_helper_bitmap_wrapper made = mtmd_helper_bitmap_init_from_buf(
             vision_, reinterpret_cast<const unsigned char*>(blob.data()), blob.size(), false, options);
         if (made.bitmap == nullptr) {
-            result.error = "a picture could not be read -- it is not a PNG, a JPEG or a GIF";
+            result.error = "a picture could not be read: it is not a PNG, a JPEG or a GIF";
             return result;
         }
         bitmaps.push_back(made.bitmap);
@@ -546,7 +551,9 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
     const auto prompt_start = Clock::now();
     result.stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
     llama_pos past = 0;
-    if (mtmd_helper_eval_chunks(vision_, ctx_, chunks, 0, 0, std::max(1, request.params.n_batch),
+    const int batch_size =
+        std::max(1, std::min(request.params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
+    if (mtmd_helper_eval_chunks(vision_, ctx_, chunks, 0, 0, batch_size,
                                 /*logits_last=*/true, &past) != 0) {
         result.stats.canceled = sink.cancel && sink.cancel();
         if (!result.stats.canceled) {

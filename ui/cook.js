@@ -15,6 +15,19 @@
 /// Each step is a verb and what it did. One with something to show for it --
 /// the diff of a write, the output of a command -- opens to show it, in a
 /// block named for the file it changed when it changed one.
+/// Which steps are open, so a redraw leaves them so: the pushes that come
+/// several times a second during a build closed a step as it was being read.
+/// A journal only grows, so what a step did, and when, is a key that holds.
+const stepsOpen = new Set();
+const stepKey = (step) => `${step.iteration}|${step.kind}|${step.ms}|${step.summary}`;
+
+actions['step-open'] = (details) => {
+  const key = details.dataset.key;
+  if (details.open === stepsOpen.has(key)) return;
+  if (details.open) stepsOpen.add(key); else stepsOpen.delete(key);
+  render();
+};
+
 function cookSteps(steps, from) {
   if (!steps || !steps.length) return '<div class="status">Nothing yet.</div>';
   const skipped = from > 0
@@ -27,8 +40,14 @@ function cookSteps(steps, from) {
       <span class="tag">${escape(expertName(step.expert))}</span>`;
     if (!step.detail) return `<div class="step"><div class="step-head">${head}</div></div>`;
     const file = (step.changed || [])[0] || '';
-    return `<details class="step"><summary class="step-head">${head}</summary>${
-      step.kind === 'write' ? writtenBlock(step.detail, file) : codeBlock(step.detail, languageOf(file))}</details>`;
+    const key = stepKey(step);
+    const open = stepsOpen.has(key);
+    // What is inside -- a colored diff, a command's output -- is laid out only
+    // while it is open. Drawn for every closed step, it was most of the cost
+    // of each push during a build.
+    return `<details class="step" data-toggle="step-open" data-key="${escape(key)}"${open ? ' open' : ''}>
+      <summary class="step-head">${head}</summary>${!open ? ''
+        : step.kind === 'write' ? writtenBlock(step.detail, file) : codeBlock(step.detail, languageOf(file))}</details>`;
   }).join('');
 }
 
@@ -40,7 +59,7 @@ function cookChain(cook) {
     if (step.expert && chain[chain.length - 1] !== step.expert) chain.push(step.expert);
   }
   if (chain.length < 2) return '';
-  return `<div class="status chain" title="Who has had the work, in the order they had it. A HANDOFF sends the next piece back through the delegator.">${
+  return `<div class="status chain" title="Who has had the work">${
     chain.map((id) => escape(expertName(id))).join('  →  ')}</div>`;
 }
 
@@ -68,7 +87,7 @@ function cookBody(cook, live) {
         <span class="dot"></span><strong>${escape(settled(cook))}</strong>
         <span class="status">${apart(count((cook.tasks || []).length, 'task'), span(cook.seconds),
           count(cook.total !== undefined ? cook.total : (cook.steps || []).length, 'step'))}</span></div>
-      <div class="build-split">${agentsList(cook, chosen, 'task-open')}${agentWork(cook, chosen)}</div>
+      <div class="build-split">${agentsList(cook, chosen, 'task-open')}${agentWork(cook, chosen, false)}</div>
       ${cook.outcome ? `<hr class="rule"><div class="md outcome">${markdown(cook.outcome)}</div>` : ''}`;
   }
   const failed = cook.state === 'failed';

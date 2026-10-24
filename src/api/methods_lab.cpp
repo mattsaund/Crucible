@@ -3,6 +3,8 @@
 // Making an expert: the recipes, the run, and where the pieces come from.
 #include "methods.hpp"
 
+#include <atomic>
+
 #include <chrono>
 
 #include "crucible/config/paths.hpp"
@@ -47,10 +49,19 @@ lab::Asset asset_from_json(const json& node) {
 /// together. Zero when no GPU runtime is installed, which the page says in
 /// words rather than as "needs 6 GB of 0".
 std::uint64_t training_memory() {
+    // Asked once it has an answer: the cards do not change size, and asking
+    // CUDA the first time starts it on every card, which takes long enough
+    // to freeze the window. The lookups that open the Create page ask
+    // before any action here does.
+    static std::atomic<std::uint64_t> known{0};
+    if (const std::uint64_t had = known.load(); had > 0) {
+        return had;
+    }
     std::uint64_t total = 0;
     for (const ComputeDevice& gpu : gpu_devices()) {
         total += gpu.memory_total;
     }
+    known.store(total);
     return total;
 }
 
@@ -206,7 +217,7 @@ Reply lab_delete(const json& params, Host& host) {
     if (host.trainer() != nullptr) {
         const lab::RunProgress run = host.trainer()->progress();
         if (run.running() && run.recipe_id == recipe.id) {
-            return bad("it is training -- stop the run first");
+            return bad("it is training: stop the run first");
         }
     }
     std::error_code ec;

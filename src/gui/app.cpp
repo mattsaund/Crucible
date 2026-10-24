@@ -25,6 +25,7 @@
 #include "crucible/runtime/backend.hpp"
 #include "crucible/util/http.hpp"
 #include "crucible/util/platform.hpp"
+#include "crucible/util/subprocess.hpp"
 
 namespace crucible::gui {
 
@@ -78,6 +79,7 @@ App::~App() {
     // closing the window could take as long as somebody's server takes to
     // time out.
     util::http::shut_down();
+    util::stop_runs();
     setup_.stop();
     if (engine_) {
         engine_->stop();
@@ -143,7 +145,7 @@ void App::absorb_finished_run() {
         recipe.stage        = lab::Stage::Testing;
         std::string error;
         if (lab::save(recipe, error)) {
-            say(recipe.name + " finished training -- it is ready to test");
+            say(recipe.name + " finished training and is ready to test");
         } else {
             say(recipe.name + " finished training, but the recipe could not be "
                 "updated: " + error);
@@ -167,7 +169,7 @@ void App::absorb_finished_build() {
     // is loaded is what puts the next prompt on the new hardware.
     engine_->reload_models();
     say(std::string(backend_info(build.kind).name)
-        + " is ready -- models will use it from the next prompt");
+        + " is ready: models use it from the next prompt");
 }
 
 void App::update_config(const std::function<void(Config&)>& change) {
@@ -207,9 +209,13 @@ void App::persist_session() {
         return;
     }
     std::string error;
-    if (store_->save(snapshot.turns, snapshot.session_usage, error)) {
-        persisted_turns_ = finished;
+    if (!store_->save(snapshot.turns, snapshot.session_usage, error) && error != save_error_) {
+        // Said once, not tried again at every push: the next turn is the next
+        // try, and a full disk does not empty itself thirty times a second.
+        say("Chat not saved: " + error);
+        save_error_ = error;
     }
+    persisted_turns_ = finished;
 }
 
 void App::absorb_written_examples() {
@@ -241,7 +247,7 @@ void App::absorb_starter_model() {
         return;
     }
     update_config([&file](Config& config) { starter::seat(config, *file); });
-    state_.add_notice(*file + " is ready, as Programming -- the expert prompts and builds go to");
+    state_.add_notice(*file + " is ready, as Programming: the expert prompts and builds go to");
     wake();
 }
 
@@ -264,7 +270,7 @@ void App::absorb_made_seats() {
         // So the delegator can route to it by more than its name, for the
         // tasks and questions that come after this build.
         engine_->write_examples(seat.expert.id);
-        say(seat.expert.name + " has joined the experts -- a build made it");
+        say(seat.expert.name + " has joined the experts (a build made it)");
     }
 }
 
@@ -418,7 +424,7 @@ void App::answer_trust(bool trusted) {
     pending_trust_.reset();
     if (!trusted) {
         if (!project_open()) {
-            say("not trusted -- choose a folder to work in");
+            say("not trusted: choose a folder to work in");
         }
         return;
     }
@@ -538,8 +544,13 @@ std::string App::delete_session(const std::string& id, const std::filesystem::pa
         if (store_ && store_->project().root == project.root) {
             close_project();
         }
-        std::filesystem::remove_all(project.root, ec);
-        std::filesystem::remove_all(project.dir, ec);
+        // On a worker: what a chat made can be a node_modules, and the
+        // window is not frozen while it goes.
+        workers_.post([root = project.root, dir = project.dir] {
+            std::error_code gone;
+            std::filesystem::remove_all(root, gone);
+            std::filesystem::remove_all(dir, gone);
+        });
     }
     return {};
 }
@@ -619,39 +630,42 @@ std::string App::keep(const std::string& recipe_id) {
     }
     test_end();
 
+    // A seat, which is what keeping it is for -- first, and the recipe marked
+    // finished only once there is one: the other way round, a roster that
+    // refused the seat left a recipe saying "On the roster" with no seat
+    // behind it. Skipped where the roster already has one by that name:
+    // keeping the same expert twice should not produce two of it.
+    std::string error;
+    bool        seated = false;
+    if (!config_.roster.find(recipe->name)) {
+        Config edited = config_;
+        Expert expert;
+        expert.name  = recipe->name;
+        // What it is for, which routing reads; the wizard does not insist on
+        // one, and the roster refuses a seat without.
+        expert.blurb = recipe->purpose.empty() ? recipe->name : recipe->purpose;
+        if (!edited.roster.add(expert, error)) {
+            return error;
+        }
+        const ExpertId id = make_expert_id(recipe->name);
+        // From the defaults rather than from nothing, so the new seat samples
+        // the way every other seat does until somebody says otherwise.
+        ModelParams    params = edited.defaults;
+        params.model       = recipe->trained_path;
+        edited.experts[id] = params;
+        update_config([&edited](Config& config) { config = edited; });
+
+        // So the delegator has something to route on besides the name.
+        engine_->write_examples(id);
+        seated = true;
+    }
+
     recipe->stage       = lab::Stage::Finished;
     recipe->finished_at = lab::now_seconds();
-    std::string error;
     if (!lab::save(*recipe, error)) {
         return error;
     }
-
-    // And a seat, which is what keeping it is for. Skipped where the roster
-    // already has one by that name: keeping the same expert twice should not
-    // produce two of it.
-    if (config_.roster.find(recipe->name)) {
-        say(recipe->name + " is finished");
-        return {};
-    }
-
-    Config edited = config_;
-    Expert expert;
-    expert.name  = recipe->name;
-    expert.blurb = recipe->purpose;
-    if (!edited.roster.add(expert, error)) {
-        return error;
-    }
-    const ExpertId id = make_expert_id(recipe->name);
-    // From the defaults rather than from nothing, so the new seat samples the
-    // way every other seat does until somebody says otherwise.
-    ModelParams    params = edited.defaults;
-    params.model       = recipe->trained_path;
-    edited.experts[id] = params;
-    update_config([&edited](Config& config) { config = edited; });
-
-    // So the delegator has something to route on besides the name.
-    engine_->write_examples(id);
-    say(recipe->name + " is finished and has joined the experts");
+    say(recipe->name + (seated ? " is finished and has joined the experts" : " is finished"));
     return {};
 }
 
@@ -683,14 +697,20 @@ void App::begin_update_check() {
 }
 
 void App::collect_update_check() {
-    if (update_checking_ == nullptr) {
+    // A copy, so the check outlives the lock taken on its mutex: the worker's
+    // copy is gone by the time the answer is here, and resetting the only
+    // other one inside the lock unlocked a mutex that had been freed.
+    const std::shared_ptr<UpdateCheck> check = update_checking_;
+    if (check == nullptr) {
         return;
     }
-    const std::lock_guard<std::mutex> lock(update_checking_->mutex);
-    if (!update_checking_->done) {
-        return;
+    {
+        const std::lock_guard<std::mutex> lock(check->mutex);
+        if (!check->done) {
+            return;
+        }
+        update_ = check->state;
     }
-    update_ = update_checking_->state;
     update_checking_.reset();
 
     // Said once, when the answer comes back. The gear carries a dot from then

@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -120,13 +121,17 @@ public:
                 fat_sectors.push_back(s);
             }
         }
+        // A file has only so many sectors, so its FAT can name only so many;
+        // a DIFAT chain that comes back on itself is followed once.
+        const std::size_t   sectors = file.size() / sector_ + 1;
+        std::set<std::uint32_t> walked;
         std::uint32_t difat = u32(file, 0x44);
-        for (int guard = 0; difat != kEnd && difat != kFree && guard < 4096; ++guard) {
+        while (difat != kEnd && difat != kFree && walked.insert(difat).second && fat_sectors.size() < sectors) {
             const std::string_view block = sector(difat);
             if (block.empty()) {
                 break;
             }
-            for (std::size_t i = 0; i + 4 < block.size(); i += 4) {
+            for (std::size_t i = 0; i + 4 < block.size() && fat_sectors.size() < sectors; i += 4) {
                 const std::uint32_t s = u32(block, i);
                 if (s != kFree) {
                     fat_sectors.push_back(s);

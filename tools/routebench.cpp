@@ -145,18 +145,21 @@ int main(int argc, char** argv) {
     }
 
     // The orchestrator's calls, answered with the model loaded above.
-    const orchestra::Handler serve = [&](const std::string& method, const json& asked) -> json {
-        if (method == "delegator.ready") {
+    const orchestra::Handler serve = [&](const std::string& called, const json& asked) -> json {
+        if (called == "delegator.ready") {
             return json{{"available", true}, {"path", params.path}};
         }
-        if (method == "delegator.format") {
+        if (called == "delegator.done") {
+            return json::object();
+        }
+        if (called == "delegator.format") {
             std::vector<ChatMessage> messages;
             for (const json& one : asked.value("messages", json::array())) {
                 messages.push_back({one.value("role", "user"), one.value("content", "")});
             }
             return json{{"text", model->format_chat(messages, true)}};
         }
-        if (method == "delegator.score") {
+        if (called == "delegator.score") {
             std::vector<std::string> labels;
             for (const json& one : asked.value("labels", json::array())) {
                 labels.push_back(one.get<std::string>());
@@ -167,7 +170,7 @@ int main(int argc, char** argv) {
             }
             return json{{"scores", out}, {"canceled", false}};
         }
-        throw std::runtime_error("routebench has no " + method);
+        throw std::runtime_error("routebench has no " + called);
     };
 
     // Every seat is filled and there is no floor, so what comes back is the

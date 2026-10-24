@@ -896,7 +896,7 @@ class Build:
                 # says what was and was not made.
                 if not wrote and task.get("files") and not pushed_back:
                     pushed_back = True
-                    self.note("note", "said DONE without writing anything -- asked to do the task",
+                    self.note("note", "said DONE without writing anything, so it was asked to do the task",
                               task=index, ok=False, ms=reply.get("ms", 0), expert=seat.id)
                     instruction = ("Nothing has been written yet, and this task is expected to make "
                                    + ", ".join(task["files"]) + ". Do the work now -- WRITE the file "
@@ -1213,6 +1213,17 @@ class Build:
                     with self.lock:
                         self.journal["outcome"] = (call or {}).get("argument") or answer
                     return
+                # A write still waits for a yes when Auto is off: the finishing
+                # pass is the architect's last word, not a way around asking.
+                if (call.get("kind") in ("write", "edit") and not self.core.flags().get("auto_edits")
+                        and not (self.core.call("edit.ask", call) or {}).get("approved", False)):
+                    if self.canceled():
+                        return
+                    self.note("note", "you declined the edit to " + call.get("argument", ""), ok=False)
+                    instruction = ("The user declined that edit, so the file is unchanged. Anything "
+                                   "else that must be repaired? If not, reply DONE: and a short "
+                                   "account of what was changed.")
+                    continue
                 started = time.monotonic()
                 result = self.run_tool(call, seat)
                 self.note(call.get("kind", ""), result.get("summary", ""), ok=result.get("ok", False),

@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -42,8 +43,8 @@ extern const unsigned int  kMarkSvg_size;
 }  // namespace crucible::gui::art
 #endif
 
-#if defined(CRUCIBLE_HAS_EMBEDDED_FONT)
-#include "fonts.hpp"
+#if defined(CRUCIBLE_HAS_KATEX)
+#include "katex_fonts.hpp"
 #endif
 
 #if defined(CRUCIBLE_HAS_WEBVIEW)
@@ -86,35 +87,91 @@ std::string mark_data_uri() {
 #endif
 }
 
-/// The @font-face rules, or nothing when this build has no font compiled in --
-/// in which case the page falls back to whatever monospace the machine has,
-/// which is what its font stack says anyway.
-std::string font_faces() {
-#if defined(CRUCIBLE_HAS_EMBEDDED_FONT)
-    const auto face = [](const char* weight, const unsigned char* data, unsigned int size) {
-        return std::string("@font-face{font-family:'JetBrains Mono';font-weight:")
-             + weight + ";font-display:block;src:url(data:font/ttf;base64,"
-             + format::base64(std::string_view(reinterpret_cast<const char*>(data), size))
-             + ") format('truetype')}";
-    };
-    return "<style>" + face("400", fonts::kRegular, fonts::kRegular_size)
-                     + face("700", fonts::kBold,    fonts::kBold_size) + "</style>";
-#else
-    return {};
+/// One @font-face rule for a woff2 compiled into this binary.
+[[maybe_unused]] std::string woff2_face(std::string_view family, std::string_view weight,
+                                        bool italic, const unsigned char* data, unsigned int size) {
+    return "@font-face{font-family:'" + std::string(family) + "';font-weight:" + std::string(weight)
+         + ";font-style:" + (italic ? "italic" : "normal")
+         + ";font-display:block;src:url(data:font/woff2;base64,"
+         + format::base64(std::string_view(reinterpret_cast<const char*>(data), size))
+         + ") format('woff2')}";
+}
+
+/// The @font-face rules for KaTeX's fonts, which the page draws math in. The
+/// interface has none of its own: it is drawn in the machine's font, or the
+/// one the Font setting names. A build that could not fetch KaTeX has none,
+/// and the page shows math as its TeX source.
+[[maybe_unused]] std::string font_faces() {
+    std::string rules;
+#if defined(CRUCIBLE_HAS_KATEX)
+    for (unsigned int i = 0; i < katex::kFaceCount; ++i) {
+        const katex::Face& face = katex::kFaces[i];
+        rules += woff2_face(face.family, std::to_string(face.weight), face.italic, face.data, face.size);
+    }
 #endif
+    return rules.empty() ? std::string() : "<style>" + rules + "</style>";
+}
+
+/// `text` as a CSS string. A family name is somebody's typing, and this is
+/// where it goes into the page without the page escaping it: a quote or a
+/// backslash would end the string, and a `<` could end the <style> it is in.
+[[maybe_unused]] std::string css_string(std::string_view text) {
+    std::string out = "\"";
+    for (const char c : text) {
+        if (c == '"' || c == '\\') {
+            out += '\\';
+            out += c;
+        } else if (c == '<') {
+            out += "\\3c ";
+        } else if (static_cast<unsigned char>(c) >= 0x20) {
+            out += c;
+        }
+    }
+    return out + "\"";
+}
+
+/// The Font setting, in place before the page draws anything, so the window
+/// does not open in the system's font and then change its mind. ui/base.js
+/// sets the same property when the setting changes, and decides about code
+/// then.
+[[maybe_unused]] std::string font_choice(std::string_view family) {
+    if (family.empty()) {
+        return {};
+    }
+    return "<style>:root{--font:" + css_string(family) + ",var(--system-font)}</style>";
 }
 
 #if defined(CRUCIBLE_HAS_WEBVIEW) && defined(CRUCIBLE_HAS_WEB_INDEX)
 
 using json = nlohmann::json;
 
-/// The first argument of a call from the page.
+/// The `n`th argument of a call from the page.
 ///
 /// webview hands a binding its arguments as the text of a JSON array, so what
-/// the page passed is element zero.
-json first_argument(const std::string& arguments) {
+/// the page passed first is element zero.
+json argument(const std::string& arguments, std::size_t n) {
     const json parsed = json::parse(arguments, nullptr, false);
-    return parsed.is_array() && !parsed.empty() ? parsed[0] : json(nullptr);
+    return parsed.is_array() && parsed.size() > n ? parsed[n] : json(nullptr);
+}
+
+json first_argument(const std::string& arguments) { return argument(arguments, 0); }
+
+/// What a call has to carry to be the page's own.
+///
+/// The webview's message handler is reachable from every frame in the page,
+/// not only the top one its bridge script is put into -- and the preview is
+/// a frame showing a page a model wrote, or one from a cloned repository. A
+/// frame is another origin and cannot read the top frame's variables, so a
+/// secret made fresh at each start, handed only to the top frame, is what
+/// tells the page's calls from a frame's. A call without it is refused.
+std::string page_token() {
+    std::random_device random;
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string token;
+    for (int i = 0; i < 32; ++i) {
+        token += kHex[random() % 16];
+    }
+    return token;
 }
 
 /// Whether the window is still there to be spoken to.
@@ -314,9 +371,8 @@ int App::run() {
             const std::filesystem::path root = project_root();
             const std::string wanted =
                 root.empty() ? std::string("Crucible")
-                             : (root.filename().empty() ? root.string()
-                                                        : root.filename().string())
-                                   + " \xE2\x80\x94 Crucible";
+                             : "Crucible: " + (root.filename().empty() ? root.string()
+                                                                        : root.filename().string());
             if (wanted != title) {
                 title = wanted;
                 view.set_title(title);
@@ -347,9 +403,17 @@ int App::run() {
     // The request is a string of JSON and so is the reply, which keeps the
     // page's side symmetrical with Python's. The page parses it once more;
     // that is cheap and it keeps one encoder.
+    const std::string token = page_token();
+    const auto refused = [&view](const std::string& id) {
+        view.resolve(id, 0, json{{"ok", false}, {"error", "refused"}}.dump());
+    };
     view.bind("rpc",
-              [this, &view, &pusher, surface, gate](const std::string& id,
+              [this, &view, &pusher, surface, gate, token, refused](const std::string& id,
                                                     const std::string& arguments, void*) {
+                  if (argument(arguments, 1) != token) {
+                      refused(id);
+                      return;
+                  }
                   const json request = first_argument(arguments);
                   api::Prepared call =
                       surface->prepare(request.is_string() ? request.get<std::string>()
@@ -385,7 +449,11 @@ int App::run() {
     // do it over. The page falls back to a picker of its own when the answer
     // comes back unsupported.
     view.bind("nativeDialog",
-              [&view, gate](const std::string& id, const std::string& arguments, void*) {
+              [&view, gate, token, refused](const std::string& id, const std::string& arguments, void*) {
+                  if (argument(arguments, 1) != token) {
+                      refused(id);
+                      return;
+                  }
                   const json wanted = first_argument(arguments);
                   dialogs::Request request;
                   if (wanted.is_object()) {
@@ -461,7 +529,8 @@ int App::run() {
                                           + json(paths).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + ")");
                             }
                         });
-    view.init(std::string("window.crucibleNativeDrops = ") + (paths_on_drop ? "true" : "false") + ";");
+    view.init(std::string("window.crucibleNativeDrops = ") + (paths_on_drop ? "true" : "false")
+              + "; window.crucibleToken = \"" + token + "\";");
 
     engine_->start();
 
@@ -480,7 +549,7 @@ int App::run() {
     // is asking the machine for a monospace and taking whatever it has, which
     // on three platforms is three different faces and none of them this one.
     std::string page(reinterpret_cast<const char*>(web::kPageHtml), web::kPageHtml_size);
-    const std::string faces = font_faces();
+    const std::string faces = font_faces() + font_choice(config_.ui.font);
     if (const std::size_t at = page.find("</head>"); at != std::string::npos && !faces.empty()) {
         page.insert(at, faces);
     }

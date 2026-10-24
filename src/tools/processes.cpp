@@ -18,7 +18,7 @@ std::string Processes::start(const std::string& command, const std::filesystem::
         error = "START needs a command";
         return {};
     }
-    auto entry     = std::make_unique<Entry>();
+    auto entry     = std::make_shared<Entry>();
     entry->command = command;
     entry->child   = std::make_unique<util::Subprocess>();
     entry->started = std::chrono::steady_clock::now();
@@ -26,23 +26,18 @@ std::string Processes::start(const std::string& command, const std::filesystem::
         return {};
     }
 
-    std::string name;
-    Entry*      raw = entry.get();
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        name = "p" + std::to_string(++next_);
-        entries_[name] = std::move(entry);
-    }
-
     // One reader per process, so a program that prints forever cannot fill
     // a pipe and stall. The tail is kept; the head is the part nobody reads.
-    raw->reader = std::thread([raw] {
+    // Started before the entry is listed, so nothing can stop an entry whose
+    // reader is not there yet.
+    Entry* raw = entry.get();
+    entry->reader = std::thread([raw] {
         std::string line;
         while (raw->child->read_line(line)) {
             const std::lock_guard<std::mutex> lock(raw->mutex);
             raw->output += detail::console_to_utf8(line);
             raw->output += '\n';
-            if (raw->output.size() > kKeepBytes) {
+            if (raw->output.size() > 2 * kKeepBytes) {
                 raw->output.erase(0, raw->output.size() - kKeepBytes);
             }
         }
@@ -51,19 +46,23 @@ std::string Processes::start(const std::string& command, const std::filesystem::
         raw->running = false;
         raw->status  = status;
     });
+
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::string name = "p" + std::to_string(++next_);
+    entries_[name] = std::move(entry);
     return name;
 }
 
 bool Processes::logs(const std::string& name, std::size_t max_bytes, std::string& out, bool& running,
                      int& status) {
-    Entry* entry = nullptr;
+    std::shared_ptr<Entry> entry;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         const auto found = entries_.find(name);
         if (found == entries_.end()) {
             return false;
         }
-        entry = found->second.get();
+        entry = found->second;
     }
     const std::lock_guard<std::mutex> lock(entry->mutex);
     out     = entry->output.size() > max_bytes ? entry->output.substr(entry->output.size() - max_bytes)
@@ -74,7 +73,7 @@ bool Processes::logs(const std::string& name, std::size_t max_bytes, std::string
 }
 
 bool Processes::stop(const std::string& name, std::string& error) {
-    std::unique_ptr<Entry> entry;
+    std::shared_ptr<Entry> entry;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         const auto found = entries_.find(name);
@@ -85,6 +84,8 @@ bool Processes::stop(const std::string& name, std::string& error) {
         entry = std::move(found->second);
         entries_.erase(found);
     }
+    // Asked to stop, and killed if it will not: the reader's wait() sees to
+    // that, so this join is a few seconds at the most.
     entry->child->terminate();
     if (entry->reader.joinable()) {
         entry->reader.join();
@@ -93,13 +94,16 @@ bool Processes::stop(const std::string& name, std::string& error) {
 }
 
 void Processes::stop_all() {
-    std::map<std::string, std::unique_ptr<Entry>> taken;
+    std::map<std::string, std::shared_ptr<Entry>> taken;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         taken.swap(entries_);
     }
+    // Every one asked first, so their grace runs side by side.
     for (auto& [name, entry] : taken) {
         entry->child->terminate();
+    }
+    for (auto& [name, entry] : taken) {
         if (entry->reader.joinable()) {
             entry->reader.join();
         }

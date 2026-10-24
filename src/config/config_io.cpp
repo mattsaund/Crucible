@@ -45,25 +45,40 @@ std::vector<McpServer> mcp_from_json(const json& doc, std::vector<std::string>& 
         warnings.emplace_back("tools.mcp: not a list of servers (ignored)");
         return out;
     }
+    // Every field by its type, never value(): value() throws on a field of
+    // the wrong type -- "enabled": "true", an "env" written as a list -- and
+    // one entry edited by hand ended every start before the window opened.
+    const auto text = [](const json& one, const char* key) {
+        const auto it = one.find(key);
+        return it != one.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
     for (const json& one : doc) {
-        if (!one.is_object() || one.value("name", std::string()).empty()
-            || one.value("command", std::string()).empty()) {
+        if (!one.is_object() || text(one, "name").empty() || text(one, "command").empty()) {
             warnings.emplace_back("tools.mcp: a server with no name or no command (skipped)");
             continue;
         }
         McpServer server;
-        server.name    = one.value("name", std::string());
-        server.command = one.value("command", std::string());
-        server.enabled = one.value("enabled", true);
-        for (const json& arg : one.value("args", json::array())) {
-            if (arg.is_string()) {
-                server.args.push_back(arg.get<std::string>());
+        server.name    = text(one, "name");
+        server.command = text(one, "command");
+        if (const auto enabled = one.find("enabled"); enabled != one.end()) {
+            if (enabled->is_boolean()) {
+                server.enabled = enabled->get<bool>();
+            } else {
+                warnings.emplace_back("tools.mcp: " + server.name + ": enabled is not true or false");
             }
         }
-        const json env = one.value("env", json::object());
-        for (auto it = env.begin(); it != env.end(); ++it) {
-            if (it.value().is_string()) {
-                server.env[it.key()] = it.value().get<std::string>();
+        if (const auto args = one.find("args"); args != one.end() && args->is_array()) {
+            for (const json& arg : *args) {
+                if (arg.is_string()) {
+                    server.args.push_back(arg.get<std::string>());
+                }
+            }
+        }
+        if (const auto env = one.find("env"); env != one.end() && env->is_object()) {
+            for (auto it = env->begin(); it != env->end(); ++it) {
+                if (it.value().is_string()) {
+                    server.env[it.key()] = it.value().get<std::string>();
+                }
             }
         }
         out.push_back(std::move(server));
@@ -151,7 +166,7 @@ bool read_expert_identity(const json& entry, const ExpertId& id, Expert& expert,
     }
     if (expert.blurb.empty()) {
         warnings.emplace_back(id + ": no \"blurb\", so the delegator has nothing to "
-                                   "route on -- this expert was skipped");
+                                   "route on, so this expert was skipped");
         return false;
     }
     return true;
@@ -307,6 +322,7 @@ json config_to_json(const Config& config) {
         {"ui", json{
             {"check_updates",  config.ui.check_updates},
             {"source_dir",     config.ui.source_dir},
+            {"font",           config.ui.font},
         }},
     };
     return doc;
@@ -354,7 +370,7 @@ std::string config_to_json_text(const Config& config) {
 Config config_from_json_text(std::string_view text, std::vector<std::string>& warnings) {
     const json doc = json::parse(text, nullptr, /*allow_exceptions=*/false);
     if (doc.is_discarded() || !doc.is_object()) {
-        warnings.emplace_back("not a configuration object -- using defaults");
+        warnings.emplace_back("not a configuration object, so the defaults are used");
         return Config{};
     }
     return config_from_json(doc, warnings);
@@ -440,6 +456,7 @@ void write_default_config(const std::filesystem::path& file) {
         {"ui", json{
             {"check_updates",  defaults.ui.check_updates},
             {"source_dir",     defaults.ui.source_dir},
+            {"font",           defaults.ui.font},
         }},
     };
 
@@ -455,8 +472,13 @@ void write_default_config(const std::filesystem::path& file) {
 Config load_config(const std::filesystem::path& file, std::vector<std::string>& warnings) {
     Config config;
 
-    if (!std::filesystem::exists(file)) {
-        write_default_config(file);
+    std::error_code missing_ec;
+    if (!std::filesystem::exists(file, missing_ec)) {
+        // Written only when it is truly not there: a folder that cannot be
+        // read is not a reason to write over what may be in it.
+        if (!missing_ec) {
+            write_default_config(file);
+        }
         // A freshly written default has no models in it; the UI turns that into
         // a "point me at some GGUFs" screen rather than an error.
         config.router.n_ctx       = 4096;
@@ -471,12 +493,12 @@ Config load_config(const std::filesystem::path& file, std::vector<std::string>& 
         in >> doc;
     } catch (const json::exception& e) {
         warnings.emplace_back("could not parse " + file.string() + ": " + e.what()
-                              + " -- falling back to built-in defaults");
+                              + ". The built-in defaults are used");
         return config;
     }
 
     if (!doc.is_object()) {
-        warnings.emplace_back(file.string() + " is not a JSON object -- using defaults");
+        warnings.emplace_back(file.string() + " is not a JSON object, so the defaults are used");
         return config;
     }
     return config_from_json(doc, warnings);
@@ -543,8 +565,8 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
                 }
             }
         } else {
-            warnings.emplace_back("experts: expected a list of experts -- using the "
-                                  "built-in ones");
+            warnings.emplace_back("experts: expected a list of experts, so the built-in "
+                                  "ones are used");
             config.roster = Roster::bare();
         }
 
@@ -644,6 +666,7 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
     if (const auto ui = doc.find("ui"); ui != doc.end() && ui->is_object()) {
         read_field(*ui, "check_updates", config.ui.check_updates, "ui", warnings);
         read_field(*ui, "source_dir", config.ui.source_dir, "ui", warnings);
+        read_field(*ui, "font", config.ui.font, "ui", warnings);
     }
 
     if (const auto providers = doc.find("providers");
@@ -668,12 +691,12 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
             }
             if (provider.kind != "anthropic" && provider.kind != "openai") {
                 warnings.emplace_back("providers." + provider.id + ": unknown kind \""
-                                      + provider.kind + "\" -- treating it as openai");
+                                      + provider.kind + "\", treated as openai");
                 provider.kind = "openai";
             }
             if (config.provider(provider.id) != nullptr) {
                 warnings.emplace_back("providers: \"" + provider.id
-                                      + "\" is listed twice -- the second was skipped");
+                                      + "\" is listed twice, and the second was skipped");
                 continue;
             }
             config.providers.push_back(std::move(provider));
@@ -698,15 +721,16 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
             }
             return;
         }
-        if (!std::filesystem::exists(params.path)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(params.path, ec)) {
             warnings.emplace_back(std::string(label) + ": model not found at " + params.path);
         }
     };
     // The delegator scores every seat against the prompt by reading the
     // model's own probabilities, which no chat API hands out. It stays local.
     if (config.router.remote()) {
-        warnings.emplace_back("router: the delegator has to be a model on this machine -- "
-                              "its provider was ignored");
+        warnings.emplace_back("router: the delegator has to be a model on this machine, "
+                              "so its provider was ignored");
         config.router.provider.clear();
     }
     check(config.router, "router");

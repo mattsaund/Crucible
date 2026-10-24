@@ -7,6 +7,7 @@
 // finding the method it names, and wrapping what comes back.
 #include "crucible/api/surface.hpp"
 #include "crucible/app/setup.hpp"
+#include "crucible/market/downloads.hpp"
 
 #include "crucible/config/paths.hpp"
 #include "crucible/session/store.hpp"
@@ -62,6 +63,7 @@ const std::vector<Method>& table() {
         install_methods(out);
         lab_methods(out);
         source_methods(out);
+        market_methods(out);
         return out;
     }();
     return methods;
@@ -116,7 +118,8 @@ Prepared Surface::prepare(std::string_view request) {
     if (parsed.contains("params") && parsed["params"].is_object()) {
         impl->params = parsed["params"];
     }
-    const std::string name = parsed.value("method", std::string{});
+    const auto        named = parsed.find("method");
+    const std::string name  = named != parsed.end() && named->is_string() ? named->get<std::string>() : std::string();
 
     if (name.empty()) {
         impl->answered = text_of(fail(impl->id, "no method named"));
@@ -259,6 +262,23 @@ std::string Surface::snapshot() {
                 list.push_back(std::move(one));
             }
             out["setup"] = json{{"running", setup->running()}, {"items", list}};
+        }
+    }
+
+    // Models on their way from the Models tab: the page's bars are drawn from
+    // these, pushed as they move rather than asked for. See market/downloads.hpp.
+    if (market::Downloads* downloads = host_.downloads()) {
+        const std::vector<market::Download> list = downloads->list();
+        if (!list.empty()) {
+            json rows = json::array();
+            for (const market::Download& d : list) {
+                rows.push_back(json{{"id", d.id}, {"repo", d.repo}, {"option", d.option},
+                                    {"format", std::string(market::format_id(d.format))},
+                                    {"folder", d.folder.string()}, {"total", d.total}, {"done", d.done},
+                                    {"rate", d.rate}, {"state", std::string(market::state_id(d.state))},
+                                    {"error", d.error}});
+            }
+            out["downloads"] = std::move(rows);
         }
     }
 

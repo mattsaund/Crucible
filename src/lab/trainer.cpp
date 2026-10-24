@@ -114,10 +114,11 @@ bool Trainer::start(const Recipe& recipe,
             return false;
         }
     }
-    const pyenv::Status env = pyenv::status();
-    if (!env.ready) {
-        error = env.note.empty() ? "the training environment is not installed"
-                                 : "the training environment is not usable: " + env.note;
+    // Only whether it is there: whether it can train is asked on the run's
+    // thread (run), since asking starts Python and imports torch -- a second
+    // and more that the window would otherwise be frozen for.
+    if (!pyenv::looks_installed()) {
+        error = "the training environment is not installed";
         return false;
     }
     if (worker_.joinable()) {
@@ -246,6 +247,17 @@ void Trainer::run(Recipe recipe, std::filesystem::path export_dir,
                   std::filesystem::path convert_script,
                   std::filesystem::path quantize_bin) {
     const std::filesystem::path run_dir = pyenv::runs_dir() / recipe.id;
+
+    if (const pyenv::Status env = pyenv::status(); !env.ready) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        progress_.phase = RunProgress::Phase::Failed;
+        progress_.error = env.note.empty() ? "the training environment is not installed"
+                                           : "the training environment is not usable: " + env.note;
+        if (on_change_) {
+            on_change_();
+        }
+        return;
+    }
 
     // The recipe as the script will read it, beside the run rather than in
     // the lab folder: what a run was given must not change under it because

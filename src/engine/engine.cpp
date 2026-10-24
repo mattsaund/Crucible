@@ -2,13 +2,20 @@
 //
 // The delegation loop.
 //
-// Everything llama.cpp touches happens on this thread. The UI hands over a
-// prompt and learns how it went through AppState plus a wake callback -- it
-// never calls into the engine's internals, and the engine never calls into
-// the window toolkit.
+// The chat's turns run on the worker thread. The UI hands over a prompt and
+// learns how it went through AppState plus a wake callback -- it never calls
+// into the engine's internals, and the engine never calls into the window
+// toolkit.
 //
-// Config changes and expert releases ride the same queue as prompts, so they
-// are applied in order and can never land in the middle of a generation.
+// The worker is not the only thread that reaches llama.cpp: a build's agents,
+// the orchestrator's requests and a load for the box's choice each run on
+// threads of their own. Every load and free takes host_mutex_, and a model
+// somebody is generating with is held by a lease, so none of them frees it
+// under its user. See leases.hpp.
+//
+// Config changes and expert releases ride the same queue as the chat's
+// prompts, so they are applied in order and never land in the middle of a
+// chat turn.
 #include "crucible/engine/engine.hpp"
 
 #include <algorithm>
@@ -44,20 +51,6 @@ namespace {
 /// asked gets nothing from.
 constexpr int kToolRounds = 12;
 
-/// Is this verb an action on the project, rather than an answer to the cook
-/// loop or a web search?
-///
-/// SEARCH has its own path below. ASK, DONE and HANDOFF are how a cook ends a
-/// piece of work and are not offered to a chat turn at all -- if one arrives
-/// anyway it falls through to being shown, which is the right outcome: a model
-/// that writes "DONE: fixed it" has said something to the reader.
-/// What the expert said before it reached for a tool.
-///
-/// A reply that ends in `WRITE: src/calc.py` and a fenced block is two things:
-/// a sentence for the reader and a line for the machine. The line has to come
-/// off the transcript -- shown as an answer it reads as the expert talking
-/// about the protocol -- and the sentence has to stay, because it is the only
-/// explanation of the change that will ever be written.
 /// Two stretches of a reply, a paragraph apart -- or whichever one there is.
 std::string paragraphs(const std::string& first, const std::string& second) {
     if (first.empty())  { return second; }
@@ -65,6 +58,13 @@ std::string paragraphs(const std::string& first, const std::string& second) {
     return first + "\n\n" + second;
 }
 
+/// What the expert said before it reached for a tool.
+///
+/// A reply that ends in `WRITE: src/calc.py` and a fenced block is two things:
+/// a sentence for the reader and a line for the machine. The line has to come
+/// off the transcript -- shown as an answer it reads as the expert talking
+/// about the protocol -- and the sentence has to stay, because it is the only
+/// explanation of the change that will ever be written.
 std::string prose_before_tool_call(const std::string& answer, tools::ToolKind kind) {
     const std::string verb(tools::tool_kind_name(kind));
     std::string upper;
@@ -98,6 +98,13 @@ std::string prose_before_tool_call(const std::string& answer, tools::ToolKind ki
     return {};   // nothing but the call: nothing to keep
 }
 
+/// Is this verb an action on the project, rather than an answer to the cook
+/// loop or a web search?
+///
+/// SEARCH has its own path below. ASK, DONE and HANDOFF are how a cook ends a
+/// piece of work and are not offered to a chat turn at all -- if one arrives
+/// anyway it falls through to being shown, which is the right outcome: a model
+/// that writes "DONE: fixed it" has said something to the reader.
 bool is_project_verb(tools::ToolKind kind) {
     switch (kind) {
         case tools::ToolKind::List:
@@ -198,13 +205,33 @@ void Engine::warm_mcp(const Config& config) {
     }
     mcp_.configure(servers);
     // One warm-up at a time; the last configuration is the one that counts,
-    // and starting a server twice would be two of it.
+    // and starting a server twice would be two of it. One going already is
+    // told to go round again rather than waited for: a server fetched by npx
+    // takes its minute, and the engine's queue is not held for it.
+    if (!mcp_.any()) {
+        return;
+    }
+    warm_again_ = true;
+    if (mcp_warming_) {
+        return;
+    }
     if (mcp_thread_.joinable()) {
-        mcp_thread_.join();
+        mcp_thread_.join();   // over: it said so before it ended
     }
-    if (mcp_.any()) {
-        mcp_thread_ = std::thread([this] { mcp_.warm(); });
-    }
+    mcp_warming_ = true;
+    mcp_thread_  = std::thread([this] {
+        for (;;) {
+            {
+                const std::lock_guard<std::mutex> again(mcp_mutex_);
+                if (!warm_again_ || !running_.load(std::memory_order_relaxed)) {
+                    mcp_warming_ = false;
+                    return;
+                }
+                warm_again_ = false;
+            }
+            mcp_.warm();
+        }
+    });
 }
 
 void Engine::stop() {
@@ -218,6 +245,10 @@ void Engine::stop() {
     // and would keep the worker -- and so the window closing -- waiting on it.
     hub_.interrupt();
     queued_.notify_all();
+    {
+        const std::lock_guard<std::mutex> lock(prepare_mutex_);   // so the wait cannot miss it
+    }
+    prepare_wanted_.notify_all();
     edit_answered_.notify_all();
     cook_answered_.notify_all();
     leases_.wake_all();
@@ -242,11 +273,16 @@ void Engine::stop() {
     // Nothing is left running behind a window that is gone: not what experts
     // started, and not the MCP servers.
     processes_.stop_all();
+    // Taken out under the lock and joined outside it: the warm-up asks for
+    // the lock to see whether to go round again.
+    std::thread warming;
     {
         const std::lock_guard<std::mutex> lock(mcp_mutex_);
-        if (mcp_thread_.joinable()) {
-            mcp_thread_.join();
-        }
+        warm_again_ = false;
+        warming     = std::move(mcp_thread_);
+    }
+    if (warming.joinable()) {
+        warming.join();
     }
     mcp_.stop_all();
 }
@@ -404,8 +440,9 @@ void Engine::release_all() {
 }
 
 void Engine::release_expert() {
-    // Queued rather than done inline: host_ belongs to the worker thread, and
-    // reaching into it from the UI thread mid-generation would be a data race.
+    // Queued rather than done inline, like a config change: it lands between
+    // the chat's prompts, in the order it was asked for, never in the middle
+    // of a turn.
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -413,6 +450,108 @@ void Engine::release_expert() {
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
+}
+
+void Engine::choose(std::optional<ExpertId> seat, bool load) {
+    bool changed = false;
+    {
+        const std::lock_guard<std::mutex> lock(chosen_mutex_);
+        changed = chosen_ != seat;
+        chosen_ = seat;
+    }
+    // A load under way for an earlier choice stops: this one is wanted now.
+    if (changed) {
+        choices_.fetch_add(1);
+    }
+    if (!load) {
+        return;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(prepare_mutex_);
+        if (!running_.load(std::memory_order_relaxed)) {
+            return;
+        }
+        prepare_seat_ = std::move(seat);
+        ++prepare_asked_;
+        if (!prepare_thread_.joinable()) {
+            prepare_thread_ = std::thread(&Engine::prepare_loop, this);
+        }
+    }
+    prepare_wanted_.notify_one();
+}
+
+void Engine::prepare_loop() {
+    std::uint64_t done = 0;
+    for (;;) {
+        std::optional<ExpertId> seat;
+        std::uint64_t           choice = 0;
+        {
+            std::unique_lock<std::mutex> lock(prepare_mutex_);
+            prepare_wanted_.wait(lock, [this, &done] {
+                return prepare_asked_ != done || !running_.load(std::memory_order_relaxed);
+            });
+            if (!running_.load(std::memory_order_relaxed)) {
+                return;
+            }
+            seat   = prepare_seat_;
+            done   = prepare_asked_;
+            choice = choices_.load();
+        }
+        // A load that throws -- a corrupt GGUF -- is said, not fatal.
+        try {
+            do_prepare(seat, choice);
+        } catch (const std::exception& e) {
+            state_.set_mood(Mood::Error, e.what());
+        } catch (...) {
+            state_.set_mood(Mood::Error, "the model did not load");
+        }
+        if (wake_) {
+            wake_();
+        }
+    }
+}
+
+std::string Engine::chosen_path() const {
+    std::optional<ExpertId> seat;
+    {
+        const std::lock_guard<std::mutex> lock(chosen_mutex_);
+        seat = chosen_;
+    }
+    if (!seat) {
+        return {};
+    }
+    const Config       config = this->config();
+    const ModelParams& params = config.expert(*seat);
+    return params.model.empty() || params.remote() ? std::string() : params.path;
+}
+
+void Engine::do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice) {
+    // Back to the delegator: the table as any prompt leaves it.
+    if (!seat) {
+        tidy_models();
+        return;
+    }
+    const Config      config = this->config();
+    const ModelParams params = config.expert(*seat);
+    if (params.model.empty() || params.remote()) {
+        return;   // a provider's model is a request away, not a load
+    }
+    if (!config.routing.keep_delegator_loaded) {
+        release_router_between_routes();
+    }
+    const CancelCallback cancel = [this, choice] {
+        return choices_.load(std::memory_order_relaxed) != choice || !running_.load(std::memory_order_relaxed);
+    };
+    long        load_ms = 0;
+    std::string error;
+    const std::string name = expert_label(config.roster, *seat);
+    // Loaded and let go at once: the lease is for a turn, and this is not one.
+    const HeldModel held = hold_model(*seat, params, name, cancel, load_ms, error);
+    if (held.model == nullptr && !error.empty() && error != "stopped") {
+        state_.set_mood(Mood::Error, name + " did not load: " + error);
+    } else if (!is_busy() && !cooking()) {
+        state_.set_mood(Mood::Idle);
+    }
 }
 
 void Engine::reload_models() {
@@ -433,6 +572,11 @@ void Engine::reset_history() {
 void Engine::approve_edit(bool approved) {
     {
         const std::lock_guard<std::mutex> lock(edit_mutex_);
+        // Only while a question is up. A second click on Allow, or one after
+        // Stop, was kept, and answered the next edit before it was shown.
+        if (!edit_asking_) {
+            return;
+        }
         edit_approved_ = approved;
     }
     edit_answered_.notify_all();
@@ -466,8 +610,16 @@ bool Engine::ask_about_edit(const tools::ToolCall& call,
     }
 
     // One edit on screen at a time: an agent of the build and the chat may
-    // both want a yes, and the window asks about one file at once.
-    const std::lock_guard<std::mutex> one_at_a_time(asking_mutex_);
+    // both want a yes, and the window asks about one file at once. Waited
+    // for in a way a Stop ends, since the one on screen may be a build's
+    // question nobody answers for an hour.
+    std::unique_lock<std::mutex> one_at_a_time(asking_mutex_, std::defer_lock);
+    while (!one_at_a_time.try_lock()) {
+        if ((cancel && cancel()) || !running_.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 
     auto edit    = std::make_shared<PendingEdit>();
     edit->path   = call.argument;
@@ -484,6 +636,12 @@ bool Engine::ask_about_edit(const tools::ToolCall& call,
         edit->before = buffer.str();
     }
 
+    {
+        // Open before it is shown, so the answer to it is the first one kept.
+        const std::lock_guard<std::mutex> lock(edit_mutex_);
+        edit_approved_.reset();
+        edit_asking_ = true;
+    }
     state_.set_pending_edit(edit);
     state_.set_mood(Mood::Idle, "waiting on you: " + call.argument);
     if (wake_) {
@@ -503,6 +661,7 @@ bool Engine::ask_about_edit(const tools::ToolCall& call,
         });
         approved = edit_approved_.value_or(false);
         edit_approved_.reset();
+        edit_asking_ = false;
     }
 
     state_.set_pending_edit(nullptr);
@@ -576,8 +735,8 @@ void Engine::run() {
     // have typed a question is the worse way to learn it.
     if (devices.empty()) {
         state_.add_notice(RuntimeRegistry::any_installed()
-                              ? "the runtime found no hardware -- see Settings, Runtimes"
-                              : "no runtime -- install one in Settings, Runtimes");
+                              ? "the runtime found no hardware (see Settings, Runtimes)"
+                              : "no runtime: install one in Settings, Runtimes");
     }
 
     {
@@ -666,7 +825,7 @@ void Engine::run() {
             if (all && !kept) {
                 state_.set_linked(std::nullopt);
             }
-            state_.set_mood(Mood::Idle, kept ? "released what is not in use -- the build is using the rest"
+            state_.set_mood(Mood::Idle, kept ? "released what is not in use (the build is using the rest)"
                                       : all ? "nothing loaded" : "expert released");
             if (wake_) {
                 wake_();
@@ -676,6 +835,8 @@ void Engine::run() {
 
         if (request.kind == RequestKind::ApplyConfig) {
             do_apply_config(std::move(request.config));
+            // Outside the models' lock, which loads and prompts wait on.
+            warm_mcp(config());
             if (wake_) {
                 wake_();
             }
@@ -748,6 +909,18 @@ void Engine::run() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
+    // A load for the box's choice has been told to stop; it is gone before
+    // the models are.
+    std::thread preparing;
+    {
+        const std::lock_guard<std::mutex> lock(prepare_mutex_);
+        preparing = std::move(prepare_thread_);
+    }
+    prepare_wanted_.notify_all();
+    if (preparing.joinable()) {
+        preparing.join();
+    }
+
     // Free the models before the backend goes away, and stop MLX's server and
     // the orchestrator, which are processes of their own and would outlive
     // the window.
@@ -759,7 +932,7 @@ void Engine::run() {
     orchestra_.stop();
 }
 
-void Engine::load_router() {
+void Engine::load_router(const CancelCallback& cancel) {
     // A copy: the build's thread may be adding a seat to the config as this
     // runs, and the delegator's settings are what is read here.
     const ModelParams router = config().router;
@@ -790,8 +963,8 @@ void Engine::load_router() {
             }
         },
         // Closing the window ends a load as surely as Stop does.
-        [this] {
-            return cancel_.load(std::memory_order_relaxed)
+        [this, &cancel] {
+            return (cancel ? cancel() : cancel_.load(std::memory_order_relaxed))
                 || !running_.load(std::memory_order_relaxed);
         },
         error, in_use(), &crowded);
@@ -820,11 +993,11 @@ void Engine::load_router() {
     show_loaded();
 }
 
-void Engine::ensure_router() {
+void Engine::ensure_router(const CancelCallback& cancel) {
     if (config().router.model.empty() || host_->router() != nullptr) {
         return;  // keywords, which need nothing loaded, or already there
     }
-    load_router();
+    load_router(cancel);
 }
 
 void Engine::ready_delegator() {
@@ -863,24 +1036,33 @@ void Engine::tidy_models() {
     if (!running_.load(std::memory_order_relaxed)) {
         return;
     }
-    const Snapshot before = state_.snapshot();
+    const Snapshot    before = state_.snapshot();
+    const bool        demand = !config().routing.keep_delegator_loaded;
+    const std::string chosen = chosen_path();
     {
         const std::lock_guard<std::mutex> host(host_mutex_);
         // On demand: the experts nobody is using go, so the delegator has
-        // the room. One a build's agent holds stays -- it is mid-task.
-        if (!config().routing.keep_delegator_loaded) {
+        // the room. One a build's agent holds stays -- it is mid-task -- and
+        // so does the one chosen in the box, which the next prompt is for.
+        if (demand) {
             const std::optional<ExpertId> was = host_->loaded_expert();
-            host_->release_experts(in_use());
+            host_->release_experts([this, &chosen](const std::string& path) {
+                return leases_.held(path) || (!chosen.empty() && path == chosen);
+            });
             if (was && host_->loaded_expert() != was) {
                 state_.set_seat(*was, SeatPhase::Dormant);
             }
             state_.set_resident(host_->loaded_expert());
             show_loaded();
-            if (!leases_.held(mlx_.served().string())) {
+            if (!leases_.held(mlx_.served().string()) && mlx_.served().string() != chosen) {
                 stop_mlx();
             }
         }
-        ready_delegator();
+        // With an expert chosen nothing is routed, and on demand the
+        // delegator would only take the chosen one's room.
+        if (!demand || chosen.empty()) {
+            ready_delegator();
+        }
     }
     // Whatever the last request ended by saying -- "canceled", an error -- is
     // still the thing worth reading once the delegator is back.
@@ -888,6 +1070,30 @@ void Engine::tidy_models() {
     if (wake_) {
         wake_();
     }
+}
+
+void Engine::release_router_between_routes() {
+    // A route is a second or two; one that has said nothing for a minute is
+    // one that will not, and is not waited for.
+    const auto stale = [this] {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch()).count();
+        return now - routes_touched_ms_.load() > 60'000;
+    };
+    {
+        std::unique_lock<std::mutex> lock(routes_mutex_);
+        routes_done_.wait_for(lock, std::chrono::seconds(10),
+                              [this, &stale] { return routes_open_.load() == 0 || stale(); });
+    }
+    const std::lock_guard<std::mutex> host(host_mutex_);
+    if (stale()) {
+        routes_open_.store(0);
+    }
+    if (routes_open_.load() == 0) {
+        release_router();
+    }
+    // Otherwise a route is still using it: it stays, and the next prompt or
+    // seat that wants the room frees it.
 }
 
 void Engine::release_router() {
@@ -933,7 +1139,6 @@ void Engine::do_apply_config(Config config) {
         hub_.adopt(config_);
     }
     const Config current = this->config();
-    warm_mcp(current);
 
     // A loaded model keeps the cards and the context it was loaded with, so a
     // change to either -- in Settings, Hardware, or a seat's own loading
@@ -976,7 +1181,7 @@ void Engine::do_apply_config(Config config) {
     state_.configure_seats(current);
     state_.set_resident(host_->loaded_expert());
     show_loaded();
-    state_.set_mood(Mood::Idle, freed ? "settings applied -- models load with them from the next prompt"
+    state_.set_mood(Mood::Idle, freed ? "settings applied: models load with them from the next prompt"
                                       : "settings applied");
 }
 
@@ -1058,7 +1263,7 @@ void Engine::do_write_examples(const ExpertId& id) {
     }
 }
 
-bool Engine::wait_for_python(std::string& error) {
+bool Engine::wait_for_python(std::string& error, const CancelCallback& cancel) {
     if (lab::python::installed()) {
         return true;
     }
@@ -1070,7 +1275,8 @@ bool Engine::wait_for_python(std::string& error) {
             wake_();
         }
         while (lab::python::installing() && !lab::python::installed()) {
-            if (cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)) {
+            if ((cancel ? cancel() : cancel_.load(std::memory_order_relaxed))
+                || !running_.load(std::memory_order_relaxed)) {
                 error = "stopped";
                 return false;
             }
@@ -1081,7 +1287,7 @@ bool Engine::wait_for_python(std::string& error) {
         }
     }
     error = "Routing and cooks run on Crucible's own Python, which is not installed. It is "
-            "downloaded when Crucible starts -- check the connection and restart Crucible, "
+            "downloaded when Crucible starts: check the connection and restart Crucible, "
             "or run crucible --install-python.";
     return false;
 }
@@ -1136,11 +1342,40 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     // freed for an expert, and a score halfway through it would be reading
     // memory that had gone; a score takes a fraction of a second, and a load
     // waiting that long behind it costs nothing anyone can see.
+    const auto now_ms = [] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
     if (method == "delegator.ready") {
+        // Something that can do without it -- a conversation's name -- does
+        // not load it over the expert chosen in the box, when it is loaded
+        // on demand: see choose().
+        const auto optional = params.find("optional");
+        const bool spare = optional != params.end() && optional->is_boolean() && optional->get<bool>()
+                        && !config().routing.keep_delegator_loaded && !chosen_path().empty();
         const std::lock_guard<std::mutex> host(host_mutex_);
-        ensure_router();
+        if (!spare) {
+            ensure_router(cancel);
+        }
         const bool loaded = host_->router() != nullptr;
+        // A route has begun: see routes_open_. Closed by delegator.done.
+        routes_open_.fetch_add(1);
+        routes_touched_ms_.store(now_ms());
         return json{{"available", loaded}, {"path", loaded ? config().router.path : std::string()}};
+    }
+    if (method == "delegator.done") {
+        {
+            const std::lock_guard<std::mutex> host(host_mutex_);
+            if (routes_open_.load() > 0) {
+                routes_open_.fetch_sub(1);
+            }
+        }
+        { const std::lock_guard<std::mutex> lock(routes_mutex_); }
+        routes_done_.notify_all();
+        return json::object();
+    }
+    if (method.rfind("delegator.", 0) == 0) {
+        routes_touched_ms_.store(now_ms());
     }
     if (method == "delegator.generate") {
         // A few words of writing -- a conversation's name, an expert's
@@ -1148,6 +1383,7 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         // out, it is given room for it, and asked for as little of it as it
         // takes.
         const std::lock_guard<std::mutex> host(host_mutex_);
+        ensure_router(cancel);   // freed since delegator.ready by somebody who could not wait
         LoadedModel* model = host_->router();
         if (model == nullptr) {
             throw std::runtime_error("the delegator is not loaded");
@@ -1175,6 +1411,7 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     }
     if (method == "delegator.format" || method == "delegator.score") {
         const std::lock_guard<std::mutex> host(host_mutex_);
+        ensure_router(cancel);   // freed since delegator.ready by somebody who could not wait
         LoadedModel* model = host_->router();
         if (model == nullptr) {
             throw std::runtime_error("the delegator is not loaded");
@@ -1271,14 +1508,13 @@ RouteDecision Engine::resolve(const Request& request, std::string& error) {
     decision.detail     = answer.value("detail", "");
 
     const Config config = this->config();
-    if (!request.pinned && !config.routing.keep_delegator_loaded
-        && !config.expert(decision.expert).remote()) {
-        // Its work for this prompt is done, and the expert is about to want
-        // every byte it was holding. Unless the expert is somewhere else: then
-        // nothing is about to be loaded, and freeing the delegator would only
-        // mean loading it again for the next prompt.
-        const std::lock_guard<std::mutex> host(host_mutex_);
-        release_router();
+    if (!config.routing.keep_delegator_loaded && !config.expert(decision.expert).remote()) {
+        // Its work for this prompt is done -- or there was none, for a prompt
+        // sent to one expert -- and the expert is about to want every byte
+        // it was holding. Unless the expert is somewhere else: then nothing
+        // is about to be loaded, and freeing the delegator would only mean
+        // loading it again for the next prompt.
+        release_router_between_routes();
     }
     return decision;
 }
@@ -1529,6 +1765,12 @@ void Engine::handle(const Request& request) {
         // request instead, which is what ChatRequest::effort is for.
         messages.front().content += "\n\nReasoning: " + config.reasoning_effort;
     }
+    // How a reply is drawn. A model that knows math is typeset writes
+    // $\frac{a}{b}$ rather than a/b squeezed into a sentence. After the
+    // configured prompt rather than in it: that one is the user's to edit, and
+    // a saved config keeps the old default.
+    messages.front().content +=
+        "\n\nReplies are shown as Markdown. Write math as LaTeX: $...$ in a line, $$...$$ on its own lines.";
     if (config.tools.web_search) {
         // Only when the tool is switched on. An expert told it can search when
         // it cannot will offer to, which is worse than not having the tool.
@@ -1544,7 +1786,8 @@ void Engine::handle(const Request& request) {
     // two is how long they run and how they end, not what they may touch.
     //
     // The permission is the folder, answered once, in the terms it is about.
-    const tools::WorkshopSettings workshop = workshop_for(project_root_);
+    tools::WorkshopSettings workshop = workshop_for(project_root_);
+    workshop.sees_pictures = expert->sees_images();
     messages.front().content +=
         tools::workshop_instructions(workshop, tools::ToolAudience::Chat);
     {
@@ -1798,7 +2041,7 @@ void Engine::handle(const Request& request) {
                 state_.set_reply(turn, earlier);
                 messages.push_back({"assistant", answer});
                 messages.push_back({"user", "You already did exactly that this turn, and its "
-                                            "result is above. Use it -- and if it told you what "
+                                            "result is above. Use it, and if it told you what "
                                             "you needed, answer now."});
                 continue;
             }
@@ -1820,7 +2063,7 @@ void Engine::handle(const Request& request) {
                     std::string why;
                     const std::optional<std::string> after = tools::edited_contents(*call, workshop, why);
                     to_approve = after ? std::optional<tools::ToolCall>(tools::ToolCall{
-                                             tools::ToolKind::Write, call->argument, *after, {}})
+                                             tools::ToolKind::Write, call->argument, *after, {}, {}})
                                        : std::nullopt;
                 }
             }
@@ -1932,8 +2175,8 @@ void Engine::handle(const Request& request) {
         if (!repeat) {
             state_.add_action(turn, TurnAction{
                 results.empty()
-                    ? "searched \"" + query + "\" -- " + search_error
-                    : "searched \"" + query + "\" -- "
+                    ? "searched \"" + query + "\": " + search_error
+                    : "searched \"" + query + "\": "
                           + std::to_string(results.size()) + " result"
                           + (results.size() == 1 ? "" : "s") + " from " + settings.provider,
                 {}, {}});
@@ -1962,8 +2205,6 @@ void Engine::handle(const Request& request) {
             wake_();
         }
     }
-
-    state_.finish_turn(turn, stats, load_ms);
 
     // Only remember exchanges that actually produced an answer, so a canceled
     // turn -- or one that spent its whole budget thinking -- does not poison
@@ -2008,12 +2249,12 @@ void Engine::handle(const Request& request) {
             if (shown.empty() || asked_to_search || asked_to_act) {
                 std::string why;
                 if (asked_to_act) {
-                    why = "ran out of turns before finishing -- ask again to carry on";
+                    why = "ran out of turns before finishing. Ask again to carry on";
                 } else if (asked_to_search) {
-                    why = "kept searching instead of answering -- raise \"Searches per "
+                    why = "kept searching instead of answering. Raise \"Searches per "
                           "prompt\" in Settings, Tools";
                 } else if (stats.hit_limit) {
-                    why = "thought until \"Longest reply\" ran out -- raise it in Settings, "
+                    why = "thought until \"Longest reply\" ran out. Raise it in Settings, "
                           "Generation, or lower the effort";
                 } else {
                     why = "stopped without answering";
@@ -2022,6 +2263,11 @@ void Engine::handle(const Request& request) {
             }
         }
     }
+
+    // Finished only now, with the reply it will keep: the session is saved as
+    // a turn finishes, and finished before the line above, it saved the raw
+    // "WRITE: ..." that the line replaces, and that came back on resume.
+    state_.finish_turn(turn, stats, load_ms);
 
     // The table is put back by settle(), once this returns and the engine is
     // no longer busy -- for this ending and for every early return above.

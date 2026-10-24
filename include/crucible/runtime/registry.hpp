@@ -3,8 +3,9 @@
 // What is installed in the runtimes directory, and getting it into ggml.
 //
 // Crucible keeps every runtime in one directory. Installing one puts a shared
-// library there, uninstalling deletes it, and startup hands the directory to
-// ggml. Nothing else in the program needs to know a backend can come and go.
+// library there, uninstalling deletes it, and startup loads what is there into
+// ggml, one backend at a time. Nothing else in the program needs to know a
+// backend can come and go.
 #pragma once
 
 #include <cstdint>
@@ -79,15 +80,17 @@ struct RuntimeStatus {
 
 /// The runtimes directory as Crucible sees it.
 ///
-/// Cheap to construct and safe to re-scan; the settings screen builds one per
-/// refresh rather than holding state that can go stale.
+/// Nothing but static functions: whatever they need of the directory they read
+/// afresh, rather than holding state that can go stale.
 class RuntimeRegistry {
 public:
-    /// Hand the runtimes directory to ggml. Call once, before any model is
-    /// loaded; ggml scores the candidates and registers the best of each kind.
+    /// Load every runtime in loadable() into ggml. Call once, before any model
+    /// is loaded; each backend's modules are scored and the best of them is
+    /// registered, the way activate() does it.
     ///
-    /// A fresh install has nothing here: Crucible ships no backends, and the
-    /// settings screen is what fills this directory.
+    /// A fresh install has nothing here: Crucible ships no backends. The
+    /// installer, the window's setup when it starts, and the settings screen
+    /// are what fill this directory.
     static void load_all();
 
     /// The backends load_all opens, in the order it opens them: every one
@@ -130,5 +133,15 @@ private:
     /// Recorded next to the modules so a runtime can say where it came from.
     static std::filesystem::path manifest_file();
 };
+
+/// Put the module `from` at `to`, replacing what is there, even while that
+/// is loaded: on POSIX a rename does it, and the running process keeps the
+/// old file; on Windows a loaded DLL can be renamed but not replaced, so it
+/// is moved aside to "<name>.old" first, and swept up on a later start.
+bool place_module(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec);
+
+/// Take the module `file` out of use: deleted, or on Windows, when it is
+/// loaded, moved aside to "<name>.old" to be swept up later.
+bool retire_module(const std::filesystem::path& file, std::error_code& ec);
 
 }  // namespace crucible

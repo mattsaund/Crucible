@@ -6,6 +6,95 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.4 (2026-10-23)
+
+Models from Hugging Face in the window, math in replies, the system's font,
+the newest llama.cpp, and a long list of fixes from a review of everything
+since 0.8.6.
+
+- **The Models tab** searches Hugging Face for GGUF or MLX models, sorted by
+  best match, downloads, likes or recently updated. A repository opens to its
+  quantizations, each marked as fitting on the GPUs, running partly on the
+  CPU, CPU only or too large for this machine, with the one to pick starred,
+  and its README. A download shows its progress, lands in
+  `models/<author>/<repo>/`, carries on after a dropped line or a restart,
+  and is checked against Hugging Face's SHA-256. Ctrl+5.
+- **Math is typeset.** `$...$`, `$$...$$`, `\(...\)`, `\[...\]` and LaTeX
+  environments in a reply are drawn with KaTeX, which is compiled in;
+  chemistry with `\ce{...}`. Copying a formula copies its LaTeX. Experts are
+  told replies show Markdown and LaTeX.
+- **The system's font**, in place of JetBrains Mono. Settings, General,
+  Font picks any installed one, and code uses it too when it is monospaced.
+- **Picking an expert in the box loads it**, rather than at the first prompt
+  to it. With the delegator on demand, the expert picked stays loaded between
+  prompts and the delegator stays away, which left it less of the cards.
+- **llama.cpp b11846**, from b11799: it runs flint, RecursiveSI's 40B
+  mixture of experts, and the other models of the week. A Crucible that
+  updates fetches its runtimes again on its first start.
+- **A model this llama.cpp cannot run says so.** Loading flint said "Too
+  large for the cards?" to somebody with every layer on the GPU; it was a
+  model llama.cpp did not know yet. What llama.cpp said is what is said now.
+- **An update built from source builds the new llama.cpp.** The build folder
+  remembered the tag it was first configured with and went on building that.
+- **Code blocks** are drawn the way a chat draws them: the language and a
+  Copy button at the top, the code under them, without line numbers.
+- **The chat box holds still while typing.** A redraw took away the height
+  it had grown to, and the next key put it back.
+- **Models moved into a subfolder are found** by the name a seat gave them.
+- **A starter model download carries on** after a dropped line or a closed
+  window, like the Models tab's.
+
+Fixed, from the review:
+
+- A reply with a fence like ```` ```c++ ```` or ```` ``` python ```` froze the
+  window, while it streamed and every time the chat was opened again.
+- A page in the preview could run script in Crucible's window.
+- On a Mac, downloaded runtimes never installed, and every runtime was
+  compiled instead.
+- The published CUDA runtime had no kernels for RTX 20 and GTX 16 cards,
+  which failed at their first kernel. It is built for Turing to Blackwell now,
+  and its name says so; Turing machines fetch it again, others keep theirs.
+- An Allow answered after its question had gone approved the next edit.
+  With Auto off, a build's finishing pass wrote files without asking.
+- Making an app named like a folder in Programs (Windows) could delete it,
+  and a quote in its name ran in PowerShell.
+- A link in a project to somewhere outside it let a WRITE land there.
+- The delegator could be freed halfway through routing a prompt, and a
+  larger Batch than a loaded model's aborted Crucible.
+- A session or a build journal cut off mid-write was lost; deleting the last
+  turn of a chat came back; a failed save said so on every redraw.
+- An MCP server entry with an unexpected value stopped Crucible at every start.
+- gpt-oss's tool calls for EDIT, FETCH, GIT, PYTHON and START were not
+  understood, and an edit became a WRITE of the snippet.
+- A WRITE with a ```` ```bash ```` block inside it was cut there.
+- The compile fallback built an older llama.cpp and called it current.
+- A command that ignores being stopped is killed three seconds later; one
+  that prints without end keeps its start and its end; one that leaves a
+  server running returns when it is done. Closing the window stops every
+  download and command at once, instead of leaving a process behind.
+- Train, Remove runtime and deleting a chat no longer freeze the window.
+- On Windows, a token given to one command reached every command after it;
+  a loaded runtime could not be reinstalled; Restart after a rebuild closed
+  the new Crucible with the old one.
+
+Tools:
+
+- **WRITE and EDIT** take `app/[id]/page.tsx` and `routes/$id.tsx`. EDIT
+  keeps Windows line ends and a blank last line.
+- **READ** numbers a long file's last lines where they are, reads a range
+  (`READ: app.py 120-180`), and says when a file is not text.
+- **FIND** takes `*.{ts,tsx}`, gives up after 20 seconds, and skips links out
+  of the project.
+- **CLICK** and **MOVE** take places in the screenshot, which are mapped to
+  the screen; on a screen wider than 1568 pixels they missed. A model that
+  sees pictures gets screenshots without their words read off, which took
+  seconds.
+- **GIT** allows `log -C` and `commit -C`, refuses a clone or init outside the
+  project, and stops on Stop.
+
+Text: hints cut to a few words, no dashes in messages, and the window is
+titled `Crucible: <project>`.
+
 ## 0.9.3 (2026-10-21)
 
 The first start after an update runs models again.
@@ -60,7 +149,7 @@ opens on Linux with NVIDIA's driver on Wayland.
   13.3.1, and 13.4 renamed the Windows installers. The actions are at their
   newest versions, and the tests run on Python 3.14.
 
-## 0.9.1 — 2026-10-11
+## 0.9.1 (2026-10-11)
 
 A hotfix for icons.
 
@@ -82,7 +171,7 @@ A hotfix for icons.
   test checks the real one is still there. CI checks the installed
   application has its icon.
 
-## 0.9.0 — 2026-10-11
+## 0.9.0 (2026-10-11)
 
 **Update now.** When a newer Crucible is out, the top bar says **Update** and
 Settings → About has an **Update now** button: it downloads the release's
@@ -100,7 +189,7 @@ ends, failed or not, and the next one tries again.
 **The corner names the models.** The local models at the foot of the right
 panel go by their own names rather than their seats', which are on hover.
 
-## 0.8.9 — 2026-10-10
+## 0.8.9 (2026-10-10)
 
 **Build: give it a directive and it makes the software.** A new tab beside
 Chat. Type what you want -- "I need a budgeting program that charts my gross
@@ -400,7 +489,7 @@ it, and the red card is gone.
   it belongs to and where any picture it made is, and a journal from before
   reads as a cook with neither.
 
-## 0.8.6 — 2026-10-06
+## 0.8.6 (2026-10-06)
 
 A hotfix for three things found in 0.8.5.
 
@@ -428,7 +517,7 @@ working*: each reply's thinking starts shut, and opening one keeps that one
 open. A reply's thinking is saved with the conversation now, so a chat opened
 again has it to open; it is still never sent back to the model.
 
-## 0.8.5 — 2026-10-05
+## 0.8.5 (2026-10-05)
 
 **Crucible fetches everything it needs.** A download carries the program and
 nothing else, and for a long time the rest was a visit to the settings screen.
@@ -532,7 +621,7 @@ delegator that could not be loaded is marked on its own row, with the reason.
   `crucible-smoke` sends one prompt through the whole engine with no window --
   which is how a Windows build is run here under Wine.
 
-## 0.8.1 — 2026-10-05
+## 0.8.1 (2026-10-05)
 
 **The macOS download opens.** The disk image's application was not signed at
 all, so on Apple Silicon a downloaded copy was "damaged" to Gatekeeper -- and
@@ -600,7 +689,7 @@ not run the same command twice.
   and the README still asked for a time limit the screen stopped taking in
   0.7.1.
 
-## 0.8.0 — 2026-10-05
+## 0.8.0 (2026-10-05)
 
 **Attach files, photos and folders.** A gray **+** at the bottom left of the
 box -- in Chat and in Cook -- opens a menu: *Add files or photos* (Ctrl+U) and
@@ -701,7 +790,7 @@ per-seat Browse buttons are gone; **Change folder** is beside the list.
   folder, an attachment -- is found. Windows read Crucible's UTF-8 paths in
   its old ANSI code page; the program now declares UTF-8 as its own.
 
-## 0.7.5 — 2026-10-04
+## 0.7.5 (2026-10-04)
 
 **An expert can be a model that is somewhere else.** A seat is a name, a
 description and a model, and the model no longer has to be a file: it can be
@@ -781,7 +870,7 @@ with no browser. The surface behind it is a table of methods split by subject,
 and one curl wrapper replaced four -- which also took a search key off a
 command line where any process on the machine could read it.
 
-## 0.7.1 — 2026-10-04
+## 0.7.1 (2026-10-04)
 
 **The interface reaches parity with the window it replaced.** The webview
 shipped in 0.7.0 with four things missing and two glitches; this is them.
@@ -836,7 +925,7 @@ the transcript without waking the page, so it stayed on screen. "Keep the delega
 reading a setting that does not exist at that path and never did anything; it
 is on General now, where the setting actually lives.
 
-## 0.7.0 — 2026-10-04
+## 0.7.0 (2026-10-04)
 
 **The window is the platform's own webview.** Dear ImGui, GLFW and OpenGL are
 gone. Crucible draws itself in WebView2 on Windows, WKWebView on macOS and
@@ -889,7 +978,7 @@ otherwise:
 - The composer can shift upward, and because it is drawn in the background
   color the move reads as the window jumping rather than as a control moving.
 
-## 0.6.5 — 2026-09-28
+## 0.6.5 (2026-09-28)
 
 
 **Create is a list of experts, not a form.** The tab used to open on step one
@@ -963,7 +1052,7 @@ Smaller things: a learning rate reads as `1.0e-05` rather than `10.0e-06`; long
 model paths are cut from the middle instead of running off the window; a
 resizable window's corner grip is no longer ImGui's default blue.
 
-## 0.6.0 — 2026-09-27
+## 0.6.0 (2026-09-27)
 
 
 **Runtimes can arrive already built.** Compiling a backend on the machine that
@@ -1011,7 +1100,7 @@ called since the top bar stopped printing paths. The icons moved into
 `packaging/icons/`, the desktop entry in with the rest of the Linux packaging,
 and the ignore list grew to cover what the packaging scripts leave behind.
 
-## 0.5.5 — 2026-09-27
+## 0.5.5 (2026-09-27)
 
 A pass over the whole window: less text, more room, and the small things that
 were wrong every day.
@@ -1044,7 +1133,7 @@ of the sidebar, and they no longer carry a `.gguf` that pushed the name out.
 Scrolling back through a conversation that is still streaming now offers a
 Jump to latest rather than either yanking you to the end or stranding you.
 
-## 0.5.1 — 2026-09-22
+## 0.5.1 (2026-09-22)
 
 **It opens on nothing.** Crucible used to pick a directory for you -- the
 shell's working directory from a terminal, the most recent project from the
@@ -1066,7 +1155,7 @@ them.
 been, which read as gray rather than as dark. The whole ladder moved down to
 near-black.
 
-## 0.5.0 — 2026-09-21
+## 0.5.0 (2026-09-21)
 
 The release that makes Crucible a program you install rather than a checkout you
 build.
@@ -1084,7 +1173,7 @@ sweeps away one left over from an older install.
 
 **Something to click.** The installers now leave an application, not just a
 command: a bundle in Applications on macOS, a menu entry on Linux, Start Menu and
-Desktop shortcuts on Windows — all pinnable. There are also downloads that need no
+Desktop shortcuts on Windows, all pinnable. There are also downloads that need no
 compiler at all: a `.dmg`, a setup `.exe` and an AppImage, built by CI from a tag.
 
 **Knowing when to update.** One request a day to GitHub's releases API for a

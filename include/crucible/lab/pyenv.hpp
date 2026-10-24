@@ -9,19 +9,17 @@
 // trainer is a script, and this is what puts a Python underneath it.
 //
 // Private, not shared. It lives in Crucible's data directory and is built
-// from whatever Python the machine already has, which means installing it
-// cannot break a system package, cannot be broken by one, and is removed by
-// deleting a folder. It is not `pip install` into whatever interpreter was on
-// PATH, which is how people end up with a torch that does not match their
-// driver and no way to tell.
+// from Crucible's own Python (see python.hpp), never the machine's, which
+// means installing it cannot break a system package, cannot be broken by one,
+// and is removed by deleting a folder. It is not `pip install` into whatever
+// interpreter was on PATH, which is how people end up with a torch that does
+// not match their driver and no way to tell.
 //
-// Installed by the installer rather than on first use. The runtime modules
-// next door are the other way round on purpose -- which GPU backend to build
-// is a question only the machine can answer, and it is asked from the
-// settings screen. This is not that question. There is one training
-// environment, its shape follows from the hardware, and a fine-tune that
-// stops to download four gigabytes is a fine-tune nobody starts. See
-// runtime/builder.hpp for the other side of that argument.
+// Installed up front rather than on first use: by the installer, or by the
+// window's setup when it starts (see app/setup.hpp), the same as the
+// runtimes. There is one training environment, its shape follows from the
+// hardware, and a fine-tune that stops to download four gigabytes is a
+// fine-tune nobody starts.
 #pragma once
 
 #include <atomic>
@@ -96,19 +94,6 @@ std::filesystem::path script();         ///< root()/finetune.py
 std::filesystem::path manifest_file();  ///< root()/trainer.json
 std::filesystem::path log_file();       ///< root()/install.log
 std::filesystem::path runs_dir();       ///< root()/runs
-
-/// A Python on this machine good enough to build the environment from, or an
-/// empty path. `version` is filled in either way, so a refusal can say what
-/// was found rather than only that it was not good enough.
-///
-/// 3.10 is the floor: it is what current torch, transformers and peft all
-/// still publish wheels for, and below it pip resolves to versions from
-/// before any of this worked.
-std::filesystem::path host_python(std::string& version);
-
-/// The advice for a machine with no usable Python, phrased for its package
-/// manager. Empty when one was found.
-std::string python_hint();
 
 // --- what is installed ------------------------------------------------------
 

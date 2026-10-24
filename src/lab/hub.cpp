@@ -121,6 +121,10 @@ double parameters_from_name(std::string_view name) {
         if (unit != 'B' && unit != 'M') {
             continue;
         }
+        // The end of a word: the "b" of "4bit" is no size.
+        if (i < name.size() && std::isalnum(static_cast<unsigned char>(name[i])) != 0) {
+            continue;
+        }
         // The digits immediately before it, with at most one decimal point.
         std::size_t end = i - 1;
         std::size_t start = end;

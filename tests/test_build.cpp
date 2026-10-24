@@ -586,6 +586,28 @@ TEST(a_second_call_in_a_reply_is_named_and_not_run) {
     CHECK(read.ok && read.output.find("\"READ: index.html\" after it was not run") != std::string::npos);
 }
 
+TEST(an_edit_keeps_the_file_as_it_was_around_the_change) {
+    std::string error;
+    // Windows line ends stay Windows line ends, the changed line too.
+    const std::string crlf = "body {\r\n  margin: 0;\r\n}\r\n";
+    std::optional<std::string> out = tools::apply_edit_blocks(crlf, {{"  margin: 0;", "  margin: 4px;"}}, error);
+    CHECK(out.has_value() && *out == "body {\r\n  margin: 4px;\r\n}\r\n");
+    out = tools::apply_edit_blocks(crlf, {{"margin: 0;", "margin: 8px;"}}, error);   // line by line
+    CHECK(out.has_value() && *out == "body {\r\n  margin: 8px;\r\n}\r\n");
+
+    // A blank last line is a line of the file.
+    out = tools::apply_edit_blocks("a = 1\nb = 2\n\n", {{"b = 2", "b = 3"}}, error);
+    CHECK(out.has_value() && *out == "a = 1\nb = 3\n\n");
+    out = tools::apply_edit_blocks("    a = 1\n    b = 2\n\n", {{"b = 2", "b = 3"}}, error);
+    CHECK(out.has_value() && *out == "    a = 1\n    b = 3\n\n");
+
+    // Numbered SEARCH lines, and REPLACE numbered the same way: the numbers
+    // are the listing's, not the file's.
+    const std::string py = "def f():\n    return 1\n";
+    out = tools::apply_edit_blocks(py, {{"1  def f():\n2      return 1", "1  def f():\n2      return 2"}}, error);
+    CHECK(out.has_value() && *out == "def f():\n    return 2\n");
+}
+
 TEST(an_edit_applies_exactly_or_line_by_line_and_refuses_to_guess) {
     const std::string css = "body {\n  margin: 0;\n}\n.button {\n  color: red;\n  margin-left: 8px;\n}\n";
     std::string error;
@@ -721,6 +743,12 @@ TEST(a_glob_matches_names_anywhere_or_paths_from_the_root) {
     CHECK(tools::glob_matches("src/**/*.py", "src/deep/app.py"));
     CHECK(tools::glob_matches("src/**/*.py", "src/app.py"));
     CHECK(tools::glob_matches("README.?d", "README.md"));
+    // Braces are either of what is in them; without a comma, just braces.
+    CHECK(tools::glob_matches("*.{ts,tsx}", "app/page.tsx"));
+    CHECK(tools::glob_matches("src/**/*.{ts,tsx}", "src/a/b.ts"));
+    CHECK(!tools::glob_matches("*.{ts,tsx}", "app/page.js"));
+    CHECK(tools::glob_matches("{x}.txt", "{x}.txt"));
+    CHECK(tools::glob_matches("app/[id]/*.tsx", "app/[id]/page.tsx"));
 }
 
 TEST(the_instructions_teach_edit_and_find_and_the_example_parses) {

@@ -210,7 +210,8 @@ TEST(the_orchestrator_answers_over_the_pipe) {
     const json routed = link.call("route", roster_request("what holds a satellite in orbit"));
     CHECK_EQ(routed.value("expert", ""), "physics");
     CHECK_EQ(routed.value("source", ""), "keywords");
-    CHECK(asked == std::vector<std::string>{"delegator.ready"});
+    // Opened and closed: between the two the core keeps the delegator.
+    CHECK((asked == std::vector<std::string>{"delegator.ready", "delegator.done"}));
 
     // A core that cannot answer makes the call fail, with the reason.
     link.set_handler([](const std::string&, const json&) -> json {

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "crucible/runtime/builder.hpp"
 #include "crucible/runtime/cuda_libraries.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/http.hpp"
@@ -25,20 +26,8 @@ using json = nlohmann::json;
 
 constexpr const char* kRepository = "mattsaund/Crucible";
 
-/// The extension a loadable module has here. Matches registry.cpp's, and for
-/// the same reason: it is how a module is told from the README beside it.
-std::string_view module_suffix() {
-#if defined(_WIN32)
-    return ".dll";
-#elif defined(__APPLE__)
-    return ".dylib";
-#else
-    return ".so";
-#endif
-}
-
-/// Run a command to completion, discarding its output. There is no shared
-/// helper for this: everything else that shells out here wants the output.
+/// Run a command to completion, discarding its output. Its exit status, or -1
+/// when it would not start.
 int run_quiet(const std::vector<std::string>& argv) {
     util::Subprocess child;
     std::string      error;
@@ -81,8 +70,10 @@ std::string asset_name(BackendKind kind) {
     if (platform.empty()) {
         return {};
     }
-    return "runtime-" + std::string(backend_info(kind).id) + "-" + platform + "-"
-         + CRUCIBLE_LLAMA_TAG + ".tar.gz";
+    // CUDA's says which kernels it has, so one published before them is
+    // never taken for one published after: same llama.cpp, same name, else.
+    return "runtime-" + std::string(backend_info(kind).id) + "-" + platform + "-" + CRUCIBLE_LLAMA_TAG
+         + (kind == BackendKind::Cuda ? "-k" + std::to_string(kCudaKernels) : std::string()) + ".tar.gz";
 }
 
 std::string releases_url() {
@@ -190,7 +181,8 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
             continue;
         }
         const std::string name = entry.path().filename().string();
-        const std::string_view suffix = module_suffix();
+        // ggml's own suffix, ".so" on a Mac as well: see backend.hpp.
+        const std::string_view suffix = crucible::module_suffix();
         if (name.size() > suffix.size() &&
             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
             found.push_back(entry.path());
@@ -226,14 +218,16 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
 
     for (const std::filesystem::path& module : found) {
         const std::filesystem::path landing = into / module.filename();
-        std::filesystem::rename(module, landing, ec);
-        if (ec) {
+        if (!place_module(module, landing, ec)) {
             // Across filesystems a rename is not a move. The runtimes directory
             // and the staging directory are siblings, so this is the unusual
             // case rather than the expected one -- but it is not an error.
-            ec.clear();
-            std::filesystem::copy_file(
-                module, landing, std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::path staged = landing;
+            staged += ".new";
+            std::filesystem::copy_file(module, staged, std::filesystem::copy_options::overwrite_existing, ec);
+            if (!ec) {
+                place_module(staged, landing, ec);
+            }
         }
         if (ec) {
             error = "could not put " + module.filename().string() + " in place";
@@ -256,12 +250,33 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
     return true;
 }
 
+bool old_cuda_kernels_run_here() {
+    static const bool runs = [] {
+        const std::vector<int> cards = nvidia_capabilities();
+        return std::all_of(cards.begin(), cards.end(),
+                           [](int card) { return (card >= 86 && card < 90) || (card >= 120 && card < 130); });
+    }();
+    return runs;
+}
+
+bool cuda_cards_supported() {
+    const std::vector<int> cards = nvidia_capabilities();
+    return std::all_of(cards.begin(), cards.end(), [](int card) { return card >= kCudaFloor; });
+}
+
 bool try_install(BackendKind kind, const std::filesystem::path& into,
                  std::vector<std::filesystem::path>& written,
-                 const std::function<void(std::string)>& say) {
+                 const std::function<void(std::string)>& say, std::string& failed) {
+    failed.clear();
     const std::string name = asset_name(kind);
     if (name.empty()) {
         return false;   // nothing is published for this platform
+    }
+    // A card before Turing has no kernels in the published module, so this
+    // machine compiles its own, for the cards it has.
+    if (kind == BackendKind::Cuda && !cuda_cards_supported()) {
+        say("a card older than Turing: compiling for it");
+        return false;
     }
 
     std::string body;
@@ -274,6 +289,16 @@ bool try_install(BackendKind kind, const std::filesystem::path& into,
         return false;   // this backend is not published, or not for this tag
     }
     if (!install(kind, url, into, written, error, say)) {
+        // The module in place and its libraries not: said, and taken back
+        // out, so the runtime is not listed as there and broken.
+        if (!written.empty()) {
+            failed = error;
+            for (const std::filesystem::path& landed : written) {
+                std::error_code ec;
+                retire_module(landed, ec);
+            }
+            written.clear();
+        }
         return false;
     }
     return true;

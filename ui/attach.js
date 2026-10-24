@@ -299,7 +299,7 @@ function dropTarget() {
   const cook = s.cook && s.cook.running ? s.cook : null;
   if (cook && state.view === 'build') {
     return { why: cook.state === 'asking' ? 'Answer the build\'s question first'
-                                          : 'A build is running -- drop it on Chat, or wait for the build' };
+                                          : 'A build is running. Drop it on Chat, or wait' };
   }
   return { mode: state.view === 'build' ? 'build' : 'chat' };
 }

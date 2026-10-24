@@ -49,6 +49,19 @@ needs more nudging.
 
 Note what failed and how long each step took.
 
+## Before a release: the Models tab
+
+1. **Search.** Models, type a name. Best match puts the used repositories
+   first; Most likes and the others reorder it.
+2. **Choose.** Open one: its quantizations, each marked Fits on GPU, Partial
+   offload, CPU only or Too large, the suggested one starred.
+3. **Download a small one** (SmolLM2-135M-Instruct, 270 MB). The bar fills,
+   the file lands in `models/<author>/<repo>/`, the option says Downloaded.
+4. **Cancel and resume.** Start a large one, Cancel: the part file goes.
+   Start it again and close the window halfway; open Crucible and download
+   it again: it carries on from where it stopped, and finishes.
+5. **MLX** lists repositories too; on Linux and Windows each says Mac only.
+
 ## Before a release that moves llama.cpp: an update
 
 The first start after an update replaces every runtime. Start the new build
@@ -89,7 +102,7 @@ Exits non-zero when the turn or the build failed.
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
 2. Push to `main` and wait for CI to pass on all three systems.
-3. Tag and push the tag: `git tag v0.9.3 && git push origin v0.9.3`.
+3. Tag and push the tag: `git tag v0.9.4 && git push origin v0.9.4`.
    The installers workflow builds the three installers and publishes the
    release.
 
@@ -126,3 +139,17 @@ Linux (Arch, KDE Plasma on Wayland), an RTX 4070, 5060 Ti and 3060, 0.9.2.
   runtime until a restart, in the window and in the installer. Every check
   above ran on fresh installs, which cannot show it. Fixed in 0.9.3, and the
   update test above is what finds it.
+
+## Seen on 2026-10-23
+
+Linux (Arch, KDE Plasma on Wayland), an RTX 4070, 5060 Ti and 3060, 0.9.4.
+
+- **The Models tab** found, sorted and opened repositories from Hugging Face.
+  A 258 MB GGUF downloaded at 73 MB/s; a 3.4 GB one, canceled, then stopped
+  halfway by closing the window, carried on at the next start and finished
+  with Hugging Face's SHA-256.
+- **Picking an expert in the box** loaded it at once, kept it loaded between
+  prompts with the delegator on demand, and freed it for the delegator when
+  the box went back to Delegator.
+- **The chat box** held still while typing during download progress; before,
+  every push moved its top edge by about 2 pixels and back.

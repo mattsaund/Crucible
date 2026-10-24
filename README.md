@@ -63,7 +63,7 @@ Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `--no-trainer`,
 
 **Updating:** Settings → About → **Update now**, or run the installer again.
 Crucible checks GitHub once a day and says when there is one. Config, models
-and history are kept. Versions are tagged `v0.9.3`; what
+and history are kept. Versions are tagged `v0.9.4`; what
 changed is in [CHANGELOG.md](CHANGELOG.md).
 
 **Uninstall:** `crucible --uninstall`. It asks before deleting models. If the
@@ -118,12 +118,19 @@ ___
   does not exist.
 - A model is in memory only while something uses it. Several stay loaded when
   memory allows; one in use is never freed.
-- Pin a prompt to one expert from the box, or with `/name`.
+- Pin a prompt to one expert from the box, or with `/name`. Picking one loads
+  it, and it stays loaded while it is picked.
+- Replies show Markdown, code and math, typeset from LaTeX.
 
 ![The roster: each seat with a description and a model](docs/images/experts.png)
 
 ### Models
 
+- **Download from Hugging Face** in the **Models** tab: search, sort by best
+  match, downloads, likes or recently updated, pick GGUF or MLX and a
+  quantization, and see whether it fits on the cards, runs partly on the CPU,
+  or is too large. Downloads go to the models folder, carry on after a dropped
+  line or a restart, and are checked against Hugging Face's checksum.
 - GGUF everywhere, MLX on Apple Silicon. Models folder read four levels deep,
   so LM Studio and Hugging Face layouts work as they are.
 - Local models that see pictures work when their `mmproj` projector sits beside
@@ -191,8 +198,10 @@ ___
 
 Everything is in Settings and applies at once. The file is
 `~/.config/crucible/config.json` (Windows: `%APPDATA%\crucible\config.json`).
+The window uses the system's font; **Settings → General** picks another.
 
-Ctrl+1 to 4: Chat, Build, Create, History. Ctrl+, Settings. Ctrl+U attach.
+Ctrl+1 to 5: Chat, Build, Create, History, Models. Ctrl+, Settings. Ctrl+U
+attach.
 
 ___
 ## Build from source

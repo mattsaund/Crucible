@@ -140,10 +140,10 @@ public:
     /// the filter hunts for.
     virtual bool reasons_inline() const = 0;
 
-    /// Whether a picture attached to a message reaches the model. False for
-    /// a model on this machine -- llama.cpp can read pictures only through a
-    /// projector file Crucible does not load -- and true for a provider's
-    /// until it says otherwise.
+    /// Whether a picture attached to a message reaches the model. For a model
+    /// on this machine, only when a projector file was found beside it and it
+    /// reads pictures (see LoadedModel::sees_images); for a provider's, until
+    /// it says otherwise.
     virtual bool sees_images() const { return false; }
 
     /// Whether this model has a reasoning effort to set. Where it does not,

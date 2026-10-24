@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 //
-// What the machine is doing, for the corner of the screen.
+// How much memory the machine has, and how much of it is in use.
 //
-// Running a model is the most demanding thing most people ask of their
-// hardware, and the two questions while it happens are always the same: is
-// there room, and is it getting hot. Both are cheap to answer and neither is
-// visible from inside llama.cpp.
+// Asked when it matters which models fit -- before one is loaded beside
+// another, when a model to download is suggested -- and for the share of it
+// the right-hand panel draws. None of it is visible from inside llama.cpp.
+// The reading comes from /proc on Linux, from sysctl and vm_stat on a Mac,
+// and from the Windows API.
 //
-// Reading is split from parsing so the parsing can be tested. The readings
-// themselves come from `/proc` and `/sys`, which are free, and from
-// `nvidia-smi`, which is not -- so it is sampled on a thread of its own rather
-// than on the one that draws.
+// Reading is split from parsing so the parsing can be tested. The parsers for
+// nvidia-smi, /proc/stat and /proc/cpuinfo are left from the monitor that
+// sampled all of this for the corner of the screen, and only the tests call
+// them now.
 #pragma once
 
 #include <atomic>
@@ -24,8 +25,8 @@
 
 namespace crucible::util {
 
-/// One device's state. Anything unreadable stays at -1, which the display shows
-/// as nothing rather than as zero.
+/// One device's state. Anything unreadable stays at -1 rather than reading as
+/// zero.
 struct ResourceSample {
     std::string   name;
     std::uint64_t used  = 0;
@@ -35,13 +36,6 @@ struct ResourceSample {
 
     /// Memory used, 0-100, or -1 when the total is unknown.
     int memory_percent() const;
-};
-
-struct ResourceSnapshot {
-    std::vector<ResourceSample> gpus;
-    ResourceSample              cpu;
-    /// False until the first sample has been taken.
-    bool ready = false;
 };
 
 /// One `nvidia-smi --query-gpu=name,memory.used,memory.total,temperature.gpu,
@@ -73,41 +67,9 @@ std::string parse_cpu_name(std::string_view cpuinfo);
 bool parse_vm_stat(std::string_view text, std::uint64_t page_size, std::uint64_t total,
                    std::uint64_t& used);
 
-/// The machine's memory as it is now, as (used, total) bytes, read the way
-/// the monitor reads it. False when it cannot be read. On a Mac this runs
-/// vm_stat, so it is for a decision -- may another model be loaded beside
-/// this one -- and not for every frame.
+/// The machine's memory as it is now, as (used, total) bytes. False when it
+/// cannot be read. On a Mac this runs vm_stat, so it is for a decision -- may
+/// another model be loaded beside this one -- and not for every frame.
 bool system_memory(std::uint64_t& used, std::uint64_t& total);
-
-/// Samples the machine on a thread of its own and hands back the last reading.
-///
-/// `on_change` is called after each sample so the screen can redraw; it runs on
-/// the sampling thread, so it must do no more than post an event.
-class ResourceMonitor {
-public:
-    ResourceMonitor() = default;
-    ~ResourceMonitor();
-    ResourceMonitor(const ResourceMonitor&)            = delete;
-    ResourceMonitor& operator=(const ResourceMonitor&) = delete;
-
-    void start(std::function<void()> on_change);
-    void stop();
-
-    /// The most recent reading. Safe from any thread.
-    ResourceSnapshot snapshot() const;
-
-private:
-    void run();
-
-    mutable std::mutex mutex_;
-    ResourceSnapshot   latest_;
-    std::thread        worker_;
-    std::atomic<bool>  running_{false};
-    std::function<void()> on_change_;
-
-    // The previous /proc/stat reading, for the difference that is a percentage.
-    std::uint64_t last_busy_  = 0;
-    std::uint64_t last_total_ = 0;
-};
 
 }  // namespace crucible::util

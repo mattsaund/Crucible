@@ -10,6 +10,8 @@ is here.
 
 import re
 
+from .routing import let_go
+
 
 # --- naming a conversation ------------------------------------------------------
 
@@ -64,12 +66,17 @@ def fallback_name(excerpt):
 def name_session(core, params):
     excerpt = params.get("excerpt", "")
     name = ""
-    ready = core.call("delegator.ready") or {}
-    if ready.get("available"):
-        reply = core.call("delegator.generate", {
-            "messages": [{"role": "user", "content": naming_prompt(excerpt)}],
-            "temperature": 0.2, "max_tokens": 24}) or {}
-        name = name_from(reply.get("text", ""))
+    # "optional": a name is not worth loading the delegator over the expert
+    # chosen in the box, which the core then keeps; the opening words do.
+    ready = core.call("delegator.ready", {"optional": True}) or {}
+    try:
+        if ready.get("available"):
+            reply = core.call("delegator.generate", {
+                "messages": [{"role": "user", "content": naming_prompt(excerpt)}],
+                "temperature": 0.2, "max_tokens": 24}) or {}
+            name = name_from(reply.get("text", ""))
+    finally:
+        let_go(core)
     return {"name": name or fallback_name(excerpt)}
 
 
@@ -113,13 +120,16 @@ def parse_examples(reply, wanted=2):
 
 def write_examples(core, params):
     ready = core.call("delegator.ready") or {}
-    if not ready.get("available"):
-        return {"examples": []}   # no delegator: the seat routes on its blurb and keywords
-    # Sampled, and warmer than routing: two questions that are near-copies of
-    # each other teach the delegator nothing, and greedy decoding on a short
-    # prompt produces exactly that.
-    reply = core.call("delegator.generate", {
-        "messages": [{"role": "user",
-                      "content": examples_prompt(params.get("name", ""), params.get("blurb", ""))}],
-        "temperature": 0.6, "max_tokens": 128}) or {}
+    try:
+        if not ready.get("available"):
+            return {"examples": []}   # no delegator: the seat routes on its blurb and keywords
+        # Sampled, and warmer than routing: two questions that are near-copies
+        # of each other teach the delegator nothing, and greedy decoding on a
+        # short prompt produces exactly that.
+        reply = core.call("delegator.generate", {
+            "messages": [{"role": "user",
+                          "content": examples_prompt(params.get("name", ""), params.get("blurb", ""))}],
+            "temperature": 0.6, "max_tokens": 128}) or {}
+    finally:
+        let_go(core)
     return {"examples": parse_examples(reply.get("text", ""))}

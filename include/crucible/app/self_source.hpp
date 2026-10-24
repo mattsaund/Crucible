@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 
+#include "crucible/util/subprocess.hpp"
+
 namespace crucible::self {
 
 /// Where the source is, and the build of it.
@@ -64,9 +66,11 @@ private:
     void add(const std::string& line);
 
     std::atomic<bool>        running_{false};
+    std::atomic<bool>        stopping_{false};   ///< the window is closing: the build is abandoned
     std::atomic<int>         status_{-1};
     mutable std::mutex       mutex_;
     std::vector<std::string> lines_;
+    util::Subprocess*        step_ = nullptr;   ///< the command running now, under mutex_
     std::thread              worker_;
 };
 

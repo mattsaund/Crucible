@@ -13,12 +13,14 @@
   will not also have, which is the point of building it this way.
 
   At build time cmake/BundlePage.cmake replaces each reference below with the
-  file it names, so what is compiled into the program is one document.
+  file it names, so what is compiled into the program is one document. What
+  is under vendor/ is KaTeX, which draws math; the build fetches it.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Crucible</title>
+<link rel="stylesheet" href="vendor/katex.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body data-mark="CRUCIBLE_MARK_SRC">
@@ -50,6 +52,9 @@ window.addEventListener('error', (event) => {
                  String(event.message) + '\n' + String(event.filename || '') + ':' + String(event.lineno || ''));
 });
 </script>
+<script src="vendor/katex.min.js"></script>
+<script src="vendor/mhchem.min.js"></script>
+<script src="vendor/copy-tex.min.js"></script>
 <script src="render.js"></script>
 <script src="base.js"></script>
 <script src="shell.js"></script>
@@ -60,6 +65,7 @@ window.addEventListener('error', (event) => {
 <script src="build.js"></script>
 <script src="create.js"></script>
 <script src="history.js"></script>
+<script src="models.js"></script>
 <script src="settings.js"></script>
 <script>
 start();

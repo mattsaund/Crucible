@@ -65,10 +65,6 @@ struct ModelShape {
     /// Zero for an architecture whose attention shape could not be read.
     std::uint64_t kv_per_token = 0;
 
-    /// The context the model was trained at, for reference; not used in the
-    /// arithmetic here.
-    std::uint32_t train_ctx = 0;
-
     /// Every placeable unit, in llama.cpp's order: `layers` blocks then the
     /// output. Empty when the tensor table could not be read, which is the
     /// signal to fall back to proportional splitting.

@@ -144,8 +144,9 @@ void write_line(const std::string& text) {
     }
 }
 
-/// Only what is safe in a signal handler: write(2), and backtrace into a
-/// buffer that already exists. The heading is built before, at install.
+/// Only what is safe in a signal handler, or near enough: a heading put
+/// together in a buffer on the stack, without the time heading() would add,
+/// then write(2), and backtrace into a buffer that already exists.
 void report(int signal) {
     if (g_fd >= 0) {
         char line[96];

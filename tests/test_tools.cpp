@@ -4,6 +4,8 @@
 // subprocess primitive underneath both.
 #include "test_helpers.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <system_error>
 
 #include "crucible/util/platform.hpp"
@@ -59,6 +61,14 @@ TEST(a_write_body_is_taken_from_a_fence_a_sentinel_or_the_rest) {
     CHECK_EQ(body("WRITE: a.py\n<<<\nprint(1)\n>>>\n"), std::string("print(1)"));
     // And neither: everything up to the next verb.
     CHECK_EQ(body("WRITE: a.py\nprint(1)\nDONE: wrote it\n"), std::string("print(1)"));
+
+    // A file with fences of its own: the body ended at the README's ```bash
+    // and half the file was written, as if that were all of it.
+    CHECK_EQ(body("WRITE: README.md\n```\n# Todo\n```bash\nnpm install\n```\nMore.\n```\n"),
+             std::string("# Todo\n```bash\nnpm install\n```\nMore."));
+    CHECK_EQ(body("WRITE: README.md\n````markdown\nA\n```\nB\n```\n````\nafter"),
+             std::string("A\n```\nB\n```"));
+    CHECK_EQ(body("WRITE: a.md\n~~~\n```js\nx\n```\n~~~\n"), std::string("```js\nx\n```"));
 }
 
 TEST(a_reply_that_says_something_is_answering_not_calling_a_tool) {
@@ -106,6 +116,15 @@ TEST(a_symlink_out_of_the_project_is_refused) {
     // Resolved before the check, not after. A string comparison would see
     // "project/escape.txt", say it was inside, and then open the file outside.
     CHECK(!tools::resolve_in_root(root, "escape.txt").has_value());
+
+    // And a link to something that is not there yet: there was nothing for
+    // weakly_canonical to resolve, so it passed, and a WRITE through it
+    // created its target outside the project.
+    std::filesystem::create_symlink(dir.path() / "planted.txt", root / "notes.txt", ec);
+    CHECK(!tools::resolve_in_root(root, "notes.txt").has_value());
+    // A link that stays inside is still a path like any other.
+    std::filesystem::create_symlink(root / "real.txt", root / "alias.txt", ec);
+    CHECK(tools::resolve_in_root(root, "alias.txt").has_value());
 }
 
 TEST(a_sibling_directory_with_a_shared_prefix_is_outside) {
@@ -150,6 +169,43 @@ TEST(reading_and_writing_a_file_works_and_says_what_it_did) {
     CHECK(do_call(write, settings).summary.find("updated") != std::string::npos);
 }
 
+TEST(a_long_file_is_read_at_both_ends_numbered_where_its_lines_are) {
+    TempDir dir;
+    tools::WorkshopSettings settings = workshop_at(dir.path());
+    settings.max_read_bytes = 2000;
+    {
+        std::ofstream out(dir.path() / "big.txt", std::ios::binary);
+        for (int i = 1; i <= 10000; ++i) {
+            out << "line " << i << "\r\n";
+        }
+    }
+    tools::ToolCall read;
+    read.kind     = tools::ToolKind::Read;
+    read.argument = "big.txt";
+    const tools::ToolResult whole = do_call(read, settings);
+    CHECK(whole.ok);
+    CHECK(whole.output.find("1\tline 1\n") != std::string::npos);
+    // The end is numbered as the end, not as if it followed the start.
+    CHECK(whole.output.find("10000\tline 10000\n") != std::string::npos);
+    CHECK(whole.output.find("not shown; READ: big.txt ") != std::string::npos);
+    CHECK(whole.output.size() < 2600);
+
+    // And the middle can be asked for.
+    read.argument = "big.txt 5000-5002";
+    const tools::ToolResult middle = do_call(read, settings);
+    CHECK(middle.ok);
+    CHECK(middle.output.find("5000\tline 5000\n5001\tline 5001\n5002\tline 5002\n") != std::string::npos);
+    CHECK(middle.output.find("4999\t") == std::string::npos);
+    CHECK(middle.output.find("5003\t") == std::string::npos);
+
+    // A file that is not text is said to be, not shown.
+    { std::ofstream out(dir.path() / "blob.bin", std::ios::binary); out << std::string("\x7f" "ELF\0\0\x01", 7); }
+    read.argument = "blob.bin";
+    const tools::ToolResult blob = do_call(read, settings);
+    CHECK(blob.ok);
+    CHECK(blob.output.find("not text") != std::string::npos);
+}
+
 TEST(a_write_target_that_is_a_sentence_is_refused) {
     TempDir dir;
     const tools::WorkshopSettings settings = workshop_at(dir.path());
@@ -187,7 +243,8 @@ TEST(an_ordinary_path_is_still_written) {
     const tools::WorkshopSettings settings = workshop_at(dir.path());
 
     for (const char* path : {"calc.py", "src/calc.py", "a/b/c/deep-file.txt",
-                             "./relative.md", "with_underscores.and.dots"}) {
+                             "./relative.md", "with_underscores.and.dots",
+                             "app/[id]/page.tsx", "app/(shop)/[...slug]/page.tsx", "app/routes/$id.tsx"}) {
         tools::ToolCall write;
         write.kind     = tools::ToolKind::Write;
         write.argument = path;
@@ -803,6 +860,51 @@ TEST(a_command_that_does_not_exist_fails_rather_than_hanging) {
     CHECK_EQ(child.wait(), 127);
 #endif
 }
+
+#if !defined(_WIN32)
+TEST(a_child_that_ignores_being_asked_to_stop_is_made_to) {
+    using Clock = std::chrono::steady_clock;
+    const auto started = Clock::now();
+    // SIGTERM ignored: the deadline asks, and three seconds later insists.
+    const util::Ran ran = util::run({"sh", "-c", "trap '' TERM; echo begun; sleep 60"}, {}, {}, 1);
+    const double took = std::chrono::duration<double>(Clock::now() - started).count();
+    CHECK(ran.started);
+    CHECK(ran.timed_out);
+    CHECK(ran.output.find("begun") != std::string::npos);
+    CHECK(took < 10.0);
+}
+
+TEST(a_command_is_over_when_it_is_not_what_it_left_running) {
+    using Clock = std::chrono::steady_clock;
+    const auto started = Clock::now();
+    // The background sleep holds the output open long after the command is
+    // done; what it printed is all there was.
+    const util::Ran ran = util::run({"sh", "-c", "sleep 30 & echo done"}, {}, {}, 20);
+    const double took = std::chrono::duration<double>(Clock::now() - started).count();
+    CHECK(!ran.timed_out);
+    CHECK_EQ(ran.status, 0);
+    CHECK(ran.output.find("done") != std::string::npos);
+    CHECK(took < 8.0);
+}
+
+TEST(output_without_end_is_kept_at_its_start_and_its_end) {
+    const util::Ran ran = util::run({"sh", "-c", "echo first; yes 0123456789 | head -n 200000; echo last"},
+                                    {}, {}, 20, {}, 64 * 1024);
+    CHECK_EQ(ran.status, 0);
+    CHECK(ran.output.size() < 70 * 1024);
+    CHECK(ran.output.rfind("first\n", 0) == 0);
+    CHECK(ran.output.find("bytes not kept") != std::string::npos);
+    CHECK(ran.output.size() >= 5 && ran.output.compare(ran.output.size() - 5, 5, "last\n") == 0);
+}
+
+TEST(a_stop_ends_a_run) {
+    std::atomic<int> asked{0};
+    const util::Ran ran = util::run({"sh", "-c", "sleep 30"}, {}, {}, 60,
+                                    [&asked] { return ++asked > 10; });
+    CHECK(ran.stopped);
+    CHECK(!ran.timed_out);
+}
+#endif
 
 TEST(on_path_finds_real_programs_and_not_invented_ones) {
 #if defined(_WIN32)

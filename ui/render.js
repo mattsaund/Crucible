@@ -31,7 +31,7 @@ const apart = (...parts) => parts
 // --- markdown -------------------------------------------------------------
 //
 // Headings, bullets, numbered items, quotes, fences with a language, rules,
-// tables, and bold / italic / code inline. This was util/markdown.cpp, which
+// tables, math, and bold / italic / code inline. This was util/markdown.cpp, which
 // parsed into blocks and spans for the window's renderer to draw; it goes
 // straight to HTML here because that is what draws it now, and there is one
 // parser again rather than two to keep in step.
@@ -42,15 +42,153 @@ const apart = (...parts) => parts
 
 function inline(text) {
   // Code spans first and separately, so backticked content is never looked at
-  // again -- `a ** b` is code containing asterisks, not emphasis.
+  // again -- `a ** b` is code containing asterisks, not emphasis. Then math,
+  // taken out before the emphasis can reach it: in $a_1 + b_2$ the
+  // underscores are subscripts, not italics.
   return text.split(/(`[^`]+`)/).map((part) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
       return `<code>${escape(part.slice(1, -1))}</code>`;
     }
-    return escape(part)
+    const formulas = [];
+    return escape(liftMath(part, formulas))
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=$|[\s).,!?;:])/g, '$1<em>$2</em>');
+      .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=$|[\s).,!?;:])/g, '$1<em>$2</em>')
+      .replace(MATH_HOLE, (_, n) => tex(formulas[n].tex, formulas[n].display));
   }).join('');
+}
+
+// --- math -----------------------------------------------------------------
+//
+// TeX, drawn by KaTeX: $x$ and \(x\) inside a line; $$x$$, \[x\] and a
+// \begin{align} ... \end{align} as a block of their own. KaTeX is inlined
+// ahead of this file (cmake/BundlePage.cmake). A build without it, and the
+// tests that load this file alone, show the TeX itself.
+//
+// A dollar is also money, so a single one opens math only as Pandoc's does:
+// something other than a space right after it, something other than a space
+// right before the one that closes it, and no digit right after that. "It
+// costs $5, or $10 with tax" stays money.
+
+/// Formulas already drawn, by their TeX. A reply that is still arriving is
+/// drawn again every few tokens, and every formula in it with it.
+const mathDrawn = new Map();
+
+function tex(source, display) {
+  const key = (display ? '$$' : '$') + source;
+  let html = mathDrawn.get(key);
+  if (html !== undefined) return html;
+  html = `<code class="math-source">${escape(source)}</code>`;
+  if (typeof katex !== 'undefined') {
+    try {
+      html = katex.renderToString(source, {
+        displayMode: display, throwOnError: false, errorColor: '#FF5F00',
+        strict: 'ignore', trust: false, maxSize: 20, maxExpand: 1000,
+      });
+    } catch (_) { /* the source, as above */ }
+  }
+  if (mathDrawn.size >= 400) mathDrawn.delete(mathDrawn.keys().next().value);
+  mathDrawn.set(key, html);
+  return html;
+}
+
+/// Where a formula was while the words around it are escaped: its number
+/// between two private-use characters, which nothing here escapes or
+/// emphasizes and no reply contains (liftMath drops any it brings).
+const MATH_HOLE = /\uE000(\d+)\uE001/g;
+
+/// `text` with its inline formulas taken out and their places marked, the
+/// formulas pushed onto `found` as { tex, display }. A \$ is a dollar sign.
+function liftMath(text, found) {
+  const hole = (source, display) => {
+    found.push({ tex: source, display });
+    return `\uE000${found.length - 1}\uE001`;
+  };
+  const src = text.replace(/[\uE000\uE001]/g, '');
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '\\') {
+      const next = src[i + 1];
+      if (next === '$') { out += '$'; i += 2; continue; }
+      if (next === '(' || next === '[') {
+        const end = src.indexOf(next === '(' ? '\\)' : '\\]', i + 2);
+        if (end > i + 2) { out += hole(src.slice(i + 2, end), next === '['); i = end + 2; continue; }
+      }
+    } else if (c === '$' && src[i + 1] === '$') {
+      const end = src.indexOf('$$', i + 2);
+      if (end > i + 2) { out += hole(src.slice(i + 2, end), true); i = end + 2; continue; }
+      out += '$$'; i += 2; continue;
+    } else if (c === '$') {
+      const end = closingDollar(src, i);
+      if (end > 0) { out += hole(src.slice(i + 1, end), false); i = end + 1; continue; }
+    }
+    out += c; i += 1;
+  }
+  return out;
+}
+
+/// Where the formula a single dollar at `open` starts ends, or -1 when it
+/// is money. Pandoc's rule; see above.
+function closingDollar(text, open) {
+  if (!text[open + 1] || /\s/.test(text[open + 1])) return -1;
+  for (let at = text.indexOf('$', open + 1); at !== -1 && at - open <= 500;
+       at = text.indexOf('$', at + 1)) {
+    if (text[at - 1] === '\\') continue;        // \$ is a dollar inside the formula
+    if (text[at + 1] === '$') return -1;         // $$ is display math's
+    if (/\s/.test(text[at - 1]) || /[0-9]/.test(text[at + 1] || '')) continue;
+    return at;
+  }
+  return -1;
+}
+
+/// The environments that are a display formula on their own, without $$.
+const MATH_ENV = /^\\begin\{(equation|align|alignat|gather|multline|flalign|eqnarray)(\*?)\}/;
+
+/// Whether `line` starts a display formula.
+const mathOpens = (line) => {
+  const s = line.trim();
+  return s.startsWith('$$') || s.startsWith('\\[') || MATH_ENV.test(s);
+};
+
+/// The display formula that starts at line `i`: its markup and the line
+/// after it, or null when line `i` starts none. "$$x$$ is the answer" is a
+/// sentence, which inline() draws.
+function mathBlock(lines, i) {
+  const first = lines[i].trim();
+  let close;
+  let body;
+  if (first.startsWith('$$')) { close = '$$'; body = first.slice(2); }
+  else if (first.startsWith('\\[')) { close = '\\]'; body = first.slice(2); }
+  else {
+    const env = first.match(MATH_ENV);
+    if (!env) return null;
+    close = `\\end{${env[1]}${env[2]}}`;
+    body = first;
+  }
+  // An environment's \begin and \end are TeX KaTeX reads; the delimiters are not.
+  const keep = close.startsWith('\\end') ? close.length : 0;
+  const block = (source) => `<div class="math">${tex(source.trim(), true)}</div>`;
+
+  const once = body.indexOf(close, close === '$$' ? 0 : 1);
+  if (once !== -1) {
+    if (body.slice(once + close.length).trim()) return null;
+    return { html: block(body.slice(0, once + keep)), next: i + 1 };
+  }
+  const taken = [body];
+  for (let j = i + 1; j < lines.length; j += 1) {
+    const at = lines[j].indexOf(close);
+    if (at === -1) { taken.push(lines[j]); continue; }
+    if (lines[j].slice(at + close.length).trim()) return null;
+    taken.push(lines[j].slice(0, at + keep));
+    return { html: block(taken.join('\n')), next: j + 1 };
+  }
+  // Not closed: a reply still arriving, most likely. Its source until it
+  // is -- a half-written formula drawn would flash red with every token. A
+  // long run with no end is a stray $$, and is left to be text.
+  if (lines.length - i > 60) return null;
+  return { html: `<pre class="math-pending">${escape(lines.slice(i).join('\n'))}</pre>`,
+           next: lines.length };
 }
 
 function cells(line) {
@@ -74,8 +212,13 @@ function alignments(rule) {
 const aligned = (align, i) =>
   align[i] && align[i] !== 'left' ? ` style="text-align:${align[i]}"` : '';
 
+/// An opening fence: the mark, and the language when one is named.
+const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+#.-]*)/;
+
 function markdown(src) {
-  const lines = String(src ?? '').split('\n');
+  // Line endings as one kind: a "\r" left on a heading made it fail one test
+  // here and pass another, and no branch took the line.
+  const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   let i = 0;
 
@@ -94,18 +237,33 @@ function markdown(src) {
     // should read as code the whole time rather than flickering. One that
     // names no language is given the one its code is written in, when that
     // is plain, so it is colored like any other.
-    const fence = line.match(/^\s*```(\w*)\s*$/);
+    //
+    // Fences as people write them: three or more backticks or tildes, a
+    // language like c++ or c#, perhaps more words after it. It closes at a
+    // line of the same mark, at least as long, and nothing else -- so a
+    // ```bash inside a ````markdown block is part of the block.
+    const fence = line.match(FENCE);
     if (fence) {
+      const mark = fence[1];
+      const closes = (l) => {
+        const end = l.match(/^\s*(`{3,}|~{3,})\s*$/);
+        return end && end[1][0] === mark[0] && end[1].length >= mark.length;
+      };
       const body = [];
       i += 1;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
+      while (i < lines.length && !closes(lines[i])) { body.push(lines[i]); i += 1; }
       i += 1;
-      out.push(codeBlock(body.join('\n'), fence[1] || guessLanguage(body)));
+      out.push(codeBlock(body.join('\n'), fence[2] || guessLanguage(body)));
       continue;
     }
 
     if (!line.trim()) { i += 1; continue; }
     if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
+
+    if (mathOpens(line)) {
+      const math = mathBlock(lines, i);
+      if (math) { out.push(math.html); i = math.next; continue; }
+    }
 
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
@@ -159,24 +317,22 @@ function markdown(src) {
       continue;
     }
 
-    const body = [];
-    while (i < lines.length && lines[i].trim()
-           && !/^\s*```/.test(lines[i]) && !/^(#{1,6})\s/.test(lines[i])
-           && !/^\s*>/.test(lines[i]) && !bullet.test(lines[i]) && !numbered.test(lines[i])
-           && !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
-      body.push(lines[i]); i += 1;
-    }
-    if (body.length) { out.push(`<p>${inline(body.join('\n'))}</p>`); }
+    // A paragraph: this line, whatever it looks like -- everything it could
+    // have started has been tried above and did not take it -- and the lines
+    // after it until one starts something else. Always at least this one,
+    // because a line no branch takes is a loop that never ends: a ```c++
+    // fence once matched neither the fence nor the paragraph, and the window
+    // stopped.
+    const starts = (l) => FENCE.test(l) || /^#{1,6}\s/.test(l) || /^\s*>/.test(l)
+      || bullet.test(l) || numbered.test(l) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l) || mathOpens(l);
+    const body = [line];
+    i += 1;
+    while (i < lines.length && lines[i].trim() && !starts(lines[i])) { body.push(lines[i]); i += 1; }
+    out.push(`<p>${inline(body.join('\n'))}</p>`);
   }
   return out.join('');
 }
 
-/// A fenced block, drawn the way code is read: a header saying what language
-/// and how long, and a numbered gutter beside the lines.
-///
-/// The line numbers are the point. A model that says "line 12 is the problem"
-/// is talking about something you can find, and a block without them is a
-/// wall you have to count down by hand.
 /// What to call a language on a block's header.
 ///
 /// A fence says ```py and a file name says .py; both mean Python, and the
@@ -195,28 +351,25 @@ const LANG_NAMES = {
   ml: 'ocaml', gradle: 'groovy',
 };
 
+/// A fenced block, drawn the way a chat draws one: what language it is at the
+/// top, a Copy button beside it, and the code under them, colored.
 function codeBlock(code, lang, extra) {
   const lines = code.split('\n');
   // A trailing newline is a fence artifact, not an empty last line.
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
-  const gutter = lines.map((_, i) => i + 1).join('\n');
   return `<div class="code${extra ? ' ' + extra : ''}">
       <div class="code-head">
         <span class="lang">${escape(
           LANG_NAMES[String(lang || '').toLowerCase()] || lang || 'text')}</span>
-        <span class="code-count">${lines.length} line${lines.length === 1 ? '' : 's'}</span>
-        <button class="copy" data-act="copy" title="Copy" aria-label="Copy">
+        <button class="copy" data-act="copy" aria-label="Copy">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none"
                stroke="currentColor" stroke-width="1.3" aria-hidden="true">
             <rect x="5.5" y="5.5" width="8" height="8" rx="1.3"/>
             <path d="M10.5 5.5v-2a1.3 1.3 0 0 0-1.3-1.3H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h2"/>
-          </svg>
+          </svg><span class="copy-word">Copy</span><span class="copy-done">Copied</span>
         </button>
       </div>
-      <div class="code-body">
-        <pre class="code-gutter" aria-hidden="true">${gutter}</pre>
-        <pre class="code-text"><code>${highlight(lines.join('\n'), lang)}</code></pre>
-      </div>
+      <div class="code-body"><pre class="code-text"><code>${highlight(lines.join('\n'), lang)}</code></pre></div>
     </div>`;
 }
 
@@ -790,12 +943,6 @@ function diffLines(before, after) {
   return out;
 }
 
-/// A file an expert wants to write, before it is written.
-///
-/// Shown as the file would be: the same block the reply's code is drawn in,
-/// tinted by what is happening to it, and two buttons with no third option.
-/// A new file is shown whole; a change to one is shown as the lines that
-/// move, because the rest of the file is not what is being decided.
 /// The language a file's extension names: "py" for calc.py. Empty for a
 /// file with none, which highlight() takes as plain text.
 function languageOf(path) {
@@ -872,7 +1019,24 @@ function writtenBlock(diff, path) {
   return diffBlock(lead.concat(matched, tail), lang, `from line ${head[1]}`) + note;
 }
 
+/// The last edit drawn, and its markup: the diff of a long file takes a
+/// good part of a second, and the page draws on every push while the
+/// question waits.
+let pendingDrawn = { key: null, html: '' };
+
+/// A file an expert wants to write, before it is written.
+///
+/// Shown as the file would be: the same block the reply's code is drawn in,
+/// tinted by what is happening to it, and two buttons with no third option.
+/// A new file is shown whole; a change to one is shown as the lines that
+/// move, because the rest of the file is not what is being decided.
 function pendingEdit(edit) {
+  const key = `${edit.path}\u0000${edit.before || ''}\u0000${edit.after || ''}`;
+  if (pendingDrawn.key !== key) pendingDrawn = { key, html: pendingEditMarkup(edit) };
+  return pendingDrawn.html;
+}
+
+function pendingEditMarkup(edit) {
   const isNew = !edit.before;
   const lang = languageOf(edit.path);
 

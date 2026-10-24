@@ -13,13 +13,11 @@
 
         & ([scriptblock]::Create((irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1))) -Uninstall
 
-    It installs the program and nothing else: find or install the build tools,
-    fetch the source, configure, build, install into a user-writable prefix, put
-    that prefix on PATH, and create the directories Crucible keeps its files in.
-
-    No compute runtime and no models. Crucible builds a runtime on demand from
-    its settings screen, on the machine that will run it, so an installer that
-    guessed at a GPU SDK was doing work the program does better.
+    It installs the program: find or install the build tools, fetch the
+    source, configure, build, install into a user-writable prefix, put that
+    prefix on PATH, and create the directories Crucible keeps its files in.
+    Then, by asking the program itself, its own Python, the compute runtimes
+    this machine can use, and the fine-tuning environment. No models.
 
     Run as a file from inside a checkout -- .\install.ps1 -- it builds that
     checkout instead of fetching one, the same as install.sh does.
@@ -50,15 +48,15 @@ param(
     [switch] $Gui,
     [switch] $NoGui,
     [switch] $NoDeps,
-    # The Python environment fine-tuning runs in. Installed by default and
-    # several gigabytes, so the size is printed before it starts. Skipping it
-    # costs nothing permanent: crucible --install-trainer does the same job
-    # afterwards.
     # The compute backends. Installed by default: the releases carry a
     # prebuilt module for every platform, so this is seconds and tens of
     # megabytes, and an install that cannot load a model until you find a
     # settings page is not an install.
     [switch] $NoRuntimes,
+    # The Python environment fine-tuning runs in. Installed by default and
+    # several gigabytes, so the size is printed before it starts. Skipping it
+    # costs nothing permanent: crucible --install-trainer does the same job
+    # afterwards.
     [switch] $NoTrainer,
     [string] $TrainerFlavor = '',
     [switch] $Yes,
@@ -579,8 +577,6 @@ function Invoke-Install {
         Write-Note "compiler   : $(if ($null -ne (Find-VisualStudio)) { 'found' } else { 'would install' })"
         Write-Note "config     : $ConfigDir"
         Write-Note "models     : $ModelsDir"
-        Write-Note 'No compute runtime is installed. Crucible builds one on demand'
-        Write-Note 'from its settings screen, on the machine that will run it.'
         Write-Ok 'nothing was changed'
         Stop-Script 0
     }

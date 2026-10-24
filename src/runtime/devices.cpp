@@ -567,7 +567,7 @@ GpuSettingSupport gpu_setting_support(const std::vector<ComputeDevice>& devices)
         // Everything about the GPU is moot, and the fix is the same for all of
         // them, so it is said the same way.
         support.split = support.gpu_only = support.vram_only =
-            "no GPU runtime is loaded -- install one under Runtimes";
+            "no GPU runtime is loaded: install one under Runtimes";
         return support;
     }
 

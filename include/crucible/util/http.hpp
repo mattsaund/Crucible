@@ -21,6 +21,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -88,8 +89,9 @@ Response send(const Request& request);
 
 /// Fetch `url` into the file at `to`, following redirects. For the downloads
 /// that are too large to hold: a prebuilt runtime is hundreds of megabytes.
+/// Ended by shut_down() like any other request, and by `stop` when given.
 bool download(const std::string& url, const std::filesystem::path& to,
-              int timeout_seconds, std::string& error);
+              int timeout_seconds, std::string& error, const std::function<bool()>& stop = {});
 
 /// Stop every request in flight, and refuse to start another.
 ///

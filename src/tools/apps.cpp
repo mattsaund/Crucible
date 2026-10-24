@@ -15,6 +15,7 @@
 #include "crucible/tools/preview.hpp"
 #include "crucible/util/platform.hpp"
 #include "crucible/util/subprocess.hpp"
+#include "crucible/util/text.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -68,7 +69,7 @@ bool run_quietly(const std::vector<std::string>& argv) {
 bool place_runner(const fs::path& to, std::string& error) {
     const fs::path from = runner();
     if (from.empty()) {
-        error = "this Crucible has no crucible-app beside it to make programs with -- reinstall Crucible";
+        error = "this Crucible has no crucible-app beside it to make programs with. Reinstall Crucible";
         return false;
     }
     std::error_code ec;
@@ -171,6 +172,32 @@ std::string name_for(const fs::path& root, const std::string& page) {
     return detail::file_name(root.filename().string());
 }
 
+namespace {
+
+/// Make room at `folder` for a made app: nothing there, or an app made here
+/// before -- it holds `marker`, the app.json beside its page -- which is
+/// replaced. Anything else of that name is somebody else's program and is
+/// left alone: an app named after a page called "Python" once replaced the
+/// folder Python was installed in.
+bool clear_for(const fs::path& folder, const fs::path& marker, std::string& error) {
+    std::error_code ec;
+    if (!fs::exists(folder, ec)) {
+        return true;
+    }
+    if (!fs::is_regular_file(marker, ec)) {
+        error = folder.string() + " is already there and is not an app made here";
+        return false;
+    }
+    fs::remove_all(folder, ec);
+    if (ec) {
+        error = "could not replace " + folder.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 fs::path runner() {
     const fs::path here = util::executable_path().parent_path();
 #if defined(_WIN32)
@@ -205,8 +232,9 @@ std::optional<Made> package(const fs::path& root, const std::string& page, const
     // system then -- no Launchpad, no Start menu -- only the files made.
     if (const char* elsewhere = std::getenv("CRUCIBLE_APPS_DIR"); elsewhere != nullptr && *elsewhere != '\0') {
         const fs::path folder = fs::path(elsewhere) / name;
-        std::error_code ec;
-        fs::remove_all(folder, ec);
+        if (!clear_for(folder, folder / "app" / "app.json", error)) {
+            return std::nullopt;
+        }
 #if defined(_WIN32)
         const fs::path exe = folder / (name + ".exe");
 #else
@@ -225,8 +253,9 @@ std::optional<Made> package(const fs::path& root, const std::string& page, const
     // ~/Applications: a person's own Applications folder, which Launchpad and
     // Spotlight look in, and which needs no administrator to write to.
     const fs::path bundle_dir = base / "Applications" / (name + ".app");
-    std::error_code ec;
-    fs::remove_all(bundle_dir, ec);
+    if (!clear_for(bundle_dir, bundle_dir / "Contents" / "Resources" / "app" / "app.json", error)) {
+        return std::nullopt;
+    }
     const fs::path contents = bundle_dir / "Contents";
     const std::string executable = detail::slug(name);
     if (!place_runner(contents / "MacOS" / executable, error)
@@ -246,7 +275,7 @@ std::optional<Made> package(const fs::path& root, const std::string& page, const
                  "Support/lsregister", "-f", bundle_dir.string()});
     made.program = bundle_dir;
     made.launch  = bundle_dir;
-    made.where   = "in Applications, in your home folder -- and in Launchpad";
+    made.where   = "in Applications, in your home folder, and in Launchpad";
 #elif defined(_WIN32)
     fs::path programs;
     if (const char* local = std::getenv("LOCALAPPDATA"); local != nullptr && *local != '\0') {
@@ -254,23 +283,31 @@ std::optional<Made> package(const fs::path& root, const std::string& page, const
     } else {
         programs = base / "AppData" / "Local" / "Programs";
     }
-    const fs::path folder = programs / name;
-    std::error_code ec;
-    fs::remove_all(folder, ec);
+    // A folder of their own beside the programs there, not the Programs
+    // folder itself, where Crucible and a per-user Python are installed.
+    const fs::path folder = programs / "Crucible Apps" / name;
+    if (!clear_for(folder, folder / "app" / "app.json", error)) {
+        return std::nullopt;
+    }
     const fs::path exe = folder / (name + ".exe");
     if (!place_runner(exe, error) || !write_file(folder / "app" / "index.html", bundle.html, error)
         || !write_file(folder / "app" / "app.json", about.dump(2), error)) {
         return std::nullopt;
     }
     // A Start menu entry and one on the desktop, made by the shell's own COM
-    // object -- the way an installer would, with nothing to install.
-    const auto shortcut = [&exe, &folder](const std::string& in) {
-        return "$s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"" + in + "\");"
-               "$s.TargetPath=\"" + exe.string() + "\";$s.WorkingDirectory=\"" + folder.string() + "\";$s.Save();";
+    // object -- the way an installer would, with nothing to install. Names and
+    // paths go in as literals, never expanded: a page's title is not script.
+    // A shortcut of the same name is replaced only when it is one of these.
+    const auto shortcut = [&exe, &folder](const std::string& where) {
+        return "$p=" + where + ";$w=New-Object -ComObject WScript.Shell;"
+               "if (-not (Test-Path -LiteralPath $p) -or $w.CreateShortcut($p).TargetPath -like '*\\Crucible Apps\\*') {"
+               "$s=$w.CreateShortcut($p);$s.TargetPath=" + crucible::detail::powershell_literal(exe.string())
+             + ";$s.WorkingDirectory=" + crucible::detail::powershell_literal(folder.string()) + ";$s.Save()};";
     };
+    const std::string link = crucible::detail::powershell_literal(name + ".lnk");
     const std::string script =
-        shortcut("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\" + name + ".lnk")
-        + shortcut("$([Environment]::GetFolderPath('Desktop'))\\" + name + ".lnk");
+        shortcut("(Join-Path (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs') " + link + ")")
+        + shortcut("(Join-Path ([Environment]::GetFolderPath('Desktop')) " + link + ")");
     run_quietly({"powershell", "-NoProfile", "-NonInteractive", "-Command", script});
     made.program = folder;
     made.launch  = exe;
@@ -284,12 +321,27 @@ std::optional<Made> package(const fs::path& root, const std::string& page, const
     }
     const std::string slug = detail::slug(name);
     const fs::path folder = share / "crucible-apps" / slug;
-    std::error_code ec;
-    fs::remove_all(folder, ec);
+    if (!clear_for(folder, folder / "app" / "app.json", error)) {
+        return std::nullopt;
+    }
+    // The menu entry under a name of its own: "<slug>.desktop" was the name of
+    // whatever program the page happened to share a title with, and writing
+    // it replaced that program's entry. One left by an older Crucible under
+    // the old name goes, so the menu does not show the app twice.
+    const fs::path old_entry = share / "applications" / (slug + ".desktop");
+    if (std::ifstream in(old_entry); in) {
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        if (text.find("Comment=Made with Crucible") != std::string::npos) {
+            std::error_code ec;
+            fs::remove(old_entry, ec);
+        }
+    }
     const fs::path exe = folder / slug;
     if (!place_runner(exe, error) || !write_file(folder / "app" / "index.html", bundle.html, error)
         || !write_file(folder / "app" / "app.json", about.dump(2), error)
-        || !write_file(share / "applications" / (slug + ".desktop"), detail::desktop_entry(name, exe), error)) {
+        || !write_file(share / "applications" / ("crucible-app-" + slug + ".desktop"),
+                       detail::desktop_entry(name, exe), error)) {
         return std::nullopt;
     }
     run_quietly({"update-desktop-database", (share / "applications").string()});

@@ -79,6 +79,17 @@ TEST(arguments_that_would_move_git_out_of_the_project_are_refused) {
     CHECK(tools::git::escaping_argument({"-C", "/elsewhere", "status"}) == "-C");
     CHECK(tools::git::escaping_argument({"--git-dir=/x", "log"}) == "--git-dir=/x");
     CHECK(tools::git::escaping_argument({"status", "--short"}).empty());
+    CHECK(tools::git::escaping_argument({"-c", "core.pager=cat", "-C", "/elsewhere", "log"}) == "-C");
+    // After the command, -C is the command's own.
+    CHECK(tools::git::escaping_argument({"log", "-C", "--stat"}).empty());
+    CHECK(tools::git::escaping_argument({"commit", "-C", "HEAD"}).empty());
+    // What a clone or an init makes stays in the project.
+    TempDir dir;
+    CHECK(tools::git::escaping_argument({"clone", "https://x/y.git", "/tmp/elsewhere"}, dir.path())
+          == "/tmp/elsewhere");
+    CHECK(tools::git::escaping_argument({"clone", "https://x/y.git", "../outside"}, dir.path()) == "../outside");
+    CHECK(tools::git::escaping_argument({"clone", "https://x/y.git", "vendor/y"}, dir.path()).empty());
+    CHECK(tools::git::escaping_argument({"init", "/tmp/elsewhere"}, dir.path()) == "/tmp/elsewhere");
 }
 
 TEST(a_repository_can_be_started_committed_to_and_read_back) {
@@ -309,4 +320,35 @@ TEST(a_page_is_packaged_with_the_runner_beside_it) {
     std::ifstream about(made->program / "app" / "app.json");
     const std::string json_text((std::istreambuf_iterator<char>(about)), std::istreambuf_iterator<char>());
     CHECK(json_text.find("\"name\": \"Budget\"") != std::string::npos);
+}
+
+TEST(a_made_app_replaces_its_own_copy_and_nothing_else) {
+    // On Windows the app went into %LOCALAPPDATA%\Programs\<name>, cleared
+    // first: an app named after a page called "Python" or "Crucible" deleted
+    // the program installed there. A folder of that name that is not a made
+    // app is left alone now; an earlier copy of the app is replaced.
+    if (tools::apps::runner().empty()) {
+        std::printf("      (no crucible-app built beside the tests; skipped)\n");
+        return;
+    }
+    TempDir project;
+    { std::ofstream out(project.path() / "index.html"); out << "<title>Budget</title><p>hi</p>"; }
+    TempDir apps;
+    std::filesystem::create_directories(apps.path() / "Budget");
+    { std::ofstream out(apps.path() / "Budget" / "precious.txt"); out << "keep me"; }
+
+    set_env("CRUCIBLE_APPS_DIR", apps.path().string());
+    std::string error;
+    const std::optional<tools::apps::Made> refused = tools::apps::package(project.path(), "index.html", "", error);
+    CHECK(!refused.has_value());
+    CHECK(error.find("not an app made here") != std::string::npos);
+    CHECK(std::filesystem::exists(apps.path() / "Budget" / "precious.txt"));
+
+    std::filesystem::remove_all(apps.path() / "Budget");
+    error.clear();
+    const std::optional<tools::apps::Made> first = tools::apps::package(project.path(), "index.html", "", error);
+    const std::optional<tools::apps::Made> again = tools::apps::package(project.path(), "index.html", "", error);
+    unset_env("CRUCIBLE_APPS_DIR");
+    CHECK(first.has_value());
+    CHECK(again.has_value());
 }
