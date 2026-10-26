@@ -383,7 +383,8 @@ bool measure_importance(const std::filesystem::path& model, const std::string& t
 std::filesystem::path importance_file(const std::filesystem::path& model) {
     std::error_code ec;
     const auto bytes = std::filesystem::file_size(model, ec);
-    const auto stamp = std::filesystem::last_write_time(model, ec).time_since_epoch().count();
+    // libc++ counts file times in __int128, which to_string has no overload for.
+    const auto stamp = static_cast<long long>(std::filesystem::last_write_time(model, ec).time_since_epoch().count());
     // FNV-1a over what identifies the file: short, and the same every time.
     std::uint64_t hash = 1469598103934665603ULL;
     for (const char c : model.string() + "|" + std::to_string(bytes) + "|" + std::to_string(stamp)) {

@@ -1104,7 +1104,8 @@ std::string ModelHost::context_key(const ModelParams& params) {
     // taken for the one the prompts were evaluated with.
     std::error_code ec;
     const std::uintmax_t size    = std::filesystem::file_size(params.path, ec);
-    const auto           written = std::filesystem::last_write_time(params.path, ec).time_since_epoch().count();
+    const long long      written = static_cast<long long>(
+        std::filesystem::last_write_time(params.path, ec).time_since_epoch().count());
     return params.path + '\n' + std::to_string(size) + '\n' + std::to_string(written) + '\n'
          + std::to_string(params.n_ctx) + '\n' + std::to_string(params.n_batch) + '\n'
          + std::to_string(params.sequences) + '\n' + (params.flash_attn ? "flash" : "plain")

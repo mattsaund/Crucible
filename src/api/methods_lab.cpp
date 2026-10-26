@@ -453,7 +453,7 @@ Reply lab_condense_sizes(const json& params, const Scene&) {
     if (!std::filesystem::is_regular_file(file, ec)) {
         return bad(file.string() + " is not a file on this machine");
     }
-    const auto stamp = std::filesystem::last_write_time(file, ec).time_since_epoch().count();
+    const auto stamp = static_cast<long long>(std::filesystem::last_write_time(file, ec).time_since_epoch().count());
     const std::string key = file.string() + "|" + std::to_string(stamp);
 
     static std::mutex                  cache_mutex;
