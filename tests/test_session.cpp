@@ -307,6 +307,28 @@ TEST(a_rate_is_only_reported_once_there_is_something_to_divide) {
     CHECK(std::abs(no_time.tokens_per_second()) < 0.001);
 }
 
+TEST(a_conversation_put_on_screen_carries_none_of_the_last_ones_context) {
+    // The line under the box is the conversation's own: what it read, what
+    // it wrote and how full its context is. All three start again with a new
+    // one, or one reopened, and the third is measured by its next turn.
+    AppState state;
+    TokenUsage spent;
+    spent.input_tokens  = 4000;
+    spent.output_tokens = 300;
+    state.set_session_usage(spent);
+    state.set_context_used(5200, 131072);
+
+    state.set_session_usage({});
+    const Snapshot fresh = state.snapshot();
+    CHECK_EQ(fresh.session_usage.input_tokens, std::uint64_t{0});
+    CHECK_EQ(fresh.context_used, 0);
+    CHECK_EQ(fresh.context_size, 0);
+
+    state.set_context_used(900, 131072);
+    CHECK_EQ(state.snapshot().context_used, 900);
+    CHECK_EQ(state.snapshot().context_size, 131072);
+}
+
 // ---------------------------------------------------------------------------
 // Session history
 // ---------------------------------------------------------------------------

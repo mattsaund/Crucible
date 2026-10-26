@@ -175,6 +175,28 @@ What a provider's tokens cost is read from
 provider has been added. The request asks for a public file and says nothing
 about the machine.
 
+## Data Crucible fetches
+
+Bench asks Hugging Face's datasets server for the questions it runs, a page at
+a time, and keeps each page in Crucible's data folder. None of them is in the
+download.
+
+| benchmark | dataset | license |
+|---|---|---|
+| MMLU-Pro | [TIGER-Lab/MMLU-Pro](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro) | MIT |
+| ARC-Challenge | [allenai/ai2_arc](https://huggingface.co/datasets/allenai/ai2_arc) | CC BY-SA 4.0 |
+| GSM8K | [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k) | MIT |
+| MATH-500 | [HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500), from [MATH](https://github.com/hendrycks/math) | MIT |
+| HumanEval | [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval) | MIT |
+| MBPP | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | CC BY 4.0 |
+| IFEval | [google/IFEval](https://huggingface.co/datasets/google/IFEval) | Apache-2.0 |
+| HellaSwag | [Rowan/hellaswag](https://huggingface.co/datasets/Rowan/hellaswag) | MIT |
+| TruthfulQA | [truthfulqa/truthful_qa](https://huggingface.co/datasets/truthfulqa/truthful_qa) | Apache-2.0 |
+
+Condensing a model to one of the smallest sizes (IQ3_XXS and below) first
+runs it over the start of [WikiText-2](https://huggingface.co/datasets/Salesforce/wikitext)
+(CC BY-SA 3.0 and GFDL), fetched the same way, once, and kept in the same folder.
+
 ## The training environment
 
 Fine-tuning runs in a Python environment that Crucible builds from its own

@@ -42,8 +42,10 @@ struct RunProgress {
         Starting,    ///< the interpreter is coming up; torch takes a few seconds
         Preparing,   ///< tokenizer, base model, reading the data
         Training,    ///< the long one, and the only phase with a step count
+        Scoring,     ///< the held-out answers, before training and after
         Merging,     ///< folding the adapter back into the base
         Exporting,   ///< converting to GGUF and quantizing
+        Condensing,  ///< a condense recipe: quantizing again, tensor by tensor
         Done,
         Failed,
         Canceled,
@@ -77,6 +79,15 @@ struct RunProgress {
     /// How many records the data came to, and how big the adapter is.
     long long records   = 0;
     long long trainable = 0;
+
+    /// The score on the data held out of training, as it arrives: the base's
+    /// before the first step, the fine-tune's after the last.
+    HeldOut held_out;
+
+    /// A file the run is writing and has not finished: a condense's ".part"
+    /// beside the original, gigabytes of it. Removed when the run ends any
+    /// way but done.
+    std::filesystem::path partial;
 
     std::string error;
     std::string hint;   ///< what to do about it, when the script knows
@@ -115,6 +126,28 @@ struct RunProgress {
     /// "training  step 120 of 400, loss 1.83" -- one line for the page.
     std::string label() const;
 };
+
+/// One line of a run's output, read into `progress`: true when it was an
+/// event, false when it is log for the caller to keep.
+///
+/// The whole of the protocol, here where a test can reach it: an object with
+/// an "event" is progress, and every other line is log. Only the script
+/// itself speaks it. What its own children print, it passes on marked, so
+/// that a quantizer saying "done" cannot finish a fine-tune at the file it
+/// was about to move.
+bool read_event(const std::string& line, RunProgress& progress);
+
+/// What a run that finished leaves in its recipe: the file it made, the
+/// held-out score, and the stage that says the result is waiting to be
+/// tried. False, with the recipe untouched, for a run that is not done.
+bool record_result(const RunProgress& run, Recipe& recipe);
+
+/// Remove what runs that never finished left half written: the ".part" of a
+/// condense that was going when Crucible was closed, or killed. Each run
+/// notes its unfinished file beside its recipe while it writes it, so this
+/// removes those and nothing else -- a download's ".part" in the same folder
+/// is carried on from, not thrown away. For when Crucible starts.
+void remove_unfinished();
 
 /// Runs one fine-tune at a time, on a thread of its own.
 class Trainer {
@@ -163,7 +196,8 @@ private:
              std::filesystem::path quantize_bin);
 
     /// One line from the child: progress if it parses as an event, log if not.
-    void consume(const std::string& line);
+    /// True for an event, which is what is worth a redraw.
+    bool consume(const std::string& line);
 
     mutable std::mutex       mutex_;
     RunProgress              progress_;

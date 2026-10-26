@@ -38,14 +38,16 @@ ModelFit fit_of(const ModelShape& shape, const ModelParams& params) {
     ModelFit fit;
     // The input embedding is never offloaded, so it is not part of what the
     // cards are asked to divide. See ModelShape::host_weights.
-    const std::uint64_t resident = shape.resident_bytes(params.n_ctx);
+    const std::uint64_t sliding  = shape.sliding_cells(params.n_ctx, params.n_batch,
+                                                       params.window_cache, params.sequences);
+    const std::uint64_t resident = shape.resident_bytes(params.n_ctx, sliding);
     fit.resident     = resident > shape.host_weights ? resident - shape.host_weights : resident;
     fit.per_card     = shape.compute_bytes(params.n_batch) - shape.logit_bytes(params.n_batch);
     fit.output_extra = shape.logit_bytes(params.n_batch);
 
     fit.units.reserve(shape.units.size());
     for (std::size_t i = 0; i < shape.units.size(); ++i) {
-        fit.units.push_back(shape.unit_bytes(i, params.n_ctx));
+        fit.units.push_back(shape.unit_bytes(i, params.n_ctx, sliding));
     }
     return fit;
 }
@@ -53,6 +55,28 @@ ModelFit fit_of(const ModelShape& shape, const ModelParams& params) {
 void stamp(ModelParams& params, const std::vector<float>& split, int main_gpu) {
     params.tensor_split = split;
     params.main_gpu     = main_gpu;
+}
+
+/// refresh_gpu_split, from `fit` when there is one and from the header when
+/// not -- which is only read when the mode plans at all.
+std::string replan(ModelParams& params, const GpuConfig& gpu, const ModelFit* fit) {
+    const std::vector<ComputeDevice> gpus = gpu_devices();
+    if (gpus.empty()) {
+        return {};
+    }
+
+    const GpuSplitMode mode = gpu_split_mode_from_id(gpu.mode);
+    if (mode == GpuSplitMode::Auto) {
+        return {};  // an explicit tensor_split in the config file is left alone
+    }
+
+    const GpuPlan plan = plan_gpu_split(mode, gpus, gpu.priority, gpu.main_gpu,
+                                        fit != nullptr ? *fit : fit_of(read_model_shape(params.path), params));
+    if (plan.split.empty()) {
+        return {};
+    }
+    stamp(params, plan.split, gpu.main_gpu);
+    return describe_split(gpus, plan);
 }
 
 /// Turn the two memory settings into the llama.cpp knobs they mean.
@@ -146,24 +170,15 @@ void pin_to_card(ModelParams& params, int device) {
 }
 
 std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu) {
-    const std::vector<ComputeDevice> gpus = gpu_devices();
-    if (gpus.empty()) {
-        return {};
-    }
+    return replan(params, gpu, nullptr);
+}
 
-    const GpuSplitMode mode = gpu_split_mode_from_id(gpu.mode);
-    if (mode == GpuSplitMode::Auto) {
-        return {};  // an explicit tensor_split in the config file is left alone
-    }
+std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu, const ModelFit& fit) {
+    return replan(params, gpu, &fit);
+}
 
-    const ModelShape shape = read_model_shape(params.path);
-    const GpuPlan    plan  = plan_gpu_split(mode, gpus, gpu.priority, gpu.main_gpu,
-                                            fit_of(shape, params));
-    if (plan.split.empty()) {
-        return {};
-    }
-    stamp(params, plan.split, gpu.main_gpu);
-    return describe_split(gpus, plan);
+ModelFit model_fit(const ModelParams& params) {
+    return fit_of(read_model_shape(params.path), params);
 }
 
 std::string apply_gpu_policy(Config& config) {

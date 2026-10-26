@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/util/platform.hpp"
+#include "crucible/util/subprocess.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #  include <io.h>
+#  include <shellapi.h>
 #else
 #  include <unistd.h>
 #  if defined(__APPLE__)
@@ -142,6 +144,28 @@ bool write_file_atomically(const std::filesystem::path& file, std::string_view t
         return false;
     }
     return true;
+}
+
+bool open_in_browser(const std::string& url, std::string& error) {
+    if (url.rfind("https://", 0) != 0 || url.find_first_of("\"\n\r") != std::string::npos) {
+        error = "only an https address is opened";
+        return false;
+    }
+#if defined(_WIN32)
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
+    std::wstring address(static_cast<std::size_t>(wide > 0 ? wide : 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, address.data(), wide);
+    const bool opened = reinterpret_cast<INT_PTR>(
+        ::ShellExecuteW(nullptr, L"open", address.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+#elif defined(__APPLE__)
+    const bool opened = start_detached({"open", url}, error);
+#else
+    const bool opened = start_detached({"xdg-open", url}, error);
+#endif
+    if (!opened && error.empty()) {
+        error = "could not open a browser";
+    }
+    return opened;
 }
 
 }  // namespace crucible::util

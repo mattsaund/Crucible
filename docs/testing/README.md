@@ -62,6 +62,33 @@ Note what failed and how long each step took.
    it again: it carries on from where it stopped, and finishes.
 5. **MLX** lists repositories too; on Linux and Windows each says Mac only.
 
+## Before a release: Bench
+
+1. **Run.** Bench, pick a small model (LFM2.5-1.2B), Quick, every benchmark.
+   A bar fills per benchmark, with how long is left. The first run fetches
+   the rows from Hugging Face; later ones read them from
+   `bench/rows/`.
+2. **Read it.** The result opens to each benchmark with its margin of error,
+   and a wrong answer shows what the model said and what was read from it.
+3. **Compare.** Compare two or three results: the spider chart, a color
+   each, and the numbers under it.
+4. **Stop.** Start another run and Stop it halfway: what finished is kept,
+   marked stopped, and a benchmark that did not finish is not counted.
+5. **Post** (on a test copy of the board, or delete the issue after): the
+   dialog shows exactly what is sent. With `gh` signed in it opens an issue;
+   the board's Action comments with the scores and `board.json` takes it.
+
+## Before a release: condensing and the code editor
+
+1. **Condense.** Create, Condense a model, pick a Q8: every size is listed
+   with how it fits. Condense to Q4_K_M, then Test it. Then IQ2_XXS: it says
+   it is running the model over sample text, then condenses. A second
+   sampled size of the same model skips that step.
+2. **Edit.** Open a project, Build, Code. Open two files, change one (the
+   tab and the tree mark it), Ctrl+S. Ctrl+P finds a file by a few letters;
+   Ctrl+Shift+F searches the project. While an agent writes a file that is
+   open and changed, the editor says so and keeps your text.
+
 ## Before a release that moves llama.cpp: an update
 
 The first start after an update replaces every runtime. Start the new build
@@ -102,9 +129,11 @@ Exits non-zero when the turn or the build failed.
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
 2. Push to `main` and wait for CI to pass on all three systems.
-3. Tag and push the tag: `git tag v0.9.4 && git push origin v0.9.4`.
-   The installers workflow builds the three installers and publishes the
-   release.
+3. Tag and push the tag: `git tag v0.9.5 && git push origin v0.9.5`.
+   The installers workflow builds the three installers and, in the same run,
+   the prebuilt runtimes. The runtimes go on a draft release as they finish,
+   and the release is published only when the installers are added to it, so
+   an install never finds a release without its runtimes.
 
 ## Seen on 2026-10-10
 
@@ -153,3 +182,62 @@ Linux (Arch, KDE Plasma on Wayland), an RTX 4070, 5060 Ti and 3060, 0.9.4.
   the box went back to Delegator.
 - **The chat box** held still while typing during download progress; before,
   every push moved its top edge by about 2 pixels and back.
+
+## Seen on 2026-10-26
+
+Linux (Arch, KDE Plasma on Wayland), the 5060 Ti and 3060 (the 4070 left
+alone), 0.9.5.
+
+- **Condense.** LFM2.5-1.2B Q8_0 to Q4_K_M from Create: every size measured
+  at once (the 27 GB Qwen3.8 Q8_0 too), the copy made in 3 seconds (697 MB),
+  and it answered "Paris" in Test. flint's eleven sizes measure in 342 ms.
+- **Bench, Quick, all nine.** The condensed LFM2.5 scored 60.7 overall in 9
+  minutes at 356 tokens a second, every skill present. The first prompts
+  showed "Answer: B" as their example, and the 1.2B answered B to nearly
+  everything (30 of 50 on ARC); the format is now `Answer: $LETTER`, and ARC
+  went from 64% to 86%.
+- **A dataset page that would not come** (TruthfulQA, once) left that
+  benchmark out without a word on screen. Pages are fetched before any model
+  loads now, tried again over a minute and a half, and a result says what it
+  missed.
+- **Code.** A project opened from the Projects list; the tree, tabs, line
+  numbers and colors drew. The colored layer ran past the bottom of the box
+  on a long file (the numbers beside it set its height); fixed.
+- **Create's Started and Finished** had been blank since 0.9.4.
+- **The smallest sizes.** LFM2.5-1.2B Q8_0 to IQ2_XXS on the 4070 in 31
+  seconds: 98 chunks of WikiText measured, 365 MB written. IQ1_M of it took
+  7 seconds with the matrix kept. Both are badly hurt at 1.2B (IQ2_XXS knew
+  Paris, not the Seine), which is what those sizes do to a small model.
+  gpt-oss-20b measured on the 5060 Ti with every expert seen, and came out
+  at 12.0 GB of 12.1: its 2880-wide rows do not divide into the 256-wide
+  blocks, so llama.cpp falls back to IQ4_NL for most of it. The tab now
+  offers a size only when the dry run says it shrinks.
+- **The first sample pass** missed the last layer: llama.cpp takes only the
+  last token through it unless every token's output is asked for. Fixed by
+  asking.
+- **An update over 0.9.4's runtimes**, whose NVIDIA libraries (CUDA 13.3.1)
+  have no release file beside them: `--runtime-status` says CUDA active, two
+  devices. Before the fix, CUDA would have been off until 1.4 GB came down
+  again.
+- **A split across two cards** (the 4070 and the 3060, Vulkan hidden):
+  gpt-oss-20b went 4.7 GB onto the 4070, which also drives the desktop, and
+  6.2 GB onto the 3060, every layer on a card, with the compute buffers
+  exactly what the dry run said. It answered 17 times 23 in 10 seconds,
+  load included.
+- **Claude Haiku 5.5 through the Anthropic provider**, the key only in the
+  environment: the model list (14), a reply, thinking shown, a picture read,
+  READ in a trusted folder, and a build that wrote hello.html, for about half
+  a cent in all. Found and fixed: a thinking reply's rate read 20,000 tokens
+  a second, the delegator was loaded after every reply and to name chats
+  while a provider's expert was chosen, and a lone `<br>` before a tool call
+  was kept as the reply's first line.
+- **Builds with gpt-oss on two cards** (the 4070 and the 3060, for the README
+  pictures). At high effort in its 8K context it reached for apply_patch,
+  then re-read files it had just read and wrote `...` into app.js; at medium
+  effort the same change was made and committed. Its architect twice wrote a
+  whole plan without the last brace. LFM2.5 as delegator matched no seat to
+  "HTML editing", so the build made one with the config's worker model, the
+  27B Qwen, which does not fit on two cards; a check task by Programming
+  finished the change. Fixed along the way: the apply_patch hint, the plan
+  reader, the tune panel's 19.200001px, and the bench clock that stood still
+  while pages were fetched.

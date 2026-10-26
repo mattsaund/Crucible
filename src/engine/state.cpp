@@ -25,6 +25,15 @@ std::string_view mood_label(Mood mood) {
     return "idle";
 }
 
+std::vector<Turn> TurnList::copy() const {
+    std::vector<Turn> out;
+    out.reserve(turns_.size());
+    for (const Shared& turn : turns_) {
+        out.push_back(*turn);
+    }
+    return out;
+}
+
 Snapshot AppState::snapshot() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     Snapshot copy;
@@ -32,6 +41,7 @@ Snapshot AppState::snapshot() const {
     copy.status   = status_;
     copy.roster   = roster_;
     copy.cook     = cook_;
+    copy.bench    = bench_;
     copy.pending_edit = pending_edit_;
     copy.context_used = context_used_;
     copy.context_size = context_size_;
@@ -42,7 +52,10 @@ Snapshot AppState::snapshot() const {
     copy.delegator_ready = delegator_ready_;
     copy.delegator_progress = delegator_progress_;
     copy.delegator_problem  = delegator_problem_;
-    copy.turns    = turns_;
+    // Pointers, not turns: a turn the frame holds is copied by whoever
+    // writes to it next, so sharing it here costs a reference count.
+    std::vector<TurnList::Shared> turns(turns_.begin(), turns_.end());
+    copy.turns    = TurnList(std::move(turns));
     copy.notices  = notices_;
     copy.busy     = busy_;
     copy.session_usage = session_usage_;
@@ -172,6 +185,11 @@ void AppState::set_cook(std::shared_ptr<const Cook> cook) {
     cook_ = std::move(cook);
 }
 
+void AppState::set_bench(std::shared_ptr<const nlohmann::json> bench) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    bench_ = std::move(bench);
+}
+
 void AppState::set_delegator_ready(bool ready) {
     const std::lock_guard<std::mutex> lock(mutex_);
     delegator_ready_    = ready;
@@ -188,54 +206,71 @@ void AppState::set_delegator_progress(float progress) {
     delegator_progress_ = progress < 0.0F ? 0.0F : (progress > 1.0F ? 1.0F : progress);
 }
 
+Turn& AppState::writable(std::size_t index) {
+    std::shared_ptr<Turn>& slot = turns_[index];
+    // Somebody besides this state holds it: a frame being drawn, or one a
+    // thread has yet to let go of. Theirs stays as it was; this one is new.
+    // A count read as more than one while a frame lets go only costs a copy.
+    if (slot.use_count() > 1) {
+        slot = std::make_shared<Turn>(*slot);
+    }
+    slot->revision = ++turn_clock_;
+    return *slot;
+}
+
+std::size_t AppState::push_turn(Turn turn) {
+    turn.revision = ++turn_clock_;
+    turns_.push_back(std::make_shared<Turn>(std::move(turn)));
+    return turns_.size() - 1;
+}
+
 std::size_t AppState::begin_turn(std::string prompt, std::vector<TurnAttachment> attachments) {
     const std::lock_guard<std::mutex> lock(mutex_);
     Turn turn;
     turn.prompt      = std::move(prompt);
     turn.attachments = std::move(attachments);
     turn.streaming = true;
-    turns_.push_back(std::move(turn));
-    return turns_.size() - 1;
+    return push_turn(std::move(turn));
 }
 
 void AppState::restore_turn(Turn turn) {
     const std::lock_guard<std::mutex> lock(mutex_);
     turn.streaming = false;
-    turns_.push_back(std::move(turn));
+    push_turn(std::move(turn));
 }
 
 void AppState::set_route(std::size_t turn, RouteDecision route) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].route = std::move(route);
+        writable(turn).route = std::move(route);
     }
 }
 
 void AppState::append_reply(std::size_t turn, std::string_view chunk) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].reply.append(chunk);
+        writable(turn).reply.append(chunk);
     }
 }
 
 void AppState::append_reasoning(std::size_t turn, std::string_view chunk) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].reasoning.append(chunk);
+        writable(turn).reasoning.append(chunk);
     }
 }
 
 void AppState::set_reply(std::size_t turn, std::string text) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].reply = std::move(text);
+        writable(turn).reply = std::move(text);
     }
 }
 
 void AppState::add_action(std::size_t turn, TurnAction action) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        turns_[turn].actions.push_back(std::move(action));
+        writable(turn).actions.push_back(std::move(action));
     }
 }
 
@@ -244,7 +279,7 @@ void AppState::finish_turn(std::size_t turn, const GenerationStats& stats, long 
     if (turn >= turns_.size()) {
         return;
     }
-    Turn& entry = turns_[turn];
+    Turn& entry = writable(turn);
     entry.streaming         = false;
     entry.canceled         = stats.canceled;
     entry.tokens_per_second = stats.tokens_per_second();
@@ -275,7 +310,7 @@ void AppState::fail_turn(std::size_t turn, std::string_view reason) {
     if (turn >= turns_.size()) {
         return;
     }
-    Turn& entry = turns_[turn];
+    Turn& entry = writable(turn);
     entry.streaming = false;
     entry.failed    = true;
     live_rate_      = 0.0;
@@ -316,7 +351,7 @@ void AppState::cancel_turn(std::size_t turn) {
     if (turn >= turns_.size()) {
         return;
     }
-    Turn& entry = turns_[turn];
+    Turn& entry = writable(turn);
     entry.streaming = false;
     entry.canceled = true;
     live_rate_      = 0.0;
@@ -350,6 +385,10 @@ void AppState::clear_turns() {
 void AppState::set_session_usage(TokenUsage usage) {
     const std::lock_guard<std::mutex> lock(mutex_);
     session_usage_ = usage;
+    // How full the context is goes with it: the figure was the last
+    // conversation's, and this one has had no turn yet to measure.
+    context_used_ = 0;
+    context_size_ = 0;
 }
 
 void AppState::set_busy(bool busy) {

@@ -198,6 +198,12 @@ struct CookSummary {
 /// way, so the two cannot drift apart. A field that is missing reads as its
 /// default; `fallback_id` stands in for a missing id.
 nlohmann::json cook_to_json(const Cook& cook);
+
+/// A cook as the orchestrator publishes it, put after the steps already
+/// held: `next` carries only the steps after the first `from`. A `from` past
+/// what is held cannot be joined on, and the held steps stay as they are;
+/// the orchestrator is told how many there are and sends the rest.
+Cook merge_published(std::vector<CookStep> held, Cook next, std::size_t from);
 Cook           cook_from_json(const nlohmann::json& doc, const std::string& fallback_id = {});
 
 class CookLog {

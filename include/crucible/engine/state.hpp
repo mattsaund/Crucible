@@ -8,11 +8,16 @@
 // a webview on one machine and a Python process on another.
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json_fwd.hpp>
 
 #include "crucible/config/config.hpp"
 #include "crucible/cook/journal.hpp"
@@ -123,6 +128,69 @@ struct Turn {
     int                    prompt_tokens     = 0;
     int                    output_tokens     = 0;
     long                   load_ms           = 0;  ///< JIT swap cost for this turn
+
+    /// Which version of this turn this is: set from one counter every time
+    /// any of it changes, so two copies with the same number are the same
+    /// turn, word for word. What lets a frame send the page only the turns
+    /// that moved (see api::PageSnapshots).
+    std::uint64_t          revision = 0;
+};
+
+/// The transcript as a frame holds it.
+///
+/// Each turn is shared with the state it was read from rather than copied.
+/// A frame is taken up to thirty times a second, and copying every turn of a
+/// long conversation into each one was most of what a long chat cost. A turn
+/// a frame holds is never changed afterwards: the state copies the one it is
+/// still writing first (AppState::writable), so a frame reads it without a
+/// lock. Reads like a vector of turns: size, [], back, and a range-for over
+/// `const Turn&`.
+class TurnList {
+public:
+    using Shared = std::shared_ptr<const Turn>;
+
+    class const_iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type        = Turn;
+        using difference_type   = std::ptrdiff_t;
+        using pointer           = const Turn*;
+        using reference         = const Turn&;
+
+        explicit const_iterator(std::vector<Shared>::const_iterator at) : at_(at) {}
+        const Turn& operator*() const { return **at_; }
+        const Turn* operator->() const { return at_->get(); }
+        const_iterator& operator++() { ++at_; return *this; }
+        const_iterator operator++(int) { const_iterator was = *this; ++at_; return was; }
+        bool operator==(const const_iterator& other) const { return at_ == other.at_; }
+        bool operator!=(const const_iterator& other) const { return at_ != other.at_; }
+
+    private:
+        std::vector<Shared>::const_iterator at_;
+    };
+
+    TurnList() = default;
+    explicit TurnList(std::vector<Shared> turns) : turns_(std::move(turns)) {}
+
+    std::size_t size() const { return turns_.size(); }
+    bool empty() const { return turns_.empty(); }
+    const Turn& operator[](std::size_t index) const { return *turns_[index]; }
+    const Turn& back() const { return *turns_.back(); }
+    const_iterator begin() const { return const_iterator(turns_.cbegin()); }
+    const_iterator end() const { return const_iterator(turns_.cend()); }
+
+    /// The turn as shared: the same pointer from frame to frame for as long
+    /// as the turn does not change.
+    const Shared& shared(std::size_t index) const { return turns_[index]; }
+
+    /// Add a turn held whole, for whoever builds a frame by hand.
+    void push_back(Turn turn) { turns_.push_back(std::make_shared<const Turn>(std::move(turn))); }
+
+    /// Every turn as a copy, for code that wants its own.
+    std::vector<Turn> copy() const;
+
+private:
+    std::vector<Shared> turns_;
 };
 
 /// A file edit an expert wants to make, waiting on an answer.
@@ -192,7 +260,7 @@ struct Snapshot {
     /// chat: it is a fact about a seat, and prompts are routed on keywords
     /// until it changes.
     std::string delegator_problem;
-    std::vector<Turn>                   turns;
+    TurnList                            turns;
     std::vector<std::string>            notices;
     bool                                busy = false;
 
@@ -233,6 +301,11 @@ struct Snapshot {
     /// screen. The engine publishes a new one after each step; the renderer
     /// reads whichever it was handed.
     std::shared_ptr<const Cook> cook;
+
+    /// The benchmark run in progress or just ended, as the orchestrator
+    /// publishes it: which models, which benchmarks, how far, how well. JSON
+    /// as it comes, since nothing on this side reads it but the page.
+    std::shared_ptr<const nlohmann::json> bench;
 };
 
 class AppState {
@@ -336,7 +409,8 @@ public:
     void clear_turns();
 
     /// What the conversation on screen has cost: zero for a new one, its own
-    /// totals for one reopened from history.
+    /// totals for one reopened from history. Clears how full the context
+    /// was, which is measured again by its next turn.
     void set_session_usage(TokenUsage usage);
 
     void set_busy(bool busy);
@@ -345,10 +419,20 @@ public:
     /// Publish the cook in progress, or nothing when one ends.
     void set_cook(std::shared_ptr<const Cook> cook);
 
+    /// Publish a benchmark run's progress.
+    void set_bench(std::shared_ptr<const nlohmann::json> bench);
+
 private:
     /// Index of `id` in the current roster, or nullopt. Call with the lock
     /// held; it does not take one.
     std::optional<std::size_t> seat_index(const ExpertId& id) const;
+
+    /// Turn `index`, ready to be changed: copied first when a frame still
+    /// holds it, and given the next revision. Called with the lock held.
+    Turn& writable(std::size_t index);
+
+    /// Add a turn at the end with its first revision. Called with the lock held.
+    std::size_t push_turn(Turn turn);
 
     mutable std::mutex                   mutex_;
     Mood                                 mood_ = Mood::Idle;
@@ -363,10 +447,14 @@ private:
     bool                                 delegator_ready_ = false;
     float                                delegator_progress_ = -1.0F;
     std::string                          delegator_problem_;
-    std::vector<Turn>                    turns_;
+    /// The newest version of each turn. One a frame still holds is copied
+    /// before it is written to; see writable().
+    std::vector<std::shared_ptr<Turn>>   turns_;
+    std::uint64_t                        turn_clock_ = 0;
     std::vector<std::string>             notices_;
     bool                                 busy_ = false;
     std::shared_ptr<const Cook>          cook_;
+    std::shared_ptr<const nlohmann::json> bench_;
     std::shared_ptr<const PendingEdit>   pending_edit_;
     int                                  context_used_ = 0;
     int                                  context_size_ = 0;

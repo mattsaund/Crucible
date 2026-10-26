@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -40,7 +41,9 @@ private:
     std::uint64_t                length_   = 0;   ///< bytes seen
 };
 
-/// The digest of a whole file, or an empty string when it cannot be read.
-std::string sha256_file(const std::filesystem::path& path);
+/// The digest of a whole file, or an empty string when it cannot be read or
+/// `stop` says so partway. A model of tens of gigabytes takes a minute, and
+/// a Stop, or the window closing, should not wait for the rest of it.
+std::string sha256_file(const std::filesystem::path& path, const std::function<bool()>& stop = {});
 
 }  // namespace crucible::util

@@ -27,6 +27,7 @@
 #include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/git.hpp"
+#include "crucible/tools/web_search.hpp"
 #include "crucible/tools/workshop.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/text.hpp"
@@ -58,16 +59,6 @@ tools::ToolKind tool_kind_from_name(const std::string& name) {
     return tools::ToolKind::None;
 }
 
-tools::ToolCall call_from(const json& params) {
-    tools::ToolCall call;
-    call.kind     = tool_kind_from_name(params.value("kind", ""));
-    call.argument = params.value("argument", "");
-    call.content  = params.value("content", "");
-    call.shell    = params.value("shell", "");
-    call.unrun    = params.value("unrun", "");
-    return call;
-}
-
 /// A seat's parameters for a model named the way a seat names one: a file
 /// in the models folder, or a provider's model.
 ModelParams params_for(const Config& config, const std::string& model, const std::string& provider) {
@@ -84,6 +75,16 @@ ModelParams params_for(const Config& config, const std::string& model, const std
 }
 
 }  // namespace
+
+tools::ToolCall Engine::call_from(const json& params) {
+    tools::ToolCall call;
+    call.kind     = tool_kind_from_name(params.value("kind", ""));
+    call.argument = params.value("argument", "");
+    call.content  = params.value("content", "");
+    call.shell    = params.value("shell", "");
+    call.unrun    = params.value("unrun", "");
+    return call;
+}
 
 // ---------------------------------------------------------------------------
 // Queueing and control
@@ -122,6 +123,11 @@ tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) 
 std::string Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
                                std::vector<attach::Attachment> attachments,
                                std::optional<ExpertId> pinned, std::string kind) {
+    // A benchmark has the cards to itself: an agent beside it would wait on
+    // the memory its model holds, or load next to it and slow what it times.
+    if (benching()) {
+        return "benchmark running";
+    }
     if (cooking_.exchange(true)) {
         return "a build is already running: stop it, or wait for it to finish";
     }
@@ -392,10 +398,16 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         const std::string answer    = params.value("answer", "");
         const std::string reasoning = params.value("reasoning", "");
         const std::optional<tools::ToolCall> call = tools::parse_tool_call(answer, reasoning);
+        // And what it asked to look up, if anything. A chat turn's search is
+        // asked for in a way of its own -- a SEARCH line, or a tool-trained
+        // model's own call on its reasoning channel -- and has bookkeeping of
+        // its own. See web_search.hpp.
+        const std::string search = tools::search_request(answer, reasoning);
         if (!call) {
             return json{{"call", nullptr},
                         {"attempted", std::string(tools::tool_kind_name(
-                                          tools::attempted_tool_call(answer, reasoning)))}};
+                                          tools::attempted_tool_call(answer, reasoning)))},
+                        {"search", search}};
         }
         // All of it, because the orchestrator hands the call straight back to
         // tools.run: without the shell, "RUN powershell:" ran under cmd, and
@@ -405,7 +417,8 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
                               {"content", call->content},
                               {"shell", call->shell},
                               {"unrun", call->unrun}}},
-                    {"attempted", "none"}};
+                    {"attempted", "none"},
+                    {"search", search}};
     }
     if (method == "tools.run") {
         const tools::ToolCall call = call_from(params);
@@ -627,26 +640,43 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
     // --- the journal and the person ---------------------------------------
     if (method == "cook.publish") {
         // The orchestrator owns the cook as it runs; this is where the window
-        // and History see it. Saved after every step rather than at the end.
+        // and History see it.
+        //
+        // Only the steps it has not sent yet come, after the `steps_from` it
+        // says this side already holds: the whole journal on every step was
+        // sent, parsed and written to disk again each time, which made a
+        // long build slower the longer it ran. The count held goes back, so
+        // a journal this side lost track of is sent again from there.
         const std::lock_guard<std::mutex> lock(cook_mutex_);
         const std::string kind = cook_.kind;
         const bool        was_asking   = cook_.state == CookState::Asking;
         const std::string was_question = cook_.question;
-        cook_ = cook_from_json(params.value("cook", json::object()), cook_.id);
+        const CookState   was_state    = cook_.state;
+        const json&       body         = params.contains("cook") ? params["cook"] : json::object();
+        Cook next = cook_from_json(body, cook_.id);
+        if (params.contains("steps_from") && params["steps_from"].is_number_unsigned()) {
+            next = merge_published(std::move(cook_.steps), std::move(next), params["steps_from"].get<std::size_t>());
+        }
+        cook_ = std::move(next);
         if (cook_.state == CookState::Asking && (!was_asking || cook_.question != was_question)) {
             // A new question: nothing said before it is its answer.
             const std::lock_guard<std::mutex> answer_lock(cook_answer_mutex_);
             cook_answer_.reset();
         }
-        if (!params.value("cook", json::object()).contains("kind")) {
+        if (!body.contains("kind")) {
             cook_.kind = kind;   // a cook's journal does not say; the engine knows
         }
         publish_cook();
-        if (cook_log_) {
+        // On disk every two seconds at most, and whenever its state changes:
+        // a build killed midway still says what it did, without the journal
+        // being written whole on every step.
+        const auto now = std::chrono::steady_clock::now();
+        if (cook_log_ && (cook_.state != was_state || now - cook_saved_at_ >= std::chrono::seconds(2))) {
             std::string error;
             cook_log_->save(cook_, error);
+            cook_saved_at_ = now;
         }
-        return json::object();
+        return json{{"steps", cook_.steps.size()}};
     }
     if (method == "cook.await_answer") {
         // One question at a time: the journal holds one, the window shows
@@ -706,7 +736,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     cook_search_.timeout_seconds = config.tools.search_timeout;
     cook_attachments_ = std::move(attachments);
 
-    json request = routing_request(goal, pinned);
+    json request = routing_request(config, goal, pinned);
     std::string id;
     json        tiles;
     {

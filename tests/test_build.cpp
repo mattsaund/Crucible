@@ -11,13 +11,21 @@
 #include "test_helpers.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <chrono>
 #include <thread>
 
+#if defined(_WIN32)
+#  include <io.h>
+#else
+#  include <unistd.h>
+#endif
+
 #include "crucible/api/surface.hpp"
 #include "crucible/engine/leases.hpp"
+#include "crucible/llm/model_host.hpp"
 #include "crucible/tools/computer.hpp"
 #include "crucible/tools/fetch.hpp"
 #include "crucible/tools/git.hpp"
@@ -223,6 +231,77 @@ TEST(a_wait_for_room_ends_when_a_lease_does_or_when_stopped) {
     CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
 }
 
+namespace {
+
+/// stderr as it was, put back when this goes. A ModelHost sends stderr to its
+/// log for good, and in a test that would take every later crash report with
+/// it.
+class StderrKept {
+public:
+    StderrKept() : saved_(dup_fd(stderr_fd())) {}
+    ~StderrKept() {
+        if (saved_ >= 0) {
+            std::fflush(stderr);
+            dup2_fd(saved_, stderr_fd());
+            close_fd(saved_);
+        }
+    }
+    StderrKept(const StderrKept&)            = delete;
+    StderrKept& operator=(const StderrKept&) = delete;
+
+private:
+#if defined(_WIN32)
+    static int  stderr_fd() { return ::_fileno(stderr); }
+    static int  dup_fd(int fd) { return ::_dup(fd); }
+    static void dup2_fd(int from, int to) { ::_dup2(from, to); }
+    static void close_fd(int fd) { ::_close(fd); }
+#else
+    static int  stderr_fd() { return fileno(stderr); }
+    static int  dup_fd(int fd) { return ::dup(fd); }
+    static void dup2_fd(int from, int to) { ::dup2(from, to); }
+    static void close_fd(int fd) { ::close(fd); }
+#endif
+    int saved_;
+};
+
+}  // namespace
+
+TEST(a_gguf_waits_for_an_mlx_model_in_use_that_leaves_it_no_room) {
+    // An MLX model runs in a process of its own, so the host holds nothing of
+    // it, and with nothing of its own resident it loaded a GGUF beside one
+    // in use without asking whether both fit. Told the MLX model is there,
+    // it asks, and a GGUF that does not fit waits, as it would for an expert.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());   // no runtimes, so nothing loads
+    // A header asking for a billion tokens of context: 128 TiB of cache, which
+    // fits beside nothing on any machine there is.
+    const std::filesystem::path file = temp.path() / "big.gguf";
+    write_test_gguf(file, /*layers=*/32, /*embd=*/4096, /*heads=*/32,
+                    /*kv_heads=*/{8}, /*key_len=*/128, /*vocab=*/32000);
+    ModelParams params;
+    params.model = file.string();
+    params.path  = file.string();
+    params.n_ctx = 1 << 30;
+
+    {
+        const StderrKept kept;
+        ModelHost host(temp.path() / "llama.log");
+        std::string error;
+        bool crowded = false;
+        CHECK(!host.fits_beside(params, /*beside_mlx=*/true));
+        CHECK(host.acquire_expert("coder", params, {}, {}, error, {}, &crowded, /*beside_mlx=*/true)
+              == nullptr);
+        CHECK(crowded);
+
+        // With nothing beside it, there is nothing to fit beside: the load is
+        // tried, and fails for want of a runtime, which is not a crowd.
+        CHECK(host.fits_beside(params));
+        CHECK(host.acquire_expert("coder", params, {}, {}, error, {}, &crowded) == nullptr);
+        CHECK(!crowded);
+    }
+    llama_log_set(nullptr, nullptr);
+}
+
 // ---------------------------------------------------------------------------
 // The verbs beyond the folder
 // ---------------------------------------------------------------------------
@@ -311,6 +390,8 @@ TEST(the_instructions_offer_each_group_only_when_its_switch_is_on) {
     CHECK(plain.find("FETCH:") == std::string::npos);
     CHECK(plain.find("SCREENSHOT:") == std::string::npos);
     CHECK(plain.find("START:") == std::string::npos);   // nowhere to keep a process
+    // gpt-oss reaches for its own apply_patch, in a here-document RUN cannot carry.
+    CHECK(plain.find("There is no apply_patch here") != std::string::npos);
 
     settings.web = true;
     settings.computer_control = true;
@@ -768,6 +849,18 @@ TEST(the_instructions_teach_edit_and_find_and_the_example_parses) {
     CHECK(example.has_value() && example->kind == tools::ToolKind::Edit);
     std::string error;
     CHECK_EQ(tools::parse_edit_blocks(example->content, error).size(), std::size_t{1});
+}
+
+TEST(the_instructions_say_a_write_line_holds_the_path_alone_and_the_example_parses) {
+    TempDir dir;
+    const std::string text = tools::workshop_instructions(everything_on(dir.path()), tools::ToolAudience::Cook);
+    CHECK(text.find("WRITE: <path>") != std::string::npos);
+    CHECK(text.find("the file's path and nothing else") != std::string::npos);
+    const std::size_t at = text.find("WRITE: src/calc.py");
+    CHECK(at != std::string::npos);
+    const std::optional<tools::ToolCall> example = tools::parse_tool_call(text.substr(at), "");
+    CHECK(example.has_value() && example->kind == tools::ToolKind::Write);
+    CHECK(example.has_value() && example->argument == "src/calc.py");
 }
 
 TEST(render_draws_a_page_into_a_pdf_and_a_picture) {

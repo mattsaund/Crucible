@@ -31,7 +31,7 @@ constexpr const char* kBanner = R"(
       ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
       ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
       ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   Crucible )" CRUCIBLE_VERSION R"(
-      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
+      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   An all in one local AI workshop.
       ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
       ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
       ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁

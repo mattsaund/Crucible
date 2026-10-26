@@ -28,6 +28,12 @@ extern const unsigned char kOrchestratorNaming[];
 extern const unsigned int  kOrchestratorNaming_size;
 extern const unsigned char kOrchestratorBuild[];
 extern const unsigned int  kOrchestratorBuild_size;
+extern const unsigned char kOrchestratorChat[];
+extern const unsigned int  kOrchestratorChat_size;
+extern const unsigned char kOrchestratorBench[];
+extern const unsigned int  kOrchestratorBench_size;
+extern const unsigned char kOrchestratorBenchScore[];
+extern const unsigned int  kOrchestratorBenchScore_size;
 }  // namespace embedded
 
 namespace {
@@ -47,6 +53,9 @@ const File kFiles[] = {
     {"cook.py", embedded::kOrchestratorCook, &embedded::kOrchestratorCook_size},
     {"naming.py", embedded::kOrchestratorNaming, &embedded::kOrchestratorNaming_size},
     {"build.py", embedded::kOrchestratorBuild, &embedded::kOrchestratorBuild_size},
+    {"chat.py", embedded::kOrchestratorChat, &embedded::kOrchestratorChat_size},
+    {"bench.py", embedded::kOrchestratorBench, &embedded::kOrchestratorBench_size},
+    {"bench_score.py", embedded::kOrchestratorBenchScore, &embedded::kOrchestratorBenchScore_size},
 };
 
 }  // namespace

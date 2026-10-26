@@ -273,6 +273,17 @@ json cook_to_json(const Cook& cook) {
     };
 }
 
+Cook merge_published(std::vector<CookStep> held, Cook next, std::size_t from) {
+    if (from <= held.size()) {
+        held.resize(from);
+        for (CookStep& step : next.steps) {
+            held.push_back(std::move(step));
+        }
+    }
+    next.steps = std::move(held);
+    return next;
+}
+
 Cook cook_from_json(const json& doc, const std::string& fallback_id) {
     Cook cook;
     if (!doc.is_object()) {

@@ -84,4 +84,9 @@ std::vector<std::string> shell_command(const std::string& command);
 /// file as it was, rather than a truncated one in its place.
 bool write_file_atomically(const std::filesystem::path& file, std::string_view text, std::string& error);
 
+/// Open an https address in the person's own browser, detached from Crucible.
+/// Anything that is not https is refused: this is for a page on the web, not
+/// a way to run whatever a string names.
+bool open_in_browser(const std::string& url, std::string& error);
+
 }  // namespace crucible::util

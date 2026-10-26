@@ -15,6 +15,7 @@
 #include <JavaScriptCore/JavaScript.h>
 
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -647,7 +648,21 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
     CHECK(drawn.find("Python 3.14.9") != std::string::npos);
     CHECK(drawn.find("width:40%") != std::string::npos);        // measured, so a bar
     CHECK(drawn.find("Try again") == std::string::npos);        // nothing failed
+    CHECK(drawn.find("data-act=\"setup-stop\"") != std::string::npos);   // but it can be stopped
     CHECK(drawn.find("Ask anything") != std::string::npos);     // and the box still works
+
+    // Stopped halfway: it stays up, says so, and carries on when asked.
+    const std::string stopped = page().eval(
+        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
+        " setup: {running: false, items: ["
+        "  {id: 'python', label: 'Python 3.14.9', state: 'stopped', detail: '', download: 76270309},"
+        "  {id: 'trainer', label: 'Training environment (cuda)', state: 'waiting', detail: '',"
+        "   download: 3000000000}]}});"
+        " const out = views.chat(); state.snapshot = was; return out; })()");
+    CHECK(stopped.find(">Stopped<") != std::string::npos);
+    CHECK(stopped.find("data-act=\"setup-retry\">Resume<") != std::string::npos);
+    CHECK(stopped.find("setup-stop") == std::string::npos);
+    CHECK(page().eval("typeof actions['setup-stop']") == "function");
 
     const std::string failed = page().eval(
         "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
@@ -895,6 +910,127 @@ TEST(a_drop_the_window_cannot_place_is_copied_in_pieces_and_attached) {
     page().eval("(call = window.__keptCall, render = window.__keptRender, state.attached.chat = [])");
 }
 
+TEST(a_picture_pasted_into_the_box_is_attached_and_text_is_left_to_paste) {
+    // What a webview hands the box on Ctrl+V: files, text, or both. A paste
+    // that carries files is the box's to attach; one that is text is the
+    // box's to paste, which is what it does when nothing stops it.
+    const std::string set = page().eval(R"JS(
+      (function () {
+        window.__calls = [];
+        window.__keptCall = call; window.__keptRender = render;
+        window.__keptView = state.view; window.__keptCook = state.snapshot.cook;
+        render = function () {};
+        state.view = 'chat'; state.modal = null; state.snapshot.cook = null; state.error = '';
+        if (typeof btoa === 'undefined') {
+          window.btoa = function (text) {
+            var a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = '';
+            for (var i = 0; i < text.length; i += 3) {
+              var n = (text.charCodeAt(i) << 16) | ((text.charCodeAt(i + 1) || 0) << 8) | (text.charCodeAt(i + 2) || 0);
+              out += a[(n >> 18) & 63] + a[(n >> 12) & 63]
+                   + (i + 1 < text.length ? a[(n >> 6) & 63] : '=') + (i + 2 < text.length ? a[n & 63] : '=');
+            }
+            return out;
+          };
+        }
+        call = function (method, params) {
+          window.__calls.push([method, params]);
+          if (method === 'attach.store') return Promise.resolve({ path: '/kept/' + params.path });
+          if (method === 'attach.inspect') {
+            return Promise.resolve({ items: params.paths.map(function (p) {
+              return { path: p, name: p.split('/').pop(), kind: /\.pdf$/.test(p) ? 'document' : 'image', label: 'X' };
+            }) });
+          }
+          if (method === 'attach.image') return Promise.reject(new Error('no canvas here'));
+          return Promise.resolve({});
+        };
+        window.__file = function (name, type, text) {
+          var bytes = Array.from(text).map(function (c) { return c.charCodeAt(0); });
+          return { name: name, type: type, size: bytes.length,
+                   slice: function (a, b) { return { arrayBuffer: function () {
+                     return Promise.resolve(new Uint8Array(bytes.slice(a, b)).buffer); } }; } };
+        };
+        // Ctrl+V into the box, with `files` and `text` on the clipboard.
+        // Says whether the paste was taken from the box. Each file comes
+        // as WebKitGTK hands a pasted picture over: as an entry too, whose
+        // path is not there.
+        window.__paste = function (files, text) {
+          var taken = false;
+          var box = { disabled: false };
+          actions['composer-paste'](box, {
+            target: box,
+            clipboardData: {
+              items: files.map(function (f) { return { kind: 'file', type: f.type,
+                getAsFile: function () { return f; },
+                webkitGetAsEntry: function () { return { isFile: true, isDirectory: false, name: f.name,
+                  file: function (ok, fail) { fail(new Error('Path does not exist')); } }; } }; }),
+              files: files,
+              getData: function (type) { return type === 'text/plain' ? text || '' : ''; } },
+            preventDefault: function () { taken = true; } });
+          return taken;
+        };
+        state.attached.chat = [];
+        return 'set';
+      })())JS");
+    CHECK_EQ(set, "set");
+
+    // A screenshot: attached, by the road a drop takes on Windows and macOS.
+    CHECK_EQ(page().eval("String(__paste([__file('image.png', 'image/png', 'png')], ''))"), "true");
+    CHECK_EQ(page().eval("JSON.stringify(window.__calls.filter(function (c) { return c[0] === 'attach.store'; })"
+                         ".map(function (c) { return [c[1].path, c[1].data]; }))"),
+             R"([["image.png","cG5n"]])");
+    CHECK_EQ(page().eval("JSON.stringify(state.attached.chat.map(function (t) { return [t.path, t.kind]; }))"),
+             R"([["/kept/image.png","image"]])");
+
+    // Text is the box's to paste.
+    CHECK_EQ(page().eval("String(__paste([], 'some words'))"), "false");
+    // So is a table copied with a picture of itself.
+    CHECK_EQ(page().eval("String(__paste([__file('image.png', 'image/png', 'png')], 'Q1\\t120\\nQ2\\t95'))"), "false");
+    CHECK_EQ(page().eval("String(state.attached.chat.length)"), "1");
+
+    // Files copied in a file manager, with their names as the text; and a
+    // picture with no name, which is named for what it is.
+    CHECK_EQ(page().eval("String(__paste([__file('photo.jpg', 'image/jpeg', 'jpg')], 'photo.jpg'))"), "true");
+    CHECK_EQ(page().eval("String(__paste([__file('report.pdf', 'application/pdf', '%PDF')], 'report.pdf'))"), "true");
+    CHECK_EQ(page().eval("String(__paste([__file('', 'image/png', 'png')], ''))"), "true");
+    CHECK_EQ(page().eval("JSON.stringify(state.attached.chat.map(function (t) { return t.path; }))"),
+             R"(["/kept/image.png","/kept/photo.jpg","/kept/report.pdf","/kept/pasted.png"])");
+
+    // Where a drop would be refused, so is a paste, and it says why.
+    CHECK_EQ(page().eval("(state.modal = { kind: 'confirm' }, String(__paste([__file('a.png', 'image/png', 'a')], '')))"),
+             "true");
+    CHECK_EQ(page().eval("state.error"), "Close the dialog first");
+    CHECK_EQ(page().eval("String(state.attached.chat.length)"), "4");
+
+    page().eval("(call = window.__keptCall, render = window.__keptRender, state.view = window.__keptView,"
+                " state.snapshot.cook = window.__keptCook, state.modal = null, state.error = '',"
+                " state.attached.chat = [])");
+}
+
+TEST(the_empty_chat_suggests_what_fits_where_it_is) {
+    const char* const empty =
+        "(function (project) { var cook = state.snapshot.cook, was = state.snapshot.project,"
+        " runtimes = state.runtimes, turns = state.snapshot.turns;"
+        " state.snapshot.cook = null; state.snapshot.project = project; state.snapshot.turns = [];"
+        " state.runtimes = { loadable: true, runtimes: [{ installed: true }] };"
+        " var out = views.chat();"
+        " state.snapshot.cook = cook; state.snapshot.project = was; state.runtimes = runtimes;"
+        " state.snapshot.turns = turns; return out; })";
+    // A project open: something to ask about it.
+    const std::string project =
+        page().eval(std::string(empty) + "({ open: true, root: '/home/me/orbit', name: 'orbit' })");
+    CHECK(project.find("What is in this project?") != std::string::npos);
+    // No project, or a chat's own scratch folder: nothing about files that
+    // are not there.
+    for (const char* none : {"{ open: false }",
+                             "{ open: true, root: '/home/me/.crucible/Scratchpad/1', scratchpad: true }"}) {
+        const std::string chat = page().eval(std::string(empty) + "(" + none + ")");
+        CHECK(chat.find("Ask anything") != std::string::npos);
+        CHECK(chat.find("Explain something to me") != std::string::npos);
+        CHECK(chat.find("this project") == std::string::npos);
+        CHECK(chat.find("failing test") == std::string::npos);
+    }
+}
+
 TEST(an_allowed_write_stays_drawn_the_way_it_was_offered) {
     // A new file: the code itself, colored, numbered, on the green of an
     // addition -- not a gray unified diff with a header and a + on each line.
@@ -1089,6 +1225,109 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     CHECK(here.find("cannot run here") != std::string::npos);
     CHECK(here.find(" disabled") != std::string::npos);
     CHECK(here.find("MLX does not run on Windows") != std::string::npos);
+}
+
+TEST(a_model_is_condensed_from_the_create_tab) {
+    // The list offers it beside New expert.
+    CHECK(page().eval("(state.open.recipe = null, views.create())").find("data-act=\"condense-new\"")
+          != std::string::npos);
+
+    // The dialog: before a model is chosen, while it is measured, and with
+    // every size, one suggested and one too big to be worth it.
+    const std::string sizes =
+        "{ path: '/models/flint-Q6_K.gguf', file: 'flint-Q6_K.gguf', bytes: 32.7e9, bits: 6.58,"
+        "  quantization: 'Q6_K', elements: 39.8e9, fit: 'partial', options: ["
+        "  { name: 'Q8_0', note: 'near original', bytes: 42.3e9, fit: 'large', worth: false },"
+        "  { name: 'Q4_K_M', note: 'balanced', bytes: 24.2e9, fit: 'gpu', worth: true, recommended: true },"
+        "  { name: 'Q2_K', note: 'large loss', bytes: 14.6e9, fit: 'gpu', worth: true }] }";
+    const std::string models = "state.models = { directory: '/models', display: '/models', models: ["
+                               "{ name: 'flint-Q6_K.gguf', path: '/models/flint-Q6_K.gguf', bytes: 32.7e9, format: 'gguf' },"
+                               "{ name: 'mmproj-x.gguf', path: '/models/mmproj-x.gguf', bytes: 1e9, format: 'gguf' }] },";
+    for (const std::string& modal : {
+             std::string("{ kind: 'condense', path: '', sizes: null, pick: '', name: '', purpose: '', error: '' }"),
+             std::string("{ kind: 'condense', path: '/models/flint-Q6_K.gguf', measuring: true, sizes: null, pick: '',"
+                         " name: '', purpose: '', error: '' }"),
+             std::string("{ kind: 'condense', path: '/models/flint-Q6_K.gguf', sizes: ") + sizes
+                 + ", pick: 'Q4_K_M', name: 'flint Q4_K_M', purpose: '', error: '' }"}) {
+        CHECK_EQ(drawn("(" + models + " modalView(" + modal + "))"), "ok");
+    }
+    const std::string drawnSizes = page().eval(
+        "(" + models + " modalView({ kind: 'condense', path: '/models/flint-Q6_K.gguf', sizes: " + sizes
+        + ", pick: 'Q4_K_M', name: 'flint Q4_K_M', purpose: '', error: '' }))");
+    CHECK(drawnSizes.find("24.2 GB") != std::string::npos || drawnSizes.find("22.5 GB") != std::string::npos);
+    CHECK(drawnSizes.find("Fits on GPU") != std::string::npos);
+    CHECK(drawnSizes.find("already this small") != std::string::npos);   // Q8_0 from Q6_K
+    CHECK(drawnSizes.find("title=\"Suggested\"") != std::string::npos);
+    CHECK(drawnSizes.find("mmproj") == std::string::npos);                // a projector is no model
+    // Nothing to condense to until a size is picked and it has a name.
+    CHECK_EQ(page().eval("/data-act=\"cz-start\"\\s+disabled/.test((" + models
+                         + " modalView({ kind: 'condense', path: '/models/flint-Q6_K.gguf', sizes: " + sizes
+                         + ", pick: '', name: '', purpose: '', error: '' })))"), std::string("true"));
+
+    // Named after the file, without its old size.
+    CHECK_EQ(page().eval("condenseName('unsloth/flint/flint-Q6_K.gguf', 'Q4_K_M')"), std::string("flint Q4_K_M"));
+    CHECK_EQ(page().eval("condenseName('gpt-oss-20b-MXFP4.gguf', 'IQ4_XS')"), std::string("gpt-oss-20b IQ4_XS"));
+    CHECK_EQ(page().eval("condenseName('Big-UD-Q8_0-00001-of-00002.gguf', 'Q4_K_M')"), std::string("Big Q4_K_M"));
+
+    // A condensed copy at every stage, opened: its own page, not the
+    // fine-tune's method and data.
+    for (const char* stage : {"draft", "training", "testing", "finished"}) {
+        const std::string recipe = std::string("aRecipe('") + stage + "', { id: 'flint-" + stage + "', method: 'condense',"
+            " base: { source: 'local', id: '/models/flint-Q6_K.gguf', path: '/models/flint-Q6_K.gguf', label: 'flint-Q6_K.gguf' },"
+            " data: [], quantization: 'Q4_K_M', source_quantization: 'Q6_K', runs: 'gpu', export_bytes: 24e9,"
+            " stage_text: '" + (std::string(stage) == "training" ? "condensing" : stage) + "', missing: [] })";
+        const std::string page_html = page().eval(
+            "(function () { var was = state.recipes; state.recipes = { memory: 6e9, recipes: [" + recipe + "] };"
+            " state.open.recipe = 'flint-" + stage + "'; var out = views.create();"
+            " state.recipes = was; state.open.recipe = null; return out; })()");
+        CHECK(page_html.find("Q6_K") != std::string::npos);
+        CHECK(page_html.find("QLoRA") == std::string::npos);
+        CHECK(page_html.find("Fits on GPU") != std::string::npos);
+        if (std::string(stage) == "training") {
+            CHECK(page_html.find("CONDENSING") != std::string::npos);
+        }
+    }
+}
+
+TEST(a_fine_tune_shows_its_score_against_its_base) {
+    // The recipe's page, with whatever its last run said about the records
+    // it held out of training.
+    const auto opened = [](const std::string& held_out) {
+        return std::string(
+                   "(function () { var was = state.recipes; state.recipes = { memory: 6e9, recipes: ["
+                   " aRecipe('testing', { held_out: ") + held_out + " })] };"
+               " state.open.recipe = 'kitchen-testing'; var out = views.create();"
+               " state.recipes = was; state.open.recipe = null; return out; })()";
+    };
+    const std::string better = "{ records: 12, base: { loss: 2.314, perplexity: 10.11 },"
+                               " tuned: { loss: 1.468, perplexity: 4.34 }, skipped: '', measured: true }";
+    CHECK_EQ(drawn(opened(better)), std::string("ok"));
+    const std::string scored = page().eval(opened(better));
+    CHECK(scored.find("Held out") != std::string::npos);
+    CHECK(scored.find("2.31 to 1.47") != std::string::npos);
+    CHECK(scored.find("12 records never trained on") != std::string::npos);
+
+    // Worse than the base it came from is said in red.
+    const std::string worse = page().eval(opened(
+        "{ records: 12, base: { loss: 1.2, perplexity: 3.3 }, tuned: { loss: 1.9, perplexity: 6.7 },"
+        " skipped: '', measured: true }"));
+    CHECK(worse.find("class=\"bad\"><span title=\"12 records") != std::string::npos);
+
+    // Too little data to hold any out says so; a recipe from before scores
+    // says nothing.
+    const std::string small = "{ records: 0, base: { loss: 0, perplexity: 0 }, tuned: { loss: 0, perplexity: 0 },"
+                              " skipped: 'too little data', measured: false }";
+    CHECK_EQ(drawn(opened(small)), std::string("ok"));
+    CHECK(page().eval(opened(small)).find("too little data") != std::string::npos);
+    CHECK(page().eval(opened("undefined")).find("Held out") == std::string::npos);
+
+    // During the run, the base's number as soon as it is known.
+    const std::string running = page().eval(
+        "(function () { var run = state.run; state.run = Object.assign({}, run, { held_out: { records: 12,"
+        "  base: { loss: 2.314, perplexity: 10.11 }, tuned: { loss: 0, perplexity: 0 }, skipped: '', measured: false } });"
+        " state.open.recipe = 'kitchen-training'; var out = views.create();"
+        " state.run = run; state.open.recipe = null; return out; })()");
+    CHECK(running.find("<span>Held out</span>2.31<") != std::string::npos);
 }
 
 TEST(a_model_moved_into_a_subfolder_is_shown_as_itself_not_as_missing) {
@@ -1815,21 +2054,44 @@ TEST(the_build_view_draws_the_agents_and_the_chosen_ones_work) {
     CHECK(chat.find("placeholder=\"Ask it something\"") != std::string::npos);
 }
 
+TEST(a_thought_opens_from_its_step_as_prose_rather_than_as_output) {
+    // A THINK step's line is cut where a word ends, and the whole thought is
+    // its detail: opened, it reads as a turn's thinking does.
+    const std::string step =
+        "({ iteration: 7, expert: 'physics', kind: 'think', ok: true, ms: 120,"
+        "   summary: '(only thought) We need to find the header...',"
+        "   detail: 'We need to find the header.\\n\\nIt is styled in `style.css`.' })";
+    CHECK_EQ(drawn("cookSteps([" + step + "], 0)"), "ok");
+    const std::string shut = page().eval("cookSteps([" + step + "], 0)");
+    CHECK(shut.find("<details class=\"step\"") != std::string::npos);
+    CHECK(shut.find("step-thought") == std::string::npos);   // laid out only when open
+    const std::string open = page().eval(
+        "(function () { var s = " + step + "; stepsOpen.add(stepKey(s));"
+        " var html = cookSteps([s], 0); stepsOpen.delete(stepKey(s)); return html; })()");
+    CHECK(open.find("class=\"md step-thought\"") != std::string::npos);
+    CHECK(open.find("<code>style.css</code>") != std::string::npos);
+    CHECK(open.find("class=\"code") == std::string::npos);
+}
+
 TEST(the_code_source_and_preview_panes_draw_what_was_read) {
     CHECK_EQ(drawn("(state.buildPane = 'code', views.build())"), "ok");
     const std::string code = page().eval("views.build()");
     CHECK(code.find("todo.py") != std::string::npos);
-    CHECK(code.find("data-act=\"editor-edit\"") != std::string::npos);
-    // Editing, what is typed is colored as it is typed: the same lexer, drawn
-    // under the textarea, which scrolls it.
+    // A file the reader says is not safe to write back is shown, not edited.
+    CHECK(code.find("Read only.") != std::string::npos);
+    // An editable one opens straight into the editor, colored as it is typed:
+    // the same lexer, drawn under the textarea, which scrolls it.
     page().eval("state.open.file = Object.assign({}, state.open.file,"
-                " { path: 'site/index.html', editing: true, draft: '<p class=\"a\">hi</p>' })");
+                " { path: 'site/index.html', editable: true, content: '<p class=\"a\">hi</p>',"
+                "   draft: '<p class=\"a\">hi</p>', serial: 7 })");
     CHECK_EQ(drawn("views.build()"), "ok");
     const std::string editing = page().eval("views.build()");
     CHECK(editing.find("code-editor-under") != std::string::npos);
     CHECK(editing.find("<span class=\"tok-key\">p</span>") != std::string::npos);
     CHECK(editing.find("data-scroll=\"editor-scroll\"") != std::string::npos);
-    page().eval("state.open.file.editing = false; state.open.file.path = 'src/todo.py'");
+    CHECK(editing.find("id=\"editor-7\"") != std::string::npos);
+    CHECK(editing.find("class=\"ide-gutter\"") != std::string::npos);
+    page().eval("state.open.file = { path: 'src/todo.py', content: 'print(1)\\n', language: 'py', bytes: 120, cut: false }");
 
     page().eval("state.ci = { available: true, runs: ["
                 "{ name: 'test', displayTitle: 'Add the parser', status: 'completed', conclusion: 'success', headBranch: 'main', event: 'push' },"
@@ -1862,6 +2124,124 @@ TEST(the_code_source_and_preview_panes_draw_what_was_read) {
     CHECK(prompt.find("index.html") != std::string::npos);
     CHECK(prompt.find("`#t`") != std::string::npos);
     CHECK(prompt.find("padding: 12px") != std::string::npos);
+}
+
+TEST(the_code_pane_is_an_editor) {
+    CHECK_EQ(page().eval(kBuildState), "ok");
+    page().eval("state.buildPane = 'code';"
+                "state.tree = { root: '~/demo', cut: false, entries: ["
+                "  { path: 'src', name: 'src', dir: true, depth: 0, bytes: 0 },"
+                "  { path: 'src/todo.py', name: 'todo.py', dir: false, depth: 1, bytes: 120 },"
+                "  { path: 'src/build.js', name: 'build.js', dir: false, depth: 1, bytes: 90 },"
+                "  { path: 'README.md', name: 'README.md', dir: false, depth: 0, bytes: 40 } ] };"
+                "state.code.tabs = [{ path: 'src/todo.py', editable: true, content: 'def a():\\n    return 1\\n',"
+                "  draft: 'def a():\\n    return 2\\n', serial: 1, hash: 'h1', indent: '    ', bytes: 24 },"
+                "  { path: 'README.md', editable: true, content: '# Hi', draft: '# Hi', serial: 2, hash: 'h2' }];"
+                "state.open.file = state.code.tabs[0]; 'ok'");
+    const std::string pane = page().eval("views.build()");
+    // Tabs, one marked unsaved; the tree marks it too.
+    CHECK(pane.find("class=\"ide-tabs\"") != std::string::npos);
+    CHECK(pane.find("dirty-dot") != std::string::npos);
+    CHECK(pane.find("data-act=\"tab-close\" data-path=\"README.md\"") != std::string::npos);
+    CHECK(pane.find("data-act=\"editor-save\" ") != std::string::npos);
+    CHECK(pane.find("Revert") != std::string::npos);
+    CHECK(pane.find("Ln 1, Col 1") != std::string::npos);
+    CHECK(pane.find(">LF<") != std::string::npos);
+    CHECK(pane.find("4 spaces") != std::string::npos);
+    CHECK_EQ(page().eval("codeUnsaved().join(',')"), std::string("src/todo.py"));
+
+    // A folder folds, and what is in it goes with it.
+    CHECK_EQ(page().eval("(state.code.closed = { src: true }, treeRows(state.tree.entries).length)"), std::string("2"));
+    CHECK_EQ(page().eval("(state.code.closed = {}, treeRows(state.tree.entries).length)"), std::string("4"));
+
+    // Find counts what it finds; go to line says how many there are.
+    page().eval("state.code.find = { mode: 'replace', query: 'return', replace: 'yield', matchCase: false, at: 0 }");
+    const std::string finding = page().eval("views.build()");
+    CHECK(finding.find("1 of 1") != std::string::npos);
+    CHECK(finding.find("Replace with") != std::string::npos);
+    page().eval("state.code.find = { mode: 'line', query: '', at: 0 }");
+    CHECK(page().eval("views.build()").find("of 3") != std::string::npos);
+    page().eval("state.code.find = null");
+
+    // A file an agent changed while it was being edited says so.
+    page().eval("state.code.tabs[0].conflict = true");
+    CHECK(page().eval("views.build()").find("Changed on disk") != std::string::npos);
+    page().eval("state.code.tabs[0].conflict = false");
+
+    // Search across the project, grouped by file.
+    page().eval("state.code.side = 'search'; state.code.search = { query: 'return', matchCase: false, busy: false, cut: false,"
+                " results: [{ path: 'src/todo.py', line: 2, text: '    return 1' }, { path: 'src/todo.py', line: 9, text: 'return x' }] }");
+    const std::string searching = page().eval("views.build()");
+    CHECK(searching.find("data-act=\"search-open\" data-path=\"src/todo.py\" data-line=\"9\"") != std::string::npos);
+    CHECK(searching.find("search-file") != std::string::npos);
+    page().eval("state.code.side = 'files'");
+
+    // Quick open finds a file by a few of its letters, its own name first.
+    CHECK(std::stoi(page().eval("fuzzy('src/build.js', 'build')")) < 0);   // in the name: ranked ahead
+    CHECK_EQ(page().eval("fuzzy('src/todo.py', 'zzz')"), std::string("-1"));
+    CHECK_EQ(page().eval("quickMatches('bld')[0].path"), std::string("src/build.js"));
+    CHECK_EQ(drawn("modalView({ kind: 'quick-open', query: 'todo', at: 0 })"), "ok");
+    CHECK_EQ(drawn("modalView({ kind: 'code-name', title: 'New file', verb: 'Create', value: 'src/', error: 'taken' })"), "ok");
+
+    // The terminal opens under the editor.
+    page().eval("state.code.run.open = true; state.code.run.output = '$ ls\\nsrc'");
+    CHECK(page().eval("views.build()").find("id=\"run-command\"") != std::string::npos);
+    page().eval("state.code.run.open = false");
+
+    // What it knows about a file's way of writing.
+    CHECK_EQ(page().eval("JSON.stringify(indentOf('a:\\n  b\\n    c'))"), std::string("\"  \""));
+    CHECK_EQ(page().eval("JSON.stringify(indentOf('func a() {\\n\\tb()\\n}'))"), std::string("\"\\t\""));
+    CHECK_EQ(page().eval("commentOf('py') + commentOf('js') + commentOf('sql') + commentOf('md')"), std::string("#//--"));
+    CHECK_EQ(page().eval("JSON.stringify(lineSpan('ab\\ncd\\nef', 4, 4))"), std::string("[3,5]"));
+    // The banner and the find bar have slots of their own, so neither showing
+    // up moves the editor; a file that starts with an empty line keeps it
+    // (the parser drops one newline after <textarea>); and a file gone from
+    // disk with work in its tab stays open and says so.
+    page().eval("state.code.find = null; state.code.tabs[0].conflict = false");
+    const std::string slots = page().eval("views.build()");
+    CHECK(slots.find("data-key=\"banner\"") != std::string::npos);
+    CHECK(slots.find("data-key=\"find\"") != std::string::npos);
+    CHECK_EQ(page().eval("/<textarea[^>]*>\\n/.test(views.build())"), std::string("true"));
+    page().eval("state.code.tabs[0].gone = true");
+    CHECK(page().eval("views.build()").find("Gone from disk") != std::string::npos);
+    page().eval("state.code.tabs[0].gone = false");
+    // Folded folders are read when first wanted, after the settings are in.
+    CHECK_EQ(page().eval("(state.code.closed = null, typeof foldedFolders())"), std::string("object"));
+    page().eval("state.code.tabs = []; state.open.file = null; state.buildPane = 'agents'");
+}
+
+TEST(closing_the_window_over_unsaved_code_asks_first) {
+    // The window is told how many files are unsaved, and only when that
+    // changes: with none it closes without asking the page at all.
+    page().eval(
+        "window.__told = []; window.__closed = [];"
+        "window.unsavedWork = function (n) { window.__told.push(n); return Promise.resolve(null); };"
+        "window.closeWindow = function (go) { window.__closed.push(go); return Promise.resolve(null); };"
+        "state.code.tabs = [{ path: 'src/todo.py', editable: true, content: 'a', draft: 'b', serial: 1 }];"
+        "tellUnsaved(); tellUnsaved(); 'ok'");
+    CHECK_EQ(page().eval("JSON.stringify(window.__told)"), std::string("[1]"));
+
+    // A close is a question, and one question however often it is asked.
+    page().eval("window.crucibleClosing(); window.crucibleClosing(); 'ok'");
+    CHECK_EQ(page().eval("state.modal && state.modal.kind"), std::string("confirm"));
+    CHECK(page().eval("state.modal.title").find("todo.py") != std::string::npos);
+    CHECK_EQ(page().eval("state.modal.body"), std::string("Close anyway?"));
+    CHECK_EQ(page().eval("String(state.modalStack.length)"), std::string("0"));
+    // Stay keeps the window; Discard closes it.
+    page().eval("actions['confirm-no'](); 'ok'");
+    CHECK_EQ(page().eval("JSON.stringify(window.__closed)"), std::string("[false]"));
+    page().eval("window.crucibleClosing(); 'ok'");
+    page().eval("actions['confirm-yes'](); 'ok'");
+    CHECK_EQ(page().eval("JSON.stringify(window.__closed)"), std::string("[false,true]"));
+
+    // Saved: the window hears there is nothing to ask about, and a close
+    // that reaches the page anyway goes ahead.
+    page().eval("state.code.tabs[0].content = 'b'; tellUnsaved(); 'ok'");
+    CHECK_EQ(page().eval("JSON.stringify(window.__told)"), std::string("[1,0]"));
+    page().eval("window.crucibleClosing(); 'ok'");
+    CHECK_EQ(page().eval("String(state.modal)"), std::string("null"));
+    CHECK_EQ(page().eval("JSON.stringify(window.__closed)"), std::string("[false,true,true]"));
+    page().eval("delete window.unsavedWork; delete window.closeWindow; state.code.tabs = []; 'ok'");
 }
 
 TEST(a_seat_at_work_in_the_build_opens_its_work) {
@@ -2051,4 +2431,258 @@ TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
 
     // Put back, for anything that runs after.
     page().eval("state.snapshot.cook = window.__cookWas; state.open.task = null;");
+}
+
+/// Results as the runner keeps them: two benchmarks, two skills.
+const char* const kBenchState = R"JS(
+window.__benchResult = function (id, a, b) {
+  return { id: id, schema: 1, suite: 'crucible-bench-1', size: 'quick', date: '2026-10-26',
+           model: { file: id + '-Q4_K_M.gguf', name: 'Tiny ' + id, quant: 'Q4_K_M', sha256: 'ab' },
+           benchmarks: { mmlu_pro: { n: 50, correct: a }, gsm8k: { n: 50, correct: b } },
+           skills: { knowledge: a / 50, math: b / 50 }, overall: (a / 50 + b / 50) / 2,
+           speed: { gen_tps: 38.1, prompt_tps: 512.3 }, seconds: 600, hardware: { backend: 'Vulkan' } };
+};
+window.__modelsWas = state.models;
+state.models = { directory: '/m', display: '/m', models: [
+  { name: 'tiny-Q4_K_M.gguf', path: '/m/tiny-Q4_K_M.gguf', bytes: 7e8, format: 'gguf' },
+  { name: 'mmproj-tiny.gguf', path: '/m/mmproj-tiny.gguf', bytes: 1e8, format: 'gguf' },
+  { name: 'tiny-mlx', path: '/m/tiny-mlx', bytes: 1e9, format: 'mlx' }] };
+state.bench.results = { results: [__benchResult('r1', 31, 44), __benchResult('r2', 20, 30),
+                                  __benchResult('r3', 40, 45), __benchResult('r4', 10, 10)] };
+state.bench.board = { offline: false, entries: [
+  { id: 12, size: 'quick', model: { file: '<img src=x onerror=alert(1)>.gguf', repo: 'someone/big-GGUF', sha256: 'cd' },
+    benchmarks: { arc: { n: 50, correct: 40 } }, skills: { reasoning: 0.8 }, overall: 0.8,
+    posted: { user: 'someone', issue: 12 } }] };
+'ok'
+)JS";
+
+TEST(the_bench_tab_runs_compares_and_posts) {
+    CHECK_EQ(page().eval(kBenchState), "ok");
+    // Every state of the tab draws: before anything is read, with results and
+    // the board, mid run, and with a result opened.
+    CHECK_EQ(drawn("(function () { var r = state.bench.results, b = state.bench.board;"
+                   " state.bench.results = null; state.bench.board = null; var out = views.bench();"
+                   " state.bench.results = r; state.bench.board = b; return out; })()"), "ok");
+    CHECK_EQ(drawn("views.bench()"), "ok");
+
+    // Only what can be run is offered: no projector, no MLX.
+    const std::string tab = page().eval("views.bench()");
+    CHECK(tab.find("data-path=\"/m/tiny-Q4_K_M.gguf\"") != std::string::npos);
+    CHECK(tab.find("mmproj") == std::string::npos);
+    CHECK(tab.find("tiny-mlx") == std::string::npos);
+    CHECK_EQ(page().eval("/data-act=\"bench-start\"\\s+disabled/.test(views.bench())"), std::string("true"));
+    CHECK(page().eval("views.bench()").find("data-act=\"bench-effort\"") != std::string::npos);
+    page().eval("state.bench.picked['/m/tiny-Q4_K_M.gguf'] = true");
+    CHECK(page().eval("views.bench()").find("450 questions") != std::string::npos);
+    page().eval("state.bench.size = 'standard'");
+    CHECK(page().eval("views.bench()").find(std::to_string(8 * 200 + 164) + " questions") != std::string::npos);
+    page().eval("state.bench.size = 'quick'; state.bench.off.humaneval = true; state.bench.off.mbpp = true");
+    CHECK(page().eval("views.bench()").find("Code tests run here") == std::string::npos);
+    page().eval("state.bench.off = {}");
+
+    // The board's arithmetic: the README's own example.
+    CHECK_EQ(page().eval("JSON.stringify(benchSkills({ mmlu_pro: { n: 50, correct: 31 }, gsm8k: { n: 50, correct: 44 } }))"),
+             std::string("{\"knowledge\":0.62,\"math\":0.88}"));
+    CHECK_EQ(page().eval("benchOverall({ knowledge: 0.62, math: 0.88 }).toFixed(2)"), std::string("0.75"));
+
+    // Three on the chart at most. A model keeps its color, and the one that
+    // makes room gives its color to the newcomer.
+    page().eval("var was = render; render = function () {};"
+                "['r1', 'r2', 'r3'].forEach(function (id) { actions['bench-compare']({ dataset: { id: id } }); });"
+                "render = was");
+    CHECK_EQ(page().eval("state.bench.compare.map(function (c) { return c.key + c.color; }).join(' ')"),
+             std::string("r1#3987e5 r2#d55181 r3#008300"));
+    page().eval("var was = render; render = function () {}; actions['bench-compare']({ dataset: { id: 'r4' } }); render = was");
+    CHECK_EQ(page().eval("state.bench.compare.map(function (c) { return c.key + c.color; }).join(' ')"),
+             std::string("r2#d55181 r3#008300 r4#3987e5"));
+    const std::string chart = page().eval("views.bench()");
+    CHECK_EQ(drawn("views.bench()"), "ok");
+    CHECK(chart.find("<svg class=\"radar\"") != std::string::npos);
+    CHECK(chart.find("stroke=\"#d55181\"") != std::string::npos);
+    CHECK(chart.find("stroke=\"#3987e5\"") != std::string::npos);
+    CHECK(chart.find("aria-label=\"r3-Q4_K_M, Math: 90.0%\"") != std::string::npos);
+    CHECK(chart.find("class=\"bench-table\"") != std::string::npos);
+    // Text wears text colors: the series color is only ever a mark's.
+    CHECK(chart.find("color:#") == std::string::npos);
+
+    // What other people posted is text, never markup.
+    page().eval("var was = render; render = function () {}; actions['bench-compare-board']({ dataset: { id: '12' } }); render = was");
+    const std::string board = page().eval("views.bench()");
+    CHECK(board.find("<img src=x") == std::string::npos);
+    CHECK(board.find("&lt;img src=x onerror=alert(1)&gt;") != std::string::npos);
+    CHECK(board.find("someone") != std::string::npos);
+    CHECK(board.find("partial") != std::string::npos);   // one skill of seven
+    // A row that is not a result is skipped rather than taking the page down.
+    CHECK_EQ(drawn("(function () { var b = state.bench.board; state.bench.board = { entries: [null, 5, 'x', [],"
+                   " b.entries[0]] }; var out = benchBoardView(); state.bench.board = b; return out; })()"), "ok");
+    page().eval("state.bench.boardQuery = 'nothing like it'");
+    CHECK(page().eval("views.bench()").find("Nothing matches.") != std::string::npos);
+    // The board names a model by its file and its repository on Hugging Face.
+    page().eval("state.bench.boardQuery = 'someone/big'");
+    CHECK(page().eval("views.bench()").find("Nothing matches.") == std::string::npos);
+    CHECK(page().eval("views.bench()").find("title=\"someone/big-GGUF, &lt;img") != std::string::npos);
+    page().eval("state.bench.boardQuery = ''; state.bench.compare = []");
+
+    // A run on its way: a bar per benchmark, and how long is left.
+    page().eval("state.snapshot.bench = { running: true, id: 'x', size: 'quick', started: Date.now() / 1000 - 120,"
+                " benchmarks: ['mmlu_pro', 'gsm8k'], models: [{ path: '/m/tiny-Q4_K_M.gguf', name: 'tiny-Q4_K_M.gguf',"
+                " state: 'running', current: 'gsm8k', benchmarks: { mmlu_pro: { done: 50, n: 50, correct: 30 },"
+                " gsm8k: { done: 10, n: 50, correct: 8 } } }] }");
+    CHECK_EQ(drawn("views.bench()"), "ok");
+    const std::string live = page().eval("views.bench()");
+    CHECK(live.find("60 of 100 questions") != std::string::npos);
+    CHECK(live.find("left") != std::string::npos);
+    CHECK(live.find("data-act=\"bench-stop\"") != std::string::npos);
+    page().eval("state.snapshot.bench.fetching = 'truthfulqa'");
+    CHECK(page().eval("views.bench()").find("Fetching TruthfulQA") != std::string::npos);
+    page().eval("delete state.snapshot.bench.fetching");
+    page().eval("state.snapshot.bench.running = false; state.snapshot.bench.stopped = true;"
+                "state.snapshot.bench.ended = state.snapshot.bench.started + 60");
+    CHECK(page().eval("views.bench()").find("STOPPED") != std::string::npos);
+    page().eval("state.snapshot.bench = null");
+
+    // A result opened: every benchmark with how sure its score is, and what
+    // the model said where it was wrong.
+    page().eval("state.bench.open = Object.assign(__benchResult('r1', 31, 44), { errors: { truthfulqa: 'HTTP 503: busy' }, cut_off: { gsm8k: 3 }, items: {"
+                " mmlu_pro: [{ i: 3, ok: false, read: 'B', answer: 'Answer: B' }, { i: 9, ok: true, read: 'C', answer: 'C' }],"
+                " ifeval: [{ i: 1, ok: false, read: [true, false], answer: 'no' }],"
+                " humaneval: [{ i: 2, ok: false, read: 'AssertionError', answer: 'def f(): pass', limit: true }] } })");
+    CHECK_EQ(drawn("views.bench()"), "ok");
+    const std::string detail = page().eval("views.bench()");
+    CHECK(detail.find("data-act=\"bench-close\"") != std::string::npos);
+    CHECK(detail.find("read B") != std::string::npos);
+    CHECK(detail.find("1 of 2 followed") != std::string::npos);
+    CHECK(detail.find("failed") != std::string::npos);
+    CHECK(detail.find("hit the limit") != std::string::npos);
+    CHECK(detail.find("&plusmn;") != std::string::npos);
+    CHECK(detail.find("31 of 50") != std::string::npos);
+    CHECK(detail.find("HTTP 503: busy") != std::string::npos);   // why a benchmark is missing
+    CHECK(detail.find("3 cut off") != std::string::npos);        // answers that ran out of room
+    page().eval("state.bench.open = null");
+
+    // Posting: exactly what goes, where it goes, and then where it went.
+    const std::string posting = "posting: { schema: 1, suite: 'crucible-bench-1', size: 'quick',"
+                                " model: { file: 'r1.gguf', sha256: 'ab', repo: 'someone/r1-GGUF' },"
+                                " benchmarks: { gsm8k: { n: 50, correct: 44 } } }, public: true";
+    for (const std::string& modal : {
+             std::string("{ kind: 'bench-post', id: 'r1', posting: null, repo: 'mattsaund/crucible-bench', gh: false }"),
+             std::string("{ kind: 'bench-post', id: 'r1', ") + posting + ", repo: 'mattsaund/crucible-bench', gh: true }",
+             std::string("{ kind: 'bench-post', id: 'r1', ") + posting + ", repo: 'mattsaund/crucible-bench', gh: true,"
+                 " error: 'GitHub said no' }",
+             std::string("{ kind: 'bench-post', id: 'r1', ") + posting + ", repo: 'mattsaund/crucible-bench', gh: true,"
+                 " posted: true, url: 'https://github.com/mattsaund/crucible-bench/issues/1' }"}) {
+        CHECK_EQ(drawn("modalView(" + modal + ")"), "ok");
+    }
+    const std::string ready = page().eval("modalView({ kind: 'bench-post', id: 'r1', " + posting
+                                          + ", repo: 'mattsaund/crucible-bench', gh: true })");
+    CHECK(ready.find("crucible-bench-1") != std::string::npos);
+    CHECK(ready.find("someone/r1-GGUF") != std::string::npos);
+    CHECK(ready.find("Not on Hugging Face") == std::string::npos);
+    CHECK_EQ(page().eval("/data-act=\"bench-post-go\"\\s+>/.test(modalView({ kind: 'bench-post', id: 'r1', " + posting
+                         + ", repo: 'mattsaund/crucible-bench', gh: true }))"), std::string("true"));
+    CHECK(page().eval("modalView({ kind: 'bench-post', id: 'r1', " + posting + ", repo: 'mattsaund/crucible-bench', gh: true,"
+                      " posted: true, url: 'https://github.com/mattsaund/crucible-bench/issues/1' })")
+              .find("issues/1") != std::string::npos);
+    // A model file Hugging Face does not have publicly is not posted: the
+    // dialog says so in a word or two, and Post stays off.
+    const std::string unknown = "{ kind: 'bench-post', id: 'r1', posting: { schema: 1, model: { file: 'mine.gguf' } },"
+                                " public: false, repo: 'mattsaund/crucible-bench', gh: true }";
+    CHECK_EQ(drawn("modalView(" + unknown + ")"), "ok");
+    CHECK(page().eval("modalView(" + unknown + ")").find("Not on Hugging Face") != std::string::npos);
+    CHECK_EQ(page().eval("/data-act=\"bench-post-go\"\\s+disabled/.test(modalView(" + unknown + "))"), std::string("true"));
+    const std::string offline = "{ kind: 'bench-post', id: 'r1', posting: { schema: 1, model: { file: 'mine.gguf' } },"
+                                " public: false, offline: true, repo: 'mattsaund/crucible-bench', gh: false }";
+    CHECK(page().eval("modalView(" + offline + ")").find("Hugging Face unreachable") != std::string::npos);
+    CHECK_EQ(page().eval("/data-act=\"bench-post-go\"\\s+disabled/.test(modalView(" + offline + "))"), std::string("true"));
+
+    // And it is a tab like the others, a key away.
+    CHECK(page().eval("topView()").find("data-view=\"bench\"") != std::string::npos);
+    page().eval("state.bench.results = null; state.bench.board = null; state.bench.picked = {}; state.models = window.__modelsWas");
+}
+
+TEST(no_two_page_scripts_define_the_same_name) {
+    // Every script on the page shares one scope, so a function a later file
+    // declares replaces an earlier one of the same name without a word:
+    // models.js's ago(iso) blanked every "Started" in Create for a release.
+    // Crucible's own scripts only; the vendored ones are minified.
+    std::map<std::string, int> seen;
+    std::vector<std::string>   twice;
+    for (const std::string& script : page_scripts()) {
+        if (script.find("SPDX-License-Identifier: MIT") == std::string::npos) {
+            continue;
+        }
+        std::size_t start = 0;
+        while (start < script.size()) {
+            std::size_t end = script.find('\n', start);
+            if (end == std::string::npos) {
+                end = script.size();
+            }
+            std::string line = script.substr(start, end - start);
+            start = end + 1;
+            for (const char* lead : {"async function ", "function ", "const ", "let ", "class "}) {
+                if (line.rfind(lead, 0) != 0) {
+                    continue;
+                }
+                std::string name;
+                for (std::size_t i = std::strlen(lead); i < line.size(); ++i) {
+                    const char c = line[i];
+                    if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '_' && c != '$') {
+                        break;
+                    }
+                    name += c;
+                }
+                if (!name.empty() && ++seen[name] == 2) {
+                    twice.push_back(name);
+                }
+                break;
+            }
+        }
+    }
+    for (const std::string& name : twice) {
+        std::printf("      defined twice: %s\n", name.c_str());
+    }
+    CHECK(twice.empty());
+    // And it looked: names from the first script and the last.
+    CHECK(seen.count("render") == 1);
+    CHECK(seen.count("benchSkills") == 1);
+    CHECK(seen.size() > 200);
+}
+
+TEST(the_page_puts_back_the_turns_it_was_sent_as_stubs) {
+    // A push with every turn whole, then one with the first as a stub: the
+    // page puts the kept turn back.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var was = state.snapshot, keepRender = render; render = function () {};
+      var one = { prompt: 'a', reply: 'b', streaming: false, rev: 5 };
+      window.crucibleSnapshot(Object.assign({}, was, { turns: [one] }));
+      window.crucibleSnapshot(Object.assign({}, was, { turns: [{ rev: 5, stub: true },
+        { prompt: 'c', reply: 'd', streaming: true, rev: 6 }] }));
+      var out = state.snapshot.turns.map(function (t) { return t.prompt; }).join(',');
+      state.snapshot = was; render = keepRender;
+      return out; })())JS"), std::string("a,c"));
+
+    // A stub for a turn the page never had: the transcript stays as it was,
+    // and the whole snapshot is asked for.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var was = state.snapshot, keepRender = render, keepCall = call, asked = [];
+      render = function () {};
+      call = function (method) { asked.push(method); return new Promise(function () {}); };
+      window.crucibleSnapshot(Object.assign({}, was, { turns: [{ prompt: 'x', reply: 'y', rev: 40 }] }));
+      window.crucibleSnapshot(Object.assign({}, was, { turns: [{ rev: 99, stub: true }] }));
+      var out = state.snapshot.turns.map(function (t) { return t.prompt; }).join(',') + '|'
+              + (asked.indexOf('snapshot') >= 0);
+      state.snapshot = was; render = keepRender; call = keepCall;
+      return out; })())JS"), std::string("x|true"));
+
+    // A finished turn already on screen is drawn as an empty stub with its
+    // signature; one that is not, whole.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var turns = [{ prompt: 'q', reply: 'r', streaming: false, rev: 7, actions: [] }];
+      var whole = turnsView(turns, 0);
+      var sig = /data-sig="([^"]*)"/.exec(whole)[1];
+      turnsShown.transcript.add('t0|' + sig.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+      var stub = turnsView(turns, 0);
+      turnsShown.transcript.clear();
+      return (whole.indexOf('data-stub') < 0) + ',' + (stub.indexOf('data-stub') >= 0) + ',' + (stub.indexOf('>r<') < 0);
+    })())JS"), std::string("true,true,true"));
 }

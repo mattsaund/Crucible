@@ -59,6 +59,7 @@ extern const unsigned int  kMarkSvg_size;
 #include "crucible/util/resources.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"
+#include "closing.hpp"
 #include "dialogs.hpp"
 #include "drops.hpp"
 #endif
@@ -383,7 +384,7 @@ int App::run() {
             // was when something changed.
             std::string snapshot;
             try {
-                snapshot = surface->snapshot();
+                snapshot = surface->page_snapshot();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "snapshot failed: %s\n", e.what());
                 return;
@@ -531,6 +532,59 @@ int App::run() {
                         });
     view.init(std::string("window.crucibleNativeDrops = ") + (paths_on_drop ? "true" : "false")
               + "; window.crucibleToken = \"" + token + "\";");
+
+    // --- closing over unsaved work ---------------------------------------------
+    //
+    // The page says how many files the code pane holds unsaved whenever that
+    // changes (ui/shell.js). With none, the window closes at once, as it always
+    // has. With some, the close is held and the page asks, and the page closes
+    // the window itself if the answer is to discard them. A page that has not
+    // answered after a few seconds does not keep the window: the next close
+    // goes ahead. See closing.hpp.
+    struct Leaving {
+        long                                  unsaved = 0;
+        std::chrono::steady_clock::time_point asked{};
+    };
+    const auto leaving = std::make_shared<Leaving>();
+    view.bind("unsavedWork",
+              [&view, leaving, token, refused](const std::string& id, const std::string& arguments, void*) {
+                  if (argument(arguments, 1) != token) {
+                      refused(id);
+                      return;
+                  }
+                  const json count = first_argument(arguments);
+                  leaving->unsaved = count.is_number() ? count.get<long>() : 0;
+                  view.resolve(id, 0, "null");
+              },
+              nullptr);
+    view.bind("closeWindow",
+              [&view, leaving, token, refused](const std::string& id, const std::string& arguments, void*) {
+                  if (argument(arguments, 1) != token) {
+                      refused(id);
+                      return;
+                  }
+                  leaving->asked = {};
+                  view.resolve(id, 0, "null");
+                  if (first_argument(arguments) == true) {
+                      view.terminate();
+                  }
+              },
+              nullptr);
+    if (const auto window = view.window(); window.ok()) {
+        closing::watch(window.value(), [&view, gate, leaving] {
+            // A closed gate is the webview putting its window away after run().
+            if (!gate->open || leaving->unsaved <= 0) {
+                return true;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (leaving->asked != std::chrono::steady_clock::time_point{}) {
+                return now - leaving->asked > std::chrono::seconds(5);
+            }
+            leaving->asked = now;
+            view.eval("window.crucibleClosing && window.crucibleClosing()");
+            return false;
+        });
+    }
 
     engine_->start();
 

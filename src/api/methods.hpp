@@ -71,11 +71,12 @@ void install_methods(std::vector<Method>& table);       ///< runtimes and the tr
 void lab_methods(std::vector<Method>& table);           ///< making an expert
 void source_methods(std::vector<Method>& table);        ///< the project's files, git, a preview, a build
 void market_methods(std::vector<Method>& table);        ///< models to download, and their downloads
+void bench_methods(std::vector<Method>& table);         ///< benchmark runs, their results, the public board
 
 // --- shapes more than one file draws ----------------------------------------
 
 /// The engine's state. In wire.cpp.
-json snapshot_to_json(const Snapshot& snapshot);
+json snapshot_to_json(const Snapshot& snapshot, bool with_turns = true);
 
 /// One step of a cook's journal, and one task of a build's plan.
 json cook_step_json(const CookStep& step);

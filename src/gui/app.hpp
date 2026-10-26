@@ -18,6 +18,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -85,6 +86,7 @@ private:
     std::string           new_session() override;
     std::string           session_id() const override;
     std::string           session_name() const override;
+    std::size_t           names_filed() const override { return names_filed_; }
     std::filesystem::path pending_trust() const override;
     void                  answer_trust(bool trusted) override;
 
@@ -145,6 +147,30 @@ private:
 
     /// The conversations a name has been asked for, so each is asked once.
     std::vector<std::string> naming_asked_;
+
+    /// The conversation last reopened from history, as its root and id.
+    std::string reopened_;
+
+    /// Name a conversation from before names existed, in passing: from the
+    /// recent chats, one at a time, between prompts, and only while the
+    /// delegator is in memory anyway. Loading it is more than a name is worth.
+    void name_old_session();
+
+    /// How naming the old ones is getting on. Shared with the worker that
+    /// reads the list, under its mutex.
+    struct OldNaming {
+        std::mutex               mutex;
+        bool                     looking = false;     ///< a worker is reading the list
+        std::string              asked;               ///< the one being named, until it is answered
+        std::chrono::steady_clock::time_point at{};   ///< when one was last asked or answered
+        std::vector<std::string> tried;               ///< root and id, each asked about once
+        bool                     none_left = false;
+    };
+    OldNaming old_naming_;
+
+    /// Conversations put away and named since the window opened, which the
+    /// page reads the recent chats again for.
+    std::size_t names_filed_ = 0;
 
     /// Close the project: no folder, no history, nothing on screen. What a new
     /// chat starts from -- its first message opens a scratch folder of its

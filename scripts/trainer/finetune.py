@@ -13,6 +13,13 @@ line. Anything that is not a JSON object with an "event" key is log text --
 transformers, torch and the CUDA loader all write to the stream too, and the
 reader keeps those for the log rather than trying to understand them.
 
+The loss is taken over the answers in the data, not over the questions:
+a model is taught to reply, and the prompt it is given is not its to
+predict. About a tenth of the records, the same ones every run, are held out
+of training and scored on that loss before the first step and after the
+last, which says as a number whether the fine-tune got better than its base
+at what it was trained for.
+
 Why an adapter and not a full fine-tune: rewriting every weight of a 7B model
 wants a data-center GPU and produces a 14 GB file. A LoRA adapter trains a few
 million parameters beside a frozen base, fits on a consumer card, and is
@@ -24,7 +31,9 @@ this program to use.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -38,10 +47,18 @@ from pathlib import Path
 
 
 def emit(event: str, **fields) -> None:
-    """One progress record. Flushed, because the reader is a pipe."""
+    """One progress record. Flushed, because the reader is a pipe.
+
+    On a line of its own, whatever was written before it. A progress bar --
+    the trainer's, a download's -- draws on standard error and does not end
+    its line, the two streams reach Crucible as one, and an event glued to
+    the end of a bar is a line that does not parse: every training step was
+    lost that way, and the page's bar stood at nothing. The blank line this
+    leaves where there was no bar is passed over.
+    """
     record = {"event": event}
     record.update(fields)
-    sys.stdout.write(json.dumps(record) + "\n")
+    sys.stdout.write("\n" + json.dumps(record) + "\n")
     sys.stdout.flush()
 
 
@@ -120,36 +137,87 @@ def base_reference(recipe: dict) -> str:
     return ref
 
 
-def load_dataset_from(recipe: dict, tokenizer, context: int):
-    """Every data asset in the recipe, tokenized into one dataset.
+def chat_answers(tokenizer, messages: list) -> tuple[str, list[list[int]]]:
+    """A conversation as the model is trained on it, and where its answers are.
+
+    The answers are the assistant's turns, found by rendering the
+    conversation up to each one: a reply, and whatever ends its turn, lie
+    between the prefix that asks for it and the prefix that includes it. A
+    template that renders an earlier turn differently once it is no longer
+    the last -- some drop an earlier answer's reasoning -- gives prefixes
+    that do not line up, and then no answers are told apart and the whole
+    conversation is learned, as everything was before they were.
+
+    Spans are [start, end) character offsets into the text.
+    """
+    text = tokenizer.apply_chat_template(messages, tokenize=False)
+    spans: list[list[int]] = []
+    for i, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        try:
+            asking = tokenizer.apply_chat_template(
+                messages[:i], tokenize=False, add_generation_prompt=True
+            )
+            answered = tokenizer.apply_chat_template(messages[: i + 1], tokenize=False)
+        except Exception:
+            return text, []
+        if not (answered.startswith(asking) and text.startswith(answered)):
+            return text, []
+        if len(answered) > len(asking):
+            spans.append([len(asking), len(answered)])
+    return text, spans
+
+
+def flat_answers(messages: list) -> tuple[str, list[list[int]]]:
+    """A conversation for a base model with no chat template: one line a
+    message, "role: content", with each assistant's content as an answer."""
+    lines: list[str] = []
+    spans: list[list[int]] = []
+    at = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", ""))
+        content = str(message.get("content", ""))
+        line = f"{role}: {content}"
+        if role == "assistant" and content:
+            spans.append([at + len(role) + 2, at + len(line)])
+        lines.append(line)
+        at += len(line) + 1
+    return "\n".join(lines), spans
+
+
+def to_record(record: dict, tokenizer) -> tuple[str, list[list[int]]] | None:
+    """One record of data as (text, answer spans), or None when it has none.
+
+    Chat records go through the tokenizer's own chat template, so a model
+    taught on them answers in the format it was trained to speak. Anything
+    else is one text, which is all answer.
+    """
+    if isinstance(record.get("messages"), list):
+        try:
+            return chat_answers(tokenizer, record["messages"])
+        except Exception:
+            # A base model with no chat template. Flatten it rather than
+            # dropping the record: the content is still worth training on.
+            return flat_answers(record["messages"])
+    for key in ("text", "content", "output", "completion"):
+        if isinstance(record.get(key), str) and record[key].strip():
+            return record[key], []
+    return None
+
+
+def read_records(recipe: dict, tokenizer) -> list[tuple[str, list[list[int]]]]:
+    """Every record in every data asset of the recipe, as (text, answer spans).
 
     Three shapes are accepted because three shapes are what people have: a
     Huggingface dataset, a folder of text, and JSONL of either {"text": ...}
-    or {"messages": [...]}. Chat records go through the tokenizer's own chat
-    template, so a model taught on them answers in the format it was trained
-    to speak.
+    or {"messages": [...]}.
     """
-    from datasets import Dataset, concatenate_datasets, load_dataset
+    from datasets import load_dataset
 
-    def to_text(record: dict) -> str | None:
-        if isinstance(record.get("messages"), list):
-            try:
-                return tokenizer.apply_chat_template(
-                    record["messages"], tokenize=False
-                )
-            except Exception:
-                # A base model with no chat template. Flatten it rather than
-                # dropping the record: the content is still worth training on.
-                return "\n".join(
-                    f"{m.get('role', '')}: {m.get('content', '')}"
-                    for m in record["messages"]
-                )
-        for key in ("text", "content", "output", "completion"):
-            if isinstance(record.get(key), str) and record[key].strip():
-                return record[key]
-        return None
-
-    parts = []
+    records: list[tuple[str, list[list[int]]]] = []
     for asset in recipe.get("data") or []:
         reference = asset.get("path") or asset.get("id") or ""
         if not reference:
@@ -159,8 +227,7 @@ def load_dataset_from(recipe: dict, tokenizer, context: int):
 
         if source == "hub":
             loaded = load_dataset(reference, split="train")
-            texts = [t for t in (to_text(r) for r in loaded) if t]
-            parts.append(Dataset.from_dict({"text": texts}))
+            records.extend(r for r in (to_record(dict(one), tokenizer) for one in loaded) if r and r[0])
             continue
 
         path = Path(reference)
@@ -173,7 +240,7 @@ def load_dataset_from(recipe: dict, tokenizer, context: int):
         else:
             fail(f"{reference} is not on this machine")
 
-        texts: list[str] = []
+        found: list[tuple[str, list[list[int]]]] = []
         for one in files:
             if one.suffix in (".jsonl", ".json"):
                 for line in one.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -181,41 +248,189 @@ def load_dataset_from(recipe: dict, tokenizer, context: int):
                     if not line:
                         continue
                     try:
-                        text = to_text(json.loads(line))
+                        parsed = json.loads(line)
                     except json.JSONDecodeError:
-                        text = None
-                    if text:
-                        texts.append(text)
+                        continue
+                    record = to_record(parsed, tokenizer) if isinstance(parsed, dict) else None
+                    if record and record[0]:
+                        found.append(record)
             else:
                 body = one.read_text(encoding="utf-8", errors="replace").strip()
                 if body:
-                    texts.append(body)
-        if not texts:
+                    found.append((body, []))
+        if not found:
             fail(f"no usable text in {reference}")
-        parts.append(Dataset.from_dict({"text": texts}))
+        records.extend(found)
 
-    if not parts:
+    if not records:
         fail("this recipe has no training data")
+    return records
 
-    data = parts[0] if len(parts) == 1 else concatenate_datasets(parts)
-    emit("data_ready", records=len(data))
 
-    def tokenize(batch):
-        out = tokenizer(
-            batch["text"],
-            truncation=True,
-            max_length=context,
-            padding="max_length",
-        )
-        # Causal language modeling: the labels are the inputs, and the loss
-        # over a padded position is thrown away.
-        out["labels"] = [
-            [(t if m == 1 else -100) for t, m in zip(ids, mask)]
-            for ids, mask in zip(out["input_ids"], out["attention_mask"])
+# How much of the data is held out of training to score the result on: one
+# record in ten, and at least a few and at most a couple of hundred. Fewer
+# than three is not a score, and past two hundred the number stops moving
+# while every one more costs a forward pass, twice.
+HOLD_OUT_SHARE = 10
+HOLD_OUT_LEAST = 3
+HOLD_OUT_MOST = 200
+
+
+def hold_out(records: list) -> tuple[list, list, str]:
+    """The records to train on, the ones to score on, and why there are none
+    of the second when there are not.
+
+    The same records every run: picked by a hash of each one's text, not by
+    where it is or at random, so training the recipe again scores the same
+    answers and the two runs can be compared. A record whose text is also
+    among the held out -- the same example twice -- is not trained on
+    either, or the score would be of something the model had seen.
+    """
+    count = min(len(records) // HOLD_OUT_SHARE, HOLD_OUT_MOST)
+    if count < HOLD_OUT_LEAST:
+        return list(records), [], "too little data"
+    order = sorted(
+        range(len(records)),
+        key=lambda i: hashlib.sha256(records[i][0].encode("utf-8")).hexdigest(),
+    )
+    chosen = set(order[:count])
+    held = [records[i] for i in sorted(chosen)]
+    seen = {text for text, _ in held}
+    train = [r for i, r in enumerate(records) if i not in chosen and r[0] not in seen]
+    if not train:
+        return list(records), [], "too little data"
+    return train, held, ""
+
+
+def answer_labels(ids: list, offsets: list, mask: list, spans: list) -> list[int]:
+    """What the loss is taken over: the tokens of the answers, and nothing
+    that is padding.
+
+    A token is an answer's when its characters overlap one. With no spans the
+    whole text is the answer: plain text, or a conversation whose answers
+    could not be told apart. So is a record whose answers the context cut off
+    altogether, rather than a record with nothing in it to learn, which
+    would make a step of nothing.
+    """
+    if spans and offsets:
+        labels = [
+            token if m == 1 and any(first < high and last > low for low, high in spans) else -100
+            for token, m, (first, last) in zip(ids, mask, offsets)
         ]
-        return out
+        if any(label != -100 for label in labels):
+            return labels
+    return [token if m == 1 else -100 for token, m in zip(ids, mask)]
 
-    return data.map(tokenize, batched=True, remove_columns=["text"])
+
+def encode(tokenizer, texts: list, spans: list, context: int, pad: bool) -> dict:
+    """Tokens and labels for some records: the same for training as for the
+    score, which is what makes the score a measure of what was trained.
+
+    Answers are found by the characters each token came from, which only a
+    fast tokenizer reports. Without one every record is learned whole.
+    """
+    fast = bool(getattr(tokenizer, "is_fast", False))
+    out = tokenizer(
+        texts,
+        truncation=True,
+        max_length=context,
+        padding="max_length" if pad else False,
+        return_offsets_mapping=fast,
+    )
+    offsets = out.pop("offset_mapping") if fast else [[] for _ in texts]
+    # Causal language modeling: the labels are the inputs, and the loss over
+    # a padded position, or one that is not an answer, is thrown away.
+    out["labels"] = [
+        answer_labels(ids, offsets[i], mask, spans[i])
+        for i, (ids, mask) in enumerate(zip(out["input_ids"], out["attention_mask"]))
+    ]
+    return out
+
+
+def to_dataset(records: list, tokenizer, context: int):
+    """The training records, tokenized into one dataset."""
+    from datasets import Dataset
+
+    data = Dataset.from_dict({
+        "text": [text for text, _ in records],
+        "spans": [spans for _, spans in records],
+    })
+    return data.map(
+        lambda batch: encode(tokenizer, batch["text"], batch["spans"], context, pad=True),
+        batched=True,
+        remove_columns=["text", "spans"],
+    )
+
+
+def summary(total: float, tokens: int) -> dict | None:
+    """Loss and perplexity from a loss summed over `tokens` answer tokens, or
+    None when there is nothing to say: no tokens, or a sum that is not a
+    number. A JSON NaN is not one the reader will parse."""
+    if tokens <= 0:
+        return None
+    loss = total / tokens
+    if not math.isfinite(loss):
+        return None
+    return {"loss": round(loss, 4), "perplexity": round(math.exp(min(loss, 700.0)), 4)}
+
+
+def score(model, examples: dict, compute) -> dict | None:
+    """The model's loss over the answers in `examples`, one record at a time.
+
+    Taken the way the trainer takes it, under the same mixed precision, so
+    that the number before training and the one after differ by the
+    training and nothing else. Under QLoRA both are of the four-bit base,
+    without the adapter and with it.
+    """
+    import contextlib
+
+    import torch
+    import torch.nn.functional as functional
+
+    device = next(model.parameters()).device
+    autocast = (
+        torch.autocast(device_type="cuda", dtype=compute)
+        if device.type == "cuda" and compute is not torch.float32
+        else contextlib.nullcontext()
+    )
+    training = model.training
+    model.eval()
+    total, tokens = 0.0, 0
+    try:
+        with torch.no_grad(), autocast:
+            for ids, mask, labels in zip(
+                examples["input_ids"], examples["attention_mask"], examples["labels"]
+            ):
+                logits = model(
+                    input_ids=torch.tensor([ids], device=device),
+                    attention_mask=torch.tensor([mask], device=device),
+                ).logits[0, :-1].float()
+                # Each position predicts the next token, so the labels move
+                # one along.
+                target = torch.tensor(labels[1:], device=device)
+                total += functional.cross_entropy(
+                    logits, target, ignore_index=-100, reduction="sum"
+                ).item()
+                tokens += int((target != -100).sum().item())
+    finally:
+        model.train(training)
+    return summary(total, tokens)
+
+
+def report_score(of: str, model, examples: dict, records: int, compute) -> None:
+    """Score `model` on the held-out records and say so, as `of` ("base" or
+    "tuned"). A score that cannot be had is said too, and the run goes on:
+    it is a measure of the training, not a part of it."""
+    phase("scoring", "the base" if of == "base" else "the fine-tune")
+    try:
+        result = score(model, examples, compute)
+    except Exception as error:  # noqa: BLE001 -- a run is worth more than its score
+        emit("note", text=f"the held-out records could not be scored: {type(error).__name__}")
+        result = None
+    if result is None:
+        emit("heldout", records=records, skipped="no score")
+        return
+    emit("heldout", of=of, records=records, **result)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +518,19 @@ def train_torch(recipe: dict, out: Path, args) -> Path:
     total = sum(p.numel() for p in model.parameters())
     emit("adapter", trainable=trainable, total=total)
 
-    data = load_dataset_from(recipe, tokenizer, context)
+    records, held, skipped = hold_out(read_records(recipe, tokenizer))
+    emit("data_ready", records=len(records))
+    data = to_dataset(records, tokenizer, context)
+
+    # The base's score, before a step: the adapter starts at nothing, so the
+    # model as it stands answers as the base does.
+    if skipped:
+        emit("heldout", records=0, skipped=skipped)
+    else:
+        examples = encode(
+            tokenizer, [text for text, _ in held], [spans for _, spans in held], context, pad=False
+        )
+        report_score("base", model, examples, len(held), compute)
 
     class Report(TrainerCallback):
         """Crucible's progress bar, and the loss curve behind it."""
@@ -343,6 +570,9 @@ def train_torch(recipe: dict, out: Path, args) -> Path:
         callbacks=[Report()],
     )
     trainer.train()
+
+    if not skipped:
+        report_score("tuned", model, examples, len(held), compute)
 
     # --- merge, so what comes out is an ordinary model ---------------------
     #
@@ -401,17 +631,34 @@ def train_mlx(recipe: dict, out: Path, args) -> Path:
     return merged
 
 
+def as_log(line: str, child: str) -> str:
+    """A child's line as it is passed on: as it was, unless Crucible could
+    read it as an event, which only this script speaks.
+
+    Anything that starts like a JSON object goes behind the child's name,
+    where it cannot parse. Crucible's own quantizer once printed its progress
+    as events, and its "done" finished the fine-tune at the file in the run
+    folder that was about to be moved into the models folder.
+    """
+    if line.lstrip(" \t\r\n﻿").startswith("{"):
+        return f"{child}: {line}"
+    return line
+
+
 def run_logged(command: list[str]) -> None:
     """Run a child and pass its output through as log lines."""
-    process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-    )
-    assert process.stdout is not None
-    for line in process.stdout:
-        sys.stdout.write(line if line.endswith("\n") else line + "\n")
-        sys.stdout.flush()
-    if process.wait() != 0:
-        fail(f"{Path(command[0]).name} exited {process.returncode}")
+    child = Path(command[0]).name
+    with subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+    ) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(as_log(line.rstrip("\r\n"), child) + "\n")
+            sys.stdout.flush()
+        status = process.wait()
+    if status != 0:
+        fail(f"{child} exited {status}")
 
 
 # ---------------------------------------------------------------------------
@@ -441,13 +688,23 @@ def to_gguf(merged: Path, out: Path, recipe: dict, args) -> Path | None:
 
     # The converter can write two of the formats on its own. The k-quants --
     # Q4_K_M and friends, which is where the interesting size/quality trades
-    # are -- need llama-quantize, a separate program from llama.cpp that
-    # Crucible does not build. So the ones that can be done in one step are
-    # done in one step, and the rest come out at F16 with a line saying why.
+    # are -- need a quantizer: Crucible's own, which it passes as
+    # --quantize-cmd, or a llama-quantize. So the ones that can be done in one
+    # step are done in one step, and the rest are converted to F16 and then
+    # quantized, or left at F16 with a line saying why when nothing can.
     direct = {"F16": "f16", "Q8_0": "q8_0"}
     quantizer = args.quantize_bin if args.quantize_bin else shutil.which("llama-quantize")
     if quantizer and not Path(quantizer).exists() and not shutil.which(quantizer):
         quantizer = None
+    # Crucible quantizes with its own llama.cpp when it is asked to, which it
+    # is unless a llama-quantize was named: `crucible --quantize IN OUT TYPE`
+    # takes llama-quantize's arguments.
+    command = [quantizer] if quantizer else None
+    if args.quantize_cmd:
+        try:
+            command = [str(part) for part in json.loads(args.quantize_cmd)] or command
+        except ValueError:
+            pass
 
     if quantization in direct:
         phase("converting", f"to GGUF at {quantization}")
@@ -464,17 +721,17 @@ def to_gguf(merged: Path, out: Path, recipe: dict, args) -> Path | None:
         sys.executable, str(args.convert_script), str(merged),
         "--outfile", str(unquantized), "--outtype", "f16",
     ])
-    if not quantizer:
+    if not command:
         emit(
             "note",
-            text=f"no llama-quantize here, so this is F16 rather than {quantization}. "
+            text=f"no quantizer here, so this is F16 rather than {quantization}. "
                  "It loads the same; it is larger.",
         )
         return unquantized
 
     phase("quantizing", quantization)
     quantized = out / f"{name}.{quantization}.gguf"
-    run_logged([quantizer, str(unquantized), str(quantized), quantization])
+    run_logged(command + [str(unquantized), str(quantized), quantization])
     unquantized.unlink(missing_ok=True)
     return quantized
 
@@ -511,6 +768,8 @@ def main() -> int:
     parser.add_argument("--out", required=True, help="directory for the result")
     parser.add_argument("--convert-script", default="", help="convert_hf_to_gguf.py")
     parser.add_argument("--quantize-bin", default="", help="llama-quantize")
+    parser.add_argument("--quantize-cmd", default="",
+                        help="the quantizer as a JSON list, given IN OUT TYPE after it")
     parser.add_argument("--export-dir", default="",
                         help="where the finished GGUF goes: Crucible's models directory")
     parser.add_argument("--max-steps", type=int, default=0,

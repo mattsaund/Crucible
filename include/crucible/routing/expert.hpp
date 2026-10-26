@@ -54,6 +54,10 @@ struct Expert {
     /// creation time -- see Engine::write_examples, and `examples_prompt` in
     /// the orchestrator's naming.py. A description is what a person can be
     /// asked for; two well-chosen example questions is not.
+    ///
+    /// A seat with none, beside seats that have some, is asked about in its
+    /// blurb instead (Roster.asked in the orchestrator's routing.py), so its
+    /// name is still an answer the delegator has seen.
     std::vector<std::string> examples;
 
     /// Whole words that mark this expert's territory, for the model-free

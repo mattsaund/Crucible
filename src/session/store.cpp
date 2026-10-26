@@ -523,17 +523,36 @@ std::filesystem::path SessionStore::totals_file() const {
     return project_.dir / "usage.json";
 }
 
-bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
-                        std::string& error) {
-    json stored_turns = json::array();
+namespace {
+
+/// The turns worth keeping, as they are written. A reply still arriving is
+/// not resumable, and a failed turn is noise -- its "reply" is the error
+/// that stopped it.
+template <typename Turns>
+json stored_turns_of(const Turns& turns) {
+    json stored = json::array();
     for (const Turn& turn : turns) {
-        // A reply still arriving is not resumable, and a failed turn is noise
-        // -- its "reply" is the error that stopped it.
         if (turn.streaming || turn.failed || turn.reply.empty()) {
             continue;
         }
-        stored_turns.push_back(turn_to_json(turn));
+        stored.push_back(turn_to_json(turn));
     }
+    return stored;
+}
+
+}  // namespace
+
+bool SessionStore::save(const std::vector<Turn>& turns, const TokenUsage& usage,
+                        std::string& error) {
+    return save_stored(stored_turns_of(turns), usage, error);
+}
+
+bool SessionStore::save(const TurnList& turns, const TokenUsage& usage, std::string& error) {
+    return save_stored(stored_turns_of(turns), usage, error);
+}
+
+bool SessionStore::save_stored(const json& stored_turns, const TokenUsage& usage,
+                               std::string& error) {
     if (stored_turns.empty()) {
         // Nothing worth a file: none yet, or the last turn was just deleted --
         // and then the file that still holds it goes too, or the turn came

@@ -3,6 +3,7 @@
 // See mcp.hpp.
 #include "crucible/tools/mcp.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 
@@ -138,6 +139,13 @@ std::vector<Tool> Client::tools() const {
 
 bool Client::start(const ServerConfig& config, std::string& error) {
     stop();
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (interrupted_) {
+            error = config.name + " was not started: Crucible is closing";
+            return false;
+        }
+    }
     config_ = config;
     std::vector<std::string> argv{config.command};
     argv.insert(argv.end(), config.args.begin(), config.args.end());
@@ -213,6 +221,19 @@ void Client::stop() {
     tools_.clear();
 }
 
+void Client::interrupt() {
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        interrupted_ = true;
+        // Signaled under the lock that stop() reaps under, so the two cannot
+        // meet on the process; the reader sees the output end once it has gone.
+        if (child_) {
+            child_->interrupt();
+        }
+    }
+    arrived_.notify_all();
+}
+
 void Client::read_all() {
     util::Subprocess* child = nullptr;
     {
@@ -247,6 +268,10 @@ json Client::request(const std::string& method, const json& params, int timeout_
             error = "the server is not running";
             return nullptr;
         }
+        if (interrupted_) {
+            error = "stopped";
+            return nullptr;
+        }
         id = ++next_id_;
         if (!child_->write_line(json{{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}}
                                     .dump(-1, ' ', false, json::error_handler_t::replace))) {
@@ -270,6 +295,10 @@ json Client::request(const std::string& method, const json& params, int timeout_
         }
         if (ended_) {
             error = "the server went away";
+            return nullptr;
+        }
+        if (interrupted_) {
+            error = "stopped";
             return nullptr;
         }
         if (arrived_.wait_until(lock, deadline) == std::cv_status::timeout) {
@@ -330,9 +359,14 @@ void Hub::configure(const std::vector<ServerConfig>& servers) {
 }
 
 std::shared_ptr<Client> Hub::client_for(const std::string& name, std::string& error) {
-    ServerConfig config;
+    ServerConfig            config;
+    std::shared_ptr<Client> client;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (stopped_) {
+            error = "stopped";
+            return nullptr;
+        }
         const auto found = servers_.find(name);
         if (found == servers_.end() || !found->second.config.enabled) {
             error = "there is no MCP server called " + name + " (Settings, Tools lists them)";
@@ -342,11 +376,21 @@ std::shared_ptr<Client> Hub::client_for(const std::string& name, std::string& er
             return found->second.client;
         }
         config = found->second.config;
+        // Where stop_all() can reach it while it starts, which for a server
+        // that never answers is a minute and a half of waiting.
+        client = std::make_shared<Client>();
+        starting_.push_back(client);
     }
     // Started without the lock: other servers' calls go on meanwhile.
-    auto client = std::make_shared<Client>();
     const bool ok = client->start(config, error);
     const std::lock_guard<std::mutex> lock(mutex_);
+    starting_.erase(std::remove(starting_.begin(), starting_.end(), client), starting_.end());
+    if (stopped_) {
+        // Up just as everything was stopped: not kept, and stopped as it goes
+        // out of scope, after the lock.
+        error = "stopped";
+        return nullptr;
+    }
     const auto found = servers_.find(name);
     if (found == servers_.end()) {
         error = name + " was removed while it started";
@@ -424,11 +468,20 @@ void Hub::stop_all() {
     std::vector<std::shared_ptr<Client>> all;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        all      = starting_;
         for (auto& [name, entry] : servers_) {
             if (entry.client) {
                 all.push_back(std::move(entry.client));
             }
         }
+    }
+    // Interrupted rather than only let go of: a start or a call waiting on
+    // another thread holds its client, and would otherwise wait out its
+    // timeout. Each ends now, its thread lets go, and whoever lets go last
+    // stops the server.
+    for (const std::shared_ptr<Client>& client : all) {
+        client->interrupt();
     }
     all.clear();
 }

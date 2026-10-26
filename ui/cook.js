@@ -44,10 +44,13 @@ function cookSteps(steps, from) {
     const open = stepsOpen.has(key);
     // What is inside -- a colored diff, a command's output -- is laid out only
     // while it is open. Drawn for every closed step, it was most of the cost
-    // of each push during a build.
+    // of each push during a build. A THINK step's is the whole of what was
+    // thought, which its line had to cut: prose, as a turn's thinking is.
     return `<details class="step" data-toggle="step-open" data-key="${escape(key)}"${open ? ' open' : ''}>
       <summary class="step-head">${head}</summary>${!open ? ''
-        : step.kind === 'write' ? writtenBlock(step.detail, file) : codeBlock(step.detail, languageOf(file))}</details>`;
+        : step.kind === 'write' ? writtenBlock(step.detail, file)
+        : step.kind === 'think' ? `<div class="md step-thought">${markdown(step.detail)}</div>`
+        : codeBlock(step.detail, languageOf(file))}</details>`;
   }).join('');
 }
 

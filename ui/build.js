@@ -247,123 +247,8 @@ function buildBody(build) {
 }
 
 // --- the code -----------------------------------------------------------------------------
-
-function codePane() {
-  const project = state.snapshot.project || {};
-  if (!project.open) return '<div class="empty"><div class="empty-label">No project open.</div></div>';
-  const tree = state.tree;
-  const open = state.open.file;
-  const entries = !tree ? '<div class="status">Reading...</div>'
-    : !tree.entries.length ? '<div class="status">Nothing in it yet.</div>'
-    : tree.entries.map((e) => `<button class="tree-row${open && open.path === e.path ? ' here' : ''}${e.dir ? ' dir' : ''}"
-          data-act="${e.dir ? 'tree-none' : 'file-open'}" data-path="${escape(e.path)}" style="padding-left:${0.6 + e.depth * 0.9}rem"
-          title="${escape(e.path)}">${escape(e.name)}${e.dir ? '/' : ''}</button>`).join('')
-      + (tree.cut ? '<div class="status" style="padding:.4rem .6rem">more files not listed</div>' : '');
-  let file = '<div class="status" style="padding:1rem">Click a file to read it.</div>';
-  if (open) {
-    if (open.loading) {
-      file = '<div class="status" style="padding:1rem">Reading...</div>';
-    } else if (open.error) {
-      file = `<div class="bad" style="padding:1rem">${escape(open.error)}</div>`;
-    } else if (open.image) {
-      file = open.thumb ? `<img class="code-picture" src="${open.thumb}" alt="${escape(open.path)}">`
-                        : '<div class="status" style="padding:1rem">Loading the picture...</div>';
-    } else if (open.editing) {
-      // The text is typed into a textarea whose own letters are clear, over
-      // the same text colored: highlighted as it is edited, and still a
-      // textarea -- undo, selection, the keyboard -- underneath.
-      file = `<div class="code-editor-wrap">
-          <pre class="code-editor-under" aria-hidden="true"><code>${highlight(open.draft, fileLanguage(open))}\n</code></pre>
-          <textarea class="code-editor" data-key="editor-key" data-input="editor-change" data-scroll="editor-scroll"
-                spellcheck="false" data-draft aria-label="Editing ${escape(open.path)}">${escape(open.draft)}</textarea></div>`;
-    } else {
-      file = codeBlock(open.content || '', fileLanguage(open))
-           + (open.cut ? '<div class="status">cut: the start of a long file</div>' : '');
-    }
-  }
-  const head = open ? `<div class="row code-head-row"><strong class="file-name">${escape(open.path)}</strong>
-      <span class="status">${open.bytes ? bytes(open.bytes) : ''}</span><span class="spacer"></span>
-      ${open.image || open.loading || open.error ? '' : open.editing
-        ? `<button class="action small" data-act="editor-save" ${state.snapshot.busy ? 'disabled' : ''}>Save</button>
-           <button class="action small" data-act="editor-cancel">Cancel</button>`
-        : `<button class="action small" data-act="editor-edit">Edit</button>`}
-      <button class="action small" data-act="file-close">Close</button></div>` : '';
-  return `<div class="code-split">
-      <div class="tree"><div class="row" style="padding:0 .6rem .4rem"><div class="caption" style="margin:0;flex:1">FILES</div>
-        <button class="link" data-act="tree-refresh">Refresh</button></div>${entries}</div>
-      <div class="code-view">${head}${file}</div>
-    </div>`;
-}
-
-async function loadTree() {
-  if (!(state.snapshot.project || {}).open) return;
-  try { state.tree = await call('project.tree'); } catch (error) { state.error = error.message; }
-  render();
-}
-
-actions['tree-refresh'] = () => { state.tree = null; render(); loadTree(); };
-actions['tree-none'] = () => {};
-actions['file-open'] = (button) => guard(async () => {
-  const path = button.dataset.path;
-  const was = state.open.file;
-  if (was && was.editing && was.draft !== was.content && was.path !== path) {
-    const discard = await confirmIt({ title: `Unsaved changes to ${was.path}`, body: 'Discard them?',
-                                      yes: 'Discard', no: 'Keep' });
-    if (!discard) return;
-  }
-  state.open.file = { path, loading: true };
-  if (state.view === 'build') state.buildPane = 'code';
-  render();
-  try {
-    const got = await call('project.read', { path });
-    state.open.file = Object.assign({ path }, got, { loading: false });
-    if (got.image) {
-      const picture = await call('attach.image', { path: got.full });
-      state.open.file.thumb = `data:${picture.mime};base64,${picture.data}`;
-    }
-  } catch (error) {
-    state.open.file = { path, error: error.message };
-  }
-});
-actions['file-close'] = () => { state.open.file = null; render(); };
-actions['editor-edit'] = () => { const f = state.open.file; f.editing = true; f.draft = f.content || ''; render(); };
-actions['editor-cancel'] = () => { const f = state.open.file; f.editing = false; render(); };
-/// The language an open file is read as: by its name first, which knows a
-/// Dockerfile, and then by what the reader said.
-const fileLanguage = (file) => languageOf(file.path) || file.language || '';
-
-actions['editor-change'] = (box) => {
-  const f = state.open.file;
-  f.draft = box.value;
-  // The colors under the text, redrawn here rather than by a render: one per
-  // keystroke would draw the whole window again for one letter.
-  const under = box.previousElementSibling;
-  if (under && under.firstElementChild) {
-    under.firstElementChild.innerHTML = highlight(box.value, fileLanguage(f)) + '\n';
-  }
-};
-actions['editor-scroll'] = (box) => {
-  const under = box.previousElementSibling;
-  if (under) { under.scrollTop = box.scrollTop; under.scrollLeft = box.scrollLeft; }
-};
-actions['editor-key'] = (box, event) => {
-  if (event.key === 'Tab') { event.preventDefault(); const at = box.selectionStart;
-    box.value = box.value.slice(0, at) + '    ' + box.value.slice(box.selectionEnd);
-    box.selectionStart = box.selectionEnd = at + 4; actions['editor-change'](box); }
-  if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
-    // As the Save button: not while something is writing to the project.
-    event.preventDefault();
-    if (!state.snapshot.busy) actions['editor-save']();
-  }
-};
-actions['editor-save'] = () => guard(async () => {
-  const f = state.open.file;
-  await call('project.write', { path: f.path, content: f.draft });
-  f.content = f.draft;
-  f.editing = false;
-  state.source = null;
-  loadSource();
-});
+//
+// The editor is code.js: codePane, loadTree and the file and editor actions.
 
 // --- version control --------------------------------------------------------------------
 
@@ -569,6 +454,7 @@ actions['build-pane'] = (button) => {
 
 function enterPane(pane) {
   if (pane === 'code' && !state.tree) loadTree();
+  if (pane === 'code') refreshTabs();
   if (pane === 'source' && !state.source) loadSource();
   if (pane === 'preview' && !state.preview.pages) enterPreview();
 }
@@ -589,6 +475,8 @@ onSnapshot.push(() => {
   state.diff = null;
   state.log = null;
   state.open.file = null;
+  state.code.tabs = [];
+  state.code.search.results = null;
   state.open.task = null;
   state.preview = Object.assign(state.preview, { pages: null, page: '', html: '', picked: null, changes: [] });
   if (state.view === 'build') enterPane(state.buildPane);
@@ -615,6 +503,8 @@ onSnapshot.push(() => {
   const fresh = build && added ? (build.steps || []).slice(-added) : [];
   buildSteps = steps;
   const touchedPage = fresh.some((step) => (step.changed || []).some((f) => /\.(html?|css|js|svg|png|jpe?g|gif)$/i.test(f)));
+  // An agent wrote a file somebody has open: it is read again, or marked.
+  codeFilesChanged(fresh.flatMap((step) => step.changed || []));
   if (state.view === 'build') {
     if (state.buildPane === 'code') loadTree();
     if (state.buildPane === 'source' && (added || finished)) loadSource(false);

@@ -184,7 +184,8 @@ file(MAKE_DIRECTORY ${CRUCIBLE_GENERATED_DIR})
 set(CRUCIBLE_ORCHESTRATOR_DIR ${CMAKE_CURRENT_LIST_DIR}/../scripts/orchestrator/crucible_orchestrator)
 set(CRUCIBLE_ORCHESTRATOR_CPP "")
 foreach(_entry "__init__.py:Init" "__main__.py:Run" "main.py:Main" "rpc.py:Rpc"
-               "routing.py:Routing" "cook.py:Cook" "naming.py:Naming" "build.py:Build")
+               "routing.py:Routing" "cook.py:Cook" "naming.py:Naming" "build.py:Build"
+               "chat.py:Chat" "bench.py:Bench" "bench_score.py:BenchScore")
     string(REPLACE ":" ";" _parts "${_entry}")
     list(GET _parts 0 _file)
     list(GET _parts 1 _symbol)
@@ -362,9 +363,11 @@ set(CRUCIBLE_UI_FILES
     ${CRUCIBLE_UI_DIR}/cook.js
     ${CRUCIBLE_UI_DIR}/preview.js
     ${CRUCIBLE_UI_DIR}/build.js
+    ${CRUCIBLE_UI_DIR}/code.js
     ${CRUCIBLE_UI_DIR}/create.js
     ${CRUCIBLE_UI_DIR}/history.js
     ${CRUCIBLE_UI_DIR}/models.js
+    ${CRUCIBLE_UI_DIR}/bench.js
     ${CRUCIBLE_UI_DIR}/settings.js)
 set(CRUCIBLE_WEBUI_CPP  "")
 set(CRUCIBLE_RENDER_CPP "")

@@ -5,7 +5,9 @@
 // way the real ones do: one JSON-RPC message a line.
 #include "test_helpers.hpp"
 
+#include <chrono>
 #include <fstream>
+#include <thread>
 
 #include "crucible/tools/mcp.hpp"
 #include "crucible/tools/workshop.hpp"
@@ -136,4 +138,40 @@ TEST(a_server_is_started_listed_and_called) {
     hub.configure({});
     CHECK(!hub.any());
     CHECK(hub.status().empty());
+}
+
+TEST(quitting_does_not_wait_for_a_server_still_starting) {
+    const std::string python = a_python();
+    if (python.empty()) {
+        std::printf("      (no Python on PATH; skipped)\n");
+        return;
+    }
+    // A server that reads and never answers: what one fetched by npx looks
+    // like while it is still arriving. Its start waits sixty seconds for an
+    // answer to initialize, and quitting used to wait with it.
+    TempDir dir;
+    std::ofstream(dir.path() / "mute.py") << "import sys\nfor line in sys.stdin:\n    pass\n";
+    tools::mcp::ServerConfig config;
+    config.name    = "mute";
+    config.command = python;
+    config.args    = {"-u", (dir.path() / "mute.py").string()};
+    tools::mcp::Hub hub;
+    hub.configure({config});
+
+    const auto began = std::chrono::steady_clock::now();
+    std::thread warming([&hub] { hub.warm(); });
+    // Long enough to be waiting for its answer on most machines; the stop is
+    // the same wherever in the start it lands.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    hub.stop_all();
+    warming.join();
+    CHECK(std::chrono::steady_clock::now() - began < std::chrono::seconds(20));
+    CHECK(hub.tools().empty());
+
+    // And nothing starts after it: a call that would start one is refused.
+    const auto asked = std::chrono::steady_clock::now();
+    const tools::mcp::Result refused = hub.call("mute", "anything", json::object(), 5);
+    CHECK(!refused.ok);
+    CHECK_EQ(refused.error, std::string("stopped"));
+    CHECK(std::chrono::steady_clock::now() - asked < std::chrono::seconds(2));
 }

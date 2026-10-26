@@ -367,11 +367,20 @@ window.addEventListener('drop', (event) => {
   const entries = Array.from(transfer.items || [])
     .map((item) => (item.kind === 'file' && item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
     .filter(Boolean);
-  const tops = entries.length ? entries : Array.from(transfer.files || []).map((file) => ({
-    isFile: true, isDirectory: false, name: file.name, file: (ok) => ok(file) }));
+  const tops = entries.length ? entries : Array.from(transfer.files || []).map(fileEntry);
   if (state.view !== target.mode) enter(target.mode);
   takeDrop(target.mode, tops);
 }, true);
+
+/// A File as keepEntry reads one, which is how a dropped entry looks. A
+/// picture handed over with no name to go by -- a clipboard's, sometimes --
+/// is given one: what a file is called decides whether it goes as a picture.
+function fileEntry(file) {
+  let name = file.name || 'pasted';
+  const picture = /^image\/(png|jpeg|gif|webp|bmp)$/.exec(file.type || '');
+  if (picture && !DROP_PICTURES.test(name)) name += `.${picture[1] === 'jpeg' ? 'jpg' : picture[1]}`;
+  return { isFile: true, isDirectory: false, name, file: (ok) => ok(file) };
+}
 
 // --- the paths, where the window says them ---------------------------------------------
 
@@ -523,3 +532,59 @@ function base64Of(bytes) {
   }
   return btoa(text);
 }
+
+// --- pasted into the box ---------------------------------------------------------------
+//
+// Ctrl+V of a picture -- a screenshot, an image copied from a browser -- or of
+// files copied in a file manager, where the webview hands them over, attaches
+// them as a drop does. A page is handed what was copied as files and never as
+// paths, so a paste takes the road of a drop the window cannot place: a copy
+// is kept, and attached. Text pastes as text, as it always has.
+//
+// WebKitGTK hands over a picture but not copied files: those it pastes as
+// their paths, as text, and tells the page nothing more.
+
+/// What a paste carries that is files rather than text, as keepDropped takes
+/// them. None when it is text.
+///
+/// A picture that comes with text is the text's own -- an office program
+/// copies a table as both, and what was meant was the table -- unless the
+/// text only says what the files are: the address a browser copies with a
+/// picture, the names a file manager copies with files.
+function pastedFiles(transfer) {
+  if (!transfer) return [];
+  const tops = [];
+  for (const item of Array.from(transfer.items || [])) {
+    if (item.kind !== 'file') continue;
+    // A folder is an entry, where the webview makes one, as on a drop. A
+    // file is read as the file it is handed: WebKitGTK makes a pasted
+    // picture an entry too, of a path that is not there.
+    let entry = null;
+    try { entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null; } catch (_) { /* a file, then */ }
+    const file = entry && entry.isDirectory ? null : item.getAsFile();
+    if (file) tops.push(fileEntry(file));
+    else if (entry && entry.isDirectory) tops.push(entry);
+  }
+  if (!tops.length) tops.push(...Array.from(transfer.files || []).map(fileEntry));
+  if (!tops.length) return [];
+  const text = ((transfer.getData && transfer.getData('text/plain')) || '').trim();
+  const pictures = tops.every((top) => top.isFile && DROP_PICTURES.test(top.name));
+  const about = !text || /^[a-z]+:\/\/\S+$/i.test(text) || tops.some((top) => text.includes(top.name));
+  return pictures && !about ? [] : tops;
+}
+
+/// Ctrl+V in the box: files go in it as tiles, and anything else is the
+/// box's own to paste.
+actions['composer-paste'] = (box, event) => {
+  if (box.disabled) return;
+  const tops = pastedFiles(event.clipboardData);
+  if (!tops.length) return;
+  event.preventDefault();
+  const target = dropTarget();
+  if (!target.mode) {
+    state.error = target.why;
+    render();
+    return;
+  }
+  keepDropped(target.mode, tops);
+};

@@ -797,6 +797,7 @@ function selfView() {
 }
 
 actions['self-open'] = () => guard(async () => {
+  if (!(await leavingCode())) return;
   await call('project.open', { path: state.self.root });
   enter('build');
 });

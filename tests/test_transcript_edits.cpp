@@ -149,3 +149,31 @@ TEST(only_exchanges_that_happened_go_back_to_the_expert) {
     state.remove_turn(2);
     CHECK_EQ(history_pairs(state), std::size_t{0});
 }
+
+// ---------------------------------------------------------------------------
+// Frames share turns, and a turn a frame holds never changes under it
+// ---------------------------------------------------------------------------
+
+TEST(a_frame_shares_the_turns_that_did_not_change_and_keeps_its_own_copy_of_the_one_that_did) {
+    AppState state;
+    three_turns(state);
+    const std::size_t live = state.begin_turn("question 4");
+    state.append_reply(live, "ans");
+
+    const Snapshot first = state.snapshot();
+    state.append_reply(live, "wer 4");
+    const Snapshot second = state.snapshot();
+
+    // The finished turns are the same turns, not copies of them.
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(first.turns.shared(i) == second.turns.shared(i));
+        CHECK_EQ(first.turns[i].revision, second.turns[i].revision);
+    }
+    // The one being written was copied before the write, so the frame taken
+    // before it still reads what it read then, and the new one says so.
+    CHECK_EQ(first.turns[3].reply, std::string("ans"));
+    CHECK_EQ(second.turns[3].reply, std::string("answer 4"));
+    CHECK(first.turns[3].revision < second.turns[3].revision);
+    // Every revision is its own.
+    CHECK(first.turns[0].revision != first.turns[1].revision);
+}

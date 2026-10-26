@@ -5,11 +5,14 @@
 #include <atomic>
 #include <cctype>
 #include <charconv>
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <random>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -375,7 +378,7 @@ Response Stream::finish() {
 // The two that wait
 // ---------------------------------------------------------------------------
 
-Response send(const Request& request) {
+Response send(const Request& request, const std::function<bool()>& stop) {
     Stream      stream;
     std::string error;
     if (!stream.open(request, error)) {
@@ -383,11 +386,38 @@ Response send(const Request& request) {
         failed.error = error;
         return failed;
     }
+    // The reading blocks for as long as the server takes, so a stop is
+    // watched for on a thread of its own. That is what abort() is for: it
+    // can be called from any thread, and the read ends when curl does.
+    std::mutex              watch_mutex;
+    std::condition_variable watch_ended;
+    bool                    read_all = false;
+    std::thread             watcher;
+    if (stop) {
+        watcher = std::thread([&] {
+            std::unique_lock<std::mutex> lock(watch_mutex);
+            while (!read_all) {
+                if (stop()) {
+                    stream.abort();
+                    return;
+                }
+                watch_ended.wait_for(lock, std::chrono::milliseconds(50));
+            }
+        });
+    }
     std::string body;
     std::string line;
     while (stream.read_line(line)) {
         body += line;
         body += '\n';
+    }
+    if (watcher.joinable()) {
+        {
+            const std::lock_guard<std::mutex> lock(watch_mutex);
+            read_all = true;
+        }
+        watch_ended.notify_one();
+        watcher.join();
     }
     Response response = stream.finish();
     response.body     = std::move(body);

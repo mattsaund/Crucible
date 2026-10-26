@@ -315,6 +315,15 @@ TEST(a_claude_stream_yields_text_reasoning_and_usage) {
     CHECK_EQ(end.output_tokens, 41);
 
     CHECK(wire::parse_anthropic(R"({"type":"message_stop"})").done);
+
+    // A thinking block starts empty, and its summary comes only when the
+    // thinking is done; the reply's time is counted from the start all the
+    // same, or its rate came out at twenty thousand tokens a second.
+    const auto thinking = wire::parse_anthropic(
+        R"({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}})");
+    CHECK(thinking.begun);
+    CHECK(thinking.reasoning.empty());
+    CHECK(!start.begun);
 }
 
 TEST(a_claude_stream_says_when_the_model_declined_and_why) {
@@ -482,6 +491,71 @@ TEST(a_model_listing_is_read_in_every_shape_it_comes_in) {
     CHECK(wire::model_ids(R"({"data":"nope"})").empty());
 }
 
+TEST(a_listing_says_how_long_a_context_is_in_each_providers_words) {
+    const auto context = [](std::string_view body, std::string_view model) {
+        return wire::facts_from_listing(body, model).context_tokens;
+    };
+    // OpenRouter, among everything else it says about each model.
+    CHECK_EQ(context(R"({"data":[
+                 {"id":"openai/gpt-4o","context_length":128000,"top_provider":{"context_length":128000}},
+                 {"id":"qwen/qwen3-235b-a22b","context_length":40960,"pricing":{"prompt":"0"}}]})",
+                     "qwen/qwen3-235b-a22b"),
+             40960);
+    CHECK_EQ(context(R"({"object":"list","data":[{"id":"llama-3.3-70b-versatile","object":"model",
+                         "context_window":131072,"max_completion_tokens":32768}]})",
+                     "llama-3.3-70b-versatile"),
+             131072);
+    // Mistral, asked for by the alias a seat is more likely to name.
+    CHECK_EQ(context(R"({"data":[{"id":"mistral-large-2411","aliases":["mistral-large-latest"],
+                         "max_context_length":131072}]})",
+                     "mistral-large-latest"),
+             131072);
+    // Together sends the list bare.
+    CHECK_EQ(context(R"([{"id":"moonshotai/Kimi-K2-Instruct","type":"chat","context_length":131072}])",
+                     "moonshotai/Kimi-K2-Instruct"),
+             131072);
+    // Gemini's own entry for the one model asked about.
+    CHECK_EQ(context(R"({"name":"models/gemini-2.5-flash","inputTokenLimit":1048576,"outputTokenLimit":65536})",
+                     "gemini-2.5-flash"),
+             1048576);
+
+    // A listing that does not say, or does not list the model, says nothing.
+    CHECK_EQ(context(R"({"data":[{"id":"gpt-4.1","object":"model","owned_by":"system"}]})", "gpt-4.1"), 0);
+    CHECK_EQ(context(R"({"data":[{"id":"other","context_length":8192}]})", "gpt-4.1"), 0);
+    CHECK_EQ(context("<html>", "gpt-4.1"), 0);
+}
+
+TEST(a_model_whose_provider_will_not_say_is_known_by_name_or_not_at_all) {
+    CHECK_EQ(wire::known_context("gpt-4.1-mini"), 1047576);
+    CHECK_EQ(wire::known_context("openai/gpt-4o"), 128000);
+    CHECK_EQ(wire::known_context("gpt-5.1"), 272000);
+    CHECK_EQ(wire::known_context("gpt-5-chat-latest"), 128000);
+    CHECK_EQ(wire::known_context("deepseek-reasoner"), 128000);
+    CHECK_EQ(wire::known_context("grok-4-fast-reasoning"), 2000000);
+    CHECK_EQ(wire::known_context("grok-4-0709"), 256000);
+    CHECK_EQ(wire::known_context("models/gemini-2.5-pro"), 1048576);
+    // Only the whole of a part of the name: o10 is not o1.
+    CHECK_EQ(wire::known_context("o10-preview"), 0);
+    // An open model runs with whatever context its server gave it.
+    CHECK_EQ(wire::known_context("qwen3:8b"), 0);
+    CHECK_EQ(wire::known_context(""), 0);
+}
+
+TEST(a_models_facts_are_asked_of_whoever_says_them) {
+    crucible::Provider anthropic;
+    anthropic.kind = "anthropic";
+    CHECK_EQ(wire::facts_url(anthropic, "claude-opus-5-5"),
+             std::string("https://api.anthropic.com/v1/models/claude-opus-5-5"));
+    // Gemini's door lists no sizes; its own API beside it does.
+    crucible::Provider gemini;
+    gemini.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/";
+    CHECK_EQ(wire::facts_url(gemini, "gemini-2.5-flash"),
+             std::string("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash"));
+    crucible::Provider openrouter;
+    openrouter.base_url = "https://openrouter.ai/api/v1";
+    CHECK_EQ(wire::facts_url(openrouter, "openai/gpt-4o"), std::string("https://openrouter.ai/api/v1/models"));
+}
+
 TEST(a_token_estimate_errs_high) {
     // Dropping history that would have fit costs a little context. Sending
     // more than fits costs the whole request.
@@ -524,6 +598,10 @@ TEST(a_hub_hands_back_the_same_model_until_the_providers_change) {
     // An open model behind somebody's server writes <think> as it would here.
     CHECK(first->reasons_inline());
     CHECK_EQ(first->context_size(), wire::kAssumedContext);
+    // One known by name is known when its provider cannot be asked.
+    ModelParams known = params;
+    known.model = "gpt-4.1";
+    CHECK_EQ(hub.model(known, error)->context_size(), 1047576);
 
     // A change that is not about the provider keeps what was learned.
     config.routing.min_confidence = 0.9F;

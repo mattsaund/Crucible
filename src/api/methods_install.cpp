@@ -333,10 +333,21 @@ Reply setup_retry(const json&, Host& host) {
     return good();
 }
 
+/// Stop what Crucible is fetching for itself. Returns at once; a download
+/// keeps what it had, for the next start to carry on from.
+Reply setup_stop(const json&, Host& host) {
+    if (host.setup() == nullptr) {
+        return bad("there is nothing to set up here");
+    }
+    host.setup()->cancel();
+    return good();
+}
+
 }  // namespace
 
 void install_methods(std::vector<Method>& table) {
     table.push_back({"setup.retry",      nullptr, setup_retry});
+    table.push_back({"setup.stop",       nullptr, setup_stop});
     table.push_back({"runtimes",         runtimes, nullptr});
     table.push_back({"runtime.build",    nullptr, runtime_build});
     table.push_back({"runtime.cancel",   nullptr, runtime_cancel});

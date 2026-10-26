@@ -96,6 +96,48 @@ bool is_effort(std::string_view effort) {
     return effort == "low" || effort == "medium" || effort == "high";
 }
 
+/// Gemini, reached through its chat-completions door. Its own API beside the
+/// door is the one that says how long a context a model takes.
+bool gemini(const Provider& provider) {
+    return provider.kind != "anthropic"
+        && contains(format::to_lower(provider.endpoint()), "generativelanguage.googleapis.com");
+}
+
+/// The list in a model listing, under whichever key the provider put it --
+/// or the whole document, which is what Together sends. Null when there is
+/// none.
+const json* listing_in(const json& node) {
+    if (node.is_array()) {
+        return &node;
+    }
+    // {"data": [...]} is what both formats say. The other two spellings are
+    // what a few of the imitators say instead.
+    for (const char* key : {"data", "models", "result"}) {
+        if (const json& inner = child(node, key); inner.is_array()) {
+            return &inner;
+        }
+    }
+    return nullptr;
+}
+
+/// A model's id as a request names it. Gemini lists "models/gemini-2.5-pro"
+/// and then wants the bare name back.
+std::string bare_id(std::string id) {
+    if (id.rfind("models/", 0) == 0) {
+        id.erase(0, 7);
+    }
+    return id;
+}
+
+/// A listed model's id, as a request names it.
+std::string listed_id(const json& entry) {
+    std::string id = entry.is_string() ? entry.get<std::string>() : string_at(entry, "id");
+    if (id.empty()) {
+        id = string_at(entry, "name");
+    }
+    return bare_id(std::move(id));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -309,6 +351,7 @@ Event parse_anthropic(std::string_view data) {
     } else if (type == "content_block_start") {
         const json&       block = child(node, "content_block");
         const std::string kind  = string_at(block, "type");
+        event.begun = true;
         if (kind == "text") {
             event.text = string_at(block, "text");
         } else if (kind == "thinking") {
@@ -504,36 +547,124 @@ ModelFacts facts_from_model(std::string_view body) {
 std::vector<std::string> model_ids(std::string_view body) {
     std::vector<std::string> ids;
     const json node = json::parse(body, nullptr, /*allow_exceptions=*/false);
-
-    // {"data": [...]} is what both formats say. The other two spellings are
-    // what a few of the imitators say instead.
-    const json* list = &node;
-    for (const char* key : {"data", "models", "result"}) {
-        if (const json& inner = child(node, key); inner.is_array()) {
-            list = &inner;
-            break;
-        }
-    }
-    if (!list->is_array()) {
+    const json* list = listing_in(node);
+    if (list == nullptr) {
         return ids;
     }
     for (const json& entry : *list) {
-        std::string id = entry.is_string() ? entry.get<std::string>() : string_at(entry, "id");
-        if (id.empty()) {
-            id = string_at(entry, "name");
-        }
-        // Gemini lists "models/gemini-2.5-pro" and then wants the bare name
-        // back in a request.
-        if (id.rfind("models/", 0) == 0) {
-            id.erase(0, 7);
-        }
-        if (!id.empty()) {
+        if (std::string id = listed_id(entry); !id.empty()) {
             ids.push_back(std::move(id));
         }
     }
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     return ids;
+}
+
+std::string facts_url(const Provider& provider, std::string_view model) {
+    const std::string endpoint = provider.endpoint();
+    if (provider.kind == "anthropic") {
+        return endpoint + "/v1/models/" + std::string(model);
+    }
+    if (gemini(provider)) {
+        // ".../v1beta/openai" is the door, and ".../v1beta/models/<id>" the
+        // model's own entry, which says its inputTokenLimit.
+        std::string base = endpoint;
+        constexpr std::string_view door = "/openai";
+        if (base.size() >= door.size() && base.compare(base.size() - door.size(), door.size(), door) == 0) {
+            base.erase(base.size() - door.size());
+        }
+        return base + "/models/" + bare_id(std::string(model));
+    }
+    // One listing for every model rather than a lookup of one: every
+    // provider has the listing, and not all of them have the lookup.
+    return endpoint + "/models";
+}
+
+ModelFacts facts_from_listing(std::string_view body, std::string_view model) {
+    ModelFacts facts;
+    const json node = json::parse(body, nullptr, /*allow_exceptions=*/false);
+    const json* entry = nullptr;
+    if (const json* list = listing_in(node)) {
+        const std::string wanted = bare_id(std::string(model));
+        const auto names = [&wanted](const json& one) {
+            if (listed_id(one) == wanted) {
+                return true;
+            }
+            // Mistral lists "mistral-large-latest" as an alias of the model
+            // it currently means.
+            const json& aliases = child(one, "aliases");
+            return aliases.is_array()
+                && std::any_of(aliases.begin(), aliases.end(), [&wanted](const json& alias) {
+                       return alias.is_string() && alias.get<std::string>() == wanted;
+                   });
+        };
+        const auto found = std::find_if(list->begin(), list->end(), names);
+        if (found != list->end()) {
+            entry = &*found;
+        }
+    } else if (node.is_object()) {
+        entry = &node;   // one model's own entry, asked for by name
+    }
+    if (entry == nullptr) {
+        return facts;
+    }
+    // Each says it in its own words: OpenRouter, Together and Fireworks
+    // context_length, Groq context_window, Mistral max_context_length,
+    // Gemini inputTokenLimit, Anthropic max_input_tokens.
+    for (const char* key : {"context_length", "context_window", "max_context_length",
+                            "inputTokenLimit", "max_input_tokens"}) {
+        if (const int tokens = int_at(*entry, key, 0); tokens > 0) {
+            facts.context_tokens = tokens;
+            return facts;
+        }
+    }
+    // DeepInfra keeps it a level down.
+    facts.context_tokens = std::max(0, int_at(child(*entry, "metadata"), "context_length", 0));
+    return facts;
+}
+
+int known_context(std::string_view model) {
+    // The last word, after the provider has been asked. A table of names is
+    // out of date the week it is written, so this one holds only families
+    // that are the same wherever they are served, and a model it does not
+    // know is assumed 128k as before. An open model behind somebody's server
+    // runs with whatever context the server was started with, which no
+    // table knows.
+    struct Known {
+        std::string_view prefix;
+        int              tokens;
+    };
+    static constexpr Known kKnown[] = {
+        // OpenAI. GPT-5's window is 400k, and 128k of it is the reply's.
+        {"gpt-5-chat", 128000}, {"gpt-5", 272000}, {"gpt-4.1", 1047576},
+        {"gpt-4o", 128000}, {"gpt-4-turbo", 128000},
+        {"o1-mini", 128000}, {"o1", 200000}, {"o3", 200000}, {"o4-mini", 200000},
+        // Anthropic's own API says; this is for a gateway in front of it
+        // with no Models API.
+        {"claude-", 200000},
+        {"gemini-", 1048576},
+        {"deepseek-chat", 128000}, {"deepseek-reasoner", 128000},
+        {"grok-4-fast", 2000000}, {"grok-4-1-fast", 2000000}, {"grok-code-fast", 256000},
+        {"grok-4", 256000}, {"grok-3", 131072},
+        {"kimi-k2-0711", 131072}, {"kimi-k2", 262144},
+    };
+    // The name without whose it is: "openai/gpt-4o" is "gpt-4o".
+    std::string name = format::to_lower(model);
+    if (const std::size_t slash = name.rfind('/'); slash != std::string::npos) {
+        name.erase(0, slash + 1);
+    }
+    for (const Known& known : kKnown) {
+        if (name.rfind(known.prefix, 0) != 0) {
+            continue;
+        }
+        // The whole of a part of the name: "o1" is not "o10".
+        const std::size_t end = known.prefix.size();
+        if (name.size() == end || known.prefix.back() == '-' || name[end] == '-' || name[end] == '.') {
+            return known.tokens;
+        }
+    }
+    return 0;
 }
 
 int estimate_tokens(const std::vector<ChatMessage>& messages) {
@@ -691,10 +822,12 @@ public:
         return detail::estimate_tokens(messages);
     }
 
+    /// What the provider said, or what the model is known to have, or 128k.
     int context_size() const override {
         const_cast<Client*>(this)->learn_facts();
         const std::lock_guard<std::mutex> lock(learned_);
-        return facts_.context_tokens > 0 ? facts_.context_tokens : detail::kAssumedContext;
+        const int known = context_known(facts_);
+        return known > 0 ? known : detail::kAssumedContext;
     }
 
     /// Claude sends its reasoning on a channel of its own and nowhere else.
@@ -725,12 +858,21 @@ private:
             && provider_.endpoint() == "https://api.anthropic.com";
     }
 
-    /// Ask Anthropic what this model takes. Once, and only of Anthropic:
-    /// nobody else publishes it.
+    /// The context as the provider said it, or as the model is known by name
+    /// to have; 0 when neither says.
+    int context_known(const ModelFacts& facts) const {
+        return facts.context_tokens > 0 ? facts.context_tokens : detail::known_context(model_);
+    }
+
+    /// Ask the provider what this model is, once. Anthropic's Models API says
+    /// what it takes as well as how long a context it has; Gemini's own API
+    /// and the listings that carry it say the context; the listings that do
+    /// not cost one request a session.
     void learn_facts() {
+        const bool anthropic = provider_.kind == "anthropic";
         {
             const std::lock_guard<std::mutex> lock(learned_);
-            if (facts_known_ || provider_.kind != "anthropic") {
+            if (facts_known_) {
                 return;
             }
             // A listing that did not answer is not asked again for a minute:
@@ -745,17 +887,30 @@ private:
         // ask, which costs a second listing, where holding the lock across a
         // request would make every other caller wait on the network.
         http::Request request;
-        request.url             = provider_.endpoint() + "/v1/models/" + model_;
+        request.url             = detail::facts_url(provider_, model_);
         request.timeout_seconds = 15;
-        request.headers         = headers_for(provider_, official_anthropic(),
-                                              kFallbackListingBeta);
+        if (anthropic) {
+            request.headers = headers_for(provider_, official_anthropic(), kFallbackListingBeta);
+        } else if (gemini(provider_)) {
+            // Google's own API takes the key in a header of its own; the
+            // bearer token the door takes is refused there.
+            if (const std::string key = provider_.resolved_key(); !key.empty()) {
+                request.headers.push_back({"x-goog-api-key", key});
+            }
+        } else {
+            request.headers = headers_for(provider_, false, "");
+        }
         const http::Response response = http::send(request);
         const std::lock_guard<std::mutex> lock(learned_);
         if (response.ok()) {
-            facts_ = detail::facts_from_model(response.body);
-            // Only against Anthropic itself. A gateway may pass the listing
-            // through and still not implement the feature it describes.
-            facts_.server_fallback = facts_.server_fallback && official_anthropic();
+            if (anthropic) {
+                facts_ = detail::facts_from_model(response.body);
+                // Only against Anthropic itself. A gateway may pass the listing
+                // through and still not implement the feature it describes.
+                facts_.server_fallback = facts_.server_fallback && official_anthropic();
+            } else {
+                facts_ = detail::facts_from_listing(response.body, model_);
+            }
             facts_known_ = true;
         } else if (response.status >= 400 && response.status < 500) {
             // A definite no -- a gateway with no Models API, a model it does
@@ -841,6 +996,9 @@ private:
             const std::string_view data = trimmed(std::string_view(line).substr(5));
             const detail::Event event = anthropic ? detail::parse_anthropic(data)
                                                   : detail::parse_openai(data);
+            if (event.begun) {
+                piece();   // the clock for the reply starts with its first block, shown or not
+            }
             if (!event.reasoning.empty()) {
                 piece();
                 if (sink.on_reasoning) {
@@ -939,8 +1097,7 @@ private:
             used.output      = static_cast<std::uint64_t>(std::max(0, output));
             used.requests    = 1;
         }
-        ledger_->record(provider_, model_, used, prompt,
-                        facts.context_tokens > 0 ? facts.context_tokens : 0, response.headers);
+        ledger_->record(provider_, model_, used, prompt, context_known(facts), response.headers);
     }
 
     Provider       provider_;

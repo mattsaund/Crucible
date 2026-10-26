@@ -16,6 +16,8 @@
 
 #include "crucible/runtime/backend.hpp"
 
+struct ggml_backend_device;   // ggml's own; a ggml_backend_dev_t points to one
+
 namespace crucible {
 
 /// One runtime, as the settings screen sees it.
@@ -124,6 +126,17 @@ public:
 
     /// Look at the runtimes directory and at what ggml actually registered.
     static std::vector<RuntimeStatus> scan();
+
+    /// The devices ggml has registered, in its order, which is the order
+    /// llama.cpp numbers them in. Read ggml's list here and nowhere else.
+    ///
+    /// ggml keeps it in a plain list that loading a backend appends to, and
+    /// guards it with nothing: read on one thread while another activates a
+    /// runtime, it can be read in the middle of being moved. So it is copied
+    /// out under the lock a load takes, and the copy is what gets read. Each
+    /// device in it stays valid for the life of the program, because a
+    /// runtime is never unloaded.
+    static std::vector<ggml_backend_device*> devices();
 
     /// Delete a runtime's module files. Takes effect on the next start, since
     /// ggml cannot unload a backend that loaded models may still be using.

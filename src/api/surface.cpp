@@ -64,6 +64,7 @@ const std::vector<Method>& table() {
         lab_methods(out);
         source_methods(out);
         market_methods(out);
+        bench_methods(out);
         return out;
     }();
     return methods;
@@ -183,11 +184,34 @@ std::string Surface::handle(std::string_view request) {
 }
 
 std::string Surface::snapshot() {
+    if (host_.state() == nullptr) {
+        return "{}";
+    }
+    return text_of(state_json(true));
+}
+
+std::string Surface::page_snapshot() {
     AppState* state = host_.state();
     if (state == nullptr) {
         return "{}";
     }
-    json out = snapshot_to_json(state->snapshot());
+    // Read once, so the turns and everything else are the same moment.
+    const Snapshot frame = state->snapshot();
+    std::string text = text_of(state_json_of(frame, false));
+    if (text.size() < 2 || text.back() != '}') {
+        return text;
+    }
+    text.pop_back();
+    text += (text.size() > 1 ? ",\"turns\":" : "\"turns\":") + page_turns_->turns_json(frame.turns) + "}";
+    return text;
+}
+
+json Surface::state_json(bool with_turns) {
+    return state_json_of(host_.state()->snapshot(), with_turns);
+}
+
+json Surface::state_json_of(const Snapshot& frame, bool with_turns) {
+    json out = snapshot_to_json(frame, with_turns);
 
     // --- what the session knows and the engine does not --------------------
     //
@@ -242,6 +266,7 @@ std::string Surface::snapshot() {
     out["reasoning_effort"] = config.reasoning_effort;
     out["session"]          = host_.session_id();
     out["session_name"]     = host_.session_name();
+    out["names_filed"]      = host_.names_filed();
 
     // What Crucible is fetching for itself, while it is, and anything that
     // failed until it is retried. See app/setup.hpp.
@@ -253,6 +278,7 @@ std::string Surface::snapshot() {
                 const char* phase = item.state == Setup::Item::State::Working ? "working"
                                   : item.state == Setup::Item::State::Done    ? "done"
                                   : item.state == Setup::Item::State::Failed  ? "failed"
+                                  : item.state == Setup::Item::State::Stopped ? "stopped"
                                                                               : "waiting";
                 json one{{"id", item.id}, {"label", item.label}, {"state", phase},
                          {"detail", item.detail}, {"download", item.download}};
@@ -319,7 +345,7 @@ std::string Surface::snapshot() {
                              {"command", std::string(update::update_command())},
                              {"installable", !update::asset_for(update::install_here()).empty()}};
     }
-    return text_of(out);
+    return out;
 }
 
 }  // namespace crucible::api

@@ -2,10 +2,12 @@
 //
 // The delegation loop.
 //
-// The chat's turns run on the worker thread. The UI hands over a prompt and
-// learns how it went through AppState plus a wake callback -- it never calls
-// into the engine's internals, and the engine never calls into the window
-// toolkit.
+// The chat's turns are taken one at a time by the worker thread, which opens
+// each in the transcript and hands it to the orchestrator: its rounds are
+// decided there and served here (see engine_chat.cpp). The UI hands over a
+// prompt and learns how it went through AppState plus a wake callback -- it
+// never calls into the engine's internals, and the engine never calls into
+// the window toolkit.
 //
 // The worker is not the only thread that reaches llama.cpp: a build's agents,
 // the orchestrator's requests and a load for the box's choice each run on
@@ -19,7 +21,6 @@
 #include "crucible/engine/engine.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <exception>
 #include <stdexcept>
@@ -29,8 +30,6 @@
 #include "crucible/config/paths.hpp"
 #include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
-#include "crucible/tools/web_search.hpp"
-#include "crucible/engine/overflow.hpp"
 #include "crucible/tools/workshop.hpp"
 
 #include <fstream>
@@ -42,127 +41,12 @@
 namespace crucible {
 namespace {
 
-/// How many times one chat turn may act on the project before it has to answer.
-///
-/// Higher than the search ceiling and counting a different thing. Reading a
-/// file, rewriting it and running the tests is three rounds of honest work; the
-/// same number of searches is a model going round in circles. Bounded all the
-/// same, because a turn that never writes an answer is a turn the person who
-/// asked gets nothing from.
-constexpr int kToolRounds = 12;
-
-/// Two stretches of a reply, a paragraph apart -- or whichever one there is.
-std::string paragraphs(const std::string& first, const std::string& second) {
-    if (first.empty())  { return second; }
-    if (second.empty()) { return first; }
-    return first + "\n\n" + second;
-}
-
-/// What the expert said before it reached for a tool.
-///
-/// A reply that ends in `WRITE: src/calc.py` and a fenced block is two things:
-/// a sentence for the reader and a line for the machine. The line has to come
-/// off the transcript -- shown as an answer it reads as the expert talking
-/// about the protocol -- and the sentence has to stay, because it is the only
-/// explanation of the change that will ever be written.
-std::string prose_before_tool_call(const std::string& answer, tools::ToolKind kind) {
-    const std::string verb(tools::tool_kind_name(kind));
-    std::string upper;
-    for (const char c : verb) {
-        upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
-    }
-    upper.push_back(':');
-
-    // The first line that opens with the verb. Searched line by line rather
-    // than with a bare find, so a mention of "WRITE:" inside the prose does not
-    // truncate the very sentence being kept.
-    std::size_t at = 0;
-    while (at <= answer.size()) {
-        std::size_t start = at;
-        while (start < answer.size() && (answer[start] == ' ' || answer[start] == '\t')) {
-            ++start;
-        }
-        if (answer.compare(start, upper.size(), upper) == 0) {
-            std::string kept = answer.substr(0, at);
-            while (!kept.empty() && (kept.back() == '\n' || kept.back() == ' ')) {
-                kept.pop_back();
-            }
-            return kept;
-        }
-        const std::size_t end = answer.find('\n', at);
-        if (end == std::string::npos) {
-            break;
-        }
-        at = end + 1;
-    }
-    return {};   // nothing but the call: nothing to keep
-}
-
-/// Is this verb an action on the project, rather than an answer to the cook
-/// loop or a web search?
-///
-/// SEARCH has its own path below. ASK, DONE and HANDOFF are how a cook ends a
-/// piece of work and are not offered to a chat turn at all -- if one arrives
-/// anyway it falls through to being shown, which is the right outcome: a model
-/// that writes "DONE: fixed it" has said something to the reader.
-bool is_project_verb(tools::ToolKind kind) {
-    switch (kind) {
-        case tools::ToolKind::List:
-        case tools::ToolKind::Read:
-        case tools::ToolKind::Write:
-        case tools::ToolKind::Edit:
-        case tools::ToolKind::Find:
-        case tools::ToolKind::Render:
-        case tools::ToolKind::Mcp:
-        case tools::ToolKind::Run:
-        case tools::ToolKind::Note:
-        case tools::ToolKind::Fetch:
-        case tools::ToolKind::Git:
-        case tools::ToolKind::Gh:
-        case tools::ToolKind::Python:
-        case tools::ToolKind::Start:
-        case tools::ToolKind::Stop:
-        case tools::ToolKind::Logs:
-        case tools::ToolKind::Screenshot:
-        case tools::ToolKind::Click:
-        case tools::ToolKind::Move:
-        case tools::ToolKind::Type:
-        case tools::ToolKind::Key:
-        case tools::ToolKind::Scroll:
-            return true;
-        case tools::ToolKind::None:
-        case tools::ToolKind::Search:
-        case tools::ToolKind::Ask:
-        case tools::ToolKind::Done:
-        case tools::ToolKind::Handoff:
-            break;
-    }
-    return false;
-}
-
-
 using Clock = std::chrono::steady_clock;
 
 long ms_since(Clock::time_point start) {
     return static_cast<long>(
         std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count());
 }
-
-/// How many past turns to replay to an expert, before the context is consulted.
-///
-/// Bounded deliberately: a swapped-in expert re-ingests the whole history from
-/// cold, so an unbounded transcript would make every turn slower than the last.
-/// This is a ceiling on work, not on meaning -- the overflow policy below is
-/// what decides what actually fits.
-constexpr std::size_t kHistoryTurns = 12;
-
-/// The share of the context a conversation may occupy.
-///
-/// The rest is for the answer. A conversation trimmed to exactly the context
-/// leaves the model no room to reply -- it ingests the prompt, has one token of
-/// space, and stops -- which looks like the model refusing to answer rather
-/// than like a context that is full.
-constexpr double kPromptShare = 0.75;
 
 }  // namespace
 
@@ -244,6 +128,11 @@ void Engine::stop() {
     // A request to a provider is blocked reading the next line of the answer,
     // and would keep the worker -- and so the window closing -- waiting on it.
     hub_.interrupt();
+    // So does an MCP server still starting, for as long as a minute and a
+    // half, and a call to one: the warm-up, the worker and a build can each
+    // be in either. They end now, before anything is joined, and no server
+    // starts after.
+    mcp_.stop_all();
     queued_.notify_all();
     {
         const std::lock_guard<std::mutex> lock(prepare_mutex_);   // so the wait cannot miss it
@@ -267,11 +156,33 @@ void Engine::stop() {
         }
         cook_thread_.join();
     }
+    // A benchmark run the same way: told to stop, given a moment, and the
+    // orchestrator stopped under it if it does not.
+    bench_stop_.store(true, std::memory_order_relaxed);
+    if (bench_thread_.joinable()) {
+        for (int waited = 0; waited < 50 && benching_.load(std::memory_order_relaxed); ++waited) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (benching_.load(std::memory_order_relaxed)) {
+            orchestra_.stop();
+        }
+        bench_thread_.join();
+    }
+    // And a chat turn, whose loop is the orchestrator's too. Every wait its
+    // calls can be in has just been told to stop, so one still being answered
+    // a few seconds on is waiting on an orchestrator that has hung -- and
+    // stopping that ends the call the worker is blocked in.
+    for (int waited = 0; waited < 50 && busy_.load(std::memory_order_relaxed); ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (busy_.load(std::memory_order_relaxed)) {
+        orchestra_.stop();
+    }
     if (worker_.joinable()) {
         worker_.join();
     }
     // Nothing is left running behind a window that is gone: not what experts
-    // started, and not the MCP servers.
+    // started, and not the MCP servers, which were stopped above.
     processes_.stop_all();
     // Taken out under the lock and joined outside it: the warm-up asks for
     // the lock to see whether to go round again.
@@ -284,7 +195,6 @@ void Engine::stop() {
     if (warming.joinable()) {
         warming.join();
     }
-    mcp_.stop_all();
 }
 
 std::vector<Engine::MadeSeat> Engine::take_made_seats() {
@@ -374,7 +284,8 @@ std::vector<std::pair<ExpertId, std::vector<std::string>>> Engine::take_written_
     return std::exchange(written_examples_, {});
 }
 
-void Engine::name_session(std::string session, std::filesystem::path root, std::string excerpt) {
+void Engine::name_session(std::string session, std::filesystem::path root, std::string excerpt,
+                          bool spare) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -382,6 +293,7 @@ void Engine::name_session(std::string session, std::filesystem::path root, std::
         request.session = std::move(session);
         request.root    = std::move(root);
         request.prompt  = std::move(excerpt);
+        request.spare   = spare;
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
@@ -412,8 +324,8 @@ Config Engine::config() const {
 
 void Engine::cancel() {
     cancel_.store(true, std::memory_order_relaxed);
-    // A turn parked on an edit is inside await_edit_approval, not looking at
-    // the flag. Waking it is what lets Stop end a turn that is waiting on you.
+    // A turn parked on an edit is inside ask_about_edit, not looking at the
+    // flag. Waking it is what lets Stop end a turn that is waiting on you.
     edit_answered_.notify_all();
     // One waiting for a model another seat is holding is in a wait of its
     // own, and looks at the flag when woken.
@@ -525,7 +437,18 @@ std::string Engine::chosen_path() const {
     return params.model.empty() || params.remote() ? std::string() : params.path;
 }
 
+bool Engine::seat_chosen() const {
+    const std::lock_guard<std::mutex> lock(chosen_mutex_);
+    return chosen_.has_value();
+}
+
 void Engine::do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice) {
+    // Nothing loads for a turn while a benchmark runs, and no turn is
+    // answered then either: the choice is kept, and loads with the first
+    // prompt after the run.
+    if (benching()) {
+        return;
+    }
     // Back to the delegator: the table as any prompt leaves it.
     if (!seat) {
         tidy_models();
@@ -582,29 +505,18 @@ void Engine::approve_edit(bool approved) {
     edit_answered_.notify_all();
 }
 
-bool Engine::await_edit_approval(std::size_t turn, const std::string& reply,
-                                 const tools::ToolCall& call,
-                                 const tools::WorkshopSettings& workshop) {
-    // The protocol line comes off the transcript before the question goes up,
-    // not after it is answered. Left on, the file is on screen twice while the
-    // user decides -- once as a raw `WRITE: path` and a fence, once in the
-    // panel asking about it -- and the raw one is the worse copy: no header, no
-    // line numbers, and a language nobody declared.
-    if (tools::resolve_in_root(workshop.root, call.argument)) {
-        state_.set_reply(turn, reply);
-    }
-    return ask_about_edit(call, workshop, [this] { return cancel_.load(std::memory_order_relaxed); });
-}
-
 bool Engine::ask_about_edit(const tools::ToolCall& call,
                             const tools::WorkshopSettings& workshop,
                             const CancelCallback& cancel) {
     // What the file is now, so the two can be shown side by side. A path that
     // does not resolve inside the root is not a question to put to the user --
     // run_tool would refuse it anyway, and asking would be asking them to
-    // approve something that cannot happen.
+    // approve something that cannot happen. Nor is a sentence where the path
+    // goes: a 1.2B model's WRITE line was its account of the change, and the
+    // person was asked about a file named after it.
     const std::optional<std::filesystem::path> target =
-        tools::resolve_in_root(workshop.root, call.argument);
+        tools::plausible_path(call.argument) ? tools::resolve_in_root(workshop.root, call.argument)
+                                             : std::nullopt;
     if (!target) {
         return true;   // let run_tool produce the refusal and its explanation
     }
@@ -877,6 +789,21 @@ void Engine::run() {
             continue;
         }
 
+        // Sent before a benchmark began and reached only once it had, behind
+        // something else in the queue: refused as one sent during it is, and
+        // before settle(), which would bring the delegator back beside it.
+        if (benching()) {
+            std::vector<TurnAttachment> tiles;
+            for (const attach::Attachment& one : request.attachments) {
+                tiles.push_back(attach::tile_of(one));
+            }
+            state_.fail_turn(state_.begin_turn(request.prompt, std::move(tiles)), "benchmark running");
+            if (wake_) {
+                wake_();
+            }
+            continue;
+        }
+
         busy_.store(true, std::memory_order_relaxed);
         state_.set_busy(true);
         cancel_.store(false, std::memory_order_relaxed);
@@ -1059,8 +986,9 @@ void Engine::tidy_models() {
             }
         }
         // With an expert chosen nothing is routed, and on demand the
-        // delegator would only take the chosen one's room.
-        if (!demand || chosen.empty()) {
+        // delegator would only take the chosen one's room, or with a
+        // provider's chosen, be gigabytes loaded for nothing.
+        if (!demand || !seat_chosen()) {
             ready_delegator();
         }
     }
@@ -1190,21 +1118,21 @@ void Engine::do_name_session(const Request& request) {
     // the opening words of the first prompt when there is not. Without the
     // orchestrator there is no name, and the list shows that first prompt,
     // which is what it showed before there were names.
-    std::string error;
-    if (!wait_for_python(error)) {
-        return;
-    }
     std::string name;
-    try {
-        const nlohmann::json out = orchestra_.call(
-            "name.session", {{"excerpt", request.prompt}, {"context", "chat"}});
-        name = out.value("name", "");
-    } catch (const std::exception&) {
-        return;
+    std::string error;
+    if (wait_for_python(error)) {
+        nlohmann::json asked{{"excerpt", request.prompt}, {"context", "chat"}};
+        if (request.spare) {
+            asked["spare"] = true;
+        }
+        try {
+            name = orchestra_.call("name.session", asked).value("name", "");
+        } catch (const std::exception&) {
+            name.clear();
+        }
     }
-    if (name.empty()) {
-        return;
-    }
+    // Said when there is none as well: whoever names old conversations one
+    // at a time is waiting on it to ask for the next.
     const std::lock_guard<std::mutex> lock(written_mutex_);
     session_names_.push_back({request.session, request.root, std::move(name)});
 }
@@ -1292,10 +1220,9 @@ bool Engine::wait_for_python(std::string& error, const CancelCallback& cancel) {
     return false;
 }
 
-nlohmann::json Engine::routing_request(const std::string& prompt,
-                                       const std::optional<ExpertId>& pinned) const {
+nlohmann::json Engine::routing_request(const Config& config, const std::string& prompt,
+                                       const std::optional<ExpertId>& pinned) {
     using json = nlohmann::json;
-    const Config config = this->config();
     json roster = json::array();
     json seats  = json::object();
     for (const Expert& expert : config.roster.experts()) {
@@ -1321,6 +1248,11 @@ nlohmann::json Engine::routing_request(const std::string& prompt,
 }
 
 CancelCallback Engine::cancel_for(const nlohmann::json& params) const {
+    if (params.value("context", std::string()) == "bench") {
+        return [this] {
+            return bench_stop_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
+        };
+    }
     if (params.value("context", std::string()) == "build") {
         return [this] {
             return cook_cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
@@ -1346,13 +1278,21 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now().time_since_epoch()).count();
     };
+    // A switch the orchestrator set, or `otherwise` when it set none.
+    const auto said = [&params](const char* key, bool otherwise) {
+        const auto found = params.find(key);
+        return found != params.end() && found->is_boolean() ? found->get<bool>() : otherwise;
+    };
     if (method == "delegator.ready") {
         // Something that can do without it -- a conversation's name -- does
-        // not load it over the expert chosen in the box, when it is loaded
-        // on demand: see choose().
-        const auto optional = params.find("optional");
-        const bool spare = optional != params.end() && optional->is_boolean() && optional->get<bool>()
-                        && !config().routing.keep_delegator_loaded && !chosen_path().empty();
+        // not load it while an expert is chosen in the box, when it is loaded
+        // on demand: over a local expert it would take that expert's room
+        // (see choose()), and beside a provider's it is gigabytes read for
+        // three words. The name waits for a prompt that loads it anyway. And
+        // what says "load": false -- an old conversation named in passing --
+        // uses it only if it is here.
+        const bool spare = (said("optional", false) && !config().routing.keep_delegator_loaded && seat_chosen())
+                        || !said("load", true);
         const std::lock_guard<std::mutex> host(host_mutex_);
         if (!spare) {
             ensure_router(cancel);
@@ -1383,7 +1323,9 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         // out, it is given room for it, and asked for as little of it as it
         // takes.
         const std::lock_guard<std::mutex> host(host_mutex_);
-        ensure_router(cancel);   // freed since delegator.ready by somebody who could not wait
+        if (said("load", true)) {
+            ensure_router(cancel);   // freed since delegator.ready by somebody who could not wait
+        }
         LoadedModel* model = host_->router();
         if (model == nullptr) {
             throw std::runtime_error("the delegator is not loaded");
@@ -1429,7 +1371,8 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         }
         const bool cancelable = params.value("cancelable", true);
         const std::vector<float> scores =
-            model->score_labels(params.value("prompt", ""), labels, cancelable ? cancel : CancelCallback{});
+            model->score_labels(params.value("prompt", ""), labels, cancelable ? cancel : CancelCallback{},
+                                params.value("prefix", ""));
         json out = json::array();
         for (const float score : scores) {
             out.push_back(score <= kUnscored ? json(nullptr) : json(score));
@@ -1473,50 +1416,13 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         return json::object();
     }
 
+    if (method.rfind("bench.", 0) == 0) {
+        return serve_bench(method, params);
+    }
+    if (method.rfind("turn.", 0) == 0) {
+        return serve_turn(method, params);
+    }
     return serve_cook(method, params);
-}
-
-RouteDecision Engine::resolve(const Request& request, std::string& error) {
-    // What was attached says something about who should answer: "what does
-    // this do" means one thing beside main.rs and another beside a lease
-    // agreement. The names are enough to say it.
-    std::string routed = request.prompt;
-    if (!request.pinned && !request.attachments.empty()) {
-        routed += "\n\nAttached:";
-        for (const attach::Attachment& one : request.attachments) {
-            routed += " " + (one.name.empty() ? std::filesystem::path(one.path).filename().string()
-                                              : one.name);
-        }
-    }
-
-    RouteDecision decision;
-    if (!wait_for_python(error)) {
-        return decision;
-    }
-    nlohmann::json answer;
-    try {
-        nlohmann::json asked = routing_request(routed, request.pinned);
-        asked["context"] = "chat";
-        answer = orchestra_.call("route", asked);
-    } catch (const std::exception& e) {
-        error = std::string("routing failed: ") + e.what();
-        return decision;
-    }
-    decision.expert     = answer.value("expert", "");
-    decision.confidence = answer.value("confidence", 0.0F);
-    decision.source     = route_source_from_name(answer.value("source", "fallback"));
-    decision.detail     = answer.value("detail", "");
-
-    const Config config = this->config();
-    if (!config.routing.keep_delegator_loaded && !config.expert(decision.expert).remote()) {
-        // Its work for this prompt is done -- or there was none, for a prompt
-        // sent to one expert -- and the expert is about to want every byte
-        // it was holding. Unless the expert is somewhere else: then nothing
-        // is about to be loaded, and freeing the delegator would only mean
-        // loading it again for the next prompt.
-        release_router_between_routes();
-    }
-    return decision;
 }
 
 Engine::HeldModel Engine::hold_model(const ExpertId& id, const ModelParams& params,
@@ -1622,11 +1528,14 @@ ChatModel* Engine::serve_mlx(const ExpertId& id, const ModelParams& params, cons
 ChatModel* Engine::load_gguf(const ExpertId& id, const ModelParams& params, const std::string& name,
                              const CancelCallback& cancel, long& load_ms, std::string& error,
                              bool& crowded) {
-    // A GGUF is about to take the memory an MLX model is holding -- unless
-    // somebody is using that model, when both stay if they fit.
+    // A GGUF is about to take the memory an MLX model is holding, unless
+    // somebody is using that model. Then both stay if they fit; and if they
+    // do not, the GGUF waits for it to be let go, as it would for an expert
+    // in use. acquire_expert asks, once it has freed what nobody is using.
     if (mlx_.running() && !leases_.held(mlx_.served().string())) {
         stop_mlx();
     }
+    const bool beside_mlx = mlx_.running();
 
     const bool already_resident = host_->loaded_expert() == id;
     if (!already_resident) {
@@ -1649,7 +1558,7 @@ ChatModel* Engine::load_gguf(const ExpertId& id, const ModelParams& params, cons
                 wake_();
             }
         },
-        cancel, error, in_use(), &crowded);
+        cancel, error, in_use(), &crowded, beside_mlx);
     if (model == nullptr) {
         state_.set_seat(id, SeatPhase::Dormant);
         state_.set_resident(host_->loaded_expert());
@@ -1663,620 +1572,6 @@ ChatModel* Engine::load_gguf(const ExpertId& id, const ModelParams& params, cons
         wake_();
     }
     return model;
-}
-
-void Engine::handle(const Request& request) {
-    std::vector<TurnAttachment> tiles;
-    for (const attach::Attachment& one : request.attachments) {
-        tiles.push_back(attach::tile_of(one));
-    }
-    const std::size_t turn = state_.begin_turn(request.prompt, std::move(tiles));
-
-    const CancelCallback cancel = [this] {
-        return cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
-    };
-
-    // The settings as they are when the turn starts, kept for the whole of
-    // it: a build running beside it can add a seat to the engine's own copy
-    // at any moment, and a turn read halfway through a change is a turn
-    // answered by half of two configurations.
-    const Config config = this->config();
-
-    // --- route -------------------------------------------------------------
-    state_.set_mood(Mood::Routing, "Crucible is reading the prompt");
-    if (wake_) {
-        wake_();
-    }
-
-    std::string routing_error;
-    const RouteDecision decision = resolve(request, routing_error);
-    if (!routing_error.empty()) {
-        if (routing_error == "stopped") {
-            state_.cancel_turn(turn);
-            state_.set_mood(Mood::Idle);
-        } else {
-            state_.fail_turn(turn, routing_error);
-            state_.set_mood(Mood::Error, routing_error);
-        }
-        return;
-    }
-    state_.set_route(turn, decision);
-    // From here the side menu draws a line from the delegator to this seat.
-    state_.set_linked(decision.expert);
-    if (wake_) {
-        wake_();
-    }
-
-    if (cancel_.load(std::memory_order_relaxed)) {
-        state_.fail_turn(turn, "canceled before routing finished");
-        state_.set_linked(std::nullopt);
-        state_.set_mood(Mood::Idle);
-        return;
-    }
-
-    if (!config.has_expert(decision.expert)) {
-        state_.fail_turn(turn,
-            "No expert has a model. Add one in Settings, Experts.");
-        state_.set_linked(std::nullopt);
-        state_.set_mood(Mood::Error, "no experts configured");
-        return;
-    }
-
-    // --- JIT swap ----------------------------------------------------------
-    const ModelParams& params = config.expert(decision.expert);
-
-    // The display name, resolved once. Every status line below wants it, and a
-    // seat ejected mid-turn would otherwise make each of them fall back to the
-    // raw id independently.
-    const std::string expert_name = expert_label(config.roster, decision.expert);
-
-    long        load_ms = 0;
-    std::string error;
-    // Held for the whole turn: the lease is what keeps a build's thread from
-    // freeing this model while the turn is answering with it.
-    HeldModel   held   = hold_model(decision.expert, params, expert_name, cancel, load_ms, error);
-    ChatModel*  expert = held.model;
-
-    if (expert == nullptr) {
-        state_.set_linked(std::nullopt);
-        // A load the user stopped is not an error to be explained, and the
-        // turn it belonged to should read as canceled rather than failed.
-        if (error == "stopped") {
-            state_.cancel_turn(turn);
-            state_.set_mood(Mood::Idle);
-        } else {
-            state_.fail_turn(turn, error);
-            state_.set_mood(Mood::Error, error);
-        }
-        return;
-    }
-
-    // --- generate ----------------------------------------------------------
-    state_.set_mood(Mood::Thinking, expert_name + " is reading");
-    if (wake_) {
-        wake_();
-    }
-
-    std::vector<ChatMessage> messages;
-    messages.push_back({"system", config.system_prompt});
-    if (!config.reasoning_effort.empty() && !params.remote() && expert->takes_effort()) {
-        // Where a local reasoning model looks for it. See
-        // Config::reasoning_effort. A provider takes it as a field of the
-        // request instead, which is what ChatRequest::effort is for.
-        messages.front().content += "\n\nReasoning: " + config.reasoning_effort;
-    }
-    // How a reply is drawn. A model that knows math is typeset writes
-    // $\frac{a}{b}$ rather than a/b squeezed into a sentence. After the
-    // configured prompt rather than in it: that one is the user's to edit, and
-    // a saved config keeps the old default.
-    messages.front().content +=
-        "\n\nReplies are shown as Markdown. Write math as LaTeX: $...$ in a line, $$...$$ on its own lines.";
-    if (config.tools.web_search) {
-        // Only when the tool is switched on. An expert told it can search when
-        // it cannot will offer to, which is worse than not having the tool.
-        messages.front().content += tools::tool_instructions();
-    }
-
-    // The same tools a cook gets, in an ordinary chat turn.
-    //
-    // There used to be a line here: cooking could change the project and
-    // chatting could only talk about it. That was never a distinction anybody
-    // asked for -- "fix the typo in README" is a sentence, not a goal worth
-    // starting a cook for, and the answer to it is the edit. What separates the
-    // two is how long they run and how they end, not what they may touch.
-    //
-    // The permission is the folder, answered once, in the terms it is about.
-    tools::WorkshopSettings workshop = workshop_for(project_root_);
-    workshop.sees_pictures = expert->sees_images();
-    messages.front().content +=
-        tools::workshop_instructions(workshop, tools::ToolAudience::Chat);
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        const std::size_t keep = kHistoryTurns * 2;
-        const std::size_t from = history_.size() > keep ? history_.size() - keep : 0;
-        messages.insert(messages.end(), history_.begin() + static_cast<long>(from),
-                        history_.end());
-    }
-    // What was attached goes above what was typed, so the question comes
-    // after the material it is about -- the order every model reads best.
-    ChatMessage asked{"user", request.prompt};
-    if (!request.attachments.empty()) {
-        state_.set_mood(Mood::Thinking, expert_name + " is reading the attachments");
-        if (wake_) {
-            wake_();
-        }
-        messages.push_back(asked);
-        attach::Composed composed = read_attachments(request.attachments, *expert, messages, kPromptShare);
-        messages.pop_back();
-        asked.content = composed.text + request.prompt;
-        for (attach::Image& image : composed.images) {
-            asked.images.push_back({std::move(image.mime), std::move(image.data)});
-        }
-    }
-    messages.push_back(asked);
-
-    // --- does it still fit? -------------------------------------------------
-    //
-    // Asked here, once the expert is loaded, because only the expert can answer
-    // it: the context size is the one it was loaded with and the token count is
-    // its own tokenizer's. Before this point there is no model to ask.
-    {
-        const Overflow policy = overflow_from_id(config.tools.overflow);
-        const int used   = expert->prompt_tokens(messages);
-        const int budget = static_cast<int>(
-            static_cast<double>(expert->context_size()) * kPromptShare);
-
-        if (policy == Overflow::StopAtLimit && used > budget) {
-            // Refused rather than shortened. The model cannot tell you what it
-            // stopped being able to see, so the program says it instead.
-            state_.set_linked(std::nullopt);
-            state_.fail_turn(
-                turn, "this conversation no longer fits: " + std::to_string(used) + " of "
-                      + std::to_string(expert->context_size())
-                      + " tokens. Raise \"Context\" in Settings, Generation, or start a new chat.");
-            state_.set_mood(Mood::Error, "context full");
-            return;
-        }
-        const TokenCounter counter = [expert](const std::vector<ChatMessage>& what) {
-            return expert->prompt_tokens(what);
-        };
-        if (const std::size_t dropped = trim_to_budget(policy, messages, counter, budget);
-            dropped > 0) {
-            state_.add_action(turn, TurnAction{
-                "dropped " + std::to_string(dropped / 2)
-                    + (dropped == 2 ? " earlier exchange" : " earlier exchanges")
-                    + " to stay inside the context",
-                {}, {}});
-        }
-        state_.set_context_used(expert->prompt_tokens(messages), expert->context_size());
-    }
-
-    // The live tok/s readout is measured from the first token rather than from
-    // the start of the call: everything before that is prompt ingestion, and
-    // folding it in would make a long prompt look like a slow expert.
-    bool first_token = true;
-    std::chrono::steady_clock::time_point first_token_at;
-    int streamed_chunks = 0;
-
-    GenerationStats stats;
-
-    // One pass per round. Ordinarily there is exactly one: the expert answers
-    // and that is the end of it. A round only repeats when the expert asked to
-    // look something up, and the number of times it may do that is bounded --
-    // an expert that reads results and searches again is being useful, one that
-    // does it eight times is stuck. See tools/web_search.hpp.
-    //
-    // With the workshop the ceiling is higher and it is a different thing being
-    // counted: reading a file, changing it and running the tests is three
-    // rounds of honest work, where three searches is a model going in circles.
-    int rounds = 1;
-    if (config.tools.web_search) {
-        rounds = std::max(rounds, config.tools.search_rounds + 1);
-    }
-    if (workshop.enabled) {
-        rounds = std::max(rounds, kToolRounds);
-    }
-    std::vector<std::string> already_searched;
-    std::vector<std::string> already_done;   // project calls made this turn
-
-    // What the rounds before this one left on screen. A turn that reads a
-    // file, then writes one, then answers says something each time, and each
-    // is kept -- a paragraph apart, rather than run into the next sentence or
-    // replaced by it.
-    std::string earlier;
-    for (int round = 0; round < rounds; ++round) {
-        bool        first_answer = true;
-        std::string answer;
-        std::string reasoning;
-        ResponseFilter filter;
-
-        // The two things a piece of output can be, wherever it came from.
-        const auto take = [&](std::string_view thought, std::string_view said) {
-            if (first_token) {
-                first_token    = false;
-                first_token_at = std::chrono::steady_clock::now();
-                state_.set_mood(Mood::Thinking, expert_name + " is thinking");
-            }
-            if (!thought.empty()) {
-                reasoning += thought;
-                state_.append_reasoning(turn, thought);
-            }
-            if (!said.empty()) {
-                if (first_answer) {
-                    first_answer = false;
-                    state_.set_mood(Mood::Talking, expert_name + " is answering");
-                    if (!earlier.empty()) {
-                        state_.append_reply(turn, "\n\n");
-                    }
-                }
-                answer += said;
-                state_.append_reply(turn, said);
-            }
-
-            // Recomputing the rate on every token would be noise on screen
-            // and work in the hot path; a few times a second is what a
-            // person can actually read.
-            if (++streamed_chunks % 8 == 0) {
-                const double elapsed_s =
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                  first_token_at).count();
-                if (elapsed_s > 0.05) {
-                    state_.set_live_rate(static_cast<double>(streamed_chunks) / elapsed_s);
-                }
-            }
-
-            if (wake_) {
-                wake_();
-            }
-        };
-
-        ChatSink sink;
-        sink.cancel = cancel;
-        if (expert->reasons_inline()) {
-            // A reasoning model writes its working before its answer, and on
-            // some of them the markers between the two are ordinary visible
-            // text. See llm/response_filter.hpp.
-            sink.on_text = [&](std::string_view raw) {
-                const ResponseFilter::Piece chunk = filter.feed(raw);
-                take(chunk.reasoning, chunk.answer);
-            };
-        } else {
-            sink.on_text = [&](std::string_view said) { take({}, said); };
-        }
-        // A channel of its own, which is how a provider sends it. Some send
-        // both ways at once, and both are reasoning.
-        sink.on_reasoning = [&](std::string_view thought) { take(thought, {}); };
-
-        const ChatResult outcome =
-            expert->chat(ChatRequest{messages, params, config.reasoning_effort}, sink);
-        const GenerationStats& pass = outcome.stats;
-
-        // Whatever was still held back, waiting to see if it was a marker.
-        if (const ResponseFilter::Piece last = filter.flush();
-            !last.answer.empty() || !last.reasoning.empty()) {
-            state_.append_reasoning(turn, last.reasoning);
-            state_.append_reply(turn, last.answer);
-            reasoning += last.reasoning;
-            answer    += last.answer;
-        }
-
-        // That a different model answered than the one in the seat, mostly.
-        for (const std::string& note : outcome.notes) {
-            state_.add_action(turn, TurnAction{note, {}, {}});
-        }
-
-        if (!outcome.error.empty()) {
-            // The provider could not be asked, or stopped partway, or the
-            // model declined. Only a remote model gets here: a local one that
-            // is loaded answers.
-            if (outcome.discard_partial) {
-                // What streamed before a refusal is not half an answer.
-                state_.set_reply(turn, earlier);
-            } else if (!answer.empty()) {
-                // fail_turn keeps a reply that had started, which is right --
-                // but then nothing would say why it stops where it does.
-                state_.add_action(turn, TurnAction{"cut short: " + outcome.error, {}, {}});
-            }
-            state_.fail_turn(turn, outcome.error);
-            state_.set_linked(std::nullopt);
-            state_.set_mood(Mood::Error, outcome.error);
-            if (wake_) {
-                wake_();
-            }
-            return;
-        }
-
-        stats.prompt_tokens += pass.prompt_tokens;
-        stats.prompt_reused += pass.prompt_reused;
-        stats.output_tokens += pass.output_tokens;
-        stats.prompt_ms     += pass.prompt_ms;
-        stats.output_ms     += pass.output_ms;
-        stats.canceled      = pass.canceled;
-        stats.hit_limit      = pass.hit_limit;
-
-        if (pass.canceled || round + 1 >= rounds) {
-            break;
-        }
-
-        // --- did it reach for the project? ---------------------------------
-        //
-        // Checked before the search, because SEARCH is one of the verbs
-        // parse_tool_call recognizes and the search path below has bookkeeping
-        // of its own -- rounds, repeats, the last-search warning -- that the
-        // file verbs do not want.
-        if (const std::optional<tools::ToolCall> call =
-                workshop.enabled ? tools::parse_tool_call(answer, reasoning)
-                                 : std::nullopt;
-            call && is_project_verb(call->kind)) {
-            // The verb and what it is being pointed at, which is the useful
-            // half. Not "<expert> is <verb>ing": the verbs are nouns as much as
-            // verbs here and half of them come out as "noteing" or "runing".
-            std::string doing = std::string(tools::tool_kind_name(call->kind)) + " "
-                              + call->argument;
-            if (doing.size() > 64) {
-                doing.resize(64);
-                doing += "\u2026";
-            }
-            state_.set_mood(Mood::Thinking, doing);
-            if (wake_) {
-                wake_();
-            }
-
-            // The turn so far, and this round's prose up to the call.
-            const std::string kept = paragraphs(earlier, prose_before_tool_call(answer, call->kind));
-
-            // The same call twice in one turn is a model going round, and the
-            // second answer would be the first one again. Not run, and not
-            // drawn: it is told its result is already above. A write or an
-            // edit is the exception -- changing a file again is how a fix to
-            // it is made.
-            const bool changes_a_file =
-                call->kind == tools::ToolKind::Write || call->kind == tools::ToolKind::Edit;
-            const std::string asked_for = std::string(tools::tool_kind_name(call->kind)) + '\n'
-                                        + call->argument;
-            if (!changes_a_file
-                && std::find(already_done.begin(), already_done.end(), asked_for)
-                       != already_done.end()) {
-                earlier = kept;
-                state_.set_reply(turn, earlier);
-                messages.push_back({"assistant", answer});
-                messages.push_back({"user", "You already did exactly that this turn, and its "
-                                            "result is above. Use it, and if it told you what "
-                                            "you needed, answer now."});
-                continue;
-            }
-            already_done.push_back(asked_for);
-
-            // --- the gate ---------------------------------------------
-            //
-            // A write or an edit is the tool call that changes something the
-            // user owns, so it is the one that stops and asks -- unless they
-            // have said not to. Everything else (reading, listing, running)
-            // either changes nothing or was already agreed to by trusting the
-            // folder. An edit is asked about as the file it would leave: an
-            // edit that would not apply is not asked about at all, and fails
-            // with its reason when it is run.
-            std::optional<tools::ToolCall> to_approve;
-            if (changes_a_file && !auto_edits_.load()) {
-                to_approve = *call;
-                if (call->kind == tools::ToolKind::Edit) {
-                    std::string why;
-                    const std::optional<std::string> after = tools::edited_contents(*call, workshop, why);
-                    to_approve = after ? std::optional<tools::ToolCall>(tools::ToolCall{
-                                             tools::ToolKind::Write, call->argument, *after, {}, {}})
-                                       : std::nullopt;
-                }
-            }
-            if (to_approve && !await_edit_approval(turn, kept, *to_approve, workshop)) {
-                state_.add_action(turn, TurnAction{
-                    "declined the edit to " + call->argument, {}, {}});
-                // This round described a change that did not happen; what
-                // came before it still stands.
-                state_.set_reply(turn, earlier);
-                messages.push_back({"assistant", answer});
-                messages.push_back(
-                    {"user", "The user declined that edit; the file is unchanged. Do "
-                             "not try the same write again. Either explain what you "
-                             "were going to change and why, or propose something "
-                             "different."});
-                if (wake_) {
-                    wake_();
-                }
-                continue;
-            }
-
-            tools::SearchSettings searching;
-            searching.enabled         = config.tools.web_search;
-            searching.provider        = config.tools.search_provider;
-            searching.endpoint        = config.tools.search_endpoint;
-            searching.api_key         = config.tools.search_api_key;
-            searching.max_results     = config.tools.search_results;
-            searching.timeout_seconds = config.tools.search_timeout;
-            const tools::ToolResult result = tools::run_tool(
-                *call, workshop, searching,
-                [this] { return cancel_.load(std::memory_order_relaxed); });
-            // The diff a write made, or the output a command printed, kept for
-            // the transcript rather than only handed to the model.
-            state_.add_action(turn, TurnAction{result.summary, result.detail,
-                                               changes_a_file ? call->argument : std::string(),
-                                               result.picture_path});
-
-            // The protocol line goes and the prose around it stays.
-            //
-            // This used to clear the whole reply, on the grounds that the call
-            // was a request rather than an answer. True of the `WRITE: path`
-            // line; false of the sentence above it explaining what was about to
-            // change, which was thrown away with it every time.
-            earlier = kept;
-            state_.set_reply(turn, earlier);
-            messages.push_back({"assistant", answer});
-
-            std::string handback = result.output;
-            // A picture the tool produced goes to a model that can see one,
-            // as a picture; one that cannot is told so, beside whatever words
-            // were read off it.
-            ChatMessage back{"user", {}};
-            if (!result.pictures.empty()) {
-                if (expert->sees_images()) {
-                    for (const attach::Image& image : result.pictures) {
-                        back.images.push_back({image.mime, image.data});
-                    }
-                } else {
-                    handback += "\n(This model reads text only and cannot see the picture itself.)";
-                }
-            }
-            if (round + 2 >= rounds) {
-                handback += "\n\nThat was the last action available this turn. Write "
-                            "the answer now from what you have.";
-            }
-            back.content = std::move(handback);
-            messages.push_back(std::move(back));
-            if (wake_) {
-                wake_();
-            }
-            continue;
-        }
-
-        const std::string query = tools::search_request(answer, reasoning);
-        if (query.empty()) {
-            break;  // it answered, which is the ordinary case
-        }
-
-        // --- the expert asked to look something up -------------------------
-        //
-        // Asking twice for the same thing is a model that has read the results
-        // and not known what to do with them. Running the search again would
-        // hand back the same page and invite it to do the same, so it is told
-        // instead -- and this becomes its last round.
-        const bool repeat = std::find(already_searched.begin(), already_searched.end(), query)
-                            != already_searched.end();
-        already_searched.push_back(query);
-
-        state_.set_mood(Mood::Thinking,
-                        repeat ? "already searched for \"" + query + "\""
-                               : "searching for \"" + query + "\"");
-        if (wake_) {
-            wake_();
-        }
-
-        tools::SearchSettings settings;
-        settings.enabled         = config.tools.web_search;
-        settings.provider        = config.tools.search_provider;
-        settings.endpoint        = config.tools.search_endpoint;
-        settings.api_key         = config.tools.search_api_key;
-        settings.max_results     = config.tools.search_results;
-        settings.timeout_seconds = config.tools.search_timeout;
-
-        std::string search_error;
-        const std::vector<tools::SearchResult> results =
-            repeat ? std::vector<tools::SearchResult>{}
-                   : tools::search(query, settings, search_error);
-
-        if (!repeat) {
-            state_.add_action(turn, TurnAction{
-                results.empty()
-                    ? "searched \"" + query + "\": " + search_error
-                    : "searched \"" + query + "\": "
-                          + std::to_string(results.size()) + " result"
-                          + (results.size() == 1 ? "" : "s") + " from " + settings.provider,
-                {}, {}});
-        }
-        // That round produced a request, not an answer. The next round writes
-        // the answer, and the request should not be sitting above it.
-        state_.set_reply(turn, earlier);
-
-        // Only the answer goes back, never the reasoning: the formats that
-        // produce reasoning say to drop it from the context, and feeding it
-        // back teaches the model that thinking aloud is part of the transcript.
-        messages.push_back({"assistant", answer});
-        std::string handback =
-            repeat ? "You have already searched for \"" + query + "\" and been given the "
-                     "results above."
-                   : tools::format_for_model(query, results);
-        if (repeat || round + 2 >= rounds) {
-            // The last search it is allowed. Saying so is the difference
-            // between an answer and a model that asks to search again and ends
-            // the turn with nothing in it.
-            handback += "\n\nThis was the last search available. Answer now from what you "
-                        "have, and say plainly if it is not enough.";
-        }
-        messages.push_back({"user", std::move(handback)});
-        if (wake_) {
-            wake_();
-        }
-    }
-
-    // Only remember exchanges that actually produced an answer, so a canceled
-    // turn -- or one that spent its whole budget thinking -- does not poison
-    // the context of the next one. Read before the placeholder below is put in
-    // its place: what goes into history has to be what the model said, not what
-    // Crucible said about it.
-    if (!stats.canceled && stats.output_tokens > 0) {
-        const Snapshot current = state_.snapshot();
-        if (turn < current.turns.size() && !current.turns[turn].reply.empty()) {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            // With what was attached, so that the next question can be about
-            // it too. It is the first thing trimmed when room runs short.
-            history_.push_back(asked);
-            history_.push_back({"assistant", current.turns[turn].reply});
-        }
-    }
-
-    // A turn that ends without an answer in it.
-    //
-    // Three ways to get here, and they want different things said. A reasoning
-    // model can spend its whole token budget in the channel the user does not
-    // see and never reach the one they do; an expert with the search tool can
-    // spend its last round asking to search again rather than answering; and a
-    // raw "SEARCH: ..." line is the one thing that must never be shown as an
-    // answer. Naming the wrong one sends the reader to the wrong setting.
-    if (!stats.canceled && stats.output_tokens > 0) {
-        const Snapshot current = state_.snapshot();
-        if (turn < current.turns.size()) {
-            const Turn&        finished = current.turns[turn];
-            const std::string& shown    = finished.reply;
-            const bool asked_to_search  = !tools::search_request(shown, {}).empty();
-
-            // A tool call left where the answer should be. It happens when the
-            // last round the turn had was spent asking for one more action, and
-            // showing "WRITE: src/main.cpp" as the reply is the one outcome
-            // that must never reach the screen -- it reads as the expert having
-            // said something.
-            const std::optional<tools::ToolCall> unfinished =
-                tools::parse_tool_call(shown, {});
-            const bool asked_to_act = unfinished && is_project_verb(unfinished->kind);
-
-            if (shown.empty() || asked_to_search || asked_to_act) {
-                std::string why;
-                if (asked_to_act) {
-                    why = "ran out of turns before finishing. Ask again to carry on";
-                } else if (asked_to_search) {
-                    why = "kept searching instead of answering. Raise \"Searches per "
-                          "prompt\" in Settings, Tools";
-                } else if (stats.hit_limit) {
-                    why = "thought until \"Longest reply\" ran out. Raise it in Settings, "
-                          "Generation, or lower the effort";
-                } else {
-                    why = "stopped without answering";
-                }
-                state_.set_reply(turn, "(" + why + ")");
-            }
-        }
-    }
-
-    // Finished only now, with the reply it will keep: the session is saved as
-    // a turn finishes, and finished before the line above, it saved the raw
-    // "WRITE: ..." that the line replaces, and that came back on resume.
-    state_.finish_turn(turn, stats, load_ms);
-
-    // The table is put back by settle(), once this returns and the engine is
-    // no longer busy -- for this ending and for every early return above.
-
-    // The work has stopped, so the line goes and the seat goes dark. Whether
-    // the weights are still in memory is a separate question, and the status
-    // bar is where it is answered.
-    state_.set_linked(std::nullopt);
-    state_.set_mood(Mood::Idle, stats.canceled ? "canceled" : "");
 }
 
 }  // namespace crucible

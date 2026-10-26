@@ -7,7 +7,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -96,12 +98,36 @@ std::map<BackendKind, std::vector<std::filesystem::path>> modules_in(
     return found;
 }
 
-/// How many devices ggml registered for each backend it managed to load.
-std::map<BackendKind, int> registered_devices() {
+/// ggml's registry of backends and devices: plain lists, which loading a
+/// backend appends to and nothing of ggml's guards. Loads happen on the
+/// engine's thread at startup and on the runtime builder's after an install,
+/// while Setup, the API's workers and the window read the lists, so a load
+/// holds this alone and a read shares it.
+///
+/// Held for the call into ggml and for nothing around it: never while
+/// modules are scored or NVIDIA's libraries preloaded, and never taken by a
+/// thread that already holds it. A load runs llama.cpp's log callback with
+/// it held, so nothing that callback does may read the devices.
+///
+/// llama.cpp reads the lists too, inside a model load, and those reads are
+/// not under it: held across a load, it would keep every reader waiting for
+/// the minute a large model takes, with the load's callbacks run inside it.
+std::shared_mutex g_ggml_registry;
+
+/// ggml's device list as it is now, nulls and all, so a position in it is
+/// ggml's index. With g_ggml_registry held, shared or alone.
+std::vector<ggml_backend_dev_t> listed_devices() {
+    std::vector<ggml_backend_dev_t> devices(ggml_backend_dev_count(), nullptr);
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        devices[i] = ggml_backend_dev_get(i);
+    }
+    return devices;
+}
+
+/// How many of `devices` each backend Crucible knows registered.
+std::map<BackendKind, int> devices_per_backend(const std::vector<ggml_backend_dev_t>& devices) {
     std::map<BackendKind, int> counts;
-    const std::size_t total = ggml_backend_dev_count();
-    for (std::size_t i = 0; i < total; ++i) {
-        ggml_backend_dev_t device = ggml_backend_dev_get(i);
+    for (ggml_backend_dev_t device : devices) {
         if (device == nullptr) {
             continue;
         }
@@ -115,6 +141,11 @@ std::map<BackendKind, int> registered_devices() {
         }
     }
     return counts;
+}
+
+/// How many devices ggml registered for each backend it managed to load.
+std::map<BackendKind, int> registered_devices() {
+    return devices_per_backend(RuntimeRegistry::devices());
 }
 
 /// Which of a backend's modules this machine should actually run.
@@ -293,9 +324,25 @@ bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
     if (kind == BackendKind::Cuda) {
         cuda_libraries::preload();   // before the module, which needs them
     }
-    if (ggml_backend_load(best.string().c_str()) == nullptr) {
-        error = "could not load " + best.filename().string() +
-                " (see the Crucible log)";
+
+    // The load is the one change to ggml's registry, so it is made with the
+    // registry to itself. And "already loaded" is asked again first, under
+    // the same lock: another thread may have loaded this backend while this
+    // one was choosing a module, and the devices would then be listed twice.
+    bool loaded = false;
+    {
+        const std::unique_lock<std::shared_mutex> loading(g_ggml_registry);
+        if (devices_per_backend(listed_devices()).count(kind) != 0) {
+            return true;
+        }
+        loaded = ggml_backend_load(best.string().c_str()) != nullptr;
+    }
+    if (!loaded) {
+        // NVIDIA's libraries fetched while the old ones were in use go in at
+        // the next start, and until then the module has none it can load.
+        error = kind == BackendKind::Cuda && cuda_libraries::waiting()
+                    ? std::string("restart Crucible to use CUDA: NVIDIA's libraries were in use")
+                    : "could not load " + best.filename().string() + " (see the Crucible log)";
         return false;
     }
     return true;
@@ -316,8 +363,14 @@ void RuntimeRegistry::load_all() {
     }
     // The one thing ggml's loader did besides the folder.
     if (const char* extra = std::getenv("GGML_BACKEND_PATH"); extra != nullptr && *extra != '\0') {
+        const std::unique_lock<std::shared_mutex> loading(g_ggml_registry);
         ggml_backend_load(extra);
     }
+}
+
+std::vector<ggml_backend_dev_t> RuntimeRegistry::devices() {
+    const std::shared_lock<std::shared_mutex> reading(g_ggml_registry);
+    return listed_devices();
 }
 
 std::vector<BackendKind> RuntimeRegistry::loadable() {
@@ -375,10 +428,13 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
         // A CUDA module that is here and not running, with NVIDIA's libraries
         // in neither place it could find them. Said, because otherwise this
         // looks exactly like a machine with no NVIDIA card: installed, no
-        // devices, and nothing to explain it.
+        // devices, and nothing to explain it. Not while a fetched set waits
+        // for the next start to go in: what it needs then is a restart, and
+        // installing it again would only download the module again.
         if (info.kind == BackendKind::Cuda && status.installed) {
             status.bytes += cuda_libraries::bytes();
-            if (!status.active && !cuda_libraries::complete() && !cuda_libraries::on_system()) {
+            if (!status.active && !cuda_libraries::usable() && !cuda_libraries::waiting()
+                && !cuda_libraries::on_system()) {
                 status.missing = "NVIDIA's CUDA runtime and cuBLAS libraries";
             }
         }

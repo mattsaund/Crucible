@@ -56,38 +56,15 @@ std::string provider_problem(const Config& config, const std::string& provider) 
 /// itself a moment later. The model may be left out and chosen afterwards --
 /// an expert is worth naming before it is worth filling.
 Reply expert_add(const json& params, Host& host) {
-    Expert expert;
-    expert.name  = format::trim(params.value("name", std::string{}));
-    expert.blurb = format::trim(params.value("description", std::string{}));
-    const auto model    = format::trim(params.value("model", std::string{}));
-    const auto provider = params.value("provider", std::string{});
-
-    Config edited = host.config();
-    if (const std::string problem = provider_problem(edited, provider); !problem.empty()) {
-        return bad(problem);
-    }
-    std::string error;
-    if (!edited.roster.add(expert, error)) {
-        // Said as the roster said it: a name already taken is fixed by
-        // changing the name, and the sentence names which.
-        return bad(error);
-    }
-    const ExpertId id = make_expert_id(expert.name);
-
-    ModelParams seated = edited.defaults;
-    seat(seated, edited, model, provider);
-    edited.experts[id] = seated;
-
-    if (const std::string refused = host.apply_config(std::move(edited)); !refused.empty()) {
+    const std::string name = format::trim(params.value("name", std::string{}));
+    if (const std::string refused =
+            add_expert(host, name, format::trim(params.value("description", std::string{})),
+                       format::trim(params.value("model", std::string{})), params.value("provider", std::string{}));
+        !refused.empty()) {
         return bad(refused);
     }
-    // So the delegator has something to route on besides the name. Queued
-    // behind whatever the engine is doing, and a no-op with no delegator.
-    if (host.engine() != nullptr) {
-        host.engine()->write_examples(id);
-    }
-    host.say(expert.name + " has joined the experts");
-    return good(json{{"id", id}});
+    host.say(name + " has joined the experts");
+    return good(json{{"id", make_expert_id(name)}});
 }
 
 /// Point an existing seat at a different model, here or elsewhere.
@@ -376,6 +353,39 @@ Reply provider_models(const json& params, const Scene& scene) {
 }
 
 }  // namespace
+
+std::string add_expert(Host& host, const std::string& name, const std::string& blurb,
+                       const std::string& model, const std::string& provider) {
+    Config edited = host.config();
+    if (std::string problem = provider_problem(edited, provider); !problem.empty()) {
+        return problem;
+    }
+    Expert expert;
+    expert.name  = name;
+    expert.blurb = blurb;
+    std::string error;
+    if (!edited.roster.add(expert, error)) {
+        // Said as the roster said it: a name already taken is fixed by
+        // changing the name, and the sentence names which.
+        return error;
+    }
+    const ExpertId id = make_expert_id(name);
+
+    // From the defaults rather than from nothing, so the new seat samples the
+    // way every other seat does until somebody says otherwise.
+    ModelParams seated = edited.defaults;
+    seat(seated, edited, model, provider);
+    edited.experts[id] = seated;
+    if (std::string refused = host.apply_config(std::move(edited)); !refused.empty()) {
+        return refused;
+    }
+    // So the delegator has something to route on besides the name. Queued
+    // behind whatever the engine is doing, and a no-op with no delegator.
+    if (host.engine() != nullptr) {
+        host.engine()->write_examples(id);
+    }
+    return {};
+}
 
 void roster_methods(std::vector<Method>& table) {
     table.push_back({"expert.add",      nullptr, expert_add});

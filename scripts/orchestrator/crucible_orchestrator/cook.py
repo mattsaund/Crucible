@@ -31,6 +31,9 @@ inside the trusted folder, asks the user about an edit, and keeps the journal
 that the window draws and History reads. This side decides what happens next.
 """
 
+import os
+import re
+import shlex
 import time
 
 from . import routing
@@ -79,25 +82,89 @@ FINISHING_ROUNDS = 6
 # A third of the context for what was attached, so the work still has room.
 ATTACHED_SHARE = 0.33
 
+# How much of a thought a THINK step keeps, to open beside its one line.
+THOUGHT_CHARS = 4000
+
+# The rest after a piece of work that changed nothing, doubled for each one
+# after it that changed nothing too, and never longer than REST_MOST. A cook
+# runs until it is stopped, and one with nothing left worth doing spun: given
+# "add a one-line docstring to each test", gpt-oss did it in the first pass and
+# spent the next ones re-reading the same two files and re-running a pytest
+# that was not installed. Resting stops nothing: Stop ends a rest at once, and
+# a piece that changes something puts the rest back to none.
+REST_FIRST = 60
+REST_MOST = 30 * 60
+
 HANDOFF_REQUEST = (
     "Say what the next most valuable piece of work towards the goal is, in one "
     "line, as:\n\nHANDOFF: <the next piece of work>\n\nSay nothing else. If it "
     "needs a different kind of expertise than yours, say so plainly in that line.")
 
+# Once the goal as written is met, each piece of work starts from an aim chosen
+# for it: one change, small enough to make and check, and inside the goal. A
+# piece with nothing to aim at re-read what it had read; told only "the next
+# most valuable piece of work", gpt-oss renamed tests it had been asked to give
+# docstrings.
+AIM_REQUEST = (
+    "The goal is met. Choose the next most valuable improvement to what it asks for: one "
+    "concrete change, naming the file, that you can make and check in a few steps. Keep to "
+    "the goal: do not rename, move or rewrite anything it does not ask about. Say it in one "
+    "line, as:\n\nHANDOFF: <the change>\n\nSay nothing else. If nothing is worth changing, "
+    "reply DONE: and why.")
 
-def system_prompt(base, goal, root, tools):
-    """What the expert is told it is doing, over and above its own system prompt."""
-    return (base
+
+def publish_journal(core, journal, sent):
+    """Show the core the journal as it is now, with only the steps it has not
+    been sent: the whole journal on every step made a long build slower the
+    longer it ran. `sent` is how many the core holds; what comes back is how
+    many it holds now, which is what the next publish starts from."""
+    steps = journal.get("steps") or []
+    sent = sent if 0 <= sent <= len(steps) else 0
+    body = dict(journal)
+    body["steps"] = steps[sent:]
+    reply = core.call("cook.publish", {"cook": body, "steps_from": sent}) or {}
+    held = reply.get("steps")
+    # A core that holds a count other than what was sent lost track (or is
+    # one that keeps no count); the next publish sends from what it holds.
+    return held if isinstance(held, int) and 0 <= held <= len(steps) else len(steps)
+
+
+def system_prompt(base, goal, root, tools, aim="", machine="", missing=()):
+    """What the expert is told it is doing, over and above its own system prompt:
+    the goal, and once it is met, what this piece of work is for."""
+    text = (base
             + "\n\nYou are working on a real project on disk, over a long session, one "
               "action at a time. The goal is:\n\n"
             + goal
             + "\n\nThe project is at " + root
+            + ("\n" + machine if machine else "")
+            + ("\nNot installed here, so do not run: " + ", ".join(missing) + "." if missing else "")
             + "\n\nWork in small steps. Look before you change: read a file before "
               "rewriting it, and run the project to find out whether a change worked "
-              "rather than assuming. Prefer the smallest change that makes something "
-              "measurably better. When a piece of work is finished, say DONE and what "
-              "you did, and you will be asked for the next one."
-            + tools)
+              "rather than assuming. Keep to what the goal asks: prefer the smallest "
+              "change that makes it measurably better, and leave alone what it does not "
+              "mention. When a piece of work is finished, say DONE and what you did, and "
+              "you will be asked for the next one.")
+    if aim:
+        text += "\n\nThe goal is met, and this piece of work improves on it. Its aim: " + aim
+    return text + tools
+
+
+def machine_line(facts):
+    """What this machine has, in one line for a prompt -- so the plan says
+    python3 where there is no python, and nobody plans around npm on a
+    machine without node."""
+    if not facts:
+        return ""
+    programs = facts.get("programs") or []
+    missing = [p for p in ("python", "python3", "node", "git") if p not in programs]
+    line = ("This machine runs " + str(facts.get("os", "")) + "; commands run in "
+            + str(facts.get("shell", "a shell")) + ". On PATH: " + (", ".join(programs) or "nothing of note") + ".")
+    if "python" in missing and "python3" in programs:
+        line += " There is no `python`: use `python3`."
+    if "node" in missing:
+        line += " There is no node."
+    return line
 
 
 def files_touched(cook):
@@ -131,10 +198,43 @@ def clip(text, limit):
     if len(text) <= limit:
         return text
     cut = text[:limit]
-    space = cut.rfind(" ")
+    # Between two words is a line break as much as a space: a thought that
+    # lists files or code a line at a time can go far without a space, and was
+    # cut through a word. A long run with no break at all, a path or some
+    # JSON, is cut after its last slash or comma rather than inside a name.
+    space = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("\t"))
+    mark = max((m.end() for m in re.finditer(r"[^\w\s]+", cut)), default=-1)
     if space > limit // 2:
         cut = cut[:space]
-    return cut.rstrip(" ,.;:") + "..."
+    elif mark > limit // 2:
+        cut = cut[:mark]
+    elif space > 0:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:\n\t") + "..."
+
+
+def line(text, limit):
+    """`text` as one line of at most `limit` characters, for a step's summary:
+    the journal draws a step on a line, and a line break in it is a space there."""
+    return clip(" ".join((text or "").split()), limit)
+
+
+def thought_step(answer, reasoning):
+    """A reply that called nothing, as a THINK step: its line, and the whole of
+    what it said or thought, to open from the step, when the line is cut."""
+    said, thought = answer.strip(), reasoning.strip()
+    if said:
+        summary, whole, room = line(said, 200), said, 200
+    elif thought:
+        summary, whole, room = "(only thought) " + line(thought, 180), thought, 180
+    else:
+        return "(said nothing)", ""
+    return summary, clip(whole, THOUGHT_CHARS) if len(" ".join(whole.split())) > room else ""
+
+
+def pause(seconds):
+    """Sleep, as a rest does: its own name, so a test can rest without waiting."""
+    time.sleep(seconds)
 
 
 class Core:
@@ -245,6 +345,263 @@ def nudge_for(parsed):
             "were given, on a line of its own, with its colon.")
 
 
+# --- the same call again -------------------------------------------------------
+#
+# A chat turn does not run a call it has already made: the answer would be the
+# one it already has, so the model is told that and to use it (the engine's turn
+# loop). A cook or a build shows the model only its last few exchanges, so here
+# a call is a repeat while the earlier one's result is still among them and
+# nothing has changed since: the same verb given the same thing, or the same
+# lines of the same file however they were read. Asked to make a header blue
+# without being told which file, gpt-oss read the page with `sed -n` and
+# grepped it for color names until its rounds ran out.
+#
+# The first repeat is not run, and is answered with REPEAT_NUDGE. The next one
+# in the same piece of work ends the piece, or the task. A change to a file
+# starts the count again.
+
+REPEAT_NUDGE = ("You already did exactly that, and its result is above: nothing has changed "
+                "since. Use it, and take a different step. Another repeat ends this {}.")
+
+# Commands that only look. A RUN made of nothing else changes nothing, so what
+# was seen before it still stands; after any other command, it is seen afresh.
+LOOKING = frozenset(("cat", "nl", "head", "tail", "sed", "grep", "egrep", "fgrep", "rg", "ag",
+                     "ls", "find", "wc", "tree", "file", "stat", "pwd", "which", "less", "more",
+                     "du", "cut", "diff", "cd", "echo"))
+
+# The verbs that only look, whatever they are given.
+LOOKS = frozenset(("list", "read", "find", "search", "fetch"))
+
+# The verbs whose answer is how things are at that moment, the screen or what a
+# running program has printed, which asking again rightly changes.
+MOMENTS = frozenset(("screenshot", "click", "move", "type", "key", "scroll", "start", "stop", "logs"))
+
+# READ's own range, "big.py 120-180", and a sed script that prints lines by
+# number: 120,180p, 120p or 120,$p.
+READ_RANGE = re.compile(r"^(.*\S)\s+(\d{1,9})\s*-\s*(\d{1,9})$")
+SED_LINES = re.compile(r"^(\d{1,9})(?:,(\d{1,9}|\$))?p$")
+
+# How a shell says it has no such program: dash, bash, zsh and cmd.
+NOT_FOUND = re.compile(r"(?:^|\n)[^\n:]*:\s*(?:(?:line )?\d+:\s*)?([\w.+-]+): (?:command )?not found"
+                       r"|command not found: ([\w.+-]+)"
+                       r"|'([^'\n]+)' is not recognized as an internal or external command")
+
+
+def shell_words(command):
+    """`command` in words, with each pipe, redirection and `&&` a word of its
+    own; None when a shell could not read it either."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def is_joint(word):
+    """Whether a word is the shell's punctuation rather than a program's."""
+    return bool(word) and set(word) <= set("();<>|&")
+
+
+def project_path(path, root=""):
+    """A file named the way the project's listing names it, relative to the root."""
+    path = path.strip()
+    base = root.rstrip("/")
+    if base and path.startswith(base + "/"):
+        path = path[len(base) + 1:]
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def printed_lines(words):
+    """What one command of a pipeline prints of a file, as (file, first, last):
+    a last of 0 is to the end, a first below 0 is that many lines from the end,
+    and the file is None when the lines come down the pipe. None when the
+    command does anything else."""
+    program = os.path.basename(words[0]) if words else ""
+    args = words[1:]
+    if program in ("cat", "nl"):
+        files = [a for a in args if not a.startswith("-")]
+        return (files[0], 0, 0) if len(files) == 1 else None
+    if program == "sed":
+        if "-n" not in args or any(a.startswith("-i") or a.startswith("--in-place") for a in args):
+            return None
+        rest = [a for a in args if a not in ("-n", "-e")]
+        lines = SED_LINES.match(rest[0]) if 1 <= len(rest) <= 2 else None
+        if not lines:
+            return None
+        first = int(lines.group(1))
+        last = first if lines.group(2) is None else 0 if lines.group(2) == "$" else int(lines.group(2))
+        return (rest[1] if len(rest) == 2 else None), first, last
+    if program in ("head", "tail"):
+        count, files, wanted = "10", [], False
+        for a in args:
+            if wanted:
+                count, wanted = a, False
+            elif a in ("-n", "--lines"):
+                wanted = True
+            elif a.startswith("--lines="):
+                count = a[len("--lines="):]
+            elif re.fullmatch(r"-n\+?\d+|-\d+", a):
+                count = a[2:] if a.startswith("-n") else a[1:]
+            elif a.startswith("-"):
+                return None   # bytes, following a growing file: not lines of it
+            else:
+                files.append(a)
+        if len(files) > 1 or not re.fullmatch(r"\+?\d{1,9}", count):
+            return None
+        file = files[0] if files else None
+        if program == "head":
+            return (file, 1, int(count)) if not count.startswith("+") else None
+        return (file, int(count[1:]), 0) if count.startswith("+") else (file, -int(count), 0)
+    return None
+
+
+def read_of(call, root=""):
+    """The lines of a file a call does nothing but read, as (file, first, last):
+    for READ, and for a RUN that prints them with sed -n, cat, nl, head or tail,
+    alone or in a pipe. None for any other call."""
+    kind = call.get("kind", "")
+    argument = (call.get("argument") or "").strip()
+    if kind == "read":
+        ranged = READ_RANGE.match(argument)
+        if ranged:
+            return project_path(ranged.group(1), root), int(ranged.group(2)), int(ranged.group(3))
+        return project_path(argument, root), 0, 0
+    words = shell_words(argument) if kind == "run" else None
+    if not words:
+        return None
+    stages = [[]]
+    for word in words:
+        if word == "|":
+            stages.append([])
+        elif is_joint(word):
+            return None
+        else:
+            stages[-1].append(word)
+    read = printed_lines(stages[0])
+    if read is None or read[0] is None:
+        return None
+    for stage in stages[1:]:
+        narrowed = printed_lines(stage)
+        if narrowed is None or narrowed[0] is not None or read[1:] != (0, 0):
+            return None
+        read = (read[0],) + narrowed[1:]
+    return (project_path(read[0], root),) + read[1:]
+
+
+# gpt-oss's own edit tool, which it runs as a command when it forgets this
+# one has none. Told so in the result, with what to use instead: without it,
+# it re-read the file it could not change until the repeat guard ended the task.
+APPLY_PATCH = re.compile(r"\s*(?:cd\s+\S+\s*&&\s*)?apply_patch\b")
+APPLY_PATCH_HINT = ("\n(There is no apply_patch here. Change part of a file with EDIT: <path> and "
+                    "SEARCH/REPLACE blocks, or write it whole with WRITE: <path>.)")
+
+
+def read_hint(call, result, root=""):
+    """For a RUN that printed lines of a file in the project and did nothing
+    else, a line to go after its result naming the READ that does the same and
+    numbers them; for a RUN of apply_patch, which is not here, what to use
+    instead; "" otherwise."""
+    if call.get("kind") == "run" and APPLY_PATCH.match(call.get("argument") or ""):
+        return APPLY_PATCH_HINT
+    read = read_of(call, root) if call.get("kind") == "run" and result.get("ok") else None
+    if read is None or os.path.isabs(read[0]) or read[0].startswith(".."):
+        return ""
+    path, first, last = read
+    if first > 0 and last >= first:
+        return "\n(READ: %s %d-%d reads the same lines, numbered.)" % (path, first, last)
+    return "\n(READ: %s reads it numbered, and READ: %s 1-80 just those lines.)" % (path, path)
+
+
+def not_installed(call, result):
+    """The program a RUN reached for that this machine does not have, or ""."""
+    if call.get("kind") != "run" or result.get("ok"):
+        return ""
+    found = NOT_FOUND.search(result.get("output") or "")
+    return next((name for name in found.groups() if name), "") if found else ""
+
+
+def only_looks(call):
+    """Whether a call changes nothing, so that what was seen before it stands."""
+    kind = call.get("kind", "")
+    if kind in LOOKS:
+        return True
+    words = shell_words(call.get("argument") or "") if kind == "run" else None
+    if not words:
+        return False
+    command = []
+    for word in words + [";"]:
+        if not is_joint(word):
+            command.append(word)
+            continue
+        if word not in ("|", "||", "&&", ";"):
+            return False   # a redirection, a subshell, a program left running
+        if command:
+            program = os.path.basename(command[0])
+            if (program not in LOOKING
+                    or (program == "sed" and any(a.startswith("-i") for a in command[1:]))
+                    or (program == "find" and any(a in ("-delete", "-exec", "-execdir", "-ok", "-okdir")
+                                                  for a in command[1:]))):
+                return False
+        command = []
+    return True
+
+
+def signature(call, root=""):
+    """What makes two calls the same, or None for one that can rightly be made again."""
+    kind = call.get("kind", "")
+    if kind in MOMENTS:
+        return None
+    read = read_of(call, root)
+    if read is not None:
+        return ("read",) + read
+    return (kind, (call.get("argument") or "").strip(), (call.get("content") or "").strip())
+
+
+def spoken(call):
+    """A call as the journal names it: the verb, and what it was given."""
+    return call.get("kind", "").upper() + ": " + line(call.get("argument") or "", 80)
+
+
+class Repeats:
+    """The calls one piece of work has made since anything last changed, each
+    with where its result went among the exchanges the model is shown."""
+
+    def __init__(self, root=""):
+        self.root = root
+        self.made = {}
+        self.strikes = 0
+
+    def clear(self):
+        """A new piece of work, with a window of its own: nothing in it is seen yet."""
+        self.made = {}
+        self.strikes = 0
+
+    def again(self, call, shown_from):
+        """Whether `call` was made already, with its result in what the model was
+        just shown (its exchanges from `shown_from` on) and nothing changed
+        since. Each one is a strike."""
+        key = signature(call, self.root)
+        at = self.made.get(key) if key is not None else None
+        if at is None or at < shown_from:
+            return False
+        self.strikes += 1
+        return True
+
+    def ran(self, call, result, at):
+        """`call` was run, and its result is exchange `at`."""
+        if result.get("changed"):
+            self.made = {}
+            self.strikes = 0
+        elif not only_looks(call) and not not_installed(call, result):
+            self.made = {}
+        key = signature(call, self.root)
+        if key is not None:
+            self.made[key] = at
+
+
 class Cook:
     def __init__(self, core, params):
         self.core = core
@@ -268,11 +625,22 @@ class Cook:
         self.seat = Seat()
         self.attached_for = None   # the seat the attachments were last read for
         self.attached = None       # the message carrying them
+        # The pieces of work after the first. `met` is whether the goal as
+        # written has been done once (DONE was said), `aim` what the piece
+        # under way is for, `changed` whether it has changed a file yet, and
+        # `empty` how many pieces in a row ended with nothing changed.
+        self.met = False
+        self.aim = ""
+        self.changed = False
+        self.empty = 0
+        self.resting = 0           # seconds to rest before the next round
+        self.machine = ""          # what this machine has, for the prompt
+        self.missing = []          # programs a command reached for that are not here
 
     # --- the journal ------------------------------------------------------------
 
     def publish(self):
-        self.core.call("cook.publish", {"cook": self.journal})
+        self.published = publish_journal(self.core, self.journal, getattr(self, "published", 0))
 
     def note(self, kind, summary, ok=True, detail="", ms=0, changed=None, expert=None, picture=""):
         self.journal["steps"].append({
@@ -335,6 +703,42 @@ class Cook:
         asked["seat"] = self.seat.handle
         return self.core.call("tools.run", asked) or {}
 
+    # --- one piece of work, and the next --------------------------------------------
+
+    def system(self):
+        """The system prompt as it stands: the goal, what this machine lacks,
+        and once the goal is met, the aim of the piece under way: the one it
+        named, or for a piece begun without naming one, the plain one."""
+        aim = self.aim or ("the next most valuable improvement to what the goal asks for"
+                           if self.met else "")
+        return system_prompt(self.params.get("system_prompt", ""), self.goal, self.root,
+                             self.params.get("tools", ""), aim, self.machine, self.missing)
+
+    def next_request(self):
+        """What to ask for when a piece of work is over: the next piece towards
+        the goal, or once it is met, an aim."""
+        return AIM_REQUEST if self.met else HANDOFF_REQUEST
+
+    def piece_over(self):
+        """A piece of work has ended. One that changed nothing makes the next
+        wait, longer for each in a row; one that changed something ends that."""
+        self.empty = 0 if self.changed else self.empty + 1
+        self.changed = False
+        self.aim = ""
+        self.resting = min(REST_MOST, REST_FIRST * 2 ** (self.empty - 1)) if self.empty else 0
+
+    def rest(self, out_of_time):
+        """Wait out a rest, a second at a time, for as long as nothing stops it."""
+        seconds, self.resting = self.resting, 0
+        minutes = max(1, round(seconds / 60))
+        self.note("note", "that piece changed nothing: the next starts in %d minute%s"
+                  % (minutes, "" if minutes == 1 else "s"))
+        self.core.mood("idle", "resting")
+        for _ in range(seconds):
+            if self.stopping() or out_of_time():
+                break
+            pause(1)
+
     # --- the loop -----------------------------------------------------------------
 
     def run(self):
@@ -351,8 +755,9 @@ class Cook:
             core.mood("error", journal["outcome"])
             return
 
-        system = system_prompt(self.params.get("system_prompt", ""), self.goal, self.root,
-                               self.params.get("tools", ""))
+        # What is on PATH, as a build's agents are told: a pass that does not
+        # know pytest is missing finds out by running it, pass after pass.
+        self.machine = machine_line(core.call("machine.facts") or {})
         budget = journal["budget_seconds"]
         deadline = time.monotonic() + budget if budget > 0 else None
 
@@ -372,6 +777,7 @@ class Cook:
 
         recent = []          # the exchanges since the last trim
         window = []          # the last few actions, and whether each changed anything
+        repeats = Repeats(self.root)
         strikes = 0
         looping = False
         stalled = False      # stopped for rounds with no action, not a repeated one
@@ -380,6 +786,10 @@ class Cook:
         since_checkpoint = 0
 
         while not self.stopping() and not out_of_time():
+            if self.resting:
+                self.rest(out_of_time)
+                continue
+            system = self.system()
             messages = [{"role": "system", "content": system}]
             self.read_for_seat(system)
             if self.attached is not None:
@@ -389,6 +799,7 @@ class Cook:
             if account:
                 messages.append({"role": "user", "content": account})
                 messages.append({"role": "assistant", "content": "Understood. Continuing."})
+            shown_from = len(recent) - RECENT_TURNS * 2
             messages.extend(recent[-RECENT_TURNS * 2:])
             messages.append({"role": "user", "content": instruction})
 
@@ -416,11 +827,8 @@ class Cook:
                 recent.append({"role": "assistant", "content": answer or "(no reply)"})
 
             if not call:
-                said, thought = answer.strip(), reasoning.strip()
-                summary = (clip(said, 200) if said
-                           else "(only thought) " + clip(thought, 180) if thought
-                           else "(said nothing)")
-                self.note("think", summary, ms=reply.get("ms", 0))
+                summary, whole = thought_step(answer, reasoning)
+                self.note("think", summary, detail=whole, ms=reply.get("ms", 0))
 
                 idle += 1
                 if idle >= IDLE_LIMIT:
@@ -491,7 +899,10 @@ class Cook:
                 # running account carries the history across.
                 journal["iterations"] += 1
                 recent = []
+                repeats.clear()
                 since_checkpoint = 0
+                if self.met:
+                    self.aim = work   # kept in front of it for the whole piece
                 instruction = "Do this now: " + work
                 continue
 
@@ -502,8 +913,30 @@ class Cook:
                 # the line goes back through the delegator.
                 journal["iterations"] += 1
                 recent = []
+                repeats.clear()
                 since_checkpoint = 0
-                instruction = "That piece is done. " + HANDOFF_REQUEST
+                self.piece_over()
+                self.met = True
+                instruction = "That piece is done. " + self.next_request()
+                continue
+
+            # The same call again, with its answer still in front of the model:
+            # told so once, and the piece is over the next time.
+            if repeats.again(call, shown_from):
+                if repeats.strikes > 1:
+                    self.note("note", "ended the piece: the same call again with nothing changed ("
+                              + spoken(call) + ")", ok=False, ms=reply.get("ms", 0))
+                    journal["iterations"] += 1
+                    recent = []
+                    repeats.clear()
+                    since_checkpoint = 0
+                    self.piece_over()
+                    instruction = ("That piece is over: you asked again for what you already had. "
+                                   + self.next_request())
+                    continue
+                self.note("note", "not run, the same as before with nothing changed: " + spoken(call),
+                          ok=False, ms=reply.get("ms", 0))
+                instruction = REPEAT_NUDGE.format("piece of work")
                 continue
 
             # A write waits for a yes when Auto is off, exactly as in a chat
@@ -526,13 +959,19 @@ class Cook:
             started = time.monotonic()
             result = self.run_tool(call)
             changed = result.get("changed") or []
+            self.changed = self.changed or bool(changed)
+            missing = not_installed(call, result)
+            if missing and missing not in self.missing:
+                self.missing.append(missing)
             self.note(kind, result.get("summary", ""), ok=result.get("ok", False),
                       detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
                       changed=changed, picture=result.get("picture", ""))
             # A picture the tool made goes with the next round, to a seat
             # that can see one; the core attaches it to this message.
-            recent.append({"role": "user", "content": result.get("output", ""),
+            recent.append({"role": "user",
+                           "content": result.get("output", "") + read_hint(call, result, self.root),
                            "tool_pictures": bool(result.get("pictures"))})
+            repeats.ran(call, result, len(recent) - 1)
             instruction = "Continue."
 
             # Has anyone else a better claim on this? Asked on a schedule, so a
@@ -540,7 +979,7 @@ class Cook:
             since_checkpoint += 1
             if since_checkpoint >= CHECKPOINT_EVERY:
                 since_checkpoint = 0
-                instruction = ("Stop and take stock. " + HANDOFF_REQUEST
+                instruction = ("Stop and take stock. " + self.next_request()
                                + "\nIf you are the right expert for it, say so in the line and "
                                  "carry on.")
                 continue
@@ -568,8 +1007,10 @@ class Cook:
                 # away, with the listing again -- the thing it has most likely
                 # lost is what the project contains.
                 recent, window = [], []
+                repeats.clear()
                 journal["iterations"] += 1
                 since_checkpoint = 0
+                self.piece_over()
                 instruction = ("Stop. The last several actions changed nothing. Forget them and "
                                "start again from the goal: " + self.goal
                                + "\n\nHere is what is in the project:\n\n" + listed
@@ -594,6 +1035,8 @@ class Cook:
                            "fix what you broke, and check it runs. When there is nothing left to "
                            "repair, reply with DONE: and a short account of what you changed "
                            "overall and what is left to do.")
+            self.aim = ""   # the last piece's aim is not this pass's
+            system = self.system()
             for _ in range(FINISHING_ROUNDS):
                 if self.canceled():
                     break

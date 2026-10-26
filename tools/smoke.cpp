@@ -153,6 +153,10 @@ int main(int argc, char** argv) {
     }
     for (const Expert& seat : config.roster.experts()) {
         config.experts[seat.id].model = std::filesystem::absolute(expert).string();
+        // One seed rather than a new one each run, so the same prompt gets
+        // the same reply from the same build: what lets two builds' answers
+        // be compared word for word.
+        config.experts[seat.id].seed = 1234;
     }
     config.resolve_models();
 
@@ -168,9 +172,17 @@ int main(int argc, char** argv) {
 
     // The turn is over when it has stopped streaming and the engine is idle.
     const auto started = std::chrono::steady_clock::now();
+    std::shared_ptr<const PendingEdit> allowed;
     for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         const Snapshot now = state.snapshot();
+        // A write waits for a yes, and there is nobody at a window to give
+        // it: it is given here, as a person would, and said.
+        if (now.pending_edit && now.pending_edit != allowed) {
+            allowed = now.pending_edit;
+            std::printf("edit: %s (allowed)\n", allowed->path.c_str());
+            engine.approve_edit(true);
+        }
         const bool done = !now.turns.empty() && !now.turns.back().streaming && !engine.is_busy();
         if (done) {
             break;
@@ -187,6 +199,11 @@ int main(int argc, char** argv) {
         std::printf("route: %s (%s, %.2f) %s\n", turn.route->expert.c_str(),
                     std::string(route_source_name(turn.route->source)).c_str(),
                     static_cast<double>(turn.route->confidence), turn.route->detail.c_str());
+    }
+    // What the turn did besides talk -- a file read, a command run -- so a
+    // turn that used a tool can be told from one that did not.
+    for (const TurnAction& action : turn.actions) {
+        std::printf("action: %s\n", action.summary.c_str());
     }
     std::printf("%s: %s\n", turn.failed ? "failed" : "reply", turn.reply.c_str());
     engine.stop();

@@ -41,15 +41,12 @@ APP_BUNDLE_DIR="$HOME/Applications"
 INSTALL_DEPS=1
 # The Python environment the fine-tuner runs in, installed by default.
 #
-# This is the opposite of the rule next door for GPU runtimes, and the
-# difference is worth stating. Which runtime to build is a question only the
-# machine can answer, so it is asked from the settings screen. This is not a
-# question: there is one training environment, its shape follows from the
-# hardware, and the alternative to installing it here is a fine-tune that
-# stops for four gigabytes the first time somebody tries one. It is several
-# gigabytes, so the size is printed before it starts and --no-trainer skips
-# it -- and skipping it costs nothing permanent, since
-# `crucible --install-trainer` does the same job afterwards.
+# There is one training environment, its shape follows from the hardware, and
+# the alternative to installing it here is a fine-tune that stops for four
+# gigabytes the first time somebody tries one. It is several gigabytes, so the
+# size is printed before it starts and --no-trainer skips it -- and skipping
+# it costs nothing permanent, since `crucible --install-trainer` does the same
+# job afterwards.
 INSTALL_TRAINER=1
 # The compute backends, installed by default.
 #
@@ -534,7 +531,7 @@ cat <<'ART'
       ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
       ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
       ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   Crucible
-      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
+      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   An all in one local AI workshop.
       ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
       ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
       ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁
@@ -1097,8 +1094,9 @@ locate_source() {
         here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     fi
 
-    # Running ./install.sh from inside a checkout builds that checkout, so you
-    # can test local changes without pushing them first.
+    # Running install.sh from inside a checkout (`bash install.sh`: git keeps
+    # it unexecutable) builds that checkout, so you can test local changes
+    # without pushing them first.
     if [ -n "$here" ] && [ -f "$here/CMakeLists.txt" ] && grep -q 'project(crucible' "$here/CMakeLists.txt" 2>/dev/null; then
         SRC_DIR="$here"
         info "building the checkout at $SRC_DIR"
@@ -1417,8 +1415,9 @@ build_and_install() {
 # Where Crucible keeps its files
 #
 # Created by the installer so the first run opens onto directories that are
-# already there, and so `--uninstall` has one place to look. Nothing is put in
-# them: no models, and no compute runtime. Both are the program's to manage.
+# already there, and so `--uninstall` has one place to look. The installer
+# puts nothing in them itself: the program fills them when it is asked to
+# below -- its Python, the runtimes, the fine-tuner -- and no models.
 # --------------------------------------------------------------------------
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/crucible"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/crucible"
@@ -1427,6 +1426,30 @@ MODELS_DIR="$DATA_DIR/models"
 make_directories() {
     mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$MODELS_DIR" 2>/dev/null || true
     return 0
+}
+
+# The models folder the program will use: the one its config names, or the
+# default when it names none. The summary named the default whatever the
+# config said, which on a machine whose models live on another drive pointed
+# somewhere they were not.
+#
+# Read the way the program reads it (Config::resolved_models_dir): empty is
+# the default, and a leading ~ is the home folder. The value is a JSON string
+# on one line, which the program writes one key to a line; it is unescaped
+# only as far as a path needs.
+configured_models_dir() {
+    local file="$CONFIG_DIR/config.json" dir=""
+    if [ -f "$file" ]; then
+        dir="$(sed -nE 's/.*"models_dir"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' "$file" 2>/dev/null)" || dir=""
+        dir="${dir%%$'\n'*}"
+        dir="$(printf '%s' "$dir" | sed -E 's/\\(.)/\1/g')"
+    fi
+    case "$dir" in
+        "")    dir="$MODELS_DIR" ;;
+        "~")   dir="$HOME" ;;
+        "~/"*) dir="$HOME/${dir#"~/"}" ;;
+    esac
+    printf '%s' "$dir"
 }
 
 # Remove one path, with sudo only where it is actually needed.
@@ -1711,6 +1734,7 @@ run_check() {
     fi
 
     printf '\n%swould install:%s\n' "$C_BOLD" "$C_RESET"
+    info "python     : Crucible's own, tens of MB"
     if [ "$INSTALL_RUNTIMES" = 1 ]; then
         info "runtimes   : the compute backends this machine can use (--no-runtimes skips)"
     else
@@ -1742,7 +1766,7 @@ run_check() {
     fi
     info "libraries  : $PREFIX/lib/crucible"
     info "config     : $CONFIG_DIR"
-    info "models     : $MODELS_DIR"
+    info "models     : $(configured_models_dir)"
     printf '\n'
     exit 0
 }
@@ -1817,7 +1841,7 @@ main() {
         printf '    application   %s\n' "in the application menu"
     fi
     printf '    config        %s\n' "$CONFIG_DIR"
-    printf '    models        %s\n' "$MODELS_DIR"
+    printf '    models        %s\n' "$(configured_models_dir)"
     if [ "${PYTHON_READY:-0}" = 1 ]; then
         printf '    python        ready\n'
     else

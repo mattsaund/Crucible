@@ -63,6 +63,11 @@ void Setup::stop() {
     }
 }
 
+void Setup::cancel() {
+    canceled_.store(true);
+    stop_.store(true);
+}
+
 void Setup::want_model(starter::Model model, std::filesystem::path models_dir) {
     const std::lock_guard<std::mutex> lock(mutex_);
     model_      = std::move(model);
@@ -143,6 +148,7 @@ void Setup::start() {
         }
     }
     stop_.store(false);
+    canceled_.store(false);
     worker_ = std::thread([this] { run(); });
     if (on_change_) {
         on_change_();
@@ -173,6 +179,8 @@ void Setup::run() {
     }
     std::size_t next_kind = 0;
     bool        runtime_added = false;
+    // The item a stop lands on says so, and the rest wait for the next start.
+    const auto halted = [this](std::size_t index) { update(index, Item::State::Stopped, {}, -1.0F); };
 
     for (std::size_t i = 0; i < todo.size() && !stop_.load(); ++i) {
         const std::string& id = todo[i].id;
@@ -191,7 +199,11 @@ void Setup::run() {
                         update(i, Item::State::Working, progress.phase, 1.0F);
                     }
                 },
-                error);
+                error, [this] { return stop_.load(); });
+            if (!ok && stop_.load()) {
+                halted(i);   // what it fetched is kept for the next start
+                break;
+            }
             update(i, ok ? Item::State::Done : Item::State::Failed, ok ? std::string() : error,
                    ok ? 1.0F : -1.0F);
             continue;
@@ -206,6 +218,7 @@ void Setup::run() {
                 breathe();
             }
             if (stop_.load()) {
+                halted(i);   // that build is the settings screen's, and goes on
                 break;
             }
             if (runtime_installed(kind)) {
@@ -229,6 +242,12 @@ void Setup::run() {
                 update(i, Item::State::Working, progress.label(),
                        progress.phase == BuildProgress::Phase::Compiling ? progress.percent : -1.0F);
                 if (stop_.load()) {
+                    // Started here, so stopped with it when the window asks.
+                    // On the way out the builder stops itself.
+                    if (canceled_.load()) {
+                        runtimes_.cancel();
+                    }
+                    halted(i);
                     break;
                 }
                 breathe();
@@ -251,6 +270,10 @@ void Setup::run() {
                     }
                 },
                 [this] { return stop_.load(); }, error);
+            if (!ok && stop_.load()) {
+                halted(i);
+                break;
+            }
             update(i, ok ? Item::State::Done : Item::State::Failed, ok ? std::string() : error,
                    ok ? 1.0F : -1.0F);
             continue;
@@ -277,7 +300,8 @@ void Setup::run() {
                                            : -1.0F);
                 },
                 [this] { return stop_.load(); }, why);
-            if (stop_.load()) {
+            if (!fetched && stop_.load()) {
+                halted(i);
                 break;
             }
             if (fetched) {
@@ -302,6 +326,7 @@ void Setup::run() {
                 breathe();
             }
             if (stop_.load()) {
+                halted(i);   // that install is the settings screen's, and goes on
                 break;
             }
             if (lab::pyenv::looks_installed()) {
@@ -322,6 +347,10 @@ void Setup::run() {
                 }
                 update(i, Item::State::Working, progress.label(), progress.percent);
                 if (stop_.load()) {
+                    if (canceled_.load()) {
+                        trainer_.cancel();
+                    }
+                    halted(i);
                     break;
                 }
                 breathe();

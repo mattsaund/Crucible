@@ -9,6 +9,9 @@
 
 #include "crucible/cook/journal.hpp"
 
+#include <mutex>
+#include <unordered_set>
+
 namespace crucible::api {
 namespace {
 
@@ -73,6 +76,7 @@ json turn_json(const Turn& turn) {
         {"prompt_tokens",     turn.prompt_tokens},
         {"output_tokens",     turn.output_tokens},
         {"load_ms",           turn.load_ms},
+        {"rev",               turn.revision},
     };
     // Reasoning is sent but kept apart from the reply, for the same reason the
     // window draws it apart: it is not the answer, and an interface that
@@ -146,7 +150,7 @@ json cook_task_json(const CookTask& task) {
 /// the engine wakes it (see Pusher in gui/window.cpp), and a diff protocol
 /// would buy some bandwidth between the program and its own page in exchange
 /// for two sides that can disagree about what they are looking at.
-json snapshot_to_json(const Snapshot& snapshot) {
+json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
     // Which platform this is, for the words the page uses about it: where a
     // program it makes is found, what a shortcut is called.
 #if defined(_WIN32)
@@ -221,12 +225,17 @@ json snapshot_to_json(const Snapshot& snapshot) {
     }
     out["experts"] = std::move(experts);
 
-    json turns = json::array();
-    for (const Turn& turn : snapshot.turns) {
-        turns.push_back(turn_json(turn));
+    if (with_turns) {
+        json turns = json::array();
+        for (const Turn& turn : snapshot.turns) {
+            turns.push_back(turn_json(turn));
+        }
+        out["turns"] = std::move(turns);
     }
-    out["turns"] = std::move(turns);
 
+    if (snapshot.bench) {
+        out["bench"] = *snapshot.bench;
+    }
     if (snapshot.cook) {
         const Cook& cook = *snapshot.cook;
         json steps = json::array();
@@ -278,6 +287,34 @@ json snapshot_to_json(const Snapshot& snapshot) {
             {"after",  snapshot.pending_edit->after},
         };
     }
+    return out;
+}
+
+std::string PageTurns::turns_json(const TurnList& turns) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::string out = "[";
+    std::unordered_set<std::uint64_t> now;
+    for (std::size_t i = 0; i < turns.size(); ++i) {
+        const Turn& turn = turns[i];
+        if (i > 0) {
+            out += ',';
+        }
+        // A revision the page was sent is the same turn word for word, and
+        // the page keeps every turn it was sent by revision: a stub names it.
+        // A turn with none was made by hand, and goes whole.
+        if (turn.revision != 0 && sent_.count(turn.revision) != 0) {
+            out += "{\"rev\":" + std::to_string(turn.revision) + ",\"stub\":true}";
+        } else {
+            out += turn_json(turn).dump(-1, ' ', false, json::error_handler_t::replace);
+        }
+        if (turn.revision != 0) {
+            now.insert(turn.revision);
+        }
+    }
+    out += ']';
+    // What the page holds after this push: the turns of this transcript and
+    // no others, so the set is as long as the conversation, not its history.
+    sent_ = std::move(now);
     return out;
 }
 

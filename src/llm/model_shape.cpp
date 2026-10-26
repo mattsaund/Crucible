@@ -7,9 +7,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <gguf.h>
@@ -93,6 +95,64 @@ std::uint64_t first_or(const std::vector<std::uint64_t>& values, std::uint64_t f
     return values.empty() ? fallback : values.front();
 }
 
+/// Cells of cache for `tokens`: llama.cpp pads a cache to a multiple of 256.
+std::uint64_t padded_cells(std::uint64_t tokens) {
+    return (tokens + 255) / 256 * 256;
+}
+
+/// Which blocks attend through a sliding window, as llama.cpp decides it.
+///
+/// A file can say so outright: a flag per block, the way flint writes it, or
+/// one number n for "the last of every n blocks sees everything and the rest
+/// slide". Most files say nothing and leave llama.cpp to a default of its own
+/// for the architecture; the ones here are the families that rely on that,
+/// gpt-oss among them. Any other architecture is read as sliding nowhere,
+/// which charges it the whole cache -- an overestimate, and the safe way to
+/// be wrong, since a dry run measures the real figure before anything is
+/// refused on it.
+std::vector<bool> sliding_blocks(gguf_context* gguf, const std::string& arch, std::size_t layers) {
+    std::vector<bool> sliding(layers, false);
+    const std::string  key = arch + ".attention.sliding_window_pattern";
+    const std::int64_t id  = gguf_find_key(gguf, key.c_str());
+    if (id >= 0 && gguf_get_kv_type(gguf, id) == GGUF_TYPE_ARRAY) {
+        const gguf_type   element = gguf_get_arr_type(gguf, id);
+        const std::size_t count   = std::min<std::size_t>(gguf_get_arr_n(gguf, id), layers);
+        const void*       data    = element == GGUF_TYPE_STRING ? nullptr : gguf_get_arr_data(gguf, id);
+        for (std::size_t i = 0; data != nullptr && i < count; ++i) {
+            if (element == GGUF_TYPE_BOOL || element == GGUF_TYPE_INT8 || element == GGUF_TYPE_UINT8) {
+                sliding[i] = static_cast<const std::int8_t*>(data)[i] != 0;
+            } else if (element == GGUF_TYPE_INT32 || element == GGUF_TYPE_UINT32) {
+                sliding[i] = static_cast<const std::int32_t*>(data)[i] != 0;
+            }
+        }
+        return sliding;
+    }
+
+    std::uint64_t every = 0;
+    if (id >= 0) {
+        const std::vector<std::uint64_t> stated = unsigned_values(gguf, key);
+        if (stated.empty()) {
+            return sliding;
+        }
+        every = stated.front();
+    } else {
+        static constexpr std::pair<std::string_view, std::uint64_t> kDefaults[] = {
+            {"gpt-oss", 2}, {"gemma2", 2}, {"gemma3", 6}, {"cohere2", 4},
+        };
+        const auto* found = std::find_if(std::begin(kDefaults), std::end(kDefaults),
+                                         [&arch](const auto& entry) { return entry.first == arch; });
+        if (found == std::end(kDefaults)) {
+            return sliding;
+        }
+        every = found->second;
+    }
+    for (std::size_t i = 0; i < layers; ++i) {
+        // llama_hparams::set_swa_pattern's rule, where zero means all of them.
+        sliding[i] = every == 0 || i % every < every - 1;
+    }
+    return sliding;
+}
+
 /// The block a tensor belongs to, or -1 for one that belongs to none.
 ///
 /// Every architecture names its repeating tensors `blk.<n>.<what>`, which is
@@ -137,11 +197,25 @@ struct BlockTensors {
 
 }  // namespace
 
-std::uint64_t ModelShape::kv_bytes(int n_ctx) const {
+std::uint64_t ModelShape::sliding_cells(int n_ctx, int n_batch, bool window_cache, int sequences) const {
+    if (!window_cache || window == 0 || n_ctx <= 0) {
+        return 0;
+    }
+    // llama.cpp's own sizing: a window for each sequence and one micro-batch
+    // past them, which is at most 512 tokens, padded -- and never more than
+    // the context.
+    const auto batch   = std::min<std::uint64_t>(static_cast<std::uint64_t>(std::max(1, n_batch)), 512);
+    const auto windows = static_cast<std::uint64_t>(window) * static_cast<std::uint64_t>(std::max(1, sequences));
+    return padded_cells(std::min(padded_cells(static_cast<std::uint64_t>(n_ctx)), windows + batch));
+}
+
+std::uint64_t ModelShape::kv_bytes(int n_ctx, std::uint64_t sliding) const {
     if (n_ctx <= 0 || kv_per_token == 0) {
         return 0;
     }
-    return static_cast<std::uint64_t>(n_ctx) * kv_per_token;
+    const auto          cells = static_cast<std::uint64_t>(n_ctx);
+    const std::uint64_t kept  = sliding > 0 ? std::min(sliding, cells) : cells;
+    return (kv_per_token - sliding_kv_per_token) * cells + sliding_kv_per_token * kept;
 }
 
 std::uint64_t ModelShape::state_bytes() const {
@@ -152,13 +226,14 @@ std::uint64_t ModelShape::state_bytes() const {
     return total;
 }
 
-std::uint64_t ModelShape::unit_bytes(std::size_t index, int n_ctx) const {
+std::uint64_t ModelShape::unit_bytes(std::size_t index, int n_ctx, std::uint64_t sliding) const {
     if (index >= units.size()) {
         return 0;
     }
-    const ModelUnit& unit = units[index];
-    return unit.weights + unit.state +
-           unit.kv_per_token * static_cast<std::uint64_t>(std::max(0, n_ctx));
+    const ModelUnit&    unit  = units[index];
+    const auto          cells = static_cast<std::uint64_t>(std::max(0, n_ctx));
+    const std::uint64_t kept  = unit.sliding && sliding > 0 ? std::min(sliding, cells) : cells;
+    return unit.weights + unit.state + unit.kv_per_token * kept;
 }
 
 std::uint64_t ModelShape::logit_bytes(int n_batch) const {
@@ -170,15 +245,15 @@ std::uint64_t ModelShape::compute_bytes(int n_batch) const {
     return kActivationAllowance + logit_bytes(n_batch);
 }
 
-std::uint64_t ModelShape::resident_bytes(int n_ctx) const {
+std::uint64_t ModelShape::resident_bytes(int n_ctx, std::uint64_t sliding) const {
     // The input embedding is deliberately left in: this is what the model
     // costs, and the caller that cares which side of the bus it lands on
     // subtracts host_weights itself.
-    return weights + kv_bytes(n_ctx) + state_bytes();
+    return weights + kv_bytes(n_ctx, sliding) + state_bytes();
 }
 
-std::uint64_t ModelShape::total_bytes(int n_ctx, int n_batch) const {
-    return resident_bytes(n_ctx) + compute_bytes(n_batch);
+std::uint64_t ModelShape::total_bytes(int n_ctx, int n_batch, std::uint64_t sliding) const {
+    return resident_bytes(n_ctx, sliding) + compute_bytes(n_batch);
 }
 
 ModelShape read_model_shape(const std::filesystem::path& file) {
@@ -225,7 +300,15 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
     const std::uint64_t ssm_inner = first_or(unsigned_values(gguf, key("ssm.inner_size")), 0);
     const std::uint64_t ssm_state = first_or(unsigned_values(gguf, key("ssm.state_size")), 0);
 
+    // The sliding window, and which blocks attend through it. A file without
+    // the window's key is read as having none, which is what llama.cpp makes
+    // of most of them too.
+    const std::uint64_t window = first_or(unsigned_values(gguf, key("attention.sliding_window")), 0);
+    const std::vector<bool> sliding =
+        window > 0 ? sliding_blocks(gguf, arch, layers) : std::vector<bool>(layers, false);
+
     shape.layers = static_cast<std::uint32_t>(layers);
+    shape.window = static_cast<std::uint32_t>(window);
 
     // The vocabulary, for the logits buffer. Its size is the length of the
     // token list rather than a key of its own in most files.
@@ -335,11 +418,13 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
                     block.conv_width > 1 ? (block.conv_width - 1) * block.conv_channels : 0;
                 unit.state = (conv + ssm_inner * ssm_state) * kStateElementBytes;
             }
+            unit.sliding = sliding[static_cast<std::size_t>(index)] && unit.kv_per_token > 0;
 
             shape.kv_per_token += unit.kv_per_token;
+            shape.sliding_kv_per_token += unit.sliding ? unit.kv_per_token : 0;
             shape.units.push_back(unit);
         }
-        shape.units.push_back(ModelUnit{output_weights, 0, 0});
+        shape.units.push_back(ModelUnit{output_weights, 0, 0, false});
     } else {
         // A file with metadata but no tensor table. Nothing here can be placed
         // layer by layer, so `units` stays empty and the split falls back to
@@ -347,6 +432,7 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
         // the header alone is enough for that.
         for (std::uint64_t index = 0; index < layers; ++index) {
             shape.kv_per_token += stated_kv(index);
+            shape.sliding_kv_per_token += sliding[static_cast<std::size_t>(index)] ? stated_kv(index) : 0;
         }
     }
 

@@ -50,34 +50,55 @@ def name_from(reply):
     return clean[0].upper() + clean[1:]
 
 
+# Words that lead into the next one. A title that stops on one reads cut off:
+# "Why does water boil at".
+LEADING = frozenset(("a", "an", "the", "at", "of", "to", "on", "in", "for", "with", "and", "or",
+                     "by", "from", "as", "is", "are", "my", "your", "its", "this", "that"))
+
+
 def fallback_name(excerpt):
     """The opening words of the first prompt, for when no model can be asked:
-    at most five, up to the first full stop or question mark."""
+    at most five, up to the first full stop or question mark, and not ending
+    on a word that leads into one left out."""
     first = (excerpt or "").split("\n", 1)[0]
     if first.startswith("Question: "):
         first = first[len("Question: "):]   # how the window hands the prompt over
     end = re.search(r"[.?!]", first)
     if end and end.start() > 0:
         first = first[:end.start()]
-    out = " ".join(first.split()[:5])
+    words = first.split()
+    kept = words[:5]
+    if len(words) > len(kept):
+        while len(kept) > 1 and kept[-1].lower().strip(",;:") in LEADING:
+            kept.pop()
+    out = " ".join(kept)
     return out[:1].upper() + out[1:] if out else ""
 
 
 def name_session(core, params):
     excerpt = params.get("excerpt", "")
+    # "spare": a conversation from before names existed, named in passing.
+    # Only a delegator already loaded names it, and nothing does otherwise:
+    # its opening words are what it is listed by already.
+    spare = bool(params.get("spare"))
     name = ""
     # "optional": a name is not worth loading the delegator over the expert
     # chosen in the box, which the core then keeps; the opening words do.
-    ready = core.call("delegator.ready", {"optional": True}) or {}
+    asked = {"optional": True}
+    if spare:
+        asked["load"] = False
+    ready = core.call("delegator.ready", asked) or {}
     try:
         if ready.get("available"):
-            reply = core.call("delegator.generate", {
-                "messages": [{"role": "user", "content": naming_prompt(excerpt)}],
-                "temperature": 0.2, "max_tokens": 24}) or {}
+            writing = {"messages": [{"role": "user", "content": naming_prompt(excerpt)}],
+                       "temperature": 0.2, "max_tokens": 24}
+            if spare:
+                writing["load"] = False
+            reply = core.call("delegator.generate", writing) or {}
             name = name_from(reply.get("text", ""))
     finally:
         let_go(core)
-    return {"name": name or fallback_name(excerpt)}
+    return {"name": name if spare else name or fallback_name(excerpt)}
 
 
 # --- an expert's worked examples ---------------------------------------------------

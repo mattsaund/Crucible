@@ -9,7 +9,9 @@
 // test that fails for reasons that have nothing to do with this code.
 #include "test_helpers.hpp"
 
+#include "crucible/lab/condense.hpp"
 #include "crucible/lab/hub.hpp"
+#include "crucible/lab/imatrix.hpp"
 #include "crucible/lab/recipe.hpp"
 
 using namespace crucible::lab;
@@ -28,6 +30,44 @@ Asset hub_asset(const std::string& id) {
     asset.source = Source::Hub;
     asset.id     = id;
     return asset;
+}
+
+/// A model as read_source would find it: what it averages, what its name
+/// says it is and what its header does.
+Original measured(double bits, const std::string& name = {}, const std::string& header = {}) {
+    Original source;
+    source.ok           = true;
+    source.bits         = bits;
+    source.quantization = name.empty() ? header : name;
+    source.type         = header;
+    return source;
+}
+
+/// A GGUF with one small tensor and a file type in its header, which is all
+/// read_source needs. The tensor's data is not written, and nothing here
+/// loads it.
+void write_typed_gguf(const std::filesystem::path& file, std::uint32_t file_type) {
+    ggml_init_params init{};
+    init.mem_size   = 4 * ggml_tensor_overhead();
+    init.mem_buffer = nullptr;
+    init.no_alloc   = true;
+    ggml_context* ctx = ggml_init(init);
+    gguf_context* gguf = gguf_init_empty();
+    gguf_set_val_str(gguf, "general.architecture", "llama");
+    gguf_set_val_u32(gguf, "general.file_type", file_type);
+    ggml_tensor* tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 64);
+    ggml_set_name(tensor, "token_embd.weight");
+    gguf_add_tensor(gguf, tensor);
+    gguf_write_to_file(gguf, file.string().c_str(), /*only_meta=*/true);
+    gguf_free(gguf);
+    ggml_free(ctx);
+}
+
+std::string read_all(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
 }
 
 constexpr std::uint64_t kGiB = 1024ULL * 1024 * 1024;
@@ -368,4 +408,296 @@ TEST(a_size_in_a_model_name_is_read_from_the_right) {
     CHECK_EQ(hub::parameters_from_name("meta/Llama-3.2"), 0.0);
     CHECK_EQ(hub::parameters_from_name("mistralai/Mistral-Nemo"), 0.0);
     CHECK_EQ(hub::parameters_from_name(""), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Condensing: the same model in fewer bits
+// ---------------------------------------------------------------------------
+
+TEST(a_file_name_says_which_quantization_it_is_at) {
+    CHECK_EQ(quantization_in_name("flint-Q6_K.gguf"), std::string("Q6_K"));
+    CHECK_EQ(quantization_in_name("LFM2.5-1.2B-Instruct-Q8_0.gguf"), std::string("Q8_0"));
+    CHECK_EQ(quantization_in_name("gpt-oss-20b-MXFP4.gguf"), std::string("MXFP4"));
+    CHECK_EQ(quantization_in_name("git-tutor.Q4_K_M.gguf"), std::string("Q4_K_M"));
+    CHECK_EQ(quantization_in_name("flint-UD-Q6_K_XL.gguf"), std::string("UD-Q6_K_XL"));
+    CHECK_EQ(quantization_in_name("Model-IQ4_XS-00001-of-00003.gguf"), std::string("IQ4_XS"));
+    CHECK_EQ(quantization_in_name("qwen2.5-coder-7b-instruct-q4_k_m.gguf"), std::string("Q4_K_M"));
+    // A version number is not a quantization.
+    CHECK_EQ(quantization_in_name("Qwen3.8-27B.gguf"), std::string());
+}
+
+TEST(a_condensed_copy_is_named_after_its_original_and_its_new_size) {
+    CHECK_EQ(condensed_name("flint-Q6_K.gguf", "Q4_K_M"), std::string("flint-Q4_K_M.gguf"));
+    CHECK_EQ(condensed_name("flint-UD-Q6_K_XL.gguf", "Q3_K_M"), std::string("flint-Q3_K_M.gguf"));
+    CHECK_EQ(condensed_name("git-tutor.Q8_0.gguf", "Q4_K_S"), std::string("git-tutor-Q4_K_S.gguf"));
+    // No quantization in the name to replace: the new one is added.
+    CHECK_EQ(condensed_name("my-model.gguf", "Q4_K_M"), std::string("my-model-Q4_K_M.gguf"));
+    // A split model's first part becomes one file.
+    CHECK_EQ(condensed_name("Big-Q8_0-00001-of-00004.gguf", "Q4_K_M"), std::string("Big-Q4_K_M.gguf"));
+}
+
+TEST(a_condensed_copy_goes_beside_its_original_inside_the_models_folder) {
+    const std::filesystem::path models = "/models";
+    CHECK(condensed_path("/models/unsloth/flint/flint-Q6_K.gguf", models, "Q4_K_M")
+          == std::filesystem::path("/models/unsloth/flint/flint-Q4_K_M.gguf"));
+    // From somewhere else, it lands at the top of the models folder, where
+    // the pickers look.
+    CHECK(condensed_path("/elsewhere/flint-Q6_K.gguf", models, "Q4_K_M")
+          == std::filesystem::path("/models/flint-Q4_K_M.gguf"));
+}
+
+TEST(condensing_is_only_offered_where_it_makes_the_model_smaller) {
+    CHECK(worth_condensing(measured(8.5), "Q4_K_M"));
+    CHECK(worth_condensing(measured(6.58), "Q5_K_M"));
+    // Already that small, or nearly: nothing to gain from another rounding.
+    CHECK(!worth_condensing(measured(8.5), "Q8_0"));
+    CHECK(!worth_condensing(measured(4.9), "Q4_K_M"));
+    CHECK(!worth_condensing(measured(4.75), "Q4_K_S"));
+    // A Q4_K_M squeezed to Q4_K_S is small but real: the last gigabyte is
+    // sometimes the one that matters.
+    CHECK(worth_condensing(measured(4.9), "Q4_K_S"));
+    CHECK(worth_condensing(measured(4.9), "Q3_K_M"));
+    CHECK(worth_condensing(measured(4.9, "Q4_K_M", "Q4_K_M"), "Q4_K_S"));
+    CHECK(!worth_condensing(measured(8.5), "Q9_Z"));
+    // Best first. The ones llama.cpp makes only with an importance matrix
+    // say so: they sample the model before condensing it. IQ3_XXS sits
+    // before Q2_K, as llama.cpp ranks them; the IQ2 and IQ1 sizes close it.
+    const std::vector<Quantization>& offered = quantizations();
+    CHECK_EQ(std::string(offered.front().name), std::string("Q8_0"));
+    CHECK_EQ(std::string(offered.back().name), std::string("IQ1_S"));
+    bool sampled = false;
+    double bits = 99.0;
+    for (const Quantization& q : offered) {
+        const std::string name = q.name;
+        const bool low = name.rfind("IQ1", 0) == 0 || name.rfind("IQ2", 0) == 0 || name == "IQ3_XXS";
+        CHECK(q.samples == low);
+        CHECK(samples_first(q.name) == low);
+        sampled = sampled || q.samples;
+        if (q.samples) {
+            CHECK(q.bits < bits);       // each sampled one smaller than the one before
+            bits = q.bits;
+        }
+        CHECK(known_quantization(q.name));
+    }
+    CHECK(sampled);
+    CHECK(known_quantization("IQ2_XXS"));
+    CHECK(worth_condensing(measured(4.9), "IQ2_XXS"));
+    // Measured: gpt-oss-20b is 4.63 bits a weight, and its 2880-wide rows fall
+    // back from IQ4_XS to IQ4_NL, 4.6 again; IQ2_XXS still saves a third of a bit.
+    CHECK(!shrinks_enough(4.63, 4.60));
+    CHECK(shrinks_enough(4.63, 4.29));
+    CHECK(shrinks_enough(0.0, 4.29));
+    CHECK(!samples_first("Q4_K_M"));
+    CHECK(!samples_first("Q9_Z"));
+    CHECK(known_quantization("F16"));
+}
+
+TEST(a_sampled_size_is_not_made_without_its_sample) {
+    // A dry run sizes it without one; a real run refuses before reading a byte.
+    const Quantized made = quantize("/nowhere/model.gguf", "/nowhere/model-IQ2_XXS.gguf", "IQ2_XXS", false);
+    CHECK(!made.ok);
+    CHECK(made.error.find("sampled") != std::string::npos);
+}
+
+TEST(an_importance_matrix_is_each_columns_mean_square) {
+    // A plain weight: one run of three columns over four rows.
+    const std::vector<float> plain = mean_squares({4.0F, 8.0F, 0.0F}, {4});
+    CHECK_EQ(plain.size(), std::size_t{3});
+    CHECK(plain[0] == 1.0F && plain[1] == 2.0F && plain[2] == 0.0F);
+
+    // Three experts of two columns: the second never chosen, so ones.
+    const std::vector<float> experts = mean_squares({6.0F, 3.0F, 9.0F, 9.0F, 10.0F, 20.0F}, {3, 0, 10});
+    CHECK_EQ(experts.size(), std::size_t{6});
+    CHECK(experts[0] == 2.0F && experts[1] == 1.0F);
+    CHECK(experts[2] == 1.0F && experts[3] == 1.0F);
+    CHECK(experts[4] == 1.0F && experts[5] == 2.0F);
+
+    // Sums that do not divide into the experts are not guessed at.
+    const std::vector<float> odd = mean_squares({1.0F, 2.0F, 3.0F}, {1, 1});
+    CHECK(odd == std::vector<float>(3, 1.0F));
+}
+
+TEST(an_importance_matrix_is_kept_and_read_back_whole) {
+    ImportanceMatrix matrix;
+    matrix.chunks = 100;
+    matrix.values["blk.0.attn_q.weight"]   = {0.5F, 1.25F, 3.0F};
+    matrix.values["blk.1.ffn_up_exps.weight"] = std::vector<float>(64, 0.125F);
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "crucible-test.imatrix";
+    std::string error;
+    CHECK(save_importance(matrix, file, error));
+
+    ImportanceMatrix back;
+    CHECK(load_importance(file, back));
+    CHECK_EQ(back.chunks, 100);
+    CHECK(back.values == matrix.values);
+
+    // Cut short, or not one of ours: not read at all, so it is measured again.
+    std::filesystem::resize_file(file, std::filesystem::file_size(file) - 5);
+    ImportanceMatrix cut;
+    CHECK(!load_importance(file, cut));
+    { std::ofstream(file, std::ios::binary) << "GGUF and something else"; }
+    CHECK(!load_importance(file, cut));
+    std::filesystem::remove(file);
+
+    // Kept by the model it measured: the same file twice, another file elsewhere.
+    CHECK(importance_file("/models/a.gguf") == importance_file("/models/a.gguf"));
+    CHECK(importance_file("/models/a.gguf") != importance_file("/models/b.gguf"));
+    CHECK_EQ(importance_file("/models/a.gguf").extension().string(), std::string(".imatrix"));
+}
+
+TEST(a_condense_recipe_needs_only_a_name_and_a_model_on_this_machine) {
+    Recipe recipe = started("Flint small");
+    recipe.method = Method::Condense;
+    std::vector<std::string> gaps = missing(recipe);
+    CHECK_EQ(gaps.size(), std::size_t{1});
+    CHECK(gaps[0].find("model on this machine") != std::string::npos);
+
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "crucible-test-condense.gguf";
+    { std::ofstream(file) << "GGUF"; }
+    recipe.base.source = Source::Local;
+    recipe.base.id     = file.string();
+    recipe.base.path   = file.string();
+    CHECK(missing(recipe).empty());   // no data: a quantization has none
+
+    // And it comes back as a condense recipe.
+    Recipe back;
+    std::string error;
+    CHECK(parse(serialize(recipe), back, error));
+    CHECK(back.method == Method::Condense);
+    CHECK_EQ(std::string(method_id(back.method)), std::string("condense"));
+    std::filesystem::remove(file);
+}
+
+TEST(a_model_is_never_offered_the_size_it_is_already_at) {
+    // A 135M at Q4_K_M averages 5.2 bits a weight, its embeddings being kept
+    // in more than four. Measured against that, Q4_K_M was a step down from
+    // itself: offered, suggested, and named exactly as the original, which
+    // the copy then replaced.
+    const Original small = measured(5.2, "Q4_K_M", "Q4_K_M");
+    CHECK(!worth_condensing(small, "Q4_K_M"));
+    CHECK(!worth_condensing(small, "q4_k_m"));
+    CHECK(!worth_condensing(small, "Q5_K_M"));   // larger, not smaller
+    CHECK(worth_condensing(small, "Q3_K_M"));
+    // Whichever of the two says what it is: a name that has none, or a name
+    // that says one thing while the header says another.
+    CHECK(!worth_condensing(measured(5.2, "", "Q4_K_M"), "Q4_K_M"));
+    CHECK(!worth_condensing(measured(5.2, "Q8_0", "Q4_K_M"), "Q4_K_M"));
+    CHECK(!worth_condensing(measured(5.2, "Q8_0", "Q4_K_M"), "Q8_0"));
+    CHECK(!worth_condensing(measured(5.2, "q4_k_m"), "Q4_K_M"));
+    // Unknown types still go by what the file averages: MXFP4 to four bits
+    // is no saving, to three is.
+    CHECK(!worth_condensing(measured(4.6, "MXFP4", "MXFP4"), "Q4_K_M"));
+    CHECK(worth_condensing(measured(4.6, "MXFP4", "MXFP4"), "Q3_K_M"));
+}
+
+TEST(the_header_says_what_type_a_model_was_written_at) {
+    TempDir temp;
+    // Nothing in the name: the type is the header's, and so is the name.
+    const std::filesystem::path plain = temp.path() / "plain.gguf";
+    write_typed_gguf(plain, LLAMA_FTYPE_MOSTLY_Q4_K_M);
+    const Original read = read_source(plain);
+    CHECK(read.ok);
+    CHECK_EQ(read.type, std::string("Q4_K_M"));
+    CHECK_EQ(read.quantization, std::string("Q4_K_M"));
+    CHECK(!worth_condensing(read, "Q4_K_M"));
+
+    // A name that says otherwise is kept for showing; the header still counts.
+    const std::filesystem::path misnamed = temp.path() / "model-Q8_0.gguf";
+    write_typed_gguf(misnamed, LLAMA_FTYPE_MOSTLY_Q4_K_M);
+    const Original other = read_source(misnamed);
+    CHECK_EQ(other.quantization, std::string("Q8_0"));
+    CHECK_EQ(other.type, std::string("Q4_K_M"));
+    CHECK(!worth_condensing(other, "Q4_K_M"));
+}
+
+TEST(a_condensed_copy_never_takes_a_name_already_in_use) {
+    TempDir temp;
+    const std::filesystem::path wanted = temp.path() / "flint-Q4_K_M.gguf";
+    CHECK(free_path(wanted) == wanted);
+
+    // Downloaded at that size already: the copy gets a number, before the
+    // size so the name still ends in it.
+    { std::ofstream(wanted) << "a model somebody downloaded"; }
+    CHECK(free_path(wanted) == temp.path() / "flint-2-Q4_K_M.gguf");
+    CHECK_EQ(quantization_in_name(free_path(wanted).filename().string()), std::string("Q4_K_M"));
+    // A part file is a download, or another condense, on its way there.
+    { std::ofstream(temp.path() / "flint-2-Q4_K_M.gguf.part") << "half"; }
+    CHECK(free_path(wanted) == temp.path() / "flint-3-Q4_K_M.gguf");
+    CHECK(free_path(temp.path() / "lone-Q8_0.gguf") == temp.path() / "lone-Q8_0.gguf");
+    { std::ofstream(temp.path() / "lone-Q8_0.gguf.part") << "half"; }
+    CHECK(free_path(temp.path() / "lone-Q8_0.gguf") == temp.path() / "lone-2-Q8_0.gguf");
+
+    // The name's own separator, and a name with no size in it.
+    { std::ofstream(temp.path() / "git-tutor.Q8_0.gguf") << "x"; }
+    CHECK(free_path(temp.path() / "git-tutor.Q8_0.gguf") == temp.path() / "git-tutor.2.Q8_0.gguf");
+    { std::ofstream(temp.path() / "my-model.gguf") << "x"; }
+    CHECK(free_path(temp.path() / "my-model.gguf") == temp.path() / "my-model-2.gguf");
+
+    // The original in another case. Whether that is the same file is the
+    // disk's to say -- it is on Windows, a Mac and exFAT -- so the answer is
+    // whatever is free there, and never the file that is.
+    const std::filesystem::path original = temp.path() / "small-q4_k_m.gguf";
+    { std::ofstream(original) << "the original"; }
+    const std::filesystem::path other_case = temp.path() / "small-Q4_K_M.gguf";
+    const std::filesystem::path chosen = free_path(other_case);
+    std::error_code ec;
+    CHECK(!chosen.empty());
+    CHECK(!std::filesystem::exists(chosen, ec));
+    if (std::filesystem::exists(other_case, ec)) {
+        CHECK(chosen != other_case);
+    }
+    CHECK_EQ(read_all(original), std::string("the original"));
+}
+
+TEST(quantizing_never_writes_over_the_model_it_reads) {
+    TempDir temp;
+    const std::filesystem::path model = temp.path() / "small-Q4_K_M.gguf";
+    { std::ofstream(model) << "the original"; }
+
+    const Quantized same = quantize(model, model, "Q4_K_M", false);
+    CHECK(!same.ok);
+    CHECK(same.error.find("written over") != std::string::npos);
+    CHECK_EQ(read_all(model), std::string("the original"));
+    std::error_code ec;
+    CHECK(!std::filesystem::exists(part_of(model), ec));
+#if !defined(_WIN32)
+    // Nor by way of another name for it.
+    const std::filesystem::path link = temp.path() / "link-Q4_K_M.gguf";
+    std::filesystem::create_symlink(model, link, ec);
+    if (!ec) {
+        CHECK(!quantize(model, link, "Q4_K_M", false).ok);
+        CHECK_EQ(read_all(model), std::string("the original"));
+    }
+#endif
+}
+
+TEST(a_held_out_score_survives_the_round_trip_through_disk) {
+    Recipe recipe                    = started("Kitchen Physicist");
+    recipe.trained_path              = "/models/kitchen-physicist-Q4_K_M.gguf";
+    recipe.held_out.records          = 12;
+    recipe.held_out.base.loss        = 2.31;
+    recipe.held_out.base.perplexity  = 10.07;
+    recipe.held_out.tuned.loss       = 1.47;
+    recipe.held_out.tuned.perplexity = 4.35;
+
+    Recipe      back;
+    std::string error;
+    CHECK(parse(serialize(recipe), back, error));
+    CHECK_EQ(back.held_out.records, 12);
+    CHECK_EQ(back.held_out.base.loss, 2.31);
+    CHECK_EQ(back.held_out.tuned.perplexity, 4.35);
+    CHECK(back.held_out.measured());
+
+    // Too little data to hold any out says so, and is not a score.
+    Recipe small           = started("Tiny");
+    small.held_out.skipped = "too little data";
+    CHECK(parse(serialize(small), back, error));
+    CHECK_EQ(back.held_out.skipped, std::string("too little data"));
+    CHECK(!back.held_out.measured());
+
+    // A recipe from before there were scores has none, and its file says
+    // nothing about one.
+    CHECK(parse(R"({"name":"Math","id":"math"})", back, error));
+    CHECK(!back.held_out.measured());
+    CHECK(serialize(started("Math")).find("held_out") == std::string::npos);
 }

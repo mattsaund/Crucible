@@ -269,6 +269,108 @@ TEST(a_download_carries_on_from_where_it_stopped) {
     CHECK(!std::filesystem::exists(spliced));
 }
 
+namespace {
+
+// Two of the hub's real files, as it described them on 2026-10-26: a model in
+// one file, and the first of a split set's two parts.
+const char* const kMxfp4  = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901";
+const char* const kFirst  = "b1d7474caa92717b8a7f75e3c1d1006eb40f3bd3591522e5a2b095f36b12757d";
+const char* const kSecond = "b7cc4f7dd8dfd252900d79ab462abc0ad4bf06e4bcf0e59e491b6625bfee36e6";
+constexpr std::uint64_t kMxfp4Bytes = 12109566624ULL;
+constexpr std::uint64_t kSetBytes   = 49630904192ULL + 13137819360ULL;
+
+const char* const kRepository = R"({
+  "_id": "688dec3ebc727e7a313790d8", "id": "ggml-org/gpt-oss-20b-GGUF", "private": false, "gated": false,
+  "disabled": false,
+  "siblings": [
+    {"rfilename": "README.md", "blobId": "e095fd94747f223e24e89440617c71099e0b98b3", "size": 501},
+    {"rfilename": "gpt-oss-20b-MXFP4.gguf", "blobId": "deda3c25c5da45a23db1c5d52a49e6c509da659b", "size": 12109566624,
+     "lfs": {"sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901", "size": 12109566624,
+             "pointerSize": 136}},
+    {"rfilename": "Q4_K_M/gpt-oss-120b-Q4_K_M-00001-of-00002.gguf", "size": 49630904192,
+     "lfs": {"sha256": "b1d7474caa92717b8a7f75e3c1d1006eb40f3bd3591522e5a2b095f36b12757d", "size": 49630904192}},
+    {"rfilename": "Q4_K_M/gpt-oss-120b-Q4_K_M-00002-of-00002.gguf", "size": 13137819360,
+     "lfs": {"sha256": "b7cc4f7dd8dfd252900d79ab462abc0ad4bf06e4bcf0e59e491b6625bfee36e6", "size": 13137819360}}
+  ]
+})";
+
+}  // namespace
+
+TEST(a_model_file_is_found_on_the_hub_by_its_hash_and_size) {
+    const Repository repo = parse_repository(kRepository);
+    CHECK_EQ(repo.id, std::string("ggml-org/gpt-oss-20b-GGUF"));
+    CHECK(repo.open);
+    CHECK_EQ(repo.files.size(), std::size_t{4});
+    // The name it has there, whatever it is called here.
+    CHECK_EQ(matching_file(repo.files, kMxfp4, kMxfp4Bytes, "renamed.gguf"), std::string("gpt-oss-20b-MXFP4.gguf"));
+    CHECK(matching_file(repo.files, kMxfp4, kMxfp4Bytes - 1, "").empty());
+    CHECK(matching_file(repo.files, std::string(64, '0'), kMxfp4Bytes, "").empty());
+    // A split set is hashed from its first part and is the size of all of them.
+    CHECK_EQ(matching_file(repo.files, kFirst, kSetBytes, ""), std::string("gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"));
+    CHECK(matching_file(repo.files, kFirst, 49630904192ULL, "").empty());
+    CHECK(matching_file(repo.files, kSecond, 13137819360ULL, "").empty());
+    std::vector<File> short_set(repo.files.begin(), repo.files.end() - 1);
+    CHECK(matching_file(short_set, kFirst, kSetBytes, "").empty());
+    // Two copies of one file: the one named as it is here, else the first.
+    const std::vector<File> twice{{"a/x.gguf", 10, kMxfp4}, {"b/y.gguf", 10, kMxfp4}};
+    CHECK_EQ(matching_file(twice, kMxfp4, 10, "y.gguf"), std::string("y.gguf"));
+    CHECK_EQ(matching_file(twice, kMxfp4, 10, "z.gguf"), std::string("x.gguf"));
+    // Only a GGUF is a model, and only one kept in LFS has a hash to compare.
+    CHECK(matching_file({{"x.bin", 10, kMxfp4}}, kMxfp4, 10, "").empty());
+    CHECK(matching_file({{"x.gguf", 10, {}}}, "", 10, "").empty());
+
+    // Private or disabled is not open to anybody; a refusal is no repository.
+    CHECK(!parse_repository(R"({"id": "a/b", "private": true, "siblings": []})").open);
+    CHECK(!parse_repository(R"({"id": "a/b", "disabled": true, "siblings": []})").open);
+    CHECK(parse_repository(R"({"id": "a/b", "gated": "manual", "siblings": []})").open);
+    CHECK(parse_repository(R"({"error": "Invalid username or password."})").id.empty());
+    CHECK(parse_repository("not json").id.empty());
+    CHECK_EQ(repository_url("ggml-org/gpt-oss-20b-GGUF"),
+             std::string("https://huggingface.co/api/models/ggml-org/gpt-oss-20b-GGUF"
+                         "?blobs=true&expand%5B%5D=siblings&expand%5B%5D=private&expand%5B%5D=disabled"));
+    // A folder's name can hold anything, and goes in the address as a name.
+    CHECK(repository_url("my models/a?b=c").find("/api/models/my%20models/a%3Fb%3Dc?blobs") != std::string::npos);
+}
+
+TEST(a_model_file_is_searched_for_by_the_name_of_its_model) {
+    CHECK_EQ(search_name("gpt-oss-20b-MXFP4.gguf"), std::string("gpt-oss-20b"));
+    CHECK_EQ(search_name("Qwen3.8-27B-UD-Q4_K_XL.gguf"), std::string("Qwen3.8-27B"));
+    CHECK_EQ(search_name("gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"), std::string("gpt-oss-120b"));
+    CHECK_EQ(search_name("openai_gpt-oss-20b-Q4_K_M.gguf"), std::string("openai_gpt-oss-20b"));
+    CHECK_EQ(search_name("model.IQ2_XXS.gguf"), std::string("model"));
+    CHECK_EQ(search_name("tiny-00001-of-00003.gguf"), std::string("tiny"));
+    CHECK_EQ(search_name("tiny.gguf"), std::string("tiny"));
+}
+
+TEST(a_model_file_is_found_public_when_asked_for_real) {
+    if (std::getenv("CRUCIBLE_LIVE_HUB") == nullptr) {
+        return;   // the network, only when asked for
+    }
+    Found       found;
+    std::string error;
+    // In the repository its folder is named for.
+    CHECK(find_public("ggml-org/gpt-oss-20b-GGUF", "gpt-oss-20b-MXFP4.gguf", kMxfp4, kMxfp4Bytes, found, error));
+    CHECK_EQ(found.repo, std::string("ggml-org/gpt-oss-20b-GGUF"));
+    CHECK_EQ(found.file, std::string("gpt-oss-20b-MXFP4.gguf"));
+    // In other capitals, the hub's own spelling comes back.
+    CHECK(find_public("GGML-ORG/gpt-oss-20b-gguf", "gpt-oss-20b-MXFP4.gguf", kMxfp4, kMxfp4Bytes, found, error));
+    CHECK_EQ(found.repo, std::string("ggml-org/gpt-oss-20b-GGUF"));
+    // With no folder to go by, a search by its name: any public copy will do.
+    CHECK(find_public("", "gpt-oss-20b-MXFP4.gguf", kMxfp4, kMxfp4Bytes, found, error));
+    CHECK_EQ(found.file, std::string("gpt-oss-20b-MXFP4.gguf"));
+    CHECK(!found.repo.empty());
+    // A split set, by its first part.
+    CHECK(find_public("", "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf", kFirst, kSetBytes, found, error));
+    CHECK_EQ(found.repo, std::string("unsloth/gpt-oss-120b-GGUF"));
+    // A file nobody published is found nowhere, and that is no error.
+    CHECK(find_public("nobody-xyz-123/nothing-here-456", "gpt-oss-20b-MXFP4.gguf", std::string(64, '0'), 1, found,
+                      error));
+    CHECK(found.repo.empty());
+    if (!error.empty()) {
+        std::printf("      %s\n", error.c_str());
+    }
+}
+
 TEST(the_hub_answers_when_asked_for_real) {
     if (std::getenv("CRUCIBLE_LIVE_HUB") == nullptr) {
         return;   // the network, only when asked for

@@ -50,7 +50,8 @@ std::vector<std::filesystem::path> project_files() {
         const std::filesystem::path& path = it->path();
         const std::string name = path.filename().string();
         if (it->is_directory(ec)) {
-            if (name == "build" || name == ".git" || name == "node_modules") {
+            // .claude holds other checkouts of this tree, each tested in its own.
+            if (name == "build" || name == ".git" || name == "node_modules" || name == ".claude") {
                 it.disable_recursion_pending();
             }
             continue;
@@ -94,11 +95,12 @@ const std::vector<std::string>& british() {
     return words;
 }
 
-/// Names a third-party header spells the British way, which this project has to
-/// spell their way or not compile. Matched before the word list, so the line
+/// Names somebody else spells the British way, which this project has to spell
+/// their way or not work: FTXUI's palette, and cancelled(), the status function
+/// GitHub Actions gives a workflow. Matched before the word list, so the line
 /// they appear on is not reported.
 std::string without_foreign_names(std::string line) {
-    static const std::vector<std::string> theirs{"Color::Grey"};
+    static const std::vector<std::string> theirs{"Color::Grey", "cancelled()"};
     for (const std::string& name : theirs) {
         for (std::string::size_type at = line.find(name); at != std::string::npos;
              at = line.find(name, at)) {

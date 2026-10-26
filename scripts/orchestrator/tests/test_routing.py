@@ -100,11 +100,20 @@ class Prompt(unittest.TestCase):
         # The prompt and the examples follow the order they are given.
         reversed_prompt = roster().system_prompt(orders[1])
         self.assertLess(reversed_prompt.index("Language"), reversed_prompt.index("Mathematics"))
-        self.assertEqual(roster().examples(orders[1])[0][1], "Programming")
+        self.assertEqual([seat for _, seat in roster().examples(orders[1])][:2], ["Language", "Biology"])
 
     def test_examples_answer_with_the_label_alone(self):
         self.assertIn(("Prove that the square root of 2 is irrational.", "Mathematics"),
                       roster().examples())
+
+    def test_a_seat_with_no_examples_is_asked_about_in_its_own_words_when_others_have_some(self):
+        asked = dict(zip(roster().labels(), roster().asked()))
+        self.assertEqual(asked["Mathematics"], ["Prove that the square root of 2 is irrational."])
+        self.assertEqual(asked["Physics"], ["Mechanics and relativity"])
+        self.assertIn(("Grammar and style", "Language"), roster().examples())
+        # With none anywhere there is nothing to even out: the descriptions alone.
+        bare = routing.Roster([dict(e, examples=[]) for e in ROSTER])
+        self.assertEqual(bare.examples(), [])
 
     def test_harmony_is_asked_where_its_answer_goes(self):
         self.assertEqual(routing.answer_prefix("...<|start|>assistant"), "<|channel|>final<|message|>")
@@ -173,9 +182,12 @@ class FakeCore:
         self.scores_for = scores_for
         self.available = available
         self.calls = []
+        self.scored = []
 
     def call(self, method, params=None):
         self.calls.append(method)
+        if method == "delegator.score":
+            self.scored.append(params)
         if method == "delegator.ready":
             return {"available": self.available, "path": "/models/delegator.gguf"}
         if method == "delegator.done":
@@ -207,6 +219,26 @@ def request(prompt, filled=("mathematics", "programming", "physics"), **extra):
 class Delegator(unittest.TestCase):
     def setUp(self):
         routing.ModelRouter._bias.clear()
+        routing.ModelRouter._prefix.clear()
+
+    def test_each_order_names_what_every_question_in_it_shares(self):
+        # The core keeps that part read from one route to the next, so it has
+        # to be the prompt exactly as far as the question, in each order.
+        core = FakeCore(lambda q, labels: [0.0] * len(labels))
+        routing.route(core, request("why is the sky blue"))
+        self.assertTrue(core.scored)
+        for params in core.scored:
+            self.assertTrue(params["prompt"].startswith(params["prefix"]))
+            self.assertTrue(params["prefix"].endswith("\nQ:"))
+        self.assertEqual(len({params["prefix"] for params in core.scored}), 3)
+
+    def test_what_the_questions_share_is_rendered_once_per_order(self):
+        core = FakeCore(lambda q, labels: [0.0] * len(labels))
+        routing.route(core, request("one"))
+        before = core.calls.count("delegator.format")
+        routing.route(core, request("two"))
+        # A question rendered in each of three orders, and nothing else.
+        self.assertEqual(core.calls.count("delegator.format") - before, 3)
 
     def test_the_best_label_wins_and_its_share_is_the_confidence(self):
         def scores(question, labels):

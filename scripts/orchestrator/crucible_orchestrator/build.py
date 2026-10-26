@@ -180,21 +180,53 @@ def command_or_nothing(text):
     return "" if len(text.split()) >= 6 and PROSE.search(text) else text
 
 
+def closed(text):
+    """`text` with the brackets it left open closed, innermost first, or None
+    when its strings or its brackets do not add up."""
+    shut = []
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            shut.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not shut or shut.pop() != ch:
+                return None
+    return None if in_string else text + "".join(reversed(shut))
+
+
 def find_json(text):
     """The first JSON object in `text`, or None.
 
     Fences are stripped and the object is taken from its first brace to its
     last; a trailing comma before a closing bracket, which models add, is
-    removed. Anything else that fails to parse is None rather than a guess.
+    removed. A reply that stops with brackets still open is closed: gpt-oss
+    wrote whole plans twice running without the last brace. Anything else
+    that fails to parse is None rather than a guess.
     """
     text = text or ""
     text = re.sub(r"```[a-zA-Z]*", "", text).replace("```", "")
     start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
+    if start < 0:
         return None
-    candidate = text[start:end + 1]
-    for attempt in (candidate, re.sub(r",\s*([}\]])", r"\1", candidate)):
+    end = text.rfind("}")
+    attempts = []
+    if end > start:
+        candidate = text[start:end + 1]
+        attempts += [candidate, re.sub(r",\s*([}\]])", r"\1", candidate)]
+    tail = text[start:].rstrip()
+    shut = closed(tail)
+    if shut is not None and shut != tail:
+        attempts.append(shut)
+    for attempt in attempts:
         try:
             parsed = json.loads(attempt)
         except ValueError:
@@ -305,23 +337,6 @@ def order_tasks(tasks):
     return order
 
 
-def machine_line(facts):
-    """What this machine has, in one line for a prompt -- so the plan says
-    python3 where there is no python, and nobody plans around npm on a
-    machine without node."""
-    if not facts:
-        return ""
-    programs = facts.get("programs") or []
-    missing = [p for p in ("python", "python3", "node", "git") if p not in programs]
-    line = ("This machine runs " + str(facts.get("os", "")) + "; commands run in "
-            + str(facts.get("shell", "a shell")) + ". On PATH: " + (", ".join(programs) or "nothing of note") + ".")
-    if "python" in missing and "python3" in programs:
-        line += " There is no `python`: use `python3`."
-    if "node" in missing:
-        line += " There is no node."
-    return line
-
-
 def plan_prompt(directive, root, survey, feedback="", machine=""):
     text = ("You are the architect of a software build. The directive is:\n\n" + directive
             + "\n\nThe project folder is " + root + ". " + survey
@@ -418,7 +433,7 @@ class Build:
 
     def publish(self):
         with self.lock:
-            self.core.call("cook.publish", {"cook": self.journal})
+            self.published = cook.publish_journal(self.core, self.journal, getattr(self, "published", 0))
 
     def note(self, kind, summary, task=-1, ok=True, detail="", ms=0, changed=None, expert=None,
              picture=""):
@@ -597,7 +612,7 @@ class Build:
     def survey(self):
         """What is in the project, for the architect: the listing, and the
         files that say what a project is when it already is one."""
-        self.machine = machine_line(self.core.call("machine.facts") or {})
+        self.machine = cook.machine_line(self.core.call("machine.facts") or {})
         listing = self.run_tool({"kind": "list", "argument": ".", "content": ""})
         self.listing = listing.get("output", "")
         names = {line.strip() for line in self.listing.splitlines()}
@@ -809,6 +824,7 @@ class Build:
                        + "\nStart on your task. Read whichever of these files it concerns "
                          "first; only these files exist.")
         recent, window = [], []
+        repeats = cook.Repeats(self.root)
         idle = strikes = 0
         pictures = None      # the message the last tool's pictures go with
         state = "incomplete"
@@ -823,6 +839,7 @@ class Build:
             if attached is not None:
                 messages.append(attached)
                 messages.append({"role": "assistant", "content": "Read. I will work from these."})
+            shown_from = len(recent) - RECENT_TURNS * 2
             messages.extend(recent[-RECENT_TURNS * 2:])
             messages.append({"role": "user", "content": instruction, "tool_pictures": pictures is not None})
             pictures = None
@@ -848,10 +865,8 @@ class Build:
                 recent.append({"role": "assistant", "content": answer or "(no reply)"})
 
             if not call:
-                said, thought = answer.strip(), reasoning.strip()
-                self.note("think", cook.clip(said, 200) if said
-                          else "(only thought) " + cook.clip(thought, 180) if thought
-                          else "(said nothing)", task=index, ms=reply.get("ms", 0), expert=seat.id)
+                summary, whole = cook.thought_step(answer, reasoning)
+                self.note("think", summary, task=index, detail=whole, ms=reply.get("ms", 0), expert=seat.id)
                 idle += 1
                 if idle >= IDLE_LIMIT:
                     self.note("note", "stopped the task: %s answered %d times in a row without "
@@ -935,6 +950,7 @@ class Build:
                                   + other.name, task=index, expert=other.id)
                         instruction = "Take over this task: " + (argument or task["detail"])
                         recent = []
+                        repeats.clear()
                     seat = holder["seat"] = other
                     with self.lock:
                         task["expert"] = seat.id
@@ -943,6 +959,20 @@ class Build:
                     attached = self.attachments_for(seat, system)
                 else:
                     instruction = "Nobody else can take it. Carry on with the task yourself."
+                continue
+
+            # The same call again, with its answer still in front of the agent:
+            # told so once, and the task is over the next time. See cook.Repeats.
+            if repeats.again(call, shown_from):
+                if repeats.strikes > 1:
+                    self.note("note", "stopped the task: the same call again with nothing changed ("
+                              + cook.spoken(call) + ")", task=index, ok=False, expert=seat.id)
+                    with self.lock:
+                        task["outcome"] = "the agent repeated the same actions without progress"
+                    break
+                self.note("note", "not run, the same as before with nothing changed: " + cook.spoken(call),
+                          task=index, ok=False, ms=reply.get("ms", 0), expert=seat.id)
+                instruction = cook.REPEAT_NUDGE.format("task")
                 continue
 
             if kind in ("write", "edit") and not self.core.flags().get("auto_edits"):
@@ -966,11 +996,13 @@ class Build:
             self.note(kind, result.get("summary", ""), task=index, ok=result.get("ok", False),
                       detail=result.get("detail", ""), ms=(time.monotonic() - started) * 1000,
                       changed=changed, picture=result.get("picture", ""), expert=seat.id)
-            handback = {"role": "user", "content": result.get("output", "")}
+            handback = {"role": "user",
+                        "content": result.get("output", "") + cook.read_hint(call, result, self.root)}
             if result.get("pictures"):
                 handback["tool_pictures"] = True
                 pictures = handback
             recent.append(handback)
+            repeats.ran(call, result, len(recent) - 1)
             instruction = "Continue."
 
             window.append((kind + "|" + argument, bool(changed)))

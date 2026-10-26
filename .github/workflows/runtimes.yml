@@ -14,11 +14,17 @@
 #
 # A job that fails takes only its own backend with it: the app falls back to
 # compiling whatever is not published, which is what it did before any of this.
+#
+# A tag runs this from the installers workflow (release.yml), as part of its
+# run, so the release there is published only once these are on it. It used
+# to run on the tag beside that one, and the release went public with the
+# installers half an hour before the runtimes arrived: a new llama.cpp tag
+# had nothing to download in between. By hand, from the Actions tab, it runs
+# on its own, and on a tag attaches what it built to that tag's release.
 name: runtimes
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -229,10 +235,13 @@ jobs:
           name: runtime-${{ matrix.backend }}-${{ matrix.platform }}
           path: dist/*.tar.gz
 
+  # Only when this runs on its own. Called from the installers workflow, the
+  # github context is that workflow's -- its name is "installers" -- and it
+  # attaches these itself, before it publishes the release.
   attach:
     name: Attach to the release
     needs: build
-    if: always() && startsWith(github.ref, 'refs/tags/v')
+    if: always() && startsWith(github.ref, 'refs/tags/v') && github.workflow == 'runtimes'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

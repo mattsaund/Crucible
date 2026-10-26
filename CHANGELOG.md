@@ -6,6 +6,136 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.5 (2026-10-26)
+
+Benchmarks with a public board, a model condensed to fit, and an editor in
+Build.
+
+- **The Bench tab** runs local models through nine benchmarks in seven
+  skills: MMLU-Pro (knowledge), ARC-Challenge (reasoning), GSM8K and MATH-500
+  (math), HumanEval and MBPP (code), IFEval (instructions), HellaSwag
+  (commonsense) and TruthfulQA (truthfulness). Quick asks 50 items of each,
+  Standard 200, Full every one. Every Crucible picks the same items and asks
+  them the same way, with greedy decoding, so a score from one machine stands
+  beside a score from another. The rows come from Hugging Face's datasets
+  server and are kept. Ctrl+6.
+- **A spider chart** compares up to three results, with the numbers under
+  it. A result opens to each benchmark with its 95% margin, and to the
+  answers that were wrong and what was read from them.
+- **The public board**, [mattsaund/crucible-bench](https://github.com/mattsaund/crucible-bench).
+  Post sends a result as a GitHub issue from your account (with `gh` signed
+  in; otherwise GitHub opens with it filled in), and an Action checks it and
+  adds it to `board.json`, which the tab shows beside your own results. What
+  is posted is the model file's name, size and SHA-256, the counts, the
+  settings and the cards, and the dialog shows exactly that first.
+- **Condense a model** from Create: a Q8 that does not fit becomes a Q6, Q5,
+  Q4, Q3 or Q2 that does. Every size is measured first, with a dry run of
+  llama.cpp's quantizer that takes under a second, marked by how it fits,
+  and offered only when it really comes out smaller. The copy is tested and
+  kept like a fine-tune, under the next free name when its own is taken. A
+  fine-tune's GGUF is quantized by the same code, so the trainer no longer
+  needs a llama-quantize beside it.
+- **The smallest sizes**, IQ3_XXS down to IQ1_S, for the model that only
+  fits at two bits. Crucible runs it over a page of WikiText first, on the
+  cards, to learn which of its weights matter most, the way llama.cpp's
+  imatrix tool does, and keeps what it learned, so a second size of the same
+  model starts at once.
+- **A fine-tune is scored.** About a tenth of the data is held out and
+  scored before and after training, and the recipe shows it ("Held out: 3.05
+  to 0.50"), in red when training made it worse. Training now learns from
+  the answers alone, not the prompts.
+- **An editor in Build.** Code has tabs, a file tree that folds, line
+  numbers, find and replace, go to line, search across the project, Ctrl+P
+  to open a file by a few of its letters, new, rename and delete, and a
+  terminal under it. Tab indents, Enter keeps the indent, Ctrl+/ comments a
+  line, Alt+Up and Down move one. A file an agent changes while it is open
+  reloads; one with changes not yet saved says so and keeps them. It works
+  while a build runs.
+- **Room to think.** A benchmark reply may run to 16384 tokens in a 20480
+  token context, so a model that thinks first is scored on its answers and
+  not on the budget; a model too large for that context runs with the old
+  8192 and 4096, and its result says so. Results count the answers that ran
+  out of room, and a run can be made at low, medium or high effort.
+- **Paste a picture** into Chat or Build with Ctrl+V, and it attaches the way
+  a dropped one does.
+- **A provider says how much it holds.** OpenRouter, Groq, Mistral, Together
+  and Gemini are asked for each model's context, and the well-known models of
+  the rest are known, so a long conversation is trimmed where that model
+  needs it rather than at a guess.
+- **A chat with no project** offers a few things to start with.
+- **Old conversations get names** one at a time between prompts, while the
+  delegator is loaded anyway, so naming them never loads a model.
+- **Python's download** can be stopped and resumed, after a restart too, and
+  a stop never leaves half an install.
+- **Closing the window** with files not yet saved in the editor asks first.
+- **The delegator decides in a quarter of the time.** The fixed part of its
+  prompt is kept read, and every expert's label is scored in one pass: gpt-oss
+  routes in 0.4 seconds where it took 1.8.
+- **A model that slides its attention fits in less.** gpt-oss, Gemma and the
+  like keep most of their cache for a window of recent tokens, and Crucible
+  now counts it that way, so a larger context fits on the same card, and a
+  conversation carries on from where it stopped instead of reading itself
+  again.
+- **A model split across cards** is planned from what llama.cpp measures on
+  them rather than from the file's header alone, so less of each card is held
+  back.
+- **Cooks and builds waste less.** A tool call that would read what the model
+  is already looking at is not run again. After the goal is met a cook picks
+  one change at a time and rests when it finds none, and a command that is not
+  installed is not tried twice.
+- **Long chats and builds stay quick.** The window is sent only the turns
+  that changed, a finished turn is not parsed again on every token, and a
+  build's journal goes to the engine a step at a time and to disk every two
+  seconds, where it went whole on every step.
+- **A new line under the flame**: "An all in one local AI workshop", in the
+  README, the installers and `crucible --help`. The README is rewritten for
+  what Crucible is now.
+
+Fixed:
+
+- Create's Started and Finished times were blank since 0.9.4: the Models
+  tab's "updated 3 days ago" took over the function every page uses for
+  times. A test now fails when two of the page's scripts define one name.
+- A disabled Start training or Condense button looked like it could be
+  pressed.
+- After Setup installed a runtime, every loaded model was dropped and
+  loaded again once per runtime, and once more after.
+- A fine-tune's progress bar never moved: every step arrived stuck to the
+  trainer's own progress line and was dropped. A condense's bar did not move
+  either.
+- A stopped condense left its unfinished file behind, and a condense could
+  be offered the size the model already was, or write over a file of the
+  same name.
+- A CUDA runtime moved to a newer CUDA release kept NVIDIA's older libraries.
+  The next one fetches its own, and swaps them in whole instead of copying
+  over a set in use.
+- Installing a runtime while a model loaded could crash.
+- On a Mac, a GGUF model loaded beside an MLX model in use even when both
+  did not fit. It now waits, as it does for an expert in use.
+- Quitting while an MCP server was starting or answering could hang.
+- A chat turn whose orchestrator died stayed on "streaming" for good. It
+  ends with the reason now.
+- With a provider's expert chosen in the box, the delegator was loaded after
+  every reply and to name the conversation, though nothing is routed then.
+- A thinking model's speed read twenty thousand tokens a second.
+- A WRITE whose line held a sentence instead of a file name asked to be
+  approved.
+- gpt-oss ran its own apply_patch as a command, which is not here, and its
+  task ended with nothing changed. The tools say so now, and point to EDIT.
+- A plan written whole but without its last brace was thrown away, and the
+  build ran the directive as one task.
+- The smallest sizes were measured as if made without their sample, and
+  IQ3_XXS was listed as larger than Q2_K.
+- The tune panel showed 19.200001px for 19.2px.
+- A chat titled by its first words could stop mid-phrase ("Why does water
+  boil at").
+- The usage line kept the last conversation's share of the context when
+  another was opened.
+- The installers' dry run and summary showed the default models folder, not
+  the one the config names, and did not list Python.
+- A release could be published before its runtimes were attached, and an
+  install in that window found none. Now the release is published last.
+
 ## 0.9.4 (2026-10-23)
 
 Models from Hugging Face in the window, math in replies, the system's font,

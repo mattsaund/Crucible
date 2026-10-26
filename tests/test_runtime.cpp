@@ -4,6 +4,9 @@
 // file turns out to be, and the resource monitor.
 #include "test_helpers.hpp"
 
+#include <atomic>
+#include <thread>
+
 #include "crucible/runtime/builder.hpp"
 
 // ---------------------------------------------------------------------------
@@ -225,6 +228,55 @@ TEST(a_stale_runtime_stays_closed_at_startup) {
     CHECK_EQ(static_cast<int>(order.back()), static_cast<int>(BackendKind::Cpu));
 }
 
+TEST(runtimes_are_loaded_and_listed_on_several_threads_at_once) {
+    // ggml keeps its devices in a plain list that a load appends to. Loads
+    // come from the engine's thread at startup and the builder's after an
+    // install, while Setup, the API's workers and the window list the cards;
+    // all of it goes through one lock, which is not one a thread may take
+    // twice. Taken twice, this would hang, or end the run with an exception
+    // from a thread.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    std::filesystem::create_directories(runtimes);
+    {
+        std::ofstream out(runtimes / (std::string(module_prefix()) + "vulkan" + std::string(module_suffix())));
+        out << "not really a module";
+    }
+
+    // A module that is not one is a line in the log every time it is tried.
+    llama_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
+    std::atomic<int> rounds{0};
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < 4; ++thread) {
+        threads.emplace_back([thread, &rounds] {
+            for (int round = 0; round < 25; ++round) {
+                std::string error;
+                switch ((thread + round) % 5) {
+                    case 0:  RuntimeRegistry::load_all(); break;
+                    case 1:  RuntimeRegistry::activate(BackendKind::Vulkan, error); break;
+                    case 2:  RuntimeRegistry::scan(); break;
+                    case 3:  compute_devices(); break;
+                    default: RuntimeRegistry::devices(); break;
+                }
+                ++rounds;
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    llama_log_set(nullptr, nullptr);
+
+    CHECK_EQ(rounds.load(), 100);
+    // And the copy is ggml's list, place for place.
+    const std::vector<ggml_backend_dev_t> listed = RuntimeRegistry::devices();
+    CHECK_EQ(listed.size(), ggml_backend_dev_count());
+    for (std::size_t i = 0; i < listed.size(); ++i) {
+        CHECK(listed[i] == ggml_backend_dev_get(i));
+    }
+}
+
 TEST(the_cpu_backend_is_the_one_every_other_runtime_needs) {
     // llama.cpp throws "no CPU backend found" whatever GPU is installed, which
     // is why the builder brings this one along with a CUDA or Vulkan install.
@@ -429,6 +481,146 @@ TEST(a_header_without_a_tensor_table_still_reports_its_cache) {
     CHECK(shape.known);
     CHECK(shape.units.empty());
     CHECK_EQ(shape.kv_per_token, std::uint64_t{4} * 2 * (16 + 16) * 2);
+}
+
+namespace {
+
+/// A GGUF of `layers` blocks that all attend, with a sliding window of
+/// `window` in its header and, unless `pattern` is empty, the flag per block
+/// that says which ones use it -- the way flint writes them.
+void write_sliding_gguf(const std::filesystem::path& file, const std::string& arch, std::uint32_t layers,
+                        std::uint32_t window, const std::vector<bool>& pattern) {
+    ggml_init_params init{};
+    init.mem_size   = static_cast<std::size_t>(layers + 8) * 4 * ggml_tensor_overhead();
+    init.mem_buffer = nullptr;
+    init.no_alloc   = true;  // shapes only
+    ggml_context* ctx = ggml_init(init);
+
+    gguf_context* gguf = gguf_init_empty();
+    gguf_set_val_str(gguf, "general.architecture", arch.c_str());
+    gguf_set_val_u32(gguf, (arch + ".block_count").c_str(), layers);
+    gguf_set_val_u32(gguf, (arch + ".embedding_length").c_str(), 64);
+    gguf_set_val_u32(gguf, (arch + ".attention.sliding_window").c_str(), window);
+    if (!pattern.empty()) {
+        std::vector<std::int8_t> flags;
+        for (const bool slides : pattern) {
+            flags.push_back(slides ? 1 : 0);
+        }
+        gguf_set_arr_data(gguf, (arch + ".attention.sliding_window_pattern").c_str(), GGUF_TYPE_BOOL,
+                          flags.data(), flags.size());
+    }
+
+    const auto add = [&](const std::string& name, std::int64_t rows, std::int64_t columns) {
+        ggml_tensor* tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rows, columns);
+        ggml_set_name(tensor, name.c_str());
+        gguf_add_tensor(gguf, tensor);
+    };
+    add("token_embd.weight", 64, 128);
+    add("output.weight", 64, 128);
+    for (std::uint32_t layer = 0; layer < layers; ++layer) {
+        const std::string prefix = "blk." + std::to_string(layer) + ".";
+        add(prefix + "attn_q.weight", 64, 64);
+        add(prefix + "attn_k.weight", 64, 16);
+        add(prefix + "attn_v.weight", 64, 16);
+    }
+
+    gguf_write_to_file(gguf, file.string().c_str(), /*only_meta=*/true);
+    gguf_free(gguf);
+    ggml_free(ctx);
+}
+
+}  // namespace
+
+TEST(a_window_cache_charges_a_sliding_layer_its_window_and_a_batch) {
+    // flint's shape in miniature: three of four layers slide, 513 back.
+    ModelShape shape;
+    shape.known                = true;
+    shape.window               = 513;
+    shape.kv_per_token         = 4 * 2048;
+    shape.sliding_kv_per_token = 3 * 2048;
+
+    // llama.cpp's own sizing: the window and a batch past it, padded to 256.
+    CHECK_EQ(shape.sliding_cells(32768, 512, true), std::uint64_t{1280});
+    // Off, nothing changes: the whole context on every layer.
+    CHECK_EQ(shape.sliding_cells(32768, 512, false), std::uint64_t{0});
+    CHECK_EQ(shape.kv_bytes(32768, 0), std::uint64_t{4} * 2048 * 32768);
+    CHECK_EQ(shape.kv_bytes(32768, 1280), std::uint64_t{2048} * 32768 + std::uint64_t{3} * 2048 * 1280);
+    // A smaller batch leaves less slack past the window.
+    CHECK_EQ(shape.sliding_cells(32768, 128, true), std::uint64_t{768});
+    // And a context the window already covers saves nothing.
+    CHECK_EQ(shape.sliding_cells(1024, 512, true), std::uint64_t{1024});
+    CHECK_EQ(shape.kv_bytes(1024, shape.sliding_cells(1024, 512, true)), shape.kv_bytes(1024));
+    // Every sequence of the context keeps a window of its own: seventeen of
+    // gpt-oss's 128 and a batch, padded, in a delegator's 4096.
+    ModelShape oss;
+    oss.window = 128;
+    CHECK_EQ(oss.sliding_cells(4096, 512, true, 17), std::uint64_t{2816});
+    CHECK_EQ(oss.sliding_cells(2048, 512, true, 17), std::uint64_t{2048});
+
+    // A model without a window has no sliding cells to speak of.
+    ModelShape plain;
+    plain.known        = true;
+    plain.kv_per_token = 2048;
+    CHECK_EQ(plain.sliding_cells(32768, 512, true), std::uint64_t{0});
+}
+
+TEST(the_header_says_which_layers_slide) {
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "flint-like.gguf";
+    write_sliding_gguf(file, "testarch", 4, 128, {true, true, false, true});
+
+    const ModelShape shape = read_model_shape(file);
+    CHECK(shape.known);
+    CHECK_EQ(shape.window, std::uint32_t{128});
+    CHECK_EQ(shape.units.size(), std::size_t{5});
+    if (shape.units.size() != 5) {
+        return;
+    }
+    CHECK(shape.units[0].sliding);
+    CHECK(shape.units[1].sliding);
+    CHECK(!shape.units[2].sliding);
+    CHECK(shape.units[3].sliding);
+    CHECK(!shape.units[4].sliding);   // the output caches nothing
+    // K and V 16 wide each, two bytes an element, on the three that slide.
+    CHECK_EQ(shape.sliding_kv_per_token, std::uint64_t{3 * (16 + 16) * 2});
+
+    // A sliding layer is charged its window with the window cache, and the
+    // whole context without; a layer that does not slide always the whole.
+    const std::uint64_t cells = shape.sliding_cells(8192, 512, true);
+    CHECK_EQ(shape.unit_bytes(0, 8192, cells), shape.units[0].weights + std::uint64_t{(16 + 16) * 2} * cells);
+    CHECK_EQ(shape.unit_bytes(0, 8192), shape.units[0].weights + std::uint64_t{(16 + 16) * 2} * 8192);
+    CHECK_EQ(shape.unit_bytes(2, 8192, cells), shape.unit_bytes(2, 8192));
+}
+
+TEST(gpt_oss_slides_on_every_other_layer_without_saying_so) {
+    // Its files state the window and leave which layers use it to llama.cpp,
+    // whose default for the architecture is every other one, from the first.
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "gpt-oss-like.gguf";
+    write_sliding_gguf(file, "gpt-oss", 4, 128, {});
+
+    const ModelShape shape = read_model_shape(file);
+    CHECK_EQ(shape.units.size(), std::size_t{5});
+    if (shape.units.size() != 5) {
+        return;
+    }
+    CHECK(shape.units[0].sliding);
+    CHECK(!shape.units[1].sliding);
+    CHECK(shape.units[2].sliding);
+    CHECK(!shape.units[3].sliding);
+}
+
+TEST(a_window_on_an_unknown_pattern_is_charged_the_whole_cache) {
+    // A window, and nothing to say which layers use it: charging all of them
+    // the whole context is wrong by too much, which is the safe way round.
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "unknown.gguf";
+    write_sliding_gguf(file, "testarch", 4, 128, {});
+
+    const ModelShape shape = read_model_shape(file);
+    CHECK_EQ(shape.window, std::uint32_t{128});
+    CHECK_EQ(shape.sliding_kv_per_token, std::uint64_t{0});
+    CHECK_EQ(shape.kv_bytes(8192, shape.sliding_cells(8192, 512, true)), shape.kv_bytes(8192));
 }
 
 TEST(a_stated_head_dimension_beats_dividing_the_embedding_by_the_heads) {

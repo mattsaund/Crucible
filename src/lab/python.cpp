@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -15,7 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/config/paths.hpp"
-#include "crucible/util/http.hpp"
+#include "crucible/market/downloads.hpp"
 #include "crucible/util/sha256.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -35,18 +36,9 @@ constexpr const char* kRelease =
 
 std::atomic<int> g_installing{0};
 
-int run_quiet(const std::vector<std::string>& argv) {
-    util::Subprocess child;
-    std::string      error;
-    if (!child.start(argv, {}, {}, error)) {
-        return -1;
-    }
-    std::string line;
-    while (child.read_line(line)) {
-        // Drained rather than ignored: a child whose pipe fills stops.
-    }
-    return child.wait();
-}
+/// Held by the install that is running, so a second waits for it: both
+/// would write the same download.
+std::mutex g_one_at_a_time;
 
 }  // namespace
 
@@ -78,15 +70,24 @@ std::filesystem::path root() { return paths::data_dir() / "python"; }
 
 std::filesystem::path marker_file() { return root() / "crucible-python.json"; }
 
-std::filesystem::path interpreter() {
-    if (const char* chosen = std::getenv("CRUCIBLE_PYTHON"); chosen != nullptr && *chosen != '\0') {
-        return chosen;
-    }
+namespace {
+
+/// The interpreter in root(), whatever CRUCIBLE_PYTHON says.
+std::filesystem::path own_interpreter() {
 #if defined(_WIN32)
     return root() / "python.exe";
 #else
     return root() / "bin" / "python3";
 #endif
+}
+
+}  // namespace
+
+std::filesystem::path interpreter() {
+    if (const char* chosen = std::getenv("CRUCIBLE_PYTHON"); chosen != nullptr && *chosen != '\0') {
+        return chosen;
+    }
+    return own_interpreter();
 }
 
 std::string installed_version() {
@@ -182,96 +183,143 @@ bool made_from_another_python(const std::filesystem::path& venv) {
     return minor_version(version) != minor_version(build->version);
 }
 
-bool install(const std::function<void(const Progress&)>& on_progress, std::string& error) {
+namespace detail {
+
+std::filesystem::path download_file(const Build& build) {
+    // Named for the build, so a part file a stop left behind is only ever
+    // carried on by the same one: one from the Python pinned before an update
+    // has another name, and is cleared away rather than finished as this.
+    return paths::data_dir() / "python-download" / (build.sha256.substr(0, 16) + ".tar.gz");
+}
+
+bool install(const Build& build, const std::function<void(const Progress&)>& on_progress,
+             std::string& error, const std::function<bool()>& stop) {
     struct Busy {
         Busy() { ++g_installing; }
         ~Busy() { --g_installing; }
     } busy;
-    const std::optional<Build> build = build_here();
-    if (!build) {
-        error = "no build of Python is published for this platform";
-        return false;
+    const auto stopped = [&stop] { return stop && stop(); };
+    const auto say     = [&on_progress](const Progress& progress) {
+        if (on_progress) {
+            on_progress(progress);
+        }
+    };
+
+    // One at a time: the setup and a training install started from Settings
+    // can both want Python, and two would write the same part file. The
+    // second waits, and finds what the first fetched.
+    std::unique_lock<std::mutex> one(g_one_at_a_time, std::defer_lock);
+    bool waited = false;
+    while (!one.try_lock()) {
+        if (stopped()) {
+            error = "stopped";
+            return false;
+        }
+        waited = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    std::error_code ec;
+    if (waited && std::filesystem::exists(own_interpreter(), ec) && installed_version() == build.version) {
+        return true;
     }
     if (!util::on_path("tar")) {
         error = "tar is needed to unpack Python";
         return false;
     }
-    std::error_code ec;
-    const std::filesystem::path data = paths::data_dir();
-    std::filesystem::create_directories(data, ec);
-    const std::filesystem::path archive = data / "python-download.tar.gz";
+    const std::filesystem::path data    = paths::data_dir();
+    const std::filesystem::path archive = download_file(build);
     const std::filesystem::path staging = data / "python-staging";
-    std::filesystem::remove(archive, ec);
 
-    // --- the download, measured by how much of the file has arrived ---------
-    std::atomic<bool> finished{false};
-    bool              fetched = false;
-    std::string       why;
-    std::thread fetch([&] {
-        fetched = util::http::download(build->url, archive, 1800, why);
-        finished.store(true);
-    });
-    while (!finished.load()) {
-        if (on_progress) {
-            std::error_code size_ec;
-            const std::uintmax_t got = std::filesystem::file_size(archive, size_ec);
-            on_progress(Progress{"downloading", size_ec ? 0 : static_cast<std::uint64_t>(got),
-                                 build->bytes});
+    // Anything else in the download folder is another build's. The archive
+    // older versions fetched beside it was never carried on from either.
+    std::filesystem::create_directories(archive.parent_path(), ec);
+    std::vector<std::filesystem::path> others;
+    for (const auto& entry : std::filesystem::directory_iterator(archive.parent_path(), ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name != archive.filename().string() && name != archive.filename().string() + ".part") {
+            others.push_back(entry.path());
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
-    fetch.join();
+    for (const std::filesystem::path& other : others) {
+        std::filesystem::remove_all(other, ec);
+    }
+    std::filesystem::remove(data / "python-download.tar.gz", ec);
+
+    // --- the download, carried on from wherever the last one stopped --------
+    //
+    // The Models tab's fetch: a part file beside the archive, moved into place
+    // only once it is whole, and kept when a stop or a dropped line ends it.
+    std::string why;
+    const bool  fetched = market::fetch(
+        build.url, archive, build.bytes, "",
+        [&say, &build](std::uint64_t have) { say(Progress{"downloading", have, build.bytes}); },
+        stop, why);
     if (!fetched) {
-        std::filesystem::remove(archive, ec);
-        error = "Python could not be downloaded: " + why;
+        error = stopped() ? std::string("stopped") : "Python could not be downloaded: " + why;
         return false;
     }
 
     // --- is it the file it should be ----------------------------------------
-    if (on_progress) {
-        on_progress(Progress{"checking", build->bytes, build->bytes});
-    }
+    say(Progress{"checking", build.bytes, build.bytes});
     const std::string digest = util::sha256_file(archive);
-    if (digest != build->sha256) {
-        std::filesystem::remove(archive, ec);
+    if (digest != build.sha256) {
+        std::filesystem::remove(archive, ec);   // whatever it is, it is not this
         error = "the Python download is not the file it should be (its SHA-256 is "
               + (digest.empty() ? std::string("unreadable") : digest) + ")";
+        return false;
+    }
+    if (stopped()) {
+        error = "stopped";   // whole and checked: the next install only unpacks it
         return false;
     }
 
     // --- unpacked beside the old one, then swapped in -----------------------
     //
     // A tar interrupted halfway into the live folder leaves an interpreter
-    // that starts and then cannot import half its standard library.
-    if (on_progress) {
-        on_progress(Progress{"unpacking", build->bytes, build->bytes});
-    }
+    // that starts and then cannot import half its standard library. Stopped
+    // or failed here, what was half unpacked goes and the archive stays.
+    say(Progress{"unpacking", build.bytes, build.bytes});
     std::filesystem::remove_all(staging, ec);
     std::filesystem::create_directories(staging, ec);
-    if (run_quiet({"tar", "-xzf", archive.string(), "-C", staging.string()}) != 0
+    const util::Ran unpacked =
+        util::run({"tar", "-xzf", archive.string(), "-C", staging.string()}, {}, {}, 900, stop);
+    if (!unpacked.started || unpacked.stopped || unpacked.timed_out || unpacked.status != 0
         || !std::filesystem::exists(staging / "python", ec)) {
         std::filesystem::remove_all(staging, ec);
-        std::filesystem::remove(archive, ec);
-        error = "the Python download could not be unpacked";
+        error = unpacked.stopped ? std::string("stopped") : std::string("the Python download could not be unpacked");
         return false;
     }
+    // From here it is a rename, and is not stopped halfway.
     std::filesystem::remove_all(root(), ec);
-    std::filesystem::rename(staging / "python", root(), ec);
+    std::error_code moved;
+    std::filesystem::rename(staging / "python", root(), moved);
     std::filesystem::remove_all(staging, ec);
-    std::filesystem::remove(archive, ec);
-    if (ec || !std::filesystem::exists(interpreter())) {
+    if (moved || !std::filesystem::exists(own_interpreter(), ec)) {
         error = "Python could not be put in place at " + root().string();
         return false;
     }
+    std::filesystem::remove_all(archive.parent_path(), ec);
 
     // Last, so a marker means everything before it happened.
     std::ofstream marker(marker_file());
-    marker << json{{"version", build->version}, {"sha256", build->sha256}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
+    marker << json{{"version", build.version}, {"sha256", build.sha256}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     if (!marker) {
         error = "could not write " + marker_file().string();
         return false;
     }
     return true;
+}
+
+}  // namespace detail
+
+bool install(const std::function<void(const Progress&)>& on_progress, std::string& error,
+             const std::function<bool()>& stop) {
+    const std::optional<Build> build = build_here();
+    if (!build) {
+        error = "no build of Python is published for this platform";
+        return false;
+    }
+    return detail::install(*build, on_progress, error, stop);
 }
 
 }  // namespace crucible::lab::python

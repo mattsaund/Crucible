@@ -165,7 +165,8 @@ int main(int argc, char** argv) {
                 labels.push_back(one.get<std::string>());
             }
             json out = json::array();
-            for (const float score : model->score_labels(asked.value("prompt", ""), labels, {})) {
+            for (const float score : model->score_labels(asked.value("prompt", ""), labels, {},
+                                                         asked.value("prefix", ""))) {
                 out.push_back(score <= kUnscored ? json(nullptr) : json(score));
             }
             return json{{"scores", out}, {"canceled", false}};

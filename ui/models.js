@@ -45,8 +45,9 @@ function paramsLabel(b) {
   return `${b >= 10 ? Math.round(b) : Number(b.toFixed(1))}B`;
 }
 
-/// "today", "3 days ago", "2 months ago".
-function ago(iso) {
+/// "today", "3 days ago", "2 months ago". Not base.js's ago, which takes a
+/// unix time: every script shares one scope, and this one loads later.
+function updatedAgo(iso) {
   const then = Date.parse(iso || '');
   if (!then) return '';
   const days = Math.floor((Date.now() - then) / 86400000);
@@ -107,7 +108,7 @@ function resultRow(l) {
       <div class="market-row-head"><strong>${escape(l.name)}</strong><span class="caps">${capabilityIcons(l)}</span></div>
       <div class="market-row-meta"><span class="who">${apart(escape(l.author), paramsLabel(l.params_b),
         `${MARKET_ICONS.down} ${shortCount(l.downloads)}`, `${MARKET_ICONS.like} ${shortCount(l.likes)}`)}</span>
-        <span class="when">${escape(ago(l.updated))}</span></div>
+        <span class="when">${escape(updatedAgo(l.updated))}</span></div>
     </button>`;
 }
 
@@ -190,7 +191,7 @@ function detailView() {
   return `<div class="market-head">
       <h1>${escape(d.id)}</h1>
       <div class="status">${apart(`${MARKET_ICONS.down} ${shortCount(d.downloads)}`,
-        `${MARKET_ICONS.like} ${shortCount(d.likes)}`, d.updated ? `updated ${escape(ago(d.updated))}` : '',
+        `${MARKET_ICONS.like} ${shortCount(d.likes)}`, d.updated ? `updated ${escape(updatedAgo(d.updated))}` : '',
         d.base_model ? `from ${escape(d.base_model)}` : '')}</div>
     </div>
     <div class="facts">${facts}</div>

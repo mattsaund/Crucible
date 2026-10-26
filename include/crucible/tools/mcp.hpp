@@ -88,6 +88,12 @@ public:
     void stop();
     bool running() const;
 
+    /// End a start() or a call() waiting on another thread now, rather than
+    /// when its answer is due, and refuse any after it: for the way out. Safe
+    /// from any thread and returns at once; the thread that was waiting
+    /// cleans up, as it does after an answer that never came.
+    void interrupt();
+
     std::vector<Tool> tools() const;
 
     /// Call `tool` with `arguments`, waiting at most `timeout_seconds`.
@@ -108,6 +114,7 @@ private:
     std::condition_variable            arrived_;
     std::deque<nlohmann::json>         answers_;
     bool                               ended_ = true;
+    bool                               interrupted_ = false;   ///< see interrupt()
     long                               next_id_ = 0;
     std::vector<Tool>                  tools_;
 };
@@ -143,6 +150,10 @@ public:
     /// Whether any server is enabled -- whether TOOL is worth teaching.
     bool any() const;
 
+    /// Stop every server, end any start or call in progress at once, and
+    /// start none after: for the way out. A server that never answers holds
+    /// its start for up to a minute and a half, and quitting used to wait
+    /// for all of it.
     void stop_all();
 
 private:
@@ -160,6 +171,11 @@ private:
 
     mutable std::mutex           mutex_;
     std::map<std::string, Entry> servers_;
+
+    /// Clients still starting, which are in no entry yet: stop_all() finds
+    /// them here.
+    std::vector<std::shared_ptr<Client>> starting_;
+    bool                                 stopped_ = false;   ///< stop_all() was called
 };
 
 namespace detail {

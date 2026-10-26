@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "crucible/engine/state.hpp"
 #include "crucible/session/usage.hpp"
 
@@ -124,6 +126,7 @@ public:
     /// Write the current session. Turns still streaming are skipped: a
     /// half-finished reply is not something to resume into.
     bool save(const std::vector<Turn>& turns, const TokenUsage& usage, std::string& error);
+    bool save(const TurnList& turns, const TokenUsage& usage, std::string& error);
 
     /// Sessions for this project, newest first.
     std::vector<SessionSummary> list(std::size_t limit = 50) const;
@@ -141,6 +144,9 @@ public:
     TokenUsage project_usage() const;
 
 private:
+    /// What both saves come to: the turns already put as they are written.
+    bool save_stored(const nlohmann::json& stored_turns, const TokenUsage& usage, std::string& error);
+
     std::filesystem::path session_file(const std::string& id) const;
     std::filesystem::path totals_file() const;
 

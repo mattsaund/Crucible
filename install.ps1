@@ -19,8 +19,11 @@
     Then, by asking the program itself, its own Python, the compute runtimes
     this machine can use, and the fine-tuning environment. No models.
 
-    Run as a file from inside a checkout -- .\install.ps1 -- it builds that
-    checkout instead of fetching one, the same as install.sh does.
+    Run as a file from inside a checkout, it builds that checkout instead of
+    fetching one, the same as install.sh does. Windows runs no script files
+    until it is told to, so start it as:
+
+        powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 .PARAMETER Prefix
     Where to install. Defaults to %LOCALAPPDATA%\Programs\Crucible.
@@ -87,6 +90,23 @@ $SrcDir  = Join-Path $env:LOCALAPPDATA 'crucible\src'
 $ConfigDir = Join-Path $env:APPDATA 'crucible'
 $DataDir   = Join-Path $env:LOCALAPPDATA 'crucible'
 $ModelsDir = Join-Path $DataDir 'models'
+
+# The models folder Crucible will use: the one its config names, or the default
+# when it names none -- read the way the program reads it, where empty is the
+# default and a leading ~/ is the home folder. The summary used to name the
+# default whatever the config said.
+function Get-ModelsDir {
+    try {
+        $file = Join-Path $ConfigDir 'config.json'
+        if (Test-Path $file) {
+            $named = "$((Get-Content -Raw -Encoding UTF8 $file | ConvertFrom-Json).models_dir)"
+            if ($named -eq '~') { return $HOME }
+            if ($named -like '~/*') { return Join-Path $HOME ($named.Substring(2) -replace '/', '\') }
+            if ($named) { return $named }
+        }
+    } catch { }
+    return $ModelsDir
+}
 
 # ---------------------------------------------------------------------------
 # State
@@ -236,7 +256,7 @@ function Write-Banner {
       ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
       ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
       ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   Crucible
-      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
+      ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   An all in one local AI workshop.
       ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
       ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
       ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁
@@ -575,8 +595,11 @@ function Invoke-Install {
         Write-Note "cmake      : $(if (Test-Command 'cmake') { 'found' } else { 'would install' })"
         Write-Note "git        : $(if (Test-Command 'git')   { 'found' } else { 'would install' })"
         Write-Note "compiler   : $(if ($null -ne (Find-VisualStudio)) { 'found' } else { 'would install' })"
+        Write-Note "python     : Crucible's own, tens of MB"
+        Write-Note "runtimes   : $(if ($NoRuntimes) { 'skipped (-NoRuntimes)' } else { 'the compute backends this machine can use' })"
+        Write-Note "fine-tuner : $(if ($NoTrainer) { 'skipped (-NoTrainer)' } else { 'a private Python environment, a few GB' })"
         Write-Note "config     : $ConfigDir"
-        Write-Note "models     : $ModelsDir"
+        Write-Note "models     : $(Get-ModelsDir)"
         Write-Ok 'nothing was changed'
         Stop-Script 0
     }
@@ -715,21 +738,16 @@ Visual Studio Build Tools, then run this again:
     Write-Host ''
     Step-Begin "Fetching Crucible's Python"
     & (Join-Path $binDir 'crucible.exe') --install-python
-    if ($LASTEXITCODE -ne 0) {
+    $pythonReady = ($LASTEXITCODE -eq 0)
+    if (-not $pythonReady) {
         Write-Host ''
         Write-Warn "Crucible's Python did not install. The window will try again when it starts."
         Write-Note "or try again now with:  $(Join-Path $binDir 'crucible.exe') --install-python"
     }
 
-    # The fine-tuner's Python environment, done by the program rather than
-    # here: `crucible --install-trainer` drives the same code the settings
-    # screen does, so there is one implementation of "fetch Crucible's Python,
-    # make a venv, resolve the right torch" instead of one in shell, one here
-    # and one in C++ that could disagree.
-    #
-    # Never fatal. A proxy that blocks PyPI, a full disk -- none of those is a
-    # reason to fail an install of a program that runs models perfectly well
-    # without a trainer.
+    # The compute backends. Quick -- tens of megabytes over the wire -- so they
+    # go before the fine-tuner, and a machine that gives up partway through
+    # the big download still ends up able to run a model.
     $runtimesReady = $false
     if (-not $NoRuntimes) {
         Stop-Progress
@@ -748,6 +766,15 @@ Visual Studio Build Tools, then run this again:
         }
     }
 
+    # The fine-tuner's Python environment, done by the program rather than
+    # here: `crucible --install-trainer` drives the same code the settings
+    # screen does, so there is one implementation of "fetch Crucible's Python,
+    # make a venv, resolve the right torch" instead of one in shell, one here
+    # and one in C++ that could disagree.
+    #
+    # Never fatal. A proxy that blocks PyPI, a full disk -- none of those is a
+    # reason to fail an install of a program that runs models perfectly well
+    # without a trainer.
     $trainerReady = $false
     if (-not $NoTrainer) {
         Stop-Progress
@@ -780,7 +807,12 @@ Visual Studio Build Tools, then run this again:
     Write-Host "    crucible      $(Join-Path $binDir 'crucible.exe')"
     Write-Host "    shortcuts     Start Menu, Desktop"
     Write-Host "    config        $ConfigDir"
-    Write-Host "    models        $ModelsDir"
+    Write-Host "    models        $(Get-ModelsDir)"
+    if ($pythonReady) {
+        Write-Host "    python        ready"
+    } else {
+        Write-Host "    python        not yet -- the window fetches it when it starts"
+    }
     if (-not $NoRuntimes) {
         if ($runtimesReady) {
             Write-Host "    runtimes      installed"

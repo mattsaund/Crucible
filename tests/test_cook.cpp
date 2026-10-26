@@ -290,3 +290,27 @@ TEST(the_headline_says_files_steps_and_how_long) {
     CHECK(headline.find("2 steps") != std::string::npos);
     CHECK(headline.find("41 minutes") != std::string::npos);
 }
+
+TEST(a_published_journal_is_put_after_the_steps_already_held) {
+    const auto step = [](const char* summary) {
+        CookStep s;
+        s.summary = summary;
+        return s;
+    };
+    Cook next;
+    next.goal  = "a goal";
+    next.steps = {step("c")};
+    // Two held, sent from two: the new one goes after them.
+    Cook joined = merge_published({step("a"), step("b")}, next, 2);
+    CHECK_EQ(joined.steps.size(), std::size_t{3});
+    CHECK_EQ(joined.steps[2].summary, std::string("c"));
+    CHECK_EQ(joined.goal, std::string("a goal"));
+    // Sent from one: the held one after it is the orchestrator's to replace.
+    joined = merge_published({step("a"), step("b")}, next, 1);
+    CHECK_EQ(joined.steps.size(), std::size_t{2});
+    CHECK_EQ(joined.steps[1].summary, std::string("c"));
+    // A gap: nothing joins, nothing held is lost.
+    joined = merge_published({step("a")}, next, 5);
+    CHECK_EQ(joined.steps.size(), std::size_t{1});
+    CHECK_EQ(joined.steps[0].summary, std::string("a"));
+}

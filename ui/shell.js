@@ -138,6 +138,7 @@ const TABS = [
   ['create',  'Create',  'Fine-tune an expert'],
   ['history', 'History', 'Past builds and conversations'],
   ['models',  'Models',  'Download models'],
+  ['bench',   'Bench',   'Benchmark models'],
 ];
 
 function topView() {
@@ -323,12 +324,47 @@ actions['fold-right'] = () =>
   setRecents(recentsOpen() ? 0 : Math.max(remember.get('recents-open', 16), SIDEBAR_MIN));
 
 actions['recent-chat'] = (row) => guard(async () => {
+  // A chat of another project opens that project.
+  const here = (state.snapshot.project || {}).root || '';
+  if (row.dataset.project && row.dataset.project !== here && !(await leavingCode())) return;
   await call('history.open', { id: row.dataset.id, project: row.dataset.project });
   state.follow = true;
   if (state.view !== 'chat') enter('chat');
   need('recents', 'recents', true);
 });
+/// Before the project changes under the editor, or the window closes over
+/// it: unsaved files are lost with it, so the person says so first.
+async function leavingCode(body = 'Open the other project anyway?') {
+  const left = codeUnsaved();
+  if (!left.length) return true;
+  return confirmIt({ title: `Unsaved changes to ${left.map(fileName).join(', ')}`,
+                     body, yes: 'Discard', no: 'Stay' });
+}
+
+/// The window's close, while the code pane holds unsaved work: the window
+/// holds it and asks here (window.cpp), and closes when it is told to.
+let closingAsked = false;
+window.crucibleClosing = async () => {
+  if (closingAsked) return;   // the question is on screen already
+  closingAsked = true;
+  const go = await leavingCode('Close anyway?');
+  closingAsked = false;
+  if (window.closeWindow) window.closeWindow(go, window.crucibleToken || '').catch(() => {});
+};
+
+/// The window is told how many files are unsaved whenever that changes, so a
+/// close with none goes ahead at once without asking the page.
+let unsavedTold = 0;
+function tellUnsaved() {
+  const left = codeUnsaved().length;
+  if (left === unsavedTold || !window.unsavedWork) return;
+  unsavedTold = left;
+  window.unsavedWork(left, window.crucibleToken || '').catch(() => {});
+}
+afterDraw.push(tellUnsaved);
+
 actions['recent-project'] = (row) => guard(async () => {
+  if (!(await leavingCode())) return;
   await call('project.open', { path: row.dataset.path });
   need('recents', 'recents', true);
 });
@@ -348,19 +384,23 @@ actions['project-forget'] = async (button) => {
   need('recents', 'recents', true);
 };
 actions['new-chat'] = () => guard(async () => {
+  // A new chat closes the project, and the files open in the editor with it.
+  if (!(await leavingCode())) return;
   await call('session.new');
   if (state.view !== 'chat') enter('chat');
   need('recents', 'recents', true);
 });
 
 /// Kept current without asking: when the project, the conversation or its
-/// length changes, and the engine is not mid-turn, the list is read again.
+/// length changes, or one put away is named, and the engine is not mid-turn,
+/// the list is read again.
 let recentsKey = '';
 let recentsTimer = 0;
 afterDraw.push(() => {
   if (!recentsOpen()) return;
   const s = state.snapshot;
-  const key = `${(s.project || {}).root}|${s.session}|${s.session_name}|${(s.turns || []).length}|${!!s.busy}`;
+  const key = `${(s.project || {}).root}|${s.session}|${s.session_name}|${(s.turns || []).length}|${
+    !!s.busy}|${s.names_filed || 0}`;
   if (key === recentsKey || s.busy) return;
   recentsKey = key;
   clearTimeout(recentsTimer);
@@ -595,8 +635,9 @@ actions['settings-page'] = (element) => enter('settings', element.dataset.page);
 actions.gear = () => enter(state.view === 'settings' ? (state.lastView || 'chat') : 'settings');
 
 function shortcuts(event) {
+  codeShortcut(event);
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-  const tab = { 1: 'chat', 2: 'build', 3: 'create', 4: 'history', 5: 'models' }[event.key];
+  const tab = { 1: 'chat', 2: 'build', 3: 'create', 4: 'history', 5: 'models', 6: 'bench' }[event.key];
   if (tab) { event.preventDefault(); enter(tab); }
   if (event.key === ',') { event.preventDefault(); actions.gear(); }
   // Attach, from wherever the box is. Not over a dialog: the box is not
@@ -614,7 +655,7 @@ actions['open-project'] = async () => {
   const project = state.snapshot.project || {};
   const path = await pickPath({ folder: true, title: 'Choose a folder to work in',
                                 start: project.root || '' });
-  if (path) await guard(() => call('project.open', { path }));
+  if (path && (await leavingCode())) await guard(() => call('project.open', { path }));
 };
 
 /// The folder question, when one is waiting. Asked by the session and shown
@@ -691,7 +732,56 @@ actions['ne-train'] = () => { closeModal(); enter('create'); actions['recipe-new
 /// The engine pushes rather than the page polling: it already knows when
 /// something changed, and a timer would either lag behind that or burn a
 /// redraw a second doing nothing.
+/// Every turn the page holds, by revision. The window sends a turn the page
+/// already has as a stub, { rev, stub: true }, and only new or changed ones
+/// whole (api::PageTurns); this is what the stubs are put back from.
+const turnsByRev = new Map();
+let fetchingTurns = false;
+
+/// The snapshot's turns with every stub put back, or null when one names a
+/// turn the page does not have: after the page was reloaded, say.
+function resolveTurns(turns) {
+  if (!Array.isArray(turns)) return [];
+  const out = [];
+  for (const turn of turns) {
+    if (turn && turn.stub) {
+      const kept = turnsByRev.get(turn.rev);
+      if (!kept) return null;
+      out.push(kept);
+    } else {
+      out.push(turn);
+    }
+  }
+  return out;
+}
+
+/// Keep exactly the turns of the transcript now, so the map is as long as
+/// the conversation rather than its history.
+function keepTurns(turns) {
+  turnsByRev.clear();
+  for (const turn of turns) if (turn && turn.rev) turnsByRev.set(turn.rev, turn);
+}
+
 window.crucibleSnapshot = (snapshot) => {
+  const turns = resolveTurns(snapshot.turns);
+  if (turns) {
+    snapshot.turns = turns;
+    keepTurns(turns);
+  } else {
+    // A stub for a turn the page never had: the transcript as it was, until
+    // the whole snapshot, asked for once, brings every turn back.
+    snapshot.turns = (state.snapshot && state.snapshot.turns) || [];
+    if (!fetchingTurns) {
+      fetchingTurns = true;
+      call('snapshot').then((whole) => {
+        if (Array.isArray(whole.turns)) {
+          keepTurns(whole.turns);
+          state.snapshot.turns = whole.turns;
+          render();
+        }
+      }).catch(() => { /* the next push tries again */ }).finally(() => { fetchingTurns = false; });
+    }
+  }
   state.snapshot = snapshot;
   trustWatch();
   for (const job of onSnapshot) job();

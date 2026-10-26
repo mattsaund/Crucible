@@ -607,6 +607,128 @@ TEST(a_layer_moved_between_cards_is_weighed_as_the_one_that_moves) {
     }
 }
 
+TEST(a_dry_run_replaces_the_allowance_with_what_the_cards_measured) {
+    // Ten one-gigabyte layers and a quarter-gigabyte output, planned with the
+    // header's 512 MiB a card and its logits, and measured: 150 MiB of
+    // buffers on the card without the output, 450 on the one with it.
+    ModelFit fit;
+    fit.units.assign(10, kGb);
+    fit.units.push_back(kGb / 4);
+    for (const std::uint64_t unit : fit.units) {
+        fit.resident += unit;
+    }
+    fit.per_card     = 512ULL << 20;
+    fit.output_extra = 300ULL << 20;
+
+    std::vector<CardNeed> need(2);
+    need[0] = {6 * kGb, 0, 150ULL << 20};
+    need[1] = {4 * kGb + kGb / 4, 0, 450ULL << 20};
+    const ModelFit calibrated = calibrated_fit(fit, {6, 5}, need, 256ULL << 20);
+
+    // What the cards use, and what the backend takes beyond it.
+    CHECK_EQ(calibrated.per_card, (150ULL << 20) + (256ULL << 20));
+    CHECK_EQ(calibrated.output_extra, 300ULL << 20);
+    // The header had the weights right, so they stay as they were.
+    CHECK(calibrated.units == fit.units);
+    CHECK_EQ(calibrated.resident, fit.resident);
+}
+
+TEST(a_header_that_undercounts_is_scaled_to_the_card_it_missed_most) {
+    // The second card measured a tenth more than the header said it would
+    // hold. Every unit grows by that much, which is right to the byte where
+    // it was measured and conservative everywhere else.
+    ModelFit fit;
+    fit.units.assign(4, kGb);
+    fit.resident = 4 * kGb;
+    std::vector<CardNeed> need(2);
+    need[0] = {2 * kGb, 0, 100ULL << 20};
+    need[1] = {2 * kGb + kGb / 5, 0, 300ULL << 20};
+    const ModelFit calibrated = calibrated_fit(fit, {2, 2}, need, 0);
+
+    CHECK_EQ(calibrated.units.size(), std::size_t{4});
+    for (const std::uint64_t unit : calibrated.units) {
+        CHECK(unit >= kGb + kGb / 10);
+        CHECK(unit <= kGb + kGb / 10 + 1);
+    }
+    CHECK_EQ(calibrated.per_card, 100ULL << 20);
+    CHECK_EQ(calibrated.output_extra, 200ULL << 20);
+}
+
+TEST(a_dry_run_that_does_not_cover_the_plan_changes_nothing) {
+    ModelFit fit;
+    fit.units.assign(4, kGb);
+    fit.resident = 4 * kGb;
+    fit.per_card = 512ULL << 20;
+    std::vector<CardNeed> need(2);
+    need[0] = {2 * kGb, 0, 100ULL << 20};
+    need[1] = {2 * kGb, 0, 300ULL << 20};
+
+    // Counts that place only some of the units.
+    CHECK_EQ(calibrated_fit(fit, {1, 1}, need, 0).per_card, fit.per_card);
+    // A card the plan used and the dry run said nothing about.
+    CHECK_EQ(calibrated_fit(fit, {2, 1, 1}, need, 0).per_card, fit.per_card);
+    // No units at all: a header that could not be read.
+    ModelFit unknown;
+    unknown.per_card = 512ULL << 20;
+    CHECK_EQ(calibrated_fit(unknown, {2, 2}, need, 0).per_card, unknown.per_card);
+}
+
+TEST(priority_packs_the_first_card_further_from_measured_buffers) {
+    // flint's shape on three cards, the first with a desktop on it: forty-nine
+    // 0.63 GB layers. The header sets 512 MiB aside on every card; the dry run
+    // says 150, and Vulkan takes up to 128 beyond that. The first card takes
+    // a layer more, and none is asked for more than it holds with what was
+    // measured set aside.
+    const std::vector<ComputeDevice> gpus{
+        fake_gpu(0, "A", static_cast<std::uint64_t>(11.4 * static_cast<double>(kGb))),
+        fake_gpu(1, "B", 12 * kGb),
+        fake_gpu(2, "C", 12 * kGb),
+    };
+    ModelFit header;
+    header.units.assign(49, 680'000'000ULL);
+    header.units.push_back(250'000'000ULL);
+    for (const std::uint64_t unit : header.units) {
+        header.resident += unit;
+    }
+    header.per_card     = 512ULL << 20;
+    header.output_extra = 300ULL << 20;
+
+    const GpuPlan first = plan_gpu_split(GpuSplitMode::Priority, gpus, {0, 1, 2}, 0, header);
+    CHECK_EQ(first.units.size(), std::size_t{3});
+    if (first.units.size() != 3) {
+        return;
+    }
+    std::vector<CardNeed> need(3);
+    std::size_t unit = 0;
+    for (std::size_t card = 0; card < 3; ++card) {
+        for (int i = 0; i < first.units[card]; ++i, ++unit) {
+            need[card].weights += header.units[unit];
+        }
+        need[card].compute = 150ULL << 20;
+    }
+    need[2].compute += 300ULL << 20;   // the logits, on the card with the output
+
+    const ModelFit calibrated = calibrated_fit(header, first.units, need, 128ULL << 20);
+    const GpuPlan  packed     = plan_gpu_split(GpuSplitMode::Priority, gpus, {0, 1, 2}, 0, calibrated);
+    CHECK_EQ(packed.units.size(), std::size_t{3});
+    if (packed.units.size() != 3) {
+        return;
+    }
+    CHECK(packed.units[0] > first.units[0]);
+    CHECK_EQ(packed.units[0] + packed.units[1] + packed.units[2], 50);
+
+    unit = 0;
+    for (std::size_t card = 0; card < 3; ++card) {
+        std::uint64_t held = 0;
+        for (int i = 0; i < packed.units[card]; ++i, ++unit) {
+            held += calibrated.units[unit];
+        }
+        const std::uint64_t set_aside =
+            calibrated.per_card + kCardHeadroom + (card == 2 ? calibrated.output_extra : 0);
+        CHECK(held <= usable_memory(gpus[card], set_aside));
+    }
+}
+
 TEST(the_priority_card_takes_the_most_layers) {
     // Equal cards, so the only thing that can decide which carries more is the
     // order the user put them in.

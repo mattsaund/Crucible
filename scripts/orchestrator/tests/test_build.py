@@ -67,6 +67,8 @@ class ScriptedCore:
         self.git = git
         self.repo = repo
         self.published = []
+        self.held_steps = []
+        self.publish_bodies = []   # how many steps each publish carried
         self.seats = []
         self.prompts = []
         self.ran = []
@@ -136,8 +138,16 @@ class ScriptedCore:
         if method == "cook.await_answer":
             return {"answer": self.answers.pop(0) if self.answers else "go"}
         if method == "cook.publish":
-            self.published.append(json.loads(json.dumps(params["cook"])))
-            return {}
+            # The journal put back together the way the core does: what it
+            # holds up to steps_from, and the new steps after it.
+            body = params["cook"]
+            steps = self.held_steps[:params.get("steps_from", 0)] + list(body.get("steps") or [])
+            self.held_steps = steps
+            whole = dict(body)
+            whole["steps"] = steps
+            self.published.append(json.loads(json.dumps(whole)))
+            self.publish_bodies.append(len(body.get("steps") or []))
+            return {"steps": len(steps)}
         if method == "roster.make":
             if not self.make_ok:
                 return {"ok": False, "error": "no model for new agents"}
@@ -180,6 +190,17 @@ def plan_text(plan=PLAN):
 
 
 class ReadingThePlan(unittest.TestCase):
+    def test_a_plan_cut_short_of_its_last_brace_is_closed(self):
+        # gpt-oss, twice running: the whole plan, and no } after the ].
+        cut = '{"summary": "Totals", "tasks": [{"title": "Add totals", "after": []}]'
+        self.assertEqual(build.find_json(cut)["tasks"][0]["title"], "Add totals")
+        self.assertEqual(build.find_json("We need to output JSON. Let's produce.\n" + cut)["summary"],
+                         "Totals")
+        # A brace inside a string is not one to close, and one closed wrongly is no plan.
+        self.assertEqual(build.find_json('{"summary": "a { b", "tasks": []')["summary"], "a { b")
+        self.assertIsNone(build.find_json('{"tasks": [}'))
+        self.assertIsNone(build.find_json('{"summary": "never ends'))
+
     def test_json_is_found_inside_prose_and_fences(self):
         plan, why = build.read_plan(plan_text())
         self.assertEqual(why, "")
@@ -612,6 +633,30 @@ class Mixing(unittest.TestCase):
             {"title": "core", "detail": "d", "size": "LARGE"},
             {"title": "docs", "detail": "d", "size": "tiny"}]}))
         self.assertEqual([t["size"] for t in plan["tasks"]], ["large", ""])
+
+
+class TheSameCallAgain(unittest.TestCase):
+    """As in a cook (see test_cook.py): told once, and the task is over the
+    next time."""
+
+    ONE = {"summary": "", "run": "", "check": "", "ship": "", "tasks": [
+        {"title": "Make the header blue", "detail": "in style.css", "files": ["style.css"],
+         "needs": "python", "after": []}]}
+
+    def test_the_same_read_again_is_not_run_and_then_ends_the_task(self):
+        core = ScriptedCore([plan_text(self.ONE), "RUN: sed -n '1,80p' style.css", "READ: style.css 1-80",
+                             "RUN: sed -n '1,80p' style.css", "the review"])
+        build.Build(core, params(core)).run()
+        task = core.published[-1]["tasks"][0]
+        self.assertEqual(task["state"], "incomplete")
+        self.assertEqual(task["outcome"], "the agent repeated the same actions without progress")
+        self.assertEqual(core.ran.count(("run", "sed -n '1,80p' style.css")), 1)
+        self.assertNotIn(("read", "style.css 1-80"), core.ran)
+        # Read with sed, it was pointed at READ; asked again, it was told.
+        handed = [m["content"] for m in core.prompts[2] if m["content"].startswith("$ sed")]
+        self.assertTrue(handed[0].endswith("(READ: style.css 1-80 reads the same lines, numbered.)"))
+        self.assertTrue(core.prompts[3][-1]["content"].startswith("You already did exactly that"))
+        self.assertTrue(core.prompts[3][-1]["content"].endswith("ends this task."))
 
 
 class Notes(unittest.TestCase):

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "crucible/config/config.hpp"
+#include "crucible/runtime/devices.hpp"
 
 namespace crucible {
 
@@ -43,6 +44,14 @@ std::string apply_gpu_policy(Config& config);
 /// place every load goes through. Returns the same one-line description
 /// apply_gpu_policy does, or an empty string when the mode leaves splits alone.
 std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu);
+
+/// The same, planned from `fit` rather than from the model's header: a fit
+/// calibrated by a dry run of the load. See calibrated_fit.
+std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu, const ModelFit& fit);
+
+/// What a load of `params` asks of the cards by its model's header: the
+/// figures refresh_gpu_split plans from, sliding window and all.
+ModelFit model_fit(const ModelParams& params);
 
 /// Put the delegator on the one card it belongs on.
 ///

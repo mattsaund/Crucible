@@ -241,7 +241,8 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
 
     // A CUDA module is half of what CUDA needs. The other half is NVIDIA's
     // runtime and cuBLAS, which the toolkit installs and a driver does not --
-    // so they come with it, unless this machine already has them.
+    // so they come with it, unless this machine already has them. Ones
+    // fetched for an older module do not count: see cuda_libraries::complete.
     if (kind == BackendKind::Cuda && !cuda_libraries::complete() && !cuda_libraries::on_system()) {
         if (!cuda_libraries::fetch(error, say)) {
             return false;

@@ -72,6 +72,10 @@ public:
     /// loaded -- the caller waits for a lease to end and asks again, rather
     /// than this freeing a model an agent is generating with.
     ///
+    /// `beside_mlx` says an MLX model is in use as well, which this host does
+    /// not hold: the new one has to fit beside it too, with or without an
+    /// expert held, and `crowded` is set the same way when it does not.
+    ///
     /// Cancelable. A thirty-gigabyte expert takes the better part of a minute
     /// to come off the disk, and a program that cannot be stopped during that
     /// minute is a program that has frozen, whatever it is doing underneath.
@@ -81,7 +85,8 @@ public:
                                 const CancelCallback& cancel,
                                 std::string& error,
                                 const Keep& keep = {},
-                                bool* crowded = nullptr);
+                                bool* crowded = nullptr,
+                                bool beside_mlx = false);
 
     /// Free every resident expert `keep` does not hold. The router is
     /// untouched.
@@ -91,7 +96,11 @@ public:
     /// where they say how much is free, and of the machine's memory where
     /// they share it -- a Mac's GPU memory is its RAM, and an MLX model in a
     /// process of its own is invisible to the cards' figure.
-    bool fits_beside(const ModelParams& params) const;
+    ///
+    /// `beside_mlx` says one is in use. None of it is this host's, so a host
+    /// with nothing of its own resident would otherwise answer yes without
+    /// looking.
+    bool fits_beside(const ModelParams& params, bool beside_mlx = false) const;
 
     /// About what `params` would hold once loaded: read from a GGUF's own
     /// header where it can be, and from the size of the weights otherwise --
@@ -146,6 +155,15 @@ private:
     /// and divided like an expert when none does. See delegator_cards.
     ModelParams placed_delegator(const ModelParams& requested) const;
 
+    /// `requested`, split over the cards as `role` is: the delegator by
+    /// placed_delegator, an expert by refresh_gpu_split.
+    ModelParams placed(const ModelParams& requested, Role role) const;
+
+    /// The file and the context a model is loaded with, as far as what its
+    /// cache holds goes: two loads with the same key hold the same thing for
+    /// the same prompt. See kept_routing_.
+    static std::string context_key(const ModelParams& params);
+
     std::unique_ptr<LoadedModel> load(const ModelParams& params,
                                       Role role,
                                       const ProgressCallback& progress,
@@ -169,6 +187,16 @@ private:
     std::unique_ptr<LoadedModel> router_;
     /// Least recently used first: the one at the back was asked for last.
     std::vector<Resident>        experts_;
+
+    /// What routing kept evaluated in the delegator's cache, held while the
+    /// delegator is freed between routes -- which it is after every prompt
+    /// unless "keep delegator loaded" is on. Without it, loading it again
+    /// would mean reading every order's prompt again too. Handed back only to
+    /// a delegator whose context_key matches `kept_key_`; see
+    /// LoadedModel::score_labels.
+    std::vector<LoadedModel::KeptPrompt> kept_routing_;
+    std::string                          kept_key_;
+    std::string                          router_key_;   ///< the loaded delegator's
 };
 
 }  // namespace crucible

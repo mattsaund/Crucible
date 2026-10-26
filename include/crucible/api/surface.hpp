@@ -24,10 +24,15 @@
 #pragma once
 
 #include <filesystem>
+#include <unordered_set>
+#include <mutex>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "crucible/app/update.hpp"
 #include "crucible/config/config.hpp"
@@ -147,6 +152,10 @@ public:
     /// What the conversation on screen is about, once it has been named.
     virtual std::string session_name() const { return {}; }
 
+    /// How many conversations put away have been named since the session
+    /// began. The page reads the recent chats again when it changes.
+    virtual std::size_t names_filed() const { return 0; }
+
     /// Answer it. True trusts the folder and opens it; false leaves both
     /// alone. Trust is granted once per directory and remembered.
     virtual void answer_trust(bool) {}
@@ -231,6 +240,31 @@ struct Prepared {
 /// `{"id": 1, "ok": false, "error": "what went wrong"}`. A reply always has
 /// the same shape, including for malformed input, so a caller never has to
 /// parse two formats to find out it made a mistake.
+/// Seat a new expert: on the roster, sampling the way every seat does, its
+/// model one on this machine (`model`) or a provider's, and examples written
+/// for the delegator to route on. What New expert does, and what keeping a
+/// fine-tune does. Empty when it was seated, otherwise why not.
+std::string add_expert(Host& host, const std::string& name, const std::string& blurb,
+                       const std::string& model, const std::string& provider = {});
+
+/// The transcript as the page is sent it.
+///
+/// A turn the page was already sent goes as a stub naming its revision, and
+/// the page puts back the one it kept (ui/shell.js); a turn that is new or
+/// has changed goes whole. A long conversation was sent entire up to thirty
+/// times a second while one reply streamed at its end. When the page cannot
+/// put a stub back, after it was reloaded, it asks for the whole snapshot
+/// once, the way any other caller does.
+class PageTurns {
+public:
+    /// The turns as a JSON array, as text.
+    std::string turns_json(const TurnList& turns);
+
+private:
+    std::mutex                        mutex_;
+    std::unordered_set<std::uint64_t> sent_;
+};
+
 class Surface {
 public:
     explicit Surface(Host& host) : host_(host) {}
@@ -261,12 +295,22 @@ public:
     /// it, rather than the page polling.
     std::string snapshot();
 
+    /// The same for the window's own page, with the turns it already has
+    /// sent as stubs. See PageTurns.
+    std::string page_snapshot();
+
     /// Every method this build understands, for `methods` and for the tests
     /// that keep the documentation honest.
     static std::vector<std::string> methods();
 
 private:
-    Host& host_;
+    /// Everything snapshot() says, as JSON: `with_turns` false leaves the
+    /// transcript out for page_snapshot to add its own way.
+    nlohmann::json state_json(bool with_turns);
+    nlohmann::json state_json_of(const Snapshot& frame, bool with_turns);
+
+    Host&                      host_;
+    std::shared_ptr<PageTurns> page_turns_ = std::make_shared<PageTurns>();
 };
 
 /// The engine's half of the snapshot, as JSON text.

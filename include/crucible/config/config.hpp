@@ -65,6 +65,19 @@ struct ModelParams {
     int  n_threads = 0;            ///< 0 = hardware_concurrency()
     bool flash_attn = true;
 
+    /// Keep only the attention window on a model's sliding-window layers,
+    /// rather than the whole context on every layer as llama.cpp does by
+    /// default. Never written to the config: ModelHost turns it on for a load
+    /// the whole cache would not fit. What it costs is in
+    /// LoadedModel::reuse_prefix.
+    bool window_cache = false;
+
+    /// How many sequences the context keeps apart: one, the conversation,
+    /// except for the delegator, which ModelHost gives more to score labels
+    /// side by side. Never written to the config. See
+    /// LoadedModel::score_labels.
+    int sequences = 1;
+
     // Sampling
     float temperature   = 0.7F;
     float top_p         = 0.95F;

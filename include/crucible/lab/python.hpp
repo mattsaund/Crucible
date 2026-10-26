@@ -64,11 +64,32 @@ struct Progress {
 
 /// Fetch, check and unpack it, replacing whatever is in root(). Blocks; call
 /// it from a thread that may wait. `on_progress` is called from that thread.
-bool install(const std::function<void(const Progress&)>& on_progress, std::string& error);
+///
+/// `stop` is asked a few times a second, and true ends it with "stopped".
+/// root() is never left half written: what was there stays until a whole,
+/// checked download has been unpacked beside it. What was downloaded is kept
+/// for the next install to carry on from.
+bool install(const std::function<void(const Progress&)>& on_progress, std::string& error,
+             const std::function<bool()>& stop = {});
 
 /// True while an install() is running, anywhere in this process -- so a
 /// prompt sent in the first minute of a new install can wait for the Python
 /// it needs rather than fail for want of it.
 bool installing();
+
+// --- exposed for the tests -------------------------------------------------
+
+namespace detail {
+
+/// install(), for `build` rather than the one this platform pins: the tests
+/// fetch a small archive of their own from a file:// address with it.
+bool install(const Build& build, const std::function<void(const Progress&)>& on_progress,
+             std::string& error, const std::function<bool()>& stop);
+
+/// Where `build` is downloaded to, by way of a ".part" beside it, until it
+/// has been unpacked.
+std::filesystem::path download_file(const Build& build);
+
+}  // namespace detail
 
 }  // namespace crucible::lab::python

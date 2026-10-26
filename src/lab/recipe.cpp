@@ -55,6 +55,42 @@ json asset_to_json(const Asset& asset) {
     return node;
 }
 
+Score score_from_json(const json& node) {
+    Score score;
+    if (node.is_object()) {
+        score.loss       = node.value("loss", 0.0);
+        score.perplexity = node.value("perplexity", 0.0);
+    }
+    return score;
+}
+
+HeldOut held_out_from_json(const json& node) {
+    HeldOut held;
+    if (!node.is_object()) {
+        return held;
+    }
+    held.records = node.value("records", 0);
+    held.base    = score_from_json(node.value("base", json::object()));
+    held.tuned   = score_from_json(node.value("tuned", json::object()));
+    held.skipped = node.value("skipped", "");
+    return held;
+}
+
+json held_out_to_json(const HeldOut& held) {
+    json node = json::object();
+    node["records"] = held.records;
+    if (held.base.measured()) {
+        node["base"] = json{{"loss", held.base.loss}, {"perplexity", held.base.perplexity}};
+    }
+    if (held.tuned.measured()) {
+        node["tuned"] = json{{"loss", held.tuned.loss}, {"perplexity", held.tuned.perplexity}};
+    }
+    if (!held.skipped.empty()) {
+        node["skipped"] = held.skipped;
+    }
+    return node;
+}
+
 }  // namespace
 
 std::string_view source_id(Source source) {
@@ -66,13 +102,20 @@ Source source_from_id(std::string_view id) {
 }
 
 std::string_view method_id(Method method) {
-    return method == Method::Lora ? "lora" : "qlora";
+    switch (method) {
+        case Method::Lora:     return "lora";
+        case Method::Condense: return "condense";
+        case Method::Qlora:    break;
+    }
+    return "qlora";
 }
 
 Method method_from_id(std::string_view id) {
     // Anything else, including a recipe saved before these were the two, reads
     // as QLoRA: the one that fits on the card most people have.
-    return id == "lora" ? Method::Lora : Method::Qlora;
+    if (id == "lora")     { return Method::Lora; }
+    if (id == "condense") { return Method::Condense; }
+    return Method::Qlora;
 }
 
 std::string_view export_id(Export format) {
@@ -157,6 +200,16 @@ std::vector<std::string> missing(const Recipe& recipe) {
     if (slug_of(recipe.name).empty()) {
         gaps.emplace_back("a name");
     }
+    if (recipe.method == Method::Condense) {
+        // A model on this machine to condense, and nothing else: there is no
+        // data to a quantization.
+        std::error_code ec;
+        const std::string file = recipe.base.path.empty() ? recipe.base.id : recipe.base.path;
+        if (file.empty() || !std::filesystem::is_regular_file(file, ec)) {
+            gaps.emplace_back("a model on this machine to condense");
+        }
+        return gaps;
+    }
     if (!recipe.base.chosen()) {
         gaps.emplace_back("a base model to start from");
     }
@@ -172,9 +225,14 @@ double bits_per_weight(std::string_view quantization) {
     // came out half a gigabyte over what the tab promised would be the tab's
     // fault.
     if (quantization == "Q2_K")   { return 3.35; }
+    if (quantization == "Q3_K_S") { return 3.50; }
     if (quantization == "Q3_K_M") { return 3.91; }
+    if (quantization == "Q3_K_L") { return 4.27; }
+    if (quantization == "IQ4_XS") { return 4.25; }
     if (quantization == "Q4_0")   { return 4.55; }
+    if (quantization == "Q4_K_S") { return 4.58; }
     if (quantization == "Q4_K_M") { return 4.85; }
+    if (quantization == "Q5_K_S") { return 5.54; }
     if (quantization == "Q5_K_M") { return 5.69; }
     if (quantization == "Q6_K")   { return 6.56; }
     if (quantization == "Q8_0")   { return 8.50; }
@@ -270,6 +328,9 @@ std::string serialize(const Recipe& recipe) {
     if (!recipe.trained_path.empty()) {
         out["trained_path"] = recipe.trained_path;
     }
+    if (recipe.held_out.records > 0 || !recipe.held_out.skipped.empty()) {
+        out["held_out"] = held_out_to_json(recipe.held_out);
+    }
     out["stage"] = std::string(stage_id(recipe.stage));
     if (recipe.started_at != 0)  { out["started_at"]  = recipe.started_at; }
     if (recipe.finished_at != 0) { out["finished_at"] = recipe.finished_at; }
@@ -313,6 +374,7 @@ bool parse(std::string_view json_text, Recipe& out, std::string& error) {
     recipe.context       = parsed.value("context", 512);
     recipe.learning_rate = parsed.value("learning_rate", 1e-5F);
     recipe.trained_path  = parsed.value("trained_path", "");
+    recipe.held_out      = held_out_from_json(parsed.value("held_out", json::object()));
 
     // A recipe written before stages existed says nothing about where it is,
     // and the file it points at is the only evidence there is: something was

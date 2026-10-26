@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.9.4
-    DESCRIPTION "A local AI engine that delegates to expert models and cooks on projects over time"
+    VERSION     0.9.5
+    DESCRIPTION "An all in one local AI workshop: build software with agents, chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
 # ---------------------------------------------------------------------------
@@ -149,6 +149,8 @@ add_library(crucible_core STATIC
     src/lab/hub.cpp
     src/lab/pyenv.cpp
     src/lab/trainer.cpp
+    src/lab/condense.cpp
+    src/lab/imatrix.cpp
 
     # routing: the expert roster, the two routers, and the command list
     src/routing/expert.cpp
@@ -190,6 +192,8 @@ add_library(crucible_core STATIC
     src/engine/state.cpp
     src/engine/engine.cpp
     src/engine/engine_cook.cpp
+    src/engine/engine_chat.cpp
+    src/engine/engine_bench.cpp
     src/engine/leases.cpp
 
     # app: process-level actions that are not the window
@@ -201,6 +205,7 @@ add_library(crucible_core STATIC
     src/api/methods_roster.cpp
     src/api/methods_settings.cpp
     src/api/methods_market.cpp
+    src/api/methods_bench.cpp
     src/api/methods_install.cpp
     src/api/methods_lab.cpp
     src/api/methods_source.cpp
@@ -297,9 +302,10 @@ target_link_libraries(crucible PRIVATE crucible::core)
 # The platform's own file dialog: one function, and the implementation that
 # belongs to wherever this is being built. See src/gui/dialogs.hpp. And the
 # paths of files dropped on the window, which only GTK will say: see
-# src/gui/drops.hpp.
+# src/gui/drops.hpp. And the close that waits while work is unsaved: see
+# src/gui/closing.hpp.
 if(WIN32)
-    target_sources(crucible PRIVATE src/gui/dialogs_win.cpp src/gui/drops_none.cpp)
+    target_sources(crucible PRIVATE src/gui/dialogs_win.cpp src/gui/drops_none.cpp src/gui/closing_win.cpp)
     # IFileOpenDialog is COM: ole32 makes the object, uuid names its class.
     # dbghelp: a crash's stack by name, in crash.log. See src/gui/crash.hpp.
     target_link_libraries(crucible PRIVATE ole32 uuid shell32 dbghelp)
@@ -309,10 +315,10 @@ if(WIN32)
     configure_file(packaging/windows/icon.rc.in "${CMAKE_CURRENT_BINARY_DIR}/crucible_icon.rc" @ONLY)
     target_sources(crucible PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/crucible_icon.rc")
 elseif(APPLE)
-    target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp)
+    target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp src/gui/closing_mac.cpp)
     target_link_libraries(crucible PRIVATE "-framework AppKit")
 else()
-    target_sources(crucible PRIVATE src/gui/dialogs_gtk.cpp src/gui/drops_gtk.cpp)
+    target_sources(crucible PRIVATE src/gui/dialogs_gtk.cpp src/gui/drops_gtk.cpp src/gui/closing_gtk.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -379,6 +385,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_attachments.cpp
         tests/test_spelling.cpp
         tests/test_orchestra.cpp
+        tests/test_chat.cpp
         tests/test_build.cpp
         tests/test_source.cpp
         tests/test_kit.cpp

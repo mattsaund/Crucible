@@ -144,6 +144,36 @@ struct ModelFit {
     std::vector<std::uint64_t> units;
 };
 
+/// What a dry run says a load puts on one card, in llama.cpp's own figures:
+/// a load with nothing allocated, which places every tensor, sizes the cache
+/// and reserves the compute graph exactly as the real one will.
+struct CardNeed {
+    std::uint64_t weights = 0;  ///< the model's tensors
+    std::uint64_t cache   = 0;  ///< KV cache and recurrent state
+    std::uint64_t compute = 0;  ///< the buffers the graph computes in
+
+    std::uint64_t total() const { return weights + cache + compute; }
+};
+
+/// `fit`, corrected by a dry run of the plan it made.
+///
+/// The header gives the weights and the cache to the byte and nothing about
+/// the compute buffers, so a plan from it sets 512 MiB aside on every card
+/// for them, and the logits besides on the card with the output: 805 MiB
+/// there for flint. A dry run of flint at 8K over two devices put them at 194
+/// MiB on the card without the output and 393 on the one with it.
+/// Calibrated, `per_card` is the largest compute buffer measured on a card
+/// without the output plus `runtime`, what the backend takes beyond the
+/// buffers llama.cpp reports; `output_extra` is what the card with the
+/// output measured over that; and the units are scaled by the most the
+/// header's weights and cache missed the measured ones by on any card.
+///
+/// `counts` is how many units the measured plan put on each card and `need`
+/// what the dry run found there, both indexed by ggml device index. When the
+/// two do not describe the whole of `fit`, `fit` comes back unchanged.
+ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
+                        const std::vector<CardNeed>& need, std::uint64_t runtime);
+
 /// A finished arrangement: what to hand llama.cpp, and what it will do.
 struct GpuPlan {
     /// `tensor_split`, indexed by ggml device index. Empty means "no opinion".

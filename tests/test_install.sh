@@ -271,8 +271,8 @@ echo
 echo "  llama tag"
 # A runtime built from a different llama.cpp tag would load and then crash on
 # the first tensor. The installer used to carry a copy of the tag so it could
-# seed a llama.cpp checkout for the in-app runtime builder; it does not deal in
-# runtimes at all now, so there is one place the tag is written down and one
+# seed a llama.cpp checkout for the in-app runtime builder; it asks the program
+# for runtimes now, so there is one place the tag is written down and one
 # place it is read.
 check_not "the installer does not carry a copy of the llama tag" \
           grep -q "LLAMA_TAG" "$HERE/../install.sh"
@@ -545,11 +545,12 @@ PROGRESS_ON=0
 STEP_NUM=0; STEP_PCT=0
 
 # --------------------------------------------------------------------------
-# Runtimes
+# The application
 #
-# Crucible installs with no compute backend at all -- not even CPU. The runtimes
-# directory is created empty and the settings screen fills it, which is what
-# makes the choice of backend reversible.
+# Crucible's build carries no compute backend at all -- not even CPU. The
+# runtimes are modules it loads, which the installer asks the program to fetch
+# and Settings can add or take away, which is what makes the choice of backend
+# reversible.
 # --------------------------------------------------------------------------
 echo
 echo "  the install makes an application"
@@ -795,10 +796,9 @@ check     "a runtime build turns off Metal unless Metal is what was asked for" \
 
 # The installer used to copy the llama.cpp checkout the build had already
 # fetched into the data directory, so that building a runtime later needed no
-# network. It was still runtime work in an installer that does not install
-# runtimes, and it left several hundred megabytes on disk for a compile that
-# might never be asked for. The program fetches its own source when you ask it
-# for a runtime.
+# network. It left several hundred megabytes on disk for a compile that might
+# never be asked for. The program fetches its own source when a runtime has to
+# be compiled, and a prebuilt one needs none.
 check_not "the installer seeds no llama.cpp checkout" \
           grep -q "seed_runtime_source\|runtime-src" "$HERE/../install.sh"
 check_not "and its summary no longer reports a runtime that was never installed" \
@@ -983,6 +983,88 @@ check     "and the Windows one creates the same three" \
           grep -q 'New-Item .*-Path \$ConfigDir, \$DataDir, \$ModelsDir' "$ROOT/install.ps1"
 
 echo
+echo "  the dry run and the summary say what the install does"
+
+# --check once ended every run with "No compute runtime is installed", right
+# under the line saying the runtimes would be installed; and it, like the
+# closing summary, named the default models folder whatever the config said.
+# Run here for real, against a config of its own, in a child that is not in
+# library mode.
+DRY="$TMP/dry"
+mkdir -p "$DRY/config/crucible"
+dry_run() {
+    CRUCIBLE_INSTALL_LIB= XDG_CONFIG_HOME="$DRY/config" XDG_DATA_HOME="$DRY/data" \
+        XDG_CACHE_HOME="$DRY/cache" NO_COLOR=1 \
+        bash "$ROOT/install.sh" --check --no-deps --prefix "$DRY/prefix" "$@" 2>&1
+}
+DRY_OUT="$(dry_run)"
+check     "the dry run says the runtimes would be installed" \
+          grep -q "runtimes   : the compute backends this machine can use" <<< "$DRY_OUT"
+check_not "and never, under it, that none is" \
+          grep -qi "no compute runtime" <<< "$DRY_OUT"
+check     "it names Crucible's own Python, which every install fetches" \
+          grep -q "python     : Crucible's own" <<< "$DRY_OUT"
+check     "and says --no-runtimes skips them" \
+          grep -q "runtimes   : skipped (--no-runtimes)" <<< "$(dry_run --no-runtimes)"
+check     "with no config, the models folder is the default" \
+          grep -qF "models     : $DRY/data/crucible/models" <<< "$DRY_OUT"
+printf '{\n  "models_dir": "/srv/llm/gguf",\n  "router": {}\n}\n' > "$DRY/config/crucible/config.json"
+check     "with one, it is the folder the config names" \
+          grep -qF "models     : /srv/llm/gguf" <<< "$(dry_run)"
+check     "and so is the one the closing summary names" \
+          grep -q "models        %s.*configured_models_dir" "$ROOT/install.sh"
+check_not "which no longer prints the default in its place" \
+          grep -q "models        %s.*MODELS_DIR" "$ROOT/install.sh"
+
+# Read the way the program reads it: Config::resolved_models_dir.
+models_from() {   # the config's text -> the folder
+    ( CONFIG_DIR="$DRY/one"; MODELS_DIR="/default/models"; HOME="/home/someone"
+      mkdir -p "$CONFIG_DIR"; printf '%s' "$1" > "$CONFIG_DIR/config.json"
+      configured_models_dir )
+}
+check_eq  "no config at all is the default" \
+          "$( CONFIG_DIR="$DRY/none"; MODELS_DIR="/default/models"; configured_models_dir )" "/default/models"
+check_eq  "nor is a config without models_dir" "$(models_from '{"router": {}}')" "/default/models"
+check_eq  "nor an empty one" "$(models_from '{"models_dir": ""}')" "/default/models"
+check_eq  "~ is the home folder" "$(models_from '{"models_dir": "~/llm"}')" "/home/someone/llm"
+check_eq  "a config written on one line is read too" \
+          "$(models_from '{"models_dir":"/a/b","router":{}}')" "/a/b"
+check_eq  "escapes are undone" "$(models_from '{"models_dir": "/a \"q\" b\\c"}')" '/a "q" b\c'
+check_eq  "the note that names models_dir is not taken for it" \
+          "$(models_from '{"$schema_note": "Models live in \"models_dir\"; each", "models_dir": "/real"}')" "/real"
+
+# The usage text says what the install does, and its examples run.
+USAGE="$(CRUCIBLE_INSTALL_LIB= bash "$ROOT/install.sh" --help 2>&1)"
+check_not "the usage no longer says runtimes are none of an installer's business" \
+          grep -qi "installer's business" <<< "$USAGE"
+check     "it says the install fetches them" \
+          grep -q "the compute runtimes this machine can use" <<< "$USAGE"
+# git keeps install.sh 100644, so ./install.sh is "permission denied" in a clone.
+check_not "nothing says to run ./install.sh, which git keeps unexecutable" \
+          grep -rqF -- "./install.sh" "$ROOT/install.sh" "$ROOT/install.ps1" "$ROOT/README.md" "$ROOT/docs"
+check     "the examples run it with bash" \
+          grep -qF "bash install.sh --prefix" <<< "$USAGE"
+
+# install.ps1 cannot be run here, so it is read: its -Check names the same
+# parts, and both of its lists read the models folder from the config. And a
+# script file is refused by Windows' default execution policy, so it does not
+# say to run .\install.ps1 bare.
+check     "install.ps1's dry run names Python" \
+          grep -q 'Write-Note "python     :' "$ROOT/install.ps1"
+check     "and the runtimes, or that -NoRuntimes skips them" \
+          grep -q 'Write-Note "runtimes   :.*skipped (-NoRuntimes)' "$ROOT/install.ps1"
+check     "and the fine-tuner" \
+          grep -q 'Write-Note "fine-tuner :' "$ROOT/install.ps1"
+check     "its dry run and its summary name the models folder from the config" \
+          test "$(grep -c '\$(Get-ModelsDir)' "$ROOT/install.ps1")" -eq 2
+check_not "and neither names the default in its place" \
+          grep -qE 'models     : \$ModelsDir|models        \$ModelsDir' "$ROOT/install.ps1"
+check     "its summary says whether Python is ready, as install.sh's does" \
+          grep -q 'python        ready' "$ROOT/install.ps1"
+check     "it says how to run it as a file" \
+          grep -qF -- '-ExecutionPolicy Bypass -File .\install.ps1' "$ROOT/install.ps1"
+
+echo
 echo "  one progress bar, and nothing else"
 
 # The bar used to have five step headings scrolling above it and a running
@@ -1039,14 +1121,16 @@ echo
 echo "  the tagline"
 
 # One sentence, in four places, and they have to agree.
-TAGLINE="a local LLM engine that delegates."
+TAGLINE="An all in one local AI workshop."
 for _where in install.sh install.ps1 src/app/cli.cpp README.md; do
     check "$_where carries the tagline" \
           grep -qF -- "$TAGLINE" "$ROOT/$_where"
 done
-check_not "and nowhere still says the old one" \
-          grep -rqF -- "a local forge" "$ROOT/install.sh" "$ROOT/install.ps1" \
-               "$ROOT/src" "$ROOT/README.md"
+for _old in "a local forge" "a local LLM engine that delegates" "an AI workshop on your machine"; do
+    check_not "and nowhere still says \"$_old\"" \
+              grep -rqF -- "$_old" "$ROOT/install.sh" "$ROOT/install.ps1" \
+                   "$ROOT/src" "$ROOT/README.md"
+done
 
 echo
 echo "  one mark, and it is a flame"
@@ -1266,8 +1350,14 @@ echo "  a runtime can arrive already built"
 RT="$ROOT/.github/workflows/runtimes.yml"
 check     "there is a workflow that builds them" \
           test -f "$RT"
-check     "a tag publishes them, like the installers" \
-          grep -q 'tags: \["v\*"\]' "$RT"
+# A tag builds them inside the installers' run, so the release can wait for
+# them. Run on the tag by themselves as well, every backend would build twice.
+check     "a tag builds them, in the same run as the installers" \
+          grep -q 'uses: ./.github/workflows/runtimes.yml' "$REL"
+check     "which is how that workflow is run on a tag" \
+          grep -q '^  workflow_call:' "$RT"
+check_not "and not on the tag by itself as well" \
+          grep -q 'tags:' "$RT"
 # The name is the safety mechanism: backend, platform and llama.cpp tag, so a
 # module built against another llama.cpp cannot be asked for by accident.
 check     "the workflow names assets by backend, platform and tag" \
@@ -1292,8 +1382,28 @@ check     "which the CUDA asset's name says, read from that header" \
 # One backend failing to build must not take the others with it.
 check     "a failed backend does not block the rest" \
           grep -q 'fail-fast: false' "$RT"
+# The release went public with the installers half an hour before the
+# runtimes were on it, and an install whose llama.cpp tag had moved found
+# nothing to download in between. Now the runtimes go on a draft first, and
+# the last job adds the installers and publishes it.
 check     "and the release takes whatever built" \
-          grep -q "if: always() && startsWith(github.ref" "$RT"
+          grep -q "if: startsWith(github.ref, 'refs/tags/v') && !cancelled()" "$REL"
+check     "on a draft, before anything is published" \
+          awk '/^  runtimes-attach:/ { on = 1 } /^  release:/ { on = 0 } on && /draft: true/ { found = 1 }
+               END { exit !found }' "$REL"
+check     "the release waits for the installers and the runtimes both" \
+          grep -q 'needs: \[macos, windows, linux, runtimes-attach\]' "$REL"
+check     "and is published only once the runtimes are on it" \
+          grep -q "needs.runtimes-attach.result == 'success'" "$REL"
+# By hand, the runtimes workflow runs on its own and attaches to a tag's
+# release itself. Called, the github context is the caller's, so its name is
+# what tells the two apart.
+check     "run by hand on a tag, the runtimes still attach themselves" \
+          grep -q "github.workflow == 'runtimes'" "$RT"
+check     "which is that workflow's name" \
+          grep -q '^name: runtimes$' "$RT"
+check     "and not the name of the run that calls it" \
+          grep -q '^name: installers$' "$REL"
 
 # The modules have to depend on the library names Crucible ships. Its own
 # libraries are unversioned -- exFAT cannot hold the symlinks a versioned

@@ -250,6 +250,11 @@ ToolKind attempted_tool_call(std::string_view answer, std::string_view reasoning
 std::optional<std::filesystem::path> resolve_in_root(const std::filesystem::path& root,
                                                      std::string_view relative);
 
+/// Whether `target` could be a file's path rather than a sentence: what a
+/// WRITE or an EDIT is refused for failing. Asked before an edit is put to the
+/// person too, so nobody is asked to approve a file named after a sentence.
+bool plausible_path(std::string_view target);
+
 /// Keep the head and the tail of `text`, with a line in the middle saying what
 /// was dropped. Returns `text` unchanged when it already fits.
 std::string clamp_output(std::string_view text, std::size_t limit);

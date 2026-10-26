@@ -44,7 +44,7 @@ namespace crucible {
 class Setup {
 public:
     struct Item {
-        enum class State { Waiting, Working, Done, Failed };
+        enum class State { Waiting, Working, Done, Failed, Stopped };
 
         std::string   id;              ///< "python", "runtime-cuda", "trainer"
         std::string   label;           ///< "Python 3.12.15", "CUDA runtime"
@@ -80,6 +80,12 @@ public:
     /// builder or the training installer is theirs to stop.
     void stop();
 
+    /// Stop from the window, without waiting for it: the item being fetched
+    /// ends where it is and says so, and a runtime build or training install
+    /// this started is canceled with it. A download keeps what it had, and the
+    /// next start() carries on from there. See lab/python.hpp.
+    void cancel();
+
     bool running() const;
     std::vector<Item> items() const;
 
@@ -100,6 +106,7 @@ private:
     std::vector<BackendKind> kinds_;   ///< parallel to the runtime items, in order
     bool                   running_ = false;
     std::atomic<bool>      stop_{false};
+    std::atomic<bool>      canceled_{false};   ///< the stop came from the window: see cancel()
     std::thread            worker_;
 };
 

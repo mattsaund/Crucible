@@ -81,6 +81,11 @@ Reply submit(const json& params, Host& host) {
     if (prompt.empty() && attachments.empty()) {
         return bad("submit needs a prompt");
     }
+    // Refused while a benchmark runs, as a build is (Engine::start_cook), and
+    // before anything else here is done for a turn that is not going to be.
+    if (host.engine()->benching()) {
+        return bad("benchmark running");
+    }
     // No project open is no reason not to answer: the conversation goes in
     // the Scratchpad, which is somewhere for it to be kept and for anything
     // the expert makes to land.
@@ -246,6 +251,11 @@ Reply cook_start(const json& params, Host& host) {
     const auto goal = params.value("goal", std::string{});
     if (goal.empty()) {
         return bad("cook.start needs a goal");
+    }
+    // Said here as well as by start_cook, before a Scratchpad folder is made
+    // for a build that is not going to start.
+    if (host.engine()->benching()) {
+        return bad("benchmark running");
     }
     // A cook reads and writes files, so it needs somewhere it is allowed to:
     // the project, or the Scratchpad when none is open.

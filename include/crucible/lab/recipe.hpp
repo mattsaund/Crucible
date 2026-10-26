@@ -58,7 +58,11 @@ struct Asset {
 /// What differs is how the frozen base is loaded. LoRA keeps it in sixteen
 /// bits, which is faster and slightly better where it fits; QLoRA quantizes it
 /// to four, which is how a 13B goes where a 7B would not.
-enum class Method { Lora, Qlora };
+///
+/// Condense trains nothing: it quantizes a GGUF on this machine again, to
+/// fewer bits, so a model that does not fit on the cards can be made to. It
+/// needs no data and no training environment. See condense.hpp.
+enum class Method { Lora, Qlora, Condense };
 
 std::string_view method_id(Method method);
 Method           method_from_id(std::string_view id);
@@ -97,6 +101,33 @@ const char* stage_text(Stage stage);
 /// measured in.
 std::int64_t now_seconds();
 
+/// What one model makes of the answers held out of training.
+struct Score {
+    double loss       = 0.0;   ///< the mean over the answer tokens, in nats
+    double perplexity = 0.0;   ///< e to the loss: roughly how many tokens it is choosing between
+
+    bool measured() const { return loss > 0.0; }
+};
+
+/// How a fine-tune does on part of its own data that it never trained on.
+///
+/// A test chat says whether a model sounds right. This says whether it got
+/// better at the thing it was trained for, as a number, against the base it
+/// started from: the same answers scored before training and after. The
+/// trainer holds out about a tenth of the records, the same ones every run,
+/// and leaves them out of training; see finetune.py.
+struct HeldOut {
+    int   records = 0;   ///< how many were held out
+    Score base;          ///< the base model, before training
+    Score tuned;         ///< the fine-tune, after
+
+    /// Why nothing was held out, when that is what happened: "too little
+    /// data". Empty otherwise.
+    std::string skipped;
+
+    bool measured() const { return base.measured() && tuned.measured(); }
+};
+
 /// A model being built.
 struct Recipe {
     /// What the expert will be called, as typed. `id` is its slug, and is what
@@ -130,6 +161,10 @@ struct Recipe {
     /// Set once training has produced something, so the tab can offer to test
     /// and export it rather than train it again.
     std::string trained_path;
+
+    /// The score of what trained_path holds against its base, from the run
+    /// that made it. Empty for a condensed copy, which trains nothing.
+    HeldOut held_out;
 
     Stage stage = Stage::Draft;
 

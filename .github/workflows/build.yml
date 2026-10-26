@@ -68,6 +68,11 @@ jobs:
       - name: Orchestrator tests
         run: python -m unittest discover -s scripts/orchestrator/tests -v
 
+      # The fine-tuner's, for the parts that need no torch: the held-out
+      # records, where the answers are, and what a child's output becomes.
+      - name: Trainer tests
+        run: python -m unittest discover -s scripts/trainer/tests -v
+
       # install.sh's own logic, under the bash each system really has. On a Mac
       # that is 3.2 at /bin/bash rather than whatever Homebrew put first on
       # PATH, and 3.2 is what people run the installer with.

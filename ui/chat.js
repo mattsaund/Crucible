@@ -140,8 +140,17 @@ function turnView(turn, index, busy) {
 /// The signature also goes on the element as data-sig, which is what lets the
 /// patcher skip the subtree without looking inside.
 const turnCache = new Map();
-function turnsView(turns, from) {
+
+/// Turns already on screen, by where they are drawn: "key|signature" of
+/// each, read off the page after every draw. A turn here is sent to the
+/// patcher as an empty stub with its signature, which the patcher keeps as
+/// it is (see morph), instead of its whole markup: a long conversation was
+/// otherwise parsed again in full on every token of the reply at its end.
+const turnsShown = { transcript: new Set(), 'test-talk': new Set() };
+
+function turnsView(turns, from, where) {
   const busy = !!state.snapshot.busy;
+  const shown = turnsShown[where || 'transcript'] || new Set();
   const out = [];
   for (let index = from; index < turns.length; index += 1) {
     const turn = turns[index];
@@ -151,9 +160,16 @@ function turnsView(turns, from) {
         turnView(turn, index, busy)}</div>`);
       continue;
     }
-    const signature = `${thoughtKey(index)}|${busy}|${thoughtsOpen.has(thoughtKey(index))}|${(turn.attachments || []).length}|${turn.prompt.length}|${
+    // A revision names the turn word for word; one made by hand has none,
+    // and is told apart by what is in it.
+    const content = turn.rev ? `r${turn.rev}` : `${(turn.attachments || []).length}|${turn.prompt.length}|${
       turn.reply.length}|${(turn.reasoning || '').length}|${(turn.actions || []).length}|${
       turn.failed}|${turn.canceled}|${turn.output_tokens}`;
+    const signature = `${thoughtKey(index)}|${busy}|${thoughtsOpen.has(thoughtKey(index))}|${content}`;
+    if (shown.has(`t${index}|${signature}`)) {
+      out.push(`<div class="turn" data-key="t${index}" data-sig="${escape(signature)}" data-stub></div>`);
+      continue;
+    }
     let html = turnCache.get(signature);
     if (html === undefined) {
       html = turnView(turn, index, busy);
@@ -165,19 +181,48 @@ function turnsView(turns, from) {
   return out.join('');
 }
 
+/// After a draw: which turns each transcript now shows. A stub that ended up
+/// on the page, because what it stood for was not there after all, is drawn
+/// again whole rather than left empty.
+afterDraw.push(() => {
+  for (const where of Object.keys(turnsShown)) {
+    const box = document.getElementById(where);
+    const shown = turnsShown[where];
+    shown.clear();
+    if (!box) continue;
+    const stubs = box.querySelectorAll('.turn[data-stub]');
+    if (stubs.length) {
+      // Taken out first: the patcher keeps an element whose signature
+      // matches, and would keep the empty one.
+      for (const stub of stubs) stub.remove();
+      render();
+      continue;
+    }
+    for (const turn of box.querySelectorAll('.turn[data-sig]')) {
+      shown.add(`${turn.getAttribute('data-key')}|${turn.getAttribute('data-sig')}`);
+    }
+  }
+});
+
 // --- nothing to show yet -----------------------------------------------------------
 
+/// Somewhere to start: about the project, when one is open. A chat with no
+/// project, or only its scratch folder with nothing in it yet, has no files
+/// to ask about, and is offered things that need none.
 const OPENERS = ['What is in this project?', 'Explain a file to me', 'Find and fix a failing test'];
+const SCRATCH_OPENERS = ['Explain something to me', 'Write a small script', 'Summarize a document'];
 
 /// What Crucible is fetching for itself, while it is: its Python, the
 /// runtimes, the training environment. Shown above whatever the empty view
 /// says, not instead of it -- a chat works as soon as Python and a runtime are
-/// in, and the training environment can take a quarter of an hour.
+/// in, and the training environment can take a quarter of an hour. It can be
+/// stopped, and a download stopped halfway carries on when it is resumed.
 function setupView() {
   const setup = state.snapshot.setup;
   if (!setup || !setup.items) return '';
   const failed = setup.items.filter((i) => i.state === 'failed');
-  if (!setup.running && !failed.length) return '';
+  const stopped = setup.items.some((i) => i.state === 'stopped');
+  if (!setup.running && !failed.length && !stopped) return '';
   const rows = setup.items.map((item) => {
     const measured = typeof item.progress === 'number' && item.state === 'working';
     const size = item.download && item.state !== 'done' ? ` (${bytes(item.download)})` : '';
@@ -190,15 +235,18 @@ function setupView() {
         ${measured ? `<div class="bar"><span style="width:${Math.round(item.progress * 100)}%"></span></div>` : ''}
       </div>`;
   }).join('');
+  const head = setup.running ? 'Setting up' : failed.length ? 'Setup failed' : 'Stopped';
+  const button = setup.running ? '<button class="action" data-act="setup-stop">Stop</button>'
+               : `<button class="action" data-act="setup-retry">${failed.length ? 'Try again' : 'Resume'}</button>`;
   return `<div class="setup">
-      <div class="setup-head">${setup.running ? 'Setting up' : 'Setup failed'}</div>
+      <div class="setup-head">${head}</div>
       ${rows}
-      ${!setup.running && failed.length
-        ? '<button class="action" data-act="setup-retry">Try again</button>' : ''}
+      ${button}
     </div>`;
 }
 
 actions['setup-retry'] = () => guard(() => call('setup.retry'));
+actions['setup-stop'] = () => guard(() => call('setup.stop'));
 
 /// What stands between this window and a first answer, or -- when nothing
 /// does -- somewhere to start.
@@ -230,8 +278,10 @@ function readiness(ready) {
   if (fix) return getting + `<div class="empty"><div class="empty-label">${label}</div>${fix}</div>`;
   // Nothing in the way. `ready` is what the view says then: Chat offers
   // somewhere to start, Cook says what a cook is.
+  const project = s.project || {};
+  const openers = project.open && !project.scratchpad ? OPENERS : SCRATCH_OPENERS;
   return getting + (ready || `<div class="empty"><div class="empty-label quiet">Ask anything</div>
-      <div class="chips">${OPENERS.map((text) =>
+      <div class="chips">${openers.map((text) =>
         `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`);
 }
 
@@ -417,6 +467,7 @@ function composerView(options) {
         <div class="box${disabled ? ' shut' : ''}">
           ${disabled ? '' : attachTiles(mode)}
           <textarea id="prompt" data-draft data-sized data-key="composer-key" data-input="composer-grow"
+                    data-paste="composer-paste"
                     rows="${state.composerRows}" placeholder="${escape(hint)}" autocomplete="off"
                     spellcheck="false" ${disabled ? 'disabled' : ''}>${escape(state.drafts[mode] || '')}</textarea>
           <div class="box-bar">
@@ -659,7 +710,8 @@ afterDraw.push(() => {
 let focused = null;
 afterDraw.push(() => {
   const wanted = document.querySelector('#layer [data-focus]')
-      || (state.modal ? null : document.querySelector('#prompt:not([disabled])'));
+      || (state.modal ? null : document.querySelector('textarea.code-editor')
+                               || document.querySelector('#prompt:not([disabled])'));
   if (wanted && wanted !== focused && !document.querySelector('#layer :focus')) {
     // Not out from under somebody typing elsewhere on the page.
     const active = document.activeElement;

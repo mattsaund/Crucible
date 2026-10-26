@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstdio>
 #include <map>
 #include <regex>
 
@@ -191,6 +192,38 @@ std::string without_quant(std::string_view name) {
         base.pop_back();
     }
     return base;
+}
+
+/// Every file a repository's page lists, with its size and, for one kept in
+/// LFS, its digest.
+std::vector<File> files_of(const json& page) {
+    std::vector<File> files;
+    const auto siblings = page.find("siblings");
+    if (siblings == page.end() || !siblings->is_array()) {
+        return files;
+    }
+    for (const json& one : *siblings) {
+        if (!one.is_object()) {
+            continue;
+        }
+        File file;
+        file.path = text(one, "rfilename");
+        file.bytes = number(one, "size");
+        // A file kept in LFS has its real size in the LFS record too.
+        if (const auto lfs = one.find("lfs"); lfs != one.end() && lfs->is_object()) {
+            if (const std::uint64_t real = number(*lfs, "size"); real > 0) {
+                file.bytes = real;
+            }
+            const std::string digest = lower(text(*lfs, "sha256"));
+            if (digest.size() == 64 && digest.find_first_not_of("0123456789abcdef") == std::string::npos) {
+                file.sha256 = digest;
+            }
+        }
+        if (!file.path.empty()) {
+            files.push_back(std::move(file));
+        }
+    }
+    return files;
 }
 
 /// A path inside a repository with nothing in it that leaves a folder.
@@ -513,30 +546,7 @@ Detail parse_model(std::string_view json_text, Format format) {
             }
         }
     }
-    std::vector<File> files;
-    if (const auto siblings = parsed.find("siblings"); siblings != parsed.end() && siblings->is_array()) {
-        for (const json& one : *siblings) {
-            if (!one.is_object()) {
-                continue;
-            }
-            File file;
-            file.path = text(one, "rfilename");
-            file.bytes = number(one, "size");
-            // A file kept in LFS has its real size in the LFS record too.
-            if (const auto lfs = one.find("lfs"); lfs != one.end() && lfs->is_object()) {
-                if (const std::uint64_t real = number(*lfs, "size"); real > 0) {
-                    file.bytes = real;
-                }
-                const std::string digest = lower(text(*lfs, "sha256"));
-                if (digest.size() == 64 && digest.find_first_not_of("0123456789abcdef") == std::string::npos) {
-                    file.sha256 = digest;
-                }
-            }
-            if (!file.path.empty()) {
-                files.push_back(std::move(file));
-            }
-        }
-    }
+    const std::vector<File> files = files_of(parsed);
     if (format == Format::Gguf) {
         detail.options = gguf_options(detail.listing.id, files);
         // A GGUF repository reads pictures when it ships a projector, whatever
@@ -724,6 +734,150 @@ std::string file_url(std::string_view repo, std::string_view path) {
         start = slash + 1;
     }
     return url;
+}
+
+std::string repository_url(std::string_view id) {
+    // Each half of the name encoded: a hint is the names of two folders on
+    // this machine, which can hold anything.
+    const std::size_t slash = id.find('/');
+    const std::string path  = slash == std::string_view::npos
+                            ? encode(id) : encode(id.substr(0, slash)) + "/" + encode(id.substr(slash + 1));
+    return std::string(kSite) + "api/models/" + path
+         + "?blobs=true&expand%5B%5D=siblings&expand%5B%5D=private&expand%5B%5D=disabled";
+}
+
+Repository parse_repository(std::string_view json_text) {
+    Repository repository;
+    const json parsed = json::parse(json_text, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        return repository;
+    }
+    const auto flagged = [&parsed](const char* key) {
+        const auto found = parsed.find(key);
+        return found != parsed.end() && found->is_boolean() && found->get<bool>();
+    };
+    repository.id    = text(parsed, "id");
+    repository.open  = !repository.id.empty() && !flagged("private") && !flagged("disabled");
+    repository.files = files_of(parsed);
+    return repository;
+}
+
+std::string matching_file(const std::vector<File>& files, std::string_view sha256, std::uint64_t bytes,
+                          std::string_view prefer) {
+    static const std::regex split(R"(^(.*)-(\d{5})-of-(\d{5})\.gguf$)");
+    std::string chosen;
+    for (const File& file : files) {
+        const std::string leaf = std::filesystem::path(file.path).filename().string();
+        if (file.sha256.empty() || file.sha256 != sha256 || leaf.size() < 5
+            || leaf.compare(leaf.size() - 5, 5, ".gguf") != 0) {
+            continue;
+        }
+        std::uint64_t size = file.bytes;
+        std::smatch   match;
+        if (std::regex_match(leaf, match, split)) {
+            // Only a first part is hashed, and the size is the whole set's.
+            if (match[2].str() != "00001") {
+                continue;
+            }
+            const std::string folder = file.path.substr(0, file.path.size() - leaf.size());
+            const int         count  = std::stoi(match[3].str());
+            bool              whole  = count > 0;
+            size = 0;
+            for (int n = 1; n <= count && whole; ++n) {
+                char part[32];
+                std::snprintf(part, sizeof(part), "-%05d-of-%05d.gguf", n, count);
+                const std::string path = folder + match[1].str() + part;
+                const auto at = std::find_if(files.begin(), files.end(), [&path](const File& f) { return f.path == path; });
+                whole = at != files.end();
+                size += whole ? at->bytes : 0;
+            }
+            if (!whole) {
+                continue;
+            }
+        }
+        if (size == bytes && (chosen.empty() || leaf == prefer)) {
+            chosen = leaf;
+        }
+    }
+    return chosen;
+}
+
+std::string search_name(std::string_view file) {
+    static const std::regex part(R"(-\d{5}-of-\d{5}$)");
+    std::string stem = std::filesystem::path(std::string(file)).filename().string();
+    if (stem.size() > 5 && lower(stem.substr(stem.size() - 5)) == ".gguf") {
+        stem.resize(stem.size() - 5);
+    }
+    stem = std::regex_replace(stem, part, "");
+    const std::string base = without_quant(stem);
+    return base.empty() ? stem : base;
+}
+
+bool find_public(std::string_view hint, std::string_view file, std::string_view sha256, std::uint64_t bytes,
+                 Found& out, std::string& error) {
+    // How many of a search's repositories are looked in, the most downloaded
+    // first: the copies people fetch are those, and each is a request.
+    constexpr int kLooked = 5;
+    out = Found{};
+    std::vector<std::string> asked;
+    // One repository looked in. False only when the hub did not answer: one
+    // that is not there, or not open, is simply not where the file is.
+    const auto look = [&](std::string_view id) {
+        const std::string key = lower(id);
+        if (std::find(asked.begin(), asked.end(), key) != asked.end()) {
+            return true;
+        }
+        asked.push_back(key);
+        util::http::Request request;
+        request.url             = repository_url(id);
+        request.headers         = {{"Accept", "application/json"}};
+        request.timeout_seconds = 20;
+        const util::http::Response response = util::http::send(request);
+        if (!response.error.empty() || response.status == 0 || response.status == 408 || response.status == 429
+            || response.status >= 500) {
+            error = "Hugging Face could not be reached (" + response.reason() + ")";
+            return false;
+        }
+        if (!response.ok()) {
+            return true;
+        }
+        const Repository repository = parse_repository(response.body);
+        if (repository.open) {
+            if (std::string name = matching_file(repository.files, sha256, bytes, file); !name.empty()) {
+                out = Found{repository.id, std::move(name)};
+            }
+        }
+        return true;
+    };
+    if (!hint.empty()) {
+        if (!look(hint)) {
+            return false;
+        }
+        if (!out.repo.empty()) {
+            return true;
+        }
+    }
+    const std::string query = search_name(file);
+    if (query.empty()) {
+        return true;
+    }
+    Page page;
+    if (!search(search_url(query, Format::Gguf, Sort::Downloads, 10), page, error)) {
+        return false;
+    }
+    int looked = 0;
+    for (const Listing& listing : page.listings) {
+        if (looked++ == kLooked) {
+            break;
+        }
+        if (!look(listing.id)) {
+            return false;
+        }
+        if (!out.repo.empty()) {
+            return true;
+        }
+    }
+    return true;
 }
 
 }  // namespace crucible::market

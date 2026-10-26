@@ -51,6 +51,10 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
 
     state_.configure_seats(config_);
 
+    // What a condense going when Crucible last closed left half written in
+    // the models folder: gigabytes, and nothing else will remove them.
+    lab::remove_unfinished();
+
     // Poked whenever the engine's state moves. Nothing is listening until
     // run() opens a window and says what a poke should do.
     engine_ = std::make_unique<Engine>(config_, state_, [this] { wake(); });
@@ -116,6 +120,7 @@ std::string App::apply_config(Config edited) {
 void App::housekeeping() {
     persist_session();
     name_sessions();
+    name_old_session();
     absorb_starter_model();
     absorb_made_seats();
     absorb_written_examples();
@@ -138,17 +143,15 @@ void App::absorb_finished_run() {
     run_absorbed_ = run.recipe_id;
 
     for (lab::Recipe recipe : lab::saved_recipes()) {
-        if (recipe.id != run.recipe_id) {
+        if (recipe.id != run.recipe_id || !lab::record_result(run, recipe)) {
             continue;
         }
-        recipe.trained_path = run.produced.string();
-        recipe.stage        = lab::Stage::Testing;
+        const char* did = recipe.method == lab::Method::Condense ? " finished condensing" : " finished training";
         std::string error;
         if (lab::save(recipe, error)) {
-            say(recipe.name + " finished training and is ready to test");
+            say(recipe.name + did + " and is ready to test");
         } else {
-            say(recipe.name + " finished training, but the recipe could not be "
-                "updated: " + error);
+            say(recipe.name + did + ", but the recipe could not be updated: " + error);
         }
     }
 }
@@ -164,6 +167,13 @@ void App::absorb_finished_build() {
         return;
     }
     build_absorbed_ = true;
+
+    // Setup installs runtimes through the same builder, and moves the models
+    // onto the new hardware itself once they are in: one reload, not one per
+    // runtime and another after.
+    if (setup_.running()) {
+        return;
+    }
 
     // A model picks its devices when it loads and keeps them. Dropping what
     // is loaded is what puts the next prompt on the new hardware.
@@ -350,15 +360,51 @@ void App::close_project() {
     state_.set_session_usage({});
     state_.set_pending_edit(nullptr);
     persisted_turns_ = 0;
-    if (wake_) {
-        wake_();
-    }
+    wake();
 }
+
+namespace {
+
+/// What a conversation is named from: its first exchange that happened --
+/// not one still arriving, stopped, or whose "reply" is the error that
+/// stopped it. Empty while it has had none.
+template <typename Turns>
+std::string naming_excerpt(const Turns& turns) {
+    const auto clip = [](const std::string& text, std::size_t most) {
+        return text.size() > most ? text.substr(0, most) + "..." : text;
+    };
+    for (const Turn& turn : turns) {
+        if (turn.streaming || turn.failed || turn.canceled || turn.reply.empty()) {
+            continue;
+        }
+        return "Question: " + clip(turn.prompt, 500) + "\nAnswer: " + clip(turn.reply, 400);
+    }
+    return {};
+}
+
+/// Whether the delegator is in memory now: when a name costs no load.
+bool delegator_in_memory(const AppState& state) {
+    const std::vector<LocalModel> loaded = state.snapshot().local_models;
+    return std::any_of(loaded.begin(), loaded.end(), [](const LocalModel& model) { return model.delegator; });
+}
+
+}  // namespace
 
 void App::name_sessions() {
     // Names that have come back, filed where their conversation is: on the
     // one being recorded when it is still that one, in its file otherwise.
     for (Engine::SessionName& named : engine_->take_session_names()) {
+        {
+            // An old one answered, named or not: the next may be asked.
+            const std::lock_guard<std::mutex> lock(old_naming_.mutex);
+            if (!old_naming_.asked.empty() && old_naming_.asked == named.session) {
+                old_naming_.asked.clear();
+                old_naming_.at = std::chrono::steady_clock::now();
+            }
+        }
+        if (named.name.empty()) {
+            continue;   // none could be written; its first prompt stands in
+        }
         if (store_ && store_->session_id() == named.session
             && Project::at(named.root).root == store_->project().root) {
             store_->set_name(named.name);
@@ -367,7 +413,9 @@ void App::name_sessions() {
             store_->save(snapshot.turns, snapshot.session_usage, error);
         } else {
             std::string error;
-            SessionStore(Project::at(named.root)).rename(named.session, named.name, error);
+            if (SessionStore(Project::at(named.root)).rename(named.session, named.name, error)) {
+                ++names_filed_;
+            }
         }
     }
 
@@ -380,21 +428,92 @@ void App::name_sessions() {
     if (std::find(naming_asked_.begin(), naming_asked_.end(), key) != naming_asked_.end()) {
         return;
     }
-    const Snapshot snapshot = state_.snapshot();
-    for (const Turn& turn : snapshot.turns) {
-        // An exchange that happened: not one still arriving, stopped, or
-        // whose "reply" is the error that stopped it.
-        if (turn.streaming || turn.failed || turn.canceled || turn.reply.empty()) {
-            continue;
-        }
-        naming_asked_.push_back(key);
-        const auto clip = [](const std::string& text, std::size_t most) {
-            return text.size() > most ? text.substr(0, most) + "..." : text;
-        };
-        engine_->name_session(store_->session_id(), store_->project().root,
-                              "Question: " + clip(turn.prompt, 500) + "\nAnswer: " + clip(turn.reply, 400));
+    // One reopened from before names existed is named as the old ones are,
+    // in passing: opening it asked for no model, and its first words are
+    // what it is listed by already.
+    const bool reopened = key == reopened_;
+    if (reopened && (engine_->is_busy() || !delegator_in_memory(state_))) {
         return;
     }
+    const std::string excerpt = naming_excerpt(state_.snapshot().turns);
+    if (excerpt.empty()) {
+        return;
+    }
+    naming_asked_.push_back(key);
+    engine_->name_session(store_->session_id(), store_->project().root, excerpt, reopened);
+}
+
+void App::name_old_session() {
+    // A breath between one and the next, so a prompt seldom waits behind
+    // one; and an answer that never comes -- asked as the orchestrator went
+    // away -- is not waited on for good.
+    constexpr auto kPace   = std::chrono::seconds(15);
+    constexpr auto kGiveUp = std::chrono::minutes(2);
+    const auto now = std::chrono::steady_clock::now();
+    {
+        const std::lock_guard<std::mutex> lock(old_naming_.mutex);
+        if (old_naming_.none_left || old_naming_.looking
+            || now - old_naming_.at < (old_naming_.asked.empty() ? kPace : kGiveUp)) {
+            return;
+        }
+    }
+    // Between prompts, with the delegator in memory already.
+    if (engine_->is_busy() || engine_->cooking() || !delegator_in_memory(state_)) {
+        return;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(old_naming_.mutex);
+        old_naming_.looking = true;
+        old_naming_.asked.clear();
+        old_naming_.at = now;
+    }
+    // The one on screen is name_sessions' to name.
+    const std::string here =
+        store_ ? store_->project().root.string() + '\n' + store_->session_id() : std::string();
+    // On a worker: the list is read from every project's history.
+    workers_.post([this, here] {
+        bool asked = false;
+        // The 24 the right-hand panel lists: the first with no name, an
+        // exchange to name it from, and no answer yet this run.
+        for (const SessionSummary& chat : recent_chats(24)) {
+            const Project project = Project::at(chat.project);
+            const std::string key = project.root.string() + '\n' + chat.id;
+            if (!chat.name.empty() || key == here) {
+                continue;
+            }
+            {
+                const std::lock_guard<std::mutex> lock(old_naming_.mutex);
+                if (std::find(old_naming_.tried.begin(), old_naming_.tried.end(), key)
+                    != old_naming_.tried.end()) {
+                    continue;
+                }
+                old_naming_.tried.push_back(key);
+            }
+            std::vector<Turn> turns;
+            TokenUsage        usage;
+            std::string       error;
+            if (!SessionStore(project).load(chat.id, turns, usage, error)) {
+                continue;
+            }
+            const std::string excerpt = naming_excerpt(turns);
+            if (excerpt.empty()) {
+                continue;
+            }
+            {
+                // Said before it is asked, so an answer quicker than this
+                // thread is still known for whose it is.
+                const std::lock_guard<std::mutex> lock(old_naming_.mutex);
+                old_naming_.asked = chat.id;
+            }
+            engine_->name_session(chat.id, project.root, excerpt, /*spare=*/true);
+            asked = true;
+            break;
+        }
+        const std::lock_guard<std::mutex> lock(old_naming_.mutex);
+        old_naming_.looking   = false;
+        old_naming_.none_left = !asked;
+        old_naming_.at        = std::chrono::steady_clock::now();
+    });
 }
 
 std::string App::session_id() const {
@@ -441,6 +560,11 @@ void App::answer_trust(bool trusted) {
 bool App::retry_turn(std::size_t index) {
     if (engine_->is_busy()) {
         return false;   // the buttons are not offered then; this is the belt to that brace
+    }
+    // Asked again is a turn like any other, and none is answered while a
+    // benchmark has the cards. Before the transcript is cut, not after.
+    if (engine_->benching()) {
+        return false;
     }
     const Snapshot snapshot = state_.snapshot();
     if (index >= snapshot.turns.size()) {
@@ -516,6 +640,7 @@ std::string App::open_session(const std::string& id) {
     store_->adopt(id);
     rebuild_history();
     persisted_turns_ = state_.snapshot().turns.size();
+    reopened_ = store_->project().root.string() + '\n' + id;
     return {};
 }
 
@@ -638,25 +763,14 @@ std::string App::keep(const std::string& recipe_id) {
     std::string error;
     bool        seated = false;
     if (!config_.roster.find(recipe->name)) {
-        Config edited = config_;
-        Expert expert;
-        expert.name  = recipe->name;
         // What it is for, which routing reads; the wizard does not insist on
-        // one, and the roster refuses a seat without.
-        expert.blurb = recipe->purpose.empty() ? recipe->name : recipe->purpose;
-        if (!edited.roster.add(expert, error)) {
-            return error;
+        // one, and the roster refuses a seat without. Seated the way New
+        // expert seats one, by the same code.
+        const std::string blurb = recipe->purpose.empty() ? recipe->name : recipe->purpose;
+        if (std::string refused = api::add_expert(*this, recipe->name, blurb, recipe->trained_path);
+            !refused.empty()) {
+            return refused;
         }
-        const ExpertId id = make_expert_id(recipe->name);
-        // From the defaults rather than from nothing, so the new seat samples
-        // the way every other seat does until somebody says otherwise.
-        ModelParams    params = edited.defaults;
-        params.model       = recipe->trained_path;
-        edited.experts[id] = params;
-        update_config([&edited](Config& config) { config = edited; });
-
-        // So the delegator has something to route on besides the name.
-        engine_->write_examples(id);
         seated = true;
     }
 

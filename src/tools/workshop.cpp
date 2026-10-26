@@ -384,6 +384,8 @@ std::optional<std::filesystem::path> resolve_argument(const std::filesystem::pat
     return resolve_in_root(root, argument);
 }
 
+}  // namespace
+
 /// Whether `target` is plausibly the name of a file rather than a sentence.
 ///
 /// This exists because of what actually happens. Given a cook, an expert wrote
@@ -418,6 +420,49 @@ bool plausible_path(std::string_view target) {
     }
 #endif
     return target.find_first_of(kRefused) == std::string_view::npos;
+}
+
+namespace {
+
+/// What a model is told, in a line, about a WRITE or an EDIT whose path is not
+/// one: `verb` says which, and `then` where what comes with it goes.
+///
+/// A small model's WRITE line is sometimes its account of the change rather
+/// than the file's path ("Change the header color to blue in style.css"):
+/// LFM2.5-1.2B got stuck proposing a file named after the whole sentence. Told
+/// only that this is not a file name, it has nothing to go on, so a sentence
+/// is called one and shown the line it should have been, with the file it
+/// names when it names just one.
+std::string not_a_path(std::string_view verb, const std::string& target, std::string_view then) {
+    const std::string shown = target.size() > 60 ? target.substr(0, 60) + "..." : target;
+    std::size_t words = 0;
+    std::istringstream in(target);
+    for (std::string word; in >> word;) {
+        ++words;
+    }
+    const bool sentence = words >= 3 || (words == 2 && std::strchr(".!?", target.back()) != nullptr);
+    if (!sentence) {
+        return "\"" + shown + "\" is not a file name. " + std::string(verb)
+             + " takes a path relative to the project root, with no spaces, and " + std::string(then);
+    }
+    // A name with an extension, as a file's is: "style.css", "src/app.js". Two
+    // letters of name or of extension at least, which leaves out "e.g".
+    static const std::regex kFile(R"(([\w./-]*\w)\.([A-Za-z][A-Za-z0-9]{0,7})\b)");
+    std::string named;
+    for (std::sregex_iterator it(target.begin(), target.end(), kFile), end; it != end; ++it) {
+        const std::smatch& found = *it;
+        if (found[1].length() < 2 && found[2].length() < 2) {
+            continue;
+        }
+        if (!named.empty() && named != found.str()) {
+            named.clear();   // two files: which one is not for this to guess
+            break;
+        }
+        named = found.str();
+    }
+    return "\"" + shown + "\" is a sentence, not a path: the line should be just " + std::string(verb)
+         + ": " + (named.empty() ? "and the file's path" : named)
+         + ", relative to the project root, with " + std::string(then);
 }
 
 /// `file` as it should be recorded: relative to the root, always.
@@ -746,10 +791,8 @@ ToolResult do_read(const ToolCall& call, const WorkshopSettings& settings) {
 /// WRITE
 ToolResult do_write(const ToolCall& call, const WorkshopSettings& settings) {
     if (!plausible_path(call.argument)) {
-        return failure("\"" + call.argument.substr(0, 60)
-                     + "\" is not a file name. WRITE takes a path relative to the "
-                       "project root, with no spaces, and the contents go in a fenced "
-                       "block on the lines after it");
+        return failure(
+            not_a_path("WRITE", call.argument, "the contents in a fenced block on the lines after it"));
     }
     const std::optional<std::filesystem::path> file =
         resolve_in_root(settings.root, call.argument);
@@ -2082,8 +2125,7 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
 std::optional<std::string> edited_contents(const ToolCall& call, const WorkshopSettings& settings,
                                            std::string& error) {
     if (!plausible_path(call.argument)) {
-        error = "\"" + call.argument.substr(0, 60) + "\" is not a file name. EDIT takes a path "
-                "relative to the project root, and the SEARCH/REPLACE blocks go on the lines after it";
+        error = not_a_path("EDIT", call.argument, "the SEARCH/REPLACE blocks on the lines after it");
         return std::nullopt;
     }
     const std::optional<std::filesystem::path> file = resolve_in_root(settings.root, call.argument);
@@ -2351,7 +2393,7 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         "those lines); a PDF or Office file as its text; a picture as itself\n"
         "FIND: <text> [in <files>]  the lines of the project's files that have it: "
         "FIND: color in *.css\n"
-        "WRITE: <file>              then the whole new contents in a ``` block\n"
+        "WRITE: <path>              then the file's whole new contents in a ``` block\n"
         "EDIT: <file>               change part of a file, with SEARCH/REPLACE blocks (below)\n"
         "RENDER: <page> to <file>   draw an HTML page or an SVG into a .pdf, or a .png "
         "(add: at 1280x800)\n";
@@ -2440,10 +2482,12 @@ std::string workshop_instructions(const WorkshopSettings& settings,
     // A worked example, because the rules alone are not enough. Told only the
     // shape, models write `WRITE path "a description of the change"` and expect
     // that to be applied -- which would put the description into the file in
-    // place of the code.
+    // place of the code. A small one put the description where the path goes,
+    // so the line is said to hold the path alone.
     text +=
-        "\nWRITE makes a file, or replaces one whole, and the new contents go in a "
-        "fenced block on the following lines, never on the same line. Like this:\n"
+        "\nWRITE makes a file, or replaces one whole. Its line holds the file's path and "
+        "nothing else, never a sentence about the change, and the new contents go in a "
+        "fenced block on the following lines. Like this:\n"
         "\nWRITE: src/calc.py\n"
         "```\n"
         "def add(a, b):\n"
@@ -2458,7 +2502,12 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         "  color: blue;\n"
         ">>>>>>> REPLACE\n"
         "\nThe SEARCH lines must be in the file exactly once; READ it first. Several "
-        "blocks may follow one EDIT line.\n";
+        "blocks may follow one EDIT line.\n"
+        // gpt-oss was trained with an apply_patch tool and reaches for it as a
+        // command, in a here-document RUN cannot carry: its build failed with
+        // nothing changed, re-reading the page it could not edit.
+        "\nFiles change through WRITE and EDIT only. There is no apply_patch here, and "
+        "RUN takes one line, so a here-document never reaches the shell.\n";
     if (settings.computer_control) {
         text += "\nTo use the screen: SCREENSHOT: first, find what you want in the picture, "
                 "then CLICK: its pixel, then SCREENSHOT: again to see the result. One "

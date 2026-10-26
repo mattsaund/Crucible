@@ -25,8 +25,14 @@ class Names(unittest.TestCase):
     def test_with_no_model_the_opening_words_of_the_question(self):
         self.assertEqual(naming.fallback_name(
             "Question: can you help with my math homework? It is due\nAnswer: Sure"),
-            "Can you help with my")
+            "Can you help")
         self.assertEqual(naming.fallback_name("Question: test\nAnswer: ok"), "Test")
+        # Cut at five, but not on a word that leads into the sixth.
+        self.assertEqual(naming.fallback_name("Why does water boil at a lower temperature?"),
+                         "Why does water boil")
+        self.assertEqual(naming.fallback_name("Fix the bug in the parser"), "Fix the bug")
+        # Whole, a prompt keeps its last word whatever it is.
+        self.assertEqual(naming.fallback_name("What is this for"), "What is this for")
 
     def test_the_prompt_shows_what_a_title_looks_like(self):
         self.assertIn("Math homework", naming.naming_prompt("Question: x"))
@@ -81,6 +87,18 @@ class Through(unittest.TestCase):
                          {"name": "How fast is the ISS"})
         # Opened and closed, and nothing generated between.
         self.assertEqual([m for m, _ in core.asked], ["delegator.ready", "delegator.done"])
+
+    def test_an_old_conversation_is_named_only_by_a_delegator_already_loaded(self):
+        core = Core("Orbital speed")
+        self.assertEqual(naming.name_session(core, {"excerpt": "Question: how fast", "spare": True}),
+                         {"name": "Orbital speed"})
+        self.assertEqual(core.asked[0], ("delegator.ready", {"optional": True, "load": False}))
+        self.assertIs(core.asked[1][1]["load"], False)
+        # With none loaded, no name: its opening words are its title already.
+        idle = Core("", available=False)
+        self.assertEqual(naming.name_session(idle, {"excerpt": "Question: how fast is the ISS",
+                                                    "spare": True}),
+                         {"name": ""})
 
     def test_examples_are_written_for_a_new_expert(self):
         core = Core("What is the torque on a bolt?\nHow do I size a beam?")

@@ -4,6 +4,7 @@
 #include "crucible/runtime/devices.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 #include <utility>
 
@@ -11,6 +12,7 @@
 #include <llama.h>
 
 #include "crucible/runtime/backend.hpp"
+#include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
 
 namespace crucible {
@@ -62,11 +64,14 @@ std::string ComputeDevice::label() const {
 
 std::vector<ComputeDevice> compute_devices() {
     std::vector<ComputeDevice> devices;
-    const std::size_t count = ggml_backend_dev_count();
-    devices.reserve(count);
+    // ggml's list as it stands, copied under the lock a runtime's load takes;
+    // what each device is asked below, its memory included, is asked of the
+    // copy with nothing held. See RuntimeRegistry::devices.
+    const std::vector<ggml_backend_dev_t> listed = RuntimeRegistry::devices();
+    devices.reserve(listed.size());
 
-    for (std::size_t i = 0; i < count; ++i) {
-        ggml_backend_dev_t handle = ggml_backend_dev_get(i);
+    for (std::size_t i = 0; i < listed.size(); ++i) {
+        ggml_backend_dev_t handle = listed[i];
         if (handle == nullptr) {
             continue;
         }
@@ -552,6 +557,67 @@ std::vector<float> compute_tensor_split(GpuSplitMode mode,
                                         int main_gpu,
                                         const ModelFit& fit) {
     return plan_gpu_split(mode, gpus, order, main_gpu, fit).split;
+}
+
+ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
+                        const std::vector<CardNeed>& need, std::uint64_t runtime) {
+    // What the header said each card would hold of the layers, and which card
+    // ends up with the output: the last one in index order that holds any.
+    std::vector<std::uint64_t> said(counts.size(), 0);
+    std::size_t unit   = 0;
+    std::size_t output = counts.size();
+    for (std::size_t device = 0; device < counts.size(); ++device) {
+        for (int i = 0; i < counts[device] && unit < fit.units.size(); ++i, ++unit) {
+            said[device] += fit.units[unit];
+        }
+        if (counts[device] > 0) {
+            output = device;
+        }
+    }
+    if (fit.units.empty() || unit < fit.units.size() || output >= need.size()) {
+        return fit;
+    }
+
+    // The worst the header did on any card, as a factor on every unit: right
+    // to the byte on the card that set it and conservative on the rest.
+    double        scale   = 0.0;
+    std::uint64_t compute = 0;     // the largest buffer on a card without the output
+    bool          others  = false;
+    for (std::size_t device = 0; device < counts.size(); ++device) {
+        if (counts[device] == 0) {
+            continue;
+        }
+        if (device >= need.size()) {
+            return fit;   // a card the dry run said nothing about
+        }
+        if (said[device] > 0) {
+            scale = std::max(scale, static_cast<double>(need[device].weights + need[device].cache) /
+                                        static_cast<double>(said[device]));
+        }
+        if (device != output) {
+            compute = std::max(compute, need[device].compute);
+            others  = true;
+        }
+    }
+    if (scale <= 0.0) {
+        return fit;
+    }
+    const std::uint64_t at_output = need[output].compute;
+    if (!others) {
+        // The whole model on one card: its buffer less the logits the header
+        // puts there is the best word on what a card without them needs.
+        compute = at_output > fit.output_extra ? at_output - fit.output_extra : 0;
+    }
+
+    ModelFit out;
+    out.units.reserve(fit.units.size());
+    for (const std::uint64_t bytes : fit.units) {
+        out.units.push_back(static_cast<std::uint64_t>(std::ceil(static_cast<double>(bytes) * scale)));
+        out.resident += out.units.back();
+    }
+    out.per_card     = compute + runtime;
+    out.output_extra = at_output > compute ? at_output - compute : 0;
+    return out;
 }
 
 GpuSettingSupport gpu_setting_support(const std::vector<ComputeDevice>& devices) {

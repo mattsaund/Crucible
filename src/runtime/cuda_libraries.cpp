@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <mutex>
 #include <system_error>
 
@@ -82,6 +83,27 @@ bool is_version_of(const std::string& name, std::string_view wanted) {
             && name[wanted.size()] == '.');
 }
 
+/// Beside the libraries, the release they came from. Written after them, so
+/// it never names a release the files beside it are not.
+constexpr const char* kReleaseFile = "release";
+
+/// What a release file says, or empty when there is none.
+std::string release_in(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    std::string   release;
+    in >> release;
+    return release;
+}
+
+/// Where a file waits to replace `file`: beside it, as "<name>.new".
+std::filesystem::path staged_name(const std::filesystem::path& file) {
+    std::filesystem::path staged = file;
+    staged += ".new";
+    return staged;
+}
+
+/// Held while a set is moved in and while one is loaded, so neither sees the
+/// other halfway.
 std::mutex g_preload_mutex;
 std::vector<std::string> g_preloaded;
 
@@ -109,10 +131,32 @@ bool complete() {
     if (names.empty()) {
         return false;
     }
+    // From this release, and not only there. A set fetched for an older CUDA
+    // module is fetched again rather than loaded under a newer one; and one
+    // whose release was never written down cannot be told from that.
+    if (release_in(dir() / kReleaseFile) != kRelease) {
+        return false;
+    }
     std::error_code ec;
     return std::all_of(names.begin(), names.end(), [&ec](const std::string& name) {
         return std::filesystem::is_regular_file(dir() / name, ec);
     });
+}
+
+bool usable() {
+    if (complete()) {
+        return true;
+    }
+    const std::vector<std::string> names = wanted();
+    std::error_code ec;
+    return !names.empty() && !std::filesystem::exists(dir() / kReleaseFile, ec)
+        && std::all_of(names.begin(), names.end(), [&ec](const std::string& name) {
+               return std::filesystem::is_regular_file(dir() / name, ec);
+           });
+}
+
+bool waiting() {
+    return !wanted().empty() && release_in(staged_name(dir() / kReleaseFile)) == kRelease;
 }
 
 bool on_system() {
@@ -138,6 +182,57 @@ bool on_system() {
     }
     return true;
 }
+
+namespace {
+
+/// Move a staged set over the one in dir(): every library, and then the
+/// release file, so the folder never names a release its libraries are not.
+/// With g_preload_mutex held. True when nothing is left waiting.
+///
+/// Renamed over, never copied over. A copy writes into the very file a running
+/// Crucible has loaded (preload never closes one), and that process crashes
+/// the next time it calls into CUDA; a rename points the name at the new file,
+/// and on Linux a process that has the old one keeps it. Windows will not
+/// replace a library that is loaded at all, so there the move stops at the
+/// first one that is, and the rest waits, staged, for the next start to move
+/// it before anything is preloaded.
+bool move_staged() {
+    const std::filesystem::path folder = dir();
+    const std::filesystem::path marker = folder / kReleaseFile;
+    const std::filesystem::path staged = staged_name(marker);
+    const std::string release = release_in(staged);
+    if (release.empty()) {
+        // Nothing staged, or a set still being staged: its fetch moves it.
+        return true;
+    }
+    std::error_code ec;
+    if (release != kRelease) {
+        // Staged by another Crucible, for another CUDA module.
+        for (const std::string& name : wanted()) {
+            std::filesystem::remove(staged_name(folder / name), ec);
+        }
+        std::filesystem::remove(staged, ec);
+        return true;
+    }
+    for (const std::string& name : wanted()) {
+        const std::filesystem::path library = staged_name(folder / name);
+        const bool there = std::filesystem::exists(library, ec);
+        if (ec) {
+            return false;
+        }
+        if (!there) {
+            continue;   // moved already, by a start that stopped halfway through
+        }
+        std::filesystem::rename(library, folder / name, ec);
+        if (ec) {
+            return false;
+        }
+    }
+    std::filesystem::rename(staged, marker, ec);
+    return !ec;
+}
+
+}  // namespace
 
 namespace detail {
 
@@ -180,6 +275,67 @@ std::vector<Archive> archives(std::string_view manifest, std::string_view platfo
     return out;
 }
 
+bool stage(const std::filesystem::path& unpacked, bool unpacked_cleanly, std::string& error) {
+    const std::filesystem::path folder = dir();
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+
+    // Whatever an earlier fetch left half staged goes first. It has no
+    // release file, so nothing would ever move it in.
+    const auto unstage = [&folder]() {
+        std::error_code ignored;
+        for (const std::string& want : wanted()) {
+            std::filesystem::remove(staged_name(folder / want), ignored);
+        }
+        std::filesystem::remove(staged_name(folder / kReleaseFile), ignored);
+    };
+    unstage();
+
+    // Each wanted name, as a plain file. On Linux the name is a link to a link
+    // to the versioned library; the links are followed here rather than kept,
+    // so the folder works on a filesystem that cannot hold one.
+    for (const std::string& want : wanted()) {
+        std::filesystem::path real;
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::recursive_directory_iterator(unpacked, ec)) {
+            const std::string name = entry.path().filename().string();
+            if (!is_version_of(name, want)) {
+                continue;
+            }
+            std::error_code check;
+            const std::filesystem::path resolved = std::filesystem::canonical(entry.path(), check);
+            if (!check && std::filesystem::is_regular_file(resolved, check)) {
+                real = resolved;
+                break;
+            }
+        }
+        if (real.empty()) {
+            error = want + (unpacked_cleanly ? " was not in NVIDIA's archive"
+                                             : " could not be unpacked from NVIDIA's archive");
+            unstage();
+            return false;
+        }
+        std::filesystem::copy_file(real, staged_name(folder / want),
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "could not put " + want + " in place: " + ec.message();
+            unstage();
+            return false;
+        }
+    }
+
+    // Last, and only now a set: the release they came from.
+    std::ofstream out(staged_name(folder / kReleaseFile), std::ios::trunc);
+    out << kRelease << '\n';
+    out.close();
+    if (!out) {
+        error = "could not put NVIDIA's libraries in place: " + folder.string() + " could not be written";
+        unstage();
+        return false;
+    }
+    return true;
+}
+
 }  // namespace detail
 
 bool fetch(std::string& error, const std::function<void(std::string)>& say) {
@@ -193,6 +349,21 @@ bool fetch(std::string& error, const std::function<void(std::string)>& say) {
             say(std::move(what));
         }
     };
+
+    // A set fetched earlier and still waiting for the old one to be let go
+    // is not fetched a second time.
+    {
+        const std::lock_guard<std::mutex> lock(g_preload_mutex);
+        if (!move_staged()) {
+            tell("NVIDIA's libraries go in at the next start");
+            return true;
+        }
+        if (complete()) {
+            tell("CUDA libraries in place");
+            return true;
+        }
+    }
+
     if (!util::http::available(error)) {
         return false;
     }
@@ -287,50 +458,32 @@ bool fetch(std::string& error, const std::function<void(std::string)>& say) {
         unpacked_cleanly = unpacked_cleanly && status == 0;
     }
 
-    // Each wanted name, as a plain file. On Linux the name is a link to a link
-    // to the versioned library; the links are followed here rather than kept,
-    // so the folder works on a filesystem that cannot hold one.
-    const std::filesystem::path landing = dir();
-    std::filesystem::create_directories(landing, ec);
-    for (const std::string& want : wanted()) {
-        std::filesystem::path real;
-        for (const std::filesystem::directory_entry& entry :
-             std::filesystem::recursive_directory_iterator(staging, ec)) {
-            const std::string name = entry.path().filename().string();
-            if (!is_version_of(name, want)) {
-                continue;
-            }
-            std::error_code check;
-            const std::filesystem::path resolved = std::filesystem::canonical(entry.path(), check);
-            if (!check && std::filesystem::is_regular_file(resolved, check)) {
-                real = resolved;
-                break;
-            }
-        }
-        if (real.empty()) {
-            error = want + (unpacked_cleanly ? " was not in NVIDIA's archive"
-                                             : " could not be unpacked from NVIDIA's archive");
-            clean();
-            return false;
-        }
-        std::filesystem::copy_file(real, landing / want,
-                                   std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) {
-            error = "could not put " + want + " in place: " + ec.message();
-            clean();
-            return false;
-        }
-    }
+    // Beside the set in use, then moved over it: see move_staged.
+    const bool staged = detail::stage(staging, unpacked_cleanly, error);
     clean();
-    tell("CUDA libraries in place");
+    if (!staged) {
+        return false;
+    }
+    bool moved = false;
+    {
+        const std::lock_guard<std::mutex> lock(g_preload_mutex);
+        moved = move_staged();
+    }
+    tell(moved ? "CUDA libraries in place" : "NVIDIA's libraries go in at the next start");
     return true;
 }
 
 void preload() {
-    if (!complete()) {
+    const std::lock_guard<std::mutex> lock(g_preload_mutex);
+    // A set that could not go in when it was fetched goes in now, before
+    // anything here has the old one loaded. And nothing is loaded from a set
+    // that is not usable, one that says it is an older release's included:
+    // once this process holds a library by its name, that is the one it
+    // gets, whatever is moved in after.
+    move_staged();
+    if (!usable()) {
         return;
     }
-    const std::lock_guard<std::mutex> lock(g_preload_mutex);
     for (const std::string& name : wanted()) {
         if (std::find(g_preloaded.begin(), g_preloaded.end(), name) != g_preloaded.end()) {
             continue;

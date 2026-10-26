@@ -401,6 +401,27 @@ TEST(a_prompt_is_never_reused_in_its_entirety) {
     CHECK_EQ(reusable_prefix({1, 2, 3, 4}, {1, 2, 3}), std::size_t{2});
 }
 
+TEST(a_window_cache_is_rewound_only_while_it_holds_the_window_before) {
+    using detail::holds_window;
+
+    // Without a sliding window every position stays, so anywhere will do.
+    CHECK(holds_window(5000, 10, 0));
+    // gpt-oss looks 128 back. A cache that still holds everything can go
+    // back anywhere, the very start included.
+    CHECK(holds_window(0, 4000, 128));
+    CHECK(holds_window(0, 100, 128));
+
+    // One that has let go of everything before 3000 can be read on from 3200,
+    // whose window starts at 3072, and not from 3100, whose window reaches
+    // back past what is there.
+    CHECK(holds_window(3000, 3200, 128));
+    CHECK(!holds_window(3000, 3100, 128));
+    // Near the start, the start itself has to be there.
+    CHECK(!holds_window(1, 100, 128));
+    // And an empty cache holds nothing to go back to.
+    CHECK(!holds_window(-1, 100, 128));
+}
+
 TEST(cuda_targets_the_cards_that_are_there_and_nothing_else) {
     // This machine: an Ampere, an Ada and a Blackwell card, against a CUDA 12.0
     // toolkit that stops at Hopper. Real code for the two it can compile for,

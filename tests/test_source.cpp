@@ -352,3 +352,51 @@ TEST(a_made_app_replaces_its_own_copy_and_nothing_else) {
     CHECK(first.has_value());
     CHECK(again.has_value());
 }
+
+TEST(deleting_or_renaming_a_link_touches_the_link_and_never_what_it_points_at) {
+#if !defined(_WIN32)
+    // A project with a link to a folder beside it, the way a shared docs
+    // folder is often linked in, and a link to its own git folder.
+    const TempDir dir;
+    const std::filesystem::path root   = dir.path() / "proj";
+    const std::filesystem::path shared = dir.path() / "shared";
+    write(root / "src" / "a.py", "print(1)\n");
+    write(shared / "guide.md", "keep me\n");
+    write(root / ".git" / "HEAD", "ref: refs/heads/main\n");
+    std::filesystem::create_directory_symlink(shared, root / "docs");
+    std::filesystem::create_directory_symlink(root / ".git", root / "history");
+    ProjectHost  host(root);
+    api::Surface surface(host);
+
+    // Renamed, the link moves and the folder it names stays put.
+    const nlohmann::json renamed = ask(surface, {{"method", "project.rename"},
+                                                 {"params", {{"path", "docs"}, {"to", "manual"}}}});
+    CHECK(renamed["ok"] == true);
+    CHECK(std::filesystem::is_symlink(root / "manual"));
+    CHECK(std::filesystem::exists(shared / "guide.md"));
+
+    // Deleted, the link goes and what it pointed at is all still there.
+    CHECK(ask(surface, {{"method", "project.delete"}, {"params", {{"path", "manual"}}}})["ok"] == true);
+    CHECK(!std::filesystem::exists(std::filesystem::symlink_status(root / "manual")));
+    CHECK(std::filesystem::exists(shared / "guide.md"));
+    CHECK(ask(surface, {{"method", "project.delete"}, {"params", {{"path", "history"}}}})["ok"] == true);
+    CHECK(std::filesystem::exists(root / ".git" / "HEAD"));
+
+    // git's own folder, in any case, and the project itself, are refused.
+    for (const char* path : {".git", ".GIT", ".git/HEAD", "", ".", "src/.."}) {
+        CHECK(ask(surface, {{"method", "project.delete"}, {"params", {{"path", path}}}})["ok"] == false);
+    }
+    CHECK(ask(surface, {{"method", "project.rename"},
+                        {"params", {{"path", "src/a.py"}, {"to", ".Git/a.py"}}}})["ok"] == false);
+    CHECK(std::filesystem::exists(root / "src" / "a.py"));
+
+    // On a filesystem where case matters, two names that differ only in case
+    // are two files, and one is not renamed over the other.
+    write(root / "README.md", "one\n");
+    write(root / "readme.md", "two\n");
+    if (!std::filesystem::equivalent(root / "README.md", root / "readme.md")) {
+        CHECK(ask(surface, {{"method", "project.rename"},
+                            {"params", {{"path", "readme.md"}, {"to", "README.md"}}}})["ok"] == false);
+    }
+#endif
+}

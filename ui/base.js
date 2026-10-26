@@ -409,8 +409,8 @@ async function guard(work) {
 // --- what a person can do ------------------------------------------------------
 
 /// The actions, by name: what data-act, data-change, data-input, data-submit,
-/// data-key and data-scroll refer to. Each is called with the element and the
-/// event.
+/// data-key, data-paste and data-scroll refer to. Each is called with the
+/// element and the event.
 const actions = {};
 
 function dispatch(kind, event) {
@@ -428,6 +428,7 @@ function listen() {
   document.addEventListener('change', (event) => dispatch('change', event));
   document.addEventListener('input', (event) => dispatch('input', event));
   document.addEventListener('submit', (event) => dispatch('submit', event));
+  document.addEventListener('paste', (event) => dispatch('paste', event));
   document.addEventListener('keydown', (event) => {
     dispatch('key', event);
     shortcuts(event);

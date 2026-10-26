@@ -87,7 +87,11 @@ const TUNE_SCRIPT = `
     var out = {};
     ['padding', 'margin', 'font-size', 'font-family', 'font-weight', 'line-height', 'color',
      'background-color', 'border-radius', 'text-align', 'gap', 'width', 'letter-spacing'].forEach(function (p) {
-      out[p] = cs.getPropertyValue(p);
+      // WebKit answers 19.200001px for 19.2px: two decimals are all anybody
+      // reads or types.
+      out[p] = cs.getPropertyValue(p).replace(/-?\\d+\\.\\d{3,}/g, function (n) {
+        return String(Math.round(parseFloat(n) * 100) / 100);
+      });
     });
     return out;
   }

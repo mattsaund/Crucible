@@ -84,8 +84,9 @@ struct Response {
 /// True when requests can be made at all. `why_not` says what is missing.
 bool available(std::string& why_not);
 
-/// Make a request and wait for all of it.
-Response send(const Request& request);
+/// Make a request and wait for all of it, or until `stop`, when given, says
+/// so: then the request is abandoned at once and its error is "stopped".
+Response send(const Request& request, const std::function<bool()>& stop = {});
 
 /// Fetch `url` into the file at `to`, following redirects. For the downloads
 /// that are too large to hold: a prebuilt runtime is hundreds of megabytes.

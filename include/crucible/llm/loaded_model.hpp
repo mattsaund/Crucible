@@ -38,6 +38,17 @@ namespace detail {
 std::size_t reusable_prefix(const std::vector<llama_token>& cached,
                             const std::vector<llama_token>& wanted);
 
+/// Whether a cache whose oldest position is `oldest` still holds what a token
+/// read at `position` looks back at, through a sliding window of `window`
+/// tokens. Always with no window; never with nothing held (-1).
+///
+/// A window cache keeps only the last window of a long sequence, so rewinding
+/// one into the middle and reading on from there is only right while the
+/// window before that point is still in it. Asked one position further back
+/// than the window reaches, which also covers a chunked window: that reaches
+/// back to where its chunk began, never further.
+bool holds_window(std::int32_t oldest, std::size_t position, std::int32_t window);
+
 }  // namespace detail
 
 /// What LoadedModel::score_labels reports for a label it could not evaluate --
@@ -105,16 +116,23 @@ public:
     /// label the model was only marginally keenest on wins outright, and there
     /// is no number afterwards to say how close it was. Scoring evaluates the
     /// prompt once and then measures every label against that same state, which
-    /// costs one forward pass plus a token or two per label, and returns
-    /// something a confidence threshold can actually be applied to.
+    /// costs one forward pass for the prompt and one for the labels' later
+    /// tokens together, and returns something a confidence threshold can
+    /// actually be applied to.
     ///
     /// The score is the sum over the label's tokens, which is the probability
     /// of the sequence. A label that tokenizes longer is very slightly
     /// penalised; with labels of two or three tokens the effect is far smaller
     /// than the differences being measured.
+    ///
+    /// `prefix` is the part of `prompt` that recurs from call to call -- a
+    /// delegator's instructions and worked examples, the same for every
+    /// question. Its cache is kept, and the next prompt starting with it reads
+    /// only what follows: one question rather than the whole roster again.
     std::vector<float> score_labels(const std::string& prompt,
                                     const std::vector<std::string>& labels,
-                                    const CancelCallback& cancel);
+                                    const CancelCallback& cancel,
+                                    const std::string& prefix = {});
 
     /// How many tokens `text` becomes for this model.
     ///
@@ -153,9 +171,56 @@ private:
     /// prefix, so the caller decodes from there.
     std::size_t reuse_prefix(const std::vector<llama_token>& tokens);
 
+    /// Whether the cache still holds what a token read again at `position`
+    /// looks back at. Always, unless the model has sliding-window layers: a
+    /// window cache keeps only the last window of a long sequence, and the
+    /// positions before it are gone.
+    bool holds_window_before(std::size_t position) const;
+
+    /// Take checkpoint_ where the cache stands now, when it is one a cut
+    /// cannot rewind: a window cache, or a recurrent model's state.
+    void keep_checkpoint();
+
+    /// Read `tokens` from `from` to `to` into the cache, a batch at a time.
+    /// False when a decode failed or `cancel` said stop.
+    bool read(const std::vector<llama_token>& tokens, std::size_t from, std::size_t to,
+              const CancelCallback& cancel);
+
+    /// Put the first `count` of `tokens` in the cache: from a kept prompt
+    /// when one matches, read and kept for next time when none does. False
+    /// when the reading failed or was stopped.
+    bool recall(const std::vector<llama_token>& tokens, std::size_t count, const CancelCallback& cancel);
+
+    /// Add to `scores` what every label's tokens after its first score, read
+    /// after the `n_prompt` tokens of prompt the cache holds. False when a
+    /// label could not be read, or `cancel` said stop.
+    bool score_rest(const std::vector<std::vector<llama_token>>& labels, std::size_t n_prompt,
+                    std::vector<float>& scores, const CancelCallback& cancel);
+
+    /// The cache's bookkeeping is no longer the truth: cached_ and
+    /// checkpoint_ go, and the next prompt starts from cold.
+    void forget();
+
     llama_model*   model_ = nullptr;
     llama_context* ctx_   = nullptr;
     std::string    path_;
+
+    /// Loaded with the window cache. See ModelParams::window_cache.
+    bool window_cache_ = false;
+
+    /// A prompt prefix scoring has read, kept so the next prompt starting
+    /// with it does not read it again. See score_labels.
+    struct KeptPrompt {
+        std::vector<llama_token>  tokens;
+        std::vector<std::uint8_t> state;     ///< the cache holding exactly `tokens`
+        std::uint64_t             used = 0;  ///< when it was last asked for
+    };
+
+    /// Four at most, the least recently used going first: the delegator
+    /// shows its roster in three orders, and each is a prefix of its own.
+    /// Each is no larger than the cache it came from.
+    std::vector<KeptPrompt> kept_;
+    std::uint64_t           kept_clock_ = 0;
 
     /// The projector, when the model has one: what turns a picture into
     /// tokens the model reads. Null for a model that reads text only.
@@ -183,6 +248,19 @@ private:
     /// state clears this, and the next turn starts from cold rather than from a
     /// guess about what survived.
     std::vector<llama_token> cached_;
+
+    /// The part of the cache a cut cannot rewind -- a recurrent state, a
+    /// sliding window -- as it stood after the first `tokens` of cached_: the
+    /// end of the last prompt, which is where a conversation's next turn
+    /// usually parts from the last one. A reasoning model's history drops the
+    /// thinking it did there, and a window cache has long since let go of
+    /// those positions by the time the reply is done. Empty when there is
+    /// nothing a cut cannot put back.
+    struct Checkpoint {
+        std::size_t               tokens = 0;
+        std::vector<std::uint8_t> state;
+    };
+    Checkpoint checkpoint_;
 };
 
 }  // namespace crucible

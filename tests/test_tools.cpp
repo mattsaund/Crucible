@@ -238,6 +238,45 @@ TEST(a_write_target_that_is_a_sentence_is_refused) {
     CHECK_EQ(entries, 0);
 }
 
+TEST(a_sentence_where_the_path_goes_is_shown_the_line_it_should_have_been) {
+    TempDir dir;
+    const tools::WorkshopSettings settings = workshop_at(dir.path());
+    tools::ToolCall write;
+    write.kind    = tools::ToolKind::Write;
+    write.content = "header { color: blue; }";
+
+    // The account of the change where the path goes, with the file in it: the
+    // correction is one line, and its WRITE line names that file.
+    write.argument = "Change the header color to blue in style.css";
+    const tools::ToolResult named = do_call(write, settings);
+    CHECK(!named.ok);
+    CHECK(named.output.find("is a sentence, not a path") != std::string::npos);
+    CHECK(named.output.find("WRITE: style.css,") != std::string::npos);
+    CHECK(named.output.find('\n') == std::string::npos);
+    write.argument = "Use e.g. a darker blue in style.css.";
+    CHECK(do_call(write, settings).output.find("WRITE: style.css,") != std::string::npos);
+
+    // No file in it, or two of them: none is guessed at.
+    for (const char* sentence : {"The fix is complete and verified.", "Move the rules from style.css into theme.css"}) {
+        write.argument = sentence;
+        CHECK(do_call(write, settings).output.find("WRITE: and the file's path") != std::string::npos);
+    }
+
+    // A name with a space in it is not a sentence, and is told what a path is.
+    write.argument = "my notes.md";
+    CHECK(do_call(write, settings).output.find("is not a file name") != std::string::npos);
+
+    // The same test keeps a sentence from being put to the person as an edit.
+    CHECK(!tools::plausible_path("Change the header color to blue in style.css"));
+    CHECK(tools::plausible_path("src/app.js"));
+    std::string why;
+    tools::ToolCall edit;
+    edit.kind     = tools::ToolKind::Edit;
+    edit.argument = "Make the header blue in style.css";
+    CHECK(!tools::edited_contents(edit, settings, why).has_value());
+    CHECK(why.find("EDIT: style.css,") != std::string::npos);
+}
+
 TEST(an_ordinary_path_is_still_written) {
     TempDir dir;
     const tools::WorkshopSettings settings = workshop_at(dir.path());

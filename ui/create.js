@@ -34,6 +34,12 @@ const rate = (value) => Number(value).toExponential(1);
 function specLine(r) {
   const parts = [];
   if (r.base && r.base.id) parts.push(r.base.label || fileName(r.base.id));
+  if (r.method === 'condense') {
+    parts.push(`${r.source_quantization || 'original'} to ${r.quantization}`);
+    const size = r.trained_bytes || r.export_bytes;
+    if (size) parts.push(bytes(size));
+    return apart(...parts.map(escape));
+  }
   if (r.parameters_b > 0) parts.push(`${r.parameters_b}B`);
   parts.push(r.method === 'lora' ? 'LoRA' : 'QLoRA');
   parts.push(`${r.format === 'mlx' ? 'MLX' : 'GGUF'} ${r.quantization}`);
@@ -54,12 +60,14 @@ function createList() {
           <span class="tag">${escape(r.stage_text)}</span>
           ${r.trained_path ? `<button class="action right" data-act="recipe-test" data-id="${escape(r.id)}"
               ${r.trained_there ? '' : 'disabled title="Trained file missing"'}>Test</button>` : ''}</div>
-        <div class="hint">${escape(r.purpose || 'no description')}</div>
+        <div class="hint">${escape(r.purpose || (r.method === 'condense' ? 'condensed copy' : 'no description'))}</div>
         <div class="hint">${specLine(r)}</div>
       </div>`).join('');
   }).join('');
   return `<h1>Create</h1>
-    <button class="action" data-act="recipe-new">New expert</button>
+    <div class="row">
+      <button class="action" data-act="recipe-new">New expert</button>
+      <button class="action" data-act="condense-new" title="Requantize a model to fewer bits">Condense a model</button></div>
     ${groups}`;
 }
 
@@ -80,11 +88,25 @@ function lossCurve(curve) {
     <div class="status">${apart(`loss ${curve[curve.length - 1].toFixed(3)}`, `started at ${curve[0].toFixed(3)}`)}</div>`;
 }
 
+/// The score on the records held out of training: the base's loss and the
+/// fine-tune's, lower being better. During a run the second is still to
+/// come; with too little data there is none, and that is said instead.
+function heldOutWords(held) {
+  if (!held) return '';
+  const loss = (score) => (score && score.loss > 0 ? score.loss.toFixed(2) : '');
+  const before = loss(held.base);
+  const after = loss(held.tuned);
+  if (before && after) return `${before} to ${after}`;
+  if (held.skipped) return escape(held.skipped);
+  return before;
+}
+
 /// What a run is doing, or how it ended.
 function runView(r) {
   const run = state.run;
   const mine = run && run.recipe === r.id;
   if (mine && run.phase === 'running') {
+    const held = heldOutWords(run.held_out);
     return `<div class="install">
         <div class="row"><strong>${escape(run.label)}</strong>
           <button class="action" data-act="run-stop" title="Can't be resumed">Stop the run</button></div>
@@ -95,6 +117,7 @@ function runView(r) {
           ${run.device ? `<div><span>On</span>${escape(run.device)}</div>` : ''}
           ${run.records ? `<div><span>Data</span>${count(run.records, 'record')}</div>` : ''}
           ${run.trainable ? `<div><span>Adapter</span>${(run.trainable / 1e6).toFixed(1)}M parameters</div>` : ''}
+          ${held ? `<div><span>Held out</span>${held}</div>` : ''}
         </div>
         ${lossCurve(run.curve)}
         ${run.notes.map((n) => `<div class="status">${escape(n)}</div>`).join('')}
@@ -116,15 +139,64 @@ function runView(r) {
   }
   // Marked as training, and nothing is. A run belongs to the window that
   // started it, so this is what a recipe looks like after that window closed.
-  return `<p class="lede">Not running${r.started_at ? `. Started ${ago(r.started_at)}` : ''}.</p>
+  const again = `<p class="lede">Not running${r.started_at ? `. Started ${ago(r.started_at)}` : ''}.</p>
     <div class="row">
       <button class="action" data-act="recipe-train" data-id="${escape(r.id)}">Start again</button>
-      <button class="action" data-act="recipe-draft" data-id="${escape(r.id)}">Put it back to a draft</button></div>
+      <button class="action" data-act="recipe-draft" data-id="${escape(r.id)}">Put it back to a draft</button></div>`;
+  if (r.method === 'condense') return again;
+  return `${again}
     <h2 style="margin-top:1.6rem">TRAINED ELSEWHERE</h2>
     <div class="row"><button class="action" data-act="recipe-attach" data-id="${escape(r.id)}">Choose the file</button></div>`;
 }
 
+/// A condensed copy's page: what it is made from and what it comes out at,
+/// in place of the fine-tune's method, data and run settings.
+function condenseDetail(r) {
+  const spec = (label, value, cls) =>
+    `<div><span>${label}</span><span class="${cls || ''}">${value}</span></div>`;
+  const [fitWords, fitClass] = FITS[r.runs] || ['', ''];
+  const size = r.trained_bytes || r.export_bytes;
+  let stage;
+  if (r.stage === 'draft') {
+    stage = `<h2 style="margin-top:1.6rem">BEFORE IT CAN RUN</h2>
+      ${r.missing.length ? `<p class="lede bad">still needs ${r.missing.map(escape).join(', ')}</p>` : ''}
+      <div class="row">
+        <button class="action" data-act="recipe-edit" data-id="${escape(r.id)}">Change</button>
+        <button class="action" data-act="recipe-train" data-id="${escape(r.id)}" ${r.missing.length ? 'disabled' : ''}>Condense</button></div>`;
+  } else if (r.stage === 'training') {
+    stage = `<h2 style="margin-top:1.6rem">CONDENSING</h2>${runView(r)}`;
+  } else if (r.stage === 'testing') {
+    stage = `<h2 style="margin-top:1.6rem">BEFORE YOU KEEP IT</h2>
+      <div class="row">
+        <button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${r.trained_there ? ''
+          : 'disabled title="File missing"'}>Test</button></div>`;
+  } else {
+    stage = `<h2 style="margin-top:1.6rem">ON THE ROSTER</h2>
+      <div class="row"><button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${
+        r.trained_there ? '' : 'disabled'}>Test again</button></div>`;
+  }
+  return `<button class="link" data-act="recipe-close">&larr; Create</button>
+    <div class="row" style="margin-top:.6rem"><h1 style="flex:1">${escape(r.name || '(unnamed)')}
+        <span class="tag">${escape(r.stage_text)}</span></h1>
+      <button class="link" data-act="recipe-delete" data-id="${escape(r.id)}"
+              data-name="${escape(r.name || 'this model')}">Delete</button></div>
+    ${r.purpose ? `<p class="lede">${escape(r.purpose)}</p>` : ''}
+    <h2>SPECS</h2>
+    <div class="runtime-detail" style="border:0;padding:0">
+      ${spec('Model', escape(r.base.label || fileName(r.base.id || '')))}
+      ${spec('From', escape(r.source_quantization || 'original'))}
+      ${spec('To', escape(r.quantization))}
+      ${size ? spec('Size', `${r.trained_bytes ? '' : 'about '}${bytes(size)}`) : ''}
+      ${fitWords ? spec('Runs', `<span class="fit ${fitClass}">${fitWords}</span>`) : ''}
+      ${r.trained_path ? spec('File', escape(r.trained_display || r.trained_path)
+          + (r.trained_there ? '' : '  (not there)'), r.trained_there ? '' : 'bad') : ''}
+      ${r.started_at ? spec('Started', ago(r.started_at)) : ''}
+      ${r.finished_at ? spec('Finished', ago(r.finished_at)) : ''}
+    </div>${stage}`;
+}
+
 function createDetail(r) {
+  if (r.method === 'condense') return condenseDetail(r);
   const trainer = state.trainer;
   const spec = (label, value, cls) =>
     `<div><span>${label}</span><span class="${cls || ''}">${value}</span></div>`;
@@ -134,6 +206,10 @@ function createDetail(r) {
     : spec('Fits', `needs ${bytes(fit.needed)} of ${bytes(fit.have)}`,
            fit.possible ? '' : 'bad');
   const method = METHODS.find(([id]) => id === r.method) || METHODS[0];
+  const held = r.held_out || {};
+  const heldWords = held.measured || held.skipped ? heldOutWords(held) : '';
+  const heldTitle = held.measured ? `${count(held.records, 'record')} never trained on. Perplexity ${
+    held.base.perplexity.toFixed(1)} to ${held.tuned.perplexity.toFixed(1)}` : '';
 
   let stage;
   if (r.stage === 'draft') {
@@ -187,6 +263,8 @@ function createDetail(r) {
       ${r.trained_path ? spec('File', escape(r.trained_display || r.trained_path)
           + (r.trained_there ? ` (${bytes(r.trained_bytes)})` : '  (not there)'),
           r.trained_there ? '' : 'bad') : ''}
+      ${heldWords ? spec('Held out', `<span title="${escape(heldTitle)}">${heldWords}</span>`,
+          !held.measured ? 'meh' : held.tuned.loss > held.base.loss ? 'bad' : '') : ''}
       ${r.started_at ? spec('Started', ago(r.started_at)) : ''}
       ${r.finished_at ? spec('Finished', ago(r.finished_at)) : ''}
     </div>${stage}`;
@@ -444,7 +522,7 @@ modals.wizard = (m) => {
       <span class="spacer"></span>
       ${last && missing.length ? `<span class="status">Still needs ${missing.map(escape).join(', ')}.</span>` : ''}
       <button class="action" data-act="wz-step" data-step="${m.step - 1}" ${m.step === 0 ? 'disabled' : ''}>Back</button>
-      ${last ? `<button class="action toggle" aria-pressed="true" data-act="wz-train" ${
+      ${last ? `<button class="action primary" data-act="wz-train" ${
                   missing.length ? 'disabled' : ''}>Start training</button>`
              : `<button class="action" data-act="wz-step" data-step="${m.step + 1}">Next</button>`}
     </div></div>`;
@@ -475,6 +553,8 @@ function refit() {
 
 actions['recipe-new']  = () => openWizard(blankRecipe(), 0);
 actions['recipe-edit'] = (e) => {
+  const condensed = recipesList().find((x) => x.id === e.dataset.id && x.method === 'condense');
+  if (condensed) { openCondense(condensed); return; }
   const r = recipesList().find((x) => x.id === e.dataset.id);
   if (r) openWizard(r, Number(e.dataset.step || 0));
 };
@@ -564,7 +644,7 @@ actions['wz-train'] = () => guard(async () => {
 
 modals.tester = (m) => {
   const turns = (state.snapshot.turns || []);
-  const talk = turns.length > m.from ? turnsView(turns, m.from)
+  const talk = turns.length > m.from ? turnsView(turns, m.from, 'test-talk')
     : '';
   return `<div class="modal wide">
     <div class="head"><strong>Testing ${escape(m.name)}</strong>
@@ -614,8 +694,163 @@ actions['test-edit'] = () => {
   const id = state.modal.id;
   closeModal();
   const r = recipesList().find((x) => x.id === id);
-  if (r) openWizard(r, 4);
+  if (r && r.method === 'condense') openCondense(r);
+  else if (r) openWizard(r, 4);
 };
 
 /// Keep the test window's own transcript at its bottom, as Chat's is.
 afterDraw.push(() => keepAtBottom('test-talk'));
+
+// --- condensing a model -------------------------------------------------------------------------
+//
+// The same model in fewer bits, so one that does not fit on the cards can be
+// made to. Picked from the models on this machine; every size is llama.cpp's
+// own dry run, and each says whether it would then run on the cards, the way
+// the Models tab does.
+
+/// The GGUF models on this machine that could be condensed: not a picture
+/// projector, which is no model on its own.
+function condensable() {
+  const models = state.models ? state.models.models || [] : [];
+  return models.filter((m) => (m.format || 'gguf') === 'gguf' && !/mmproj/i.test(m.name));
+}
+
+/// What a condensed copy is called before anybody names it: the file's name
+/// without its quantization, and the new one.
+function condenseName(file, quantization) {
+  const stem = fileName(file).replace(/\.gguf$/i, '').replace(/-\d{5}-of-\d{5}$/, '');
+  const bare = stem.replace(/[-._]((UD-)?(I?Q\d(_[A-Z0-9]+)*|B?F16|F32|MXFP4(_MOE)?))$/i, '');
+  return `${bare || stem} ${quantization}`;
+}
+
+modals.condense = (m) => {
+  const models = condensable();
+  const chosen = models.find((x) => x.path === m.path);
+  const sizes = m.sizes;
+  const option = (o) => {
+    const [fitWords, fitClass] = FITS[o.fit] || FITS.large;
+    const why = o.worth ? '' : ' title="Already this small"';
+    return `<button type="button" class="condense-option${o.name === m.pick ? ' on' : ''}" data-act="cz-pick"
+        data-name="${escape(o.name)}" aria-pressed="${o.name === m.pick}"${o.worth ? '' : ' disabled'}${why}>
+      <strong>${escape(o.name)}</strong>
+      ${o.samples ? '<span class="tag" title="Runs the model over sample text first">sampled</span>' : ''}
+      ${o.recommended ? `<span class="pick-mark" title="Suggested">${MARKET_ICONS.pick}</span>` : ''}
+      <span class="status">${escape(o.worth ? o.note : 'already this small')}</span>
+      <span class="spacer"></span>
+      <span class="fit ${fitClass}">${fitWords}</span>
+      <span class="status size">${bytes(o.bytes)}</span></button>`;
+  };
+  let body;
+  if (!models.length) {
+    body = '<p class="lede">No GGUF models here yet. Get one from Models.</p>';
+  } else if (!m.path) {
+    body = '';
+  } else if (m.measuring) {
+    body = '<div class="status" style="margin-top:.8rem">Measuring...</div>';
+  } else if (sizes) {
+    const [nowWords, nowClass] = FITS[sizes.fit] || FITS.large;
+    body = `<div class="status" style="margin:.5rem 0 .9rem">${apart(escape(sizes.quantization || 'unknown'),
+        bytes(sizes.bytes), `<span class="fit ${nowClass}">${nowWords}</span>`)}</div>
+      <div class="caption">TO</div>
+      <div class="condense-options">${sizes.options.map(option).join('')}</div>
+      <div class="caption" style="margin-top:1rem">NAME</div>
+      <input id="cz-name" data-input="cz-name" value="${escape(m.name)}" autocomplete="off" spellcheck="false">
+      <input id="cz-purpose" data-input="cz-purpose" value="${escape(m.purpose)}" placeholder="What it is for (optional)"
+             autocomplete="off" style="margin-top:.5rem">`;
+  } else {
+    body = '';
+  }
+  return `<div class="modal wide">
+    <div class="head"><strong>Condense a model</strong>
+      <div class="status">Fewer bits: smaller, a little less sharp.</div></div>
+    <div class="body-pad">
+      ${models.length ? `<div class="caption">MODEL</div>
+      <select data-change="cz-model" aria-label="Model">
+        <option value=""${m.path ? '' : ' selected'}>Choose a model</option>
+        ${models.map((x) => `<option value="${escape(x.path)}"${x.path === m.path ? ' selected' : ''}>${
+          escape(x.name)}  (${bytes(x.bytes)})</option>`).join('')}
+      </select>` : ''}
+      ${body}
+      ${m.error ? `<div class="bad" style="margin-top:.8rem">${escape(m.error)}</div>` : ''}
+      ${chosen || !m.path ? '' : '<div class="bad" style="margin-top:.8rem">That model is not in the models folder now.</div>'}
+    </div>
+    <div class="feet">
+      <button class="action" data-act="modal-close">Cancel</button>
+      <span class="spacer"></span>
+      <button class="action primary" data-act="cz-start"
+              ${m.pick && m.name.trim() && sizes ? '' : 'disabled'}>Condense</button>
+    </div></div>`;
+};
+
+/// Open the dialog, empty or on a recipe being changed.
+function openCondense(recipe) {
+  need('models', 'models');
+  openModal({ kind: 'condense', sticky: true, id: recipe ? recipe.id : '',
+              path: recipe ? (recipe.base.path || recipe.base.id) : '', sizes: null, measuring: false,
+              pick: recipe ? recipe.quantization : '', name: recipe ? recipe.name : '',
+              named: !!recipe, purpose: recipe ? recipe.purpose : '', error: '' });
+  if (recipe) measureCondense();
+}
+
+/// Ask what the chosen model weighs at every size. The suggested one is
+/// picked unless something was already.
+async function measureCondense() {
+  const m = state.modal;
+  if (!m || m.kind !== 'condense' || !m.path) return;
+  const path = m.path;
+  m.measuring = true;
+  m.sizes = null;
+  m.error = '';
+  render();
+  try {
+    const sizes = await call('lab.condense.sizes', { path });
+    if (state.modal !== m || m.path !== path) return;   // the choice moved on meanwhile
+    m.sizes = sizes;
+    const usable = sizes.options.filter((o) => o.worth);
+    if (!usable.some((o) => o.name === m.pick)) {
+      const suggested = usable.find((o) => o.recommended) || usable[0];
+      m.pick = suggested ? suggested.name : '';
+    }
+    if (!m.named && m.pick) m.name = condenseName(sizes.file, m.pick);
+  } catch (error) {
+    if (state.modal === m) m.error = error.message;
+  } finally {
+    if (state.modal === m) { m.measuring = false; render(); }
+  }
+}
+
+actions['condense-new'] = () => openCondense(null);
+actions['cz-model'] = (select) => {
+  const m = state.modal;
+  m.path = select.value;
+  m.pick = '';
+  if (!m.named) m.name = '';
+  measureCondense();
+};
+actions['cz-pick'] = (button) => {
+  const m = state.modal;
+  m.pick = button.dataset.name;
+  if (!m.named && m.sizes) m.name = condenseName(m.sizes.file, m.pick);
+  render();
+};
+actions['cz-name'] = (box) => { state.modal.name = box.value; state.modal.named = true; };
+actions['cz-purpose'] = (box) => { state.modal.purpose = box.value; };
+actions['cz-start'] = () => guard(async () => {
+  const m = state.modal;
+  const model = condensable().find((x) => x.path === m.path);
+  if (!model || !m.sizes || !m.pick) return;
+  const was = m.id ? recipesList().find((r) => r.id === m.id) : null;
+  const recipe = Object.assign(was ? JSON.parse(JSON.stringify(was)) : blankRecipe(), {
+    name: m.name.trim(), purpose: m.purpose.trim(), method: 'condense', format: 'gguf',
+    quantization: m.pick, stage: 'draft', data: [], tools: [],
+    parameters_b: Math.round((m.sizes.elements || 0) / 1e7) / 100,
+    base: { source: 'local', id: model.path, path: model.path, label: fileName(model.name), bytes: model.bytes },
+  });
+  const saved = await call('lab.save', recipe);
+  await call('lab.train', { id: saved.id });
+  state.run = await call('lab.run');
+  await reloadRecipes();
+  state.modal.sticky = false;
+  closeModal();
+  state.open.recipe = saved.id;
+});

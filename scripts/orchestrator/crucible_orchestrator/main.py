@@ -4,7 +4,7 @@
 import platform
 import sys
 
-from . import PROTOCOL, build, cook, naming, routing
+from . import PROTOCOL, bench, build, chat, cook, naming, routing
 from .rpc import Channel
 
 
@@ -14,8 +14,10 @@ def handlers(channel):
         "ping": lambda params: {"pong": params.get("say", "")},
         "route": lambda params: routing.route(channel, params).to_json(),
         "route.explain": lambda params: routing.explain(channel, params),
+        "chat.turn": lambda params: chat.turn(channel, params),
         "cook.run": lambda params: cook.run(core, params),
         "build.run": lambda params: build.run(core, params),
+        "bench.run": lambda params: bench.run(channel, params),
         "name.session": lambda params: naming.name_session(channel, params),
         "examples.write": lambda params: naming.write_examples(channel, params),
     }

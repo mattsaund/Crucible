@@ -20,6 +20,7 @@
 #include "crucible/config/paths.hpp"
 #include "crucible/config/trust.hpp"
 #include "crucible/kit/kit.hpp"
+#include "crucible/lab/condense.hpp"
 #include "crucible/session/store.hpp"
 #include "crucible/util/platform.hpp"
 #include "app.hpp"
@@ -30,6 +31,14 @@ int main(int argc, char** argv) {
     // Started from a terminal, `crucible --help` prints the braille mark, and
     // on Windows the console needs telling before it can render it.
     crucible::util::use_utf8_console();
+
+    // Condensing a model is Crucible run as a child of itself, so it can be
+    // stopped and cannot take the window down. Its arguments are positional,
+    // so it is answered before the usual parsing would refuse them. See
+    // lab/condense.hpp.
+    if (crucible::lab::is_condense_command(argc, argv)) {
+        return crucible::lab::condense_main(std::vector<std::string>(argv + 1, argv + argc));
+    }
 
     // The programs Crucible fetched for its experts, ahead of the machine's
     // own on this process's PATH, so every command an expert runs finds them.

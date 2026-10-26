@@ -12,14 +12,17 @@ and does the arithmetic. Everything about *how* a route is chosen is here, so it
 can be changed and measured without rebuilding anything; everything about the
 weights stays where the weights are.
 
-Measured with crucible-routebench: on Crucible's 54-prompt benchmark, 50/54
+Measured with crucible-routebench: on Crucible's 54-prompt benchmark, 49/54
 with LFM2.5-1.2B and 54/54 with gpt-oss-20b; on a five-seat roster of fifty
 prompts, 49/50 with LFM -- a pH question sits on its line between Chemistry
 and Mathematics -- and 48/50 with gpt-oss. See ModelRouter and Roster.orders for why three
-orders rather than one.
+orders rather than one. LFM's 54-prompt score was 50 while its later labels
+were scored behind the ones before them, which a cache it cannot cut back
+used to leave in place.
 """
 
 import math
+import os
 import time
 
 # Where a decision came from, by the names the session history stores.
@@ -109,16 +112,35 @@ class Roster:
             prompt += "%s  %s: %s\n" % (e.get("tag", ""), e.get("name", ""), e.get("blurb", ""))
         return prompt
 
+    def asked(self):
+        """Each seat's worked questions: its examples, or when it has none and
+        another seat has some, its own description.
+
+        A seat whose name is never given as an answer loses to one whose name
+        is. The starter seat has no examples, nor does a seat added before
+        there was a delegator to write them, and LFM2.5-1.2B, routing for a
+        Programming seat with none beside a Writing seat with two, sent eight
+        of twelve requests to restyle a page to Writing, "make the header blue"
+        among them. Asked about in its blurb, Programming took nine of the
+        twelve, and every writing request was still Writing's. When no seat
+        has examples there is nothing to even out, and the delegator reads the
+        descriptions alone, as it always did.
+        """
+        asked = [[q for q in e.get("examples") or [] if q] for e in self.experts]
+        if not any(asked):
+            return asked
+        return [questions or ([e["blurb"]] if e.get("blurb") else [])
+                for questions, e in zip(asked, self.experts)]
+
     def examples(self, order=None):
         # The answer to each is exactly a label and nothing more: an example
         # that showed anything else would teach the delegator to keep writing
         # past the string being scored.
+        asked = self.asked()
         pairs = []
         for i in order if order is not None else range(len(self.experts)):
-            e = self.experts[i]
-            for question in e.get("examples") or []:
-                if question:
-                    pairs.append((question, e.get("name", "")))
+            for question in asked[i]:
+                pairs.append((question, self.experts[i].get("name", "")))
         return pairs
 
 
@@ -200,6 +222,10 @@ class ModelRouter:
     # each one; it depends on neither the load nor the question.
     _bias = {}
 
+    # What every question's prompt in an order starts with, by the file and
+    # the prompt it was rendered from. See prefix.
+    _prefix = {}
+
     def __init__(self, core, roster, delegator_path, calibration=CALIBRATION, method=""):
         self.core = core
         self.roster = roster
@@ -220,11 +246,29 @@ class ModelRouter:
         rendered = self.core.call("delegator.format", {"messages": messages})["text"]
         return rendered + answer_prefix(rendered)
 
+    def prefix(self, order):
+        """The part of an order's prompt that every question shares.
+
+        The instructions and the worked examples, up to where the question
+        goes. The core keeps it read between routes, so a route reads the
+        question three times instead of the whole roster: on an RTX 3060 a
+        gpt-oss-20b route went from 1.8 s to 0.4 s, with the core scoring a
+        roster's labels at once besides.
+        """
+        key = (self.path, self.roster.system_prompt(order), tuple(self.roster.examples(order)))
+        if key not in ModelRouter._prefix:
+            # Rendered around two different questions, what the two have in
+            # common is all that comes before the question, in whatever shape
+            # the model's chat format gives it.
+            rendered = [self.conversation(question, order) for question in ("a", "b")]
+            ModelRouter._prefix[key] = os.path.commonprefix(rendered)
+        return ModelRouter._prefix[key]
+
     def score(self, question, order, cancelable=True):
         """Raw label scores for one question, or None when it could not be scored."""
         reply = self.core.call("delegator.score",
                                {"prompt": self.conversation(question, order), "labels": self.labels,
-                                "cancelable": cancelable})
+                                "prefix": self.prefix(order), "cancelable": cancelable})
         scores = reply.get("scores") or []
         if reply.get("canceled"):
             return "canceled"

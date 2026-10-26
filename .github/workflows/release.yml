@@ -10,6 +10,13 @@
 # Run it by pushing a tag (v0.1.0), or by hand from the Actions tab -- the
 # manual run uploads the artifacts and makes no release, which is how to check
 # the packaging without publishing anything.
+#
+# A tag also builds the prebuilt runtimes (runtimes.yml) as part of this run,
+# and the release goes public only once both are on it: the runtimes are put
+# on a draft as soon as they are built, and the last job adds the installers
+# and publishes it. The release used to go public with the installers while
+# the runtimes were still building, and for that half hour an install whose
+# llama.cpp tag had moved found nothing to download.
 name: installers
 
 on:
@@ -156,21 +163,54 @@ jobs:
           name: Crucible-Linux
           path: dist/Crucible-x86_64.AppImage
 
-  release:
-    name: Attach to the release
-    needs: [macos, windows, linux]
+  # The compute backends, built by runtimes.yml inside this run so the release
+  # can wait for them. Only on a tag: a run by hand is a packaging check, and
+  # runtimes.yml can be run by hand on its own.
+  runtimes:
+    name: Runtimes
     if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/runtimes.yml
+
+  # Whatever of them built, put on the release while it is still a draft --
+  # made a draft here if there is no release yet. A backend whose job failed
+  # is simply not there, and the app compiles that one the way it always has.
+  runtimes-attach:
+    name: Attach the runtimes
+    needs: runtimes
+    if: startsWith(github.ref, 'refs/tags/v') && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
         with:
+          pattern: runtime-*
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/**/*.tar.gz
+          draft: true
+
+  release:
+    name: Publish the release
+    needs: [macos, windows, linux, runtimes-attach]
+    # Pushing the tag is the decision to release: the three installers have to
+    # pass, and the runtimes have to be on the draft, whichever of them built.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && !cancelled()
+      && needs.macos.result == 'success' && needs.windows.result == 'success'
+      && needs.linux.result == 'success' && needs.runtimes-attach.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: Crucible-*
           path: artifacts
 
       - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/**/*
-          # Published rather than left a draft: pushing the tag is the
-          # decision to release, and the three installers above are what has
-          # to pass first -- this job runs only when all of them did.
+          # Published rather than left a draft, now that everything is on it:
+          # the installers are uploaded to the draft first and only then is
+          # it made public, in this one step.
           draft: false
           generate_release_notes: true

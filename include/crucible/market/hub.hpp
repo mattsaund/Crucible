@@ -157,4 +157,51 @@ std::filesystem::path landing(const std::filesystem::path& folder, const File& f
 /// The URL a file is fetched from.
 std::string file_url(std::string_view repo, std::string_view path);
 
+// --- where a model file came from ---------------------------------------------
+//
+// A benchmark result goes on the public board only for a model anybody can
+// fetch, so before one is posted its file is looked for here by its SHA-256
+// (see api/methods_bench.cpp). The board checks the same thing again.
+
+/// A repository as its files describe it.
+struct Repository {
+    std::string       id;             ///< the hub's own name for it, whatever name it was asked by
+    bool              open = false;   ///< public and not disabled: anybody may fetch from it
+    std::vector<File> files;          ///< every file, with its size and, kept in LFS, its SHA-256
+};
+
+/// The URL a repository's files are asked for at: only those, the name and
+/// whether it is open.
+std::string repository_url(std::string_view id);
+
+/// What that URL answered, read. An empty id when it was not a repository.
+Repository parse_repository(std::string_view json_text);
+
+/// The name, in `files`, of the model whose SHA-256 is `sha256` and whose size
+/// is `bytes`, or empty when none is. A split GGUF is hashed from its first
+/// part and its size is that of all its parts, which sit beside the first.
+/// `prefer` is the name the file has here, chosen when two files match.
+std::string matching_file(const std::vector<File>& files, std::string_view sha256, std::uint64_t bytes,
+                          std::string_view prefer);
+
+/// What to search the hub for to find a GGUF file's repository: its name
+/// without the extension, a split set's part number or the quantization,
+/// "gpt-oss-20b" for "gpt-oss-20b-MXFP4.gguf". Repositories are named for the
+/// model and their files for the model and the quantization.
+std::string search_name(std::string_view file);
+
+/// Where a model file is public on the hub.
+struct Found {
+    std::string repo;   ///< as the hub spells it; empty when no public file matched
+    std::string file;   ///< the file's name there
+};
+
+/// Look for a model file on the hub by its SHA-256 and size: in `hint` first,
+/// the repository its folder is named for, then in the few most downloaded
+/// GGUF repositories a search for its name finds. False, with `error`, only
+/// when the hub could not be asked. A file found nowhere is an empty
+/// `out.repo`.
+bool find_public(std::string_view hint, std::string_view file, std::string_view sha256, std::uint64_t bytes,
+                 Found& out, std::string& error);
+
 }  // namespace crucible::market

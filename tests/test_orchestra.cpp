@@ -9,12 +9,15 @@
 #include "test_helpers.hpp"
 
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <thread>
 
+#include "crucible/config/paths.hpp"
 #include "crucible/lab/python.hpp"
 #include "crucible/orchestra/link.hpp"
+#include "crucible/util/http.hpp"
 #include "crucible/util/sha256.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -85,6 +88,19 @@ TEST(a_file_is_hashed_as_its_bytes) {
     CHECK(util::sha256_file(dir.path() / "missing").empty());
 }
 
+TEST(a_digest_is_given_up_on_when_told_to) {
+    // What a Stop does to a model being fingerprinted for the benchmarks: the
+    // hashing ends between one chunk and the next, and what was read so far
+    // is nobody's digest.
+    TempDir dir;
+    const auto file = dir.path() / "blob";
+    { std::ofstream(file, std::ios::binary) << std::string(1 << 20, 'x'); }
+    int asked = 0;
+    CHECK(util::sha256_file(file, [&asked] { return ++asked == 3; }).empty());
+    CHECK_EQ(asked, 3);
+    CHECK_EQ(util::sha256_file(file, [] { return false; }), sha(std::string(1 << 20, 'x')));
+}
+
 TEST(every_platform_crucible_ships_on_has_a_pinned_python) {
 #if (defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))) || defined(__APPLE__) \
     || (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
@@ -145,6 +161,100 @@ TEST(a_venv_made_from_another_python_is_found_out) {
     CHECK(!lab::python::made_from_another_python(dir.path() / "nothing"));
     set_env("CRUCIBLE_PYTHON", "python3");
     CHECK(!lab::python::made_from_another_python(venv("named", ours, "version = 3.12.15")));
+}
+
+TEST(a_python_download_stopped_halfway_is_carried_on_and_never_half_installed) {
+    std::string why;
+    if (!util::http::available(why) || !util::on_path("tar")) {
+        std::printf("      (no curl or tar; skipped)\n");
+        return;
+    }
+#if defined(_WIN32)
+    // tar is handed the archive by its full path, which the GNU tar a Windows
+    // runner can have first on PATH reads as a host and a file. The steps
+    // around it are the same on every platform.
+    std::printf("      (skipped on Windows)\n");
+    return;
+#else
+    namespace fs = std::filesystem;
+    TempDir dir;
+    const ScopedDataHome data(dir.path() / "data");
+
+    // python-build-standalone's shape: one folder, python/, with the
+    // interpreter where Crucible looks for it.
+    const fs::path made = dir.path() / "made";
+    fs::create_directories(made / "python" / "bin");
+    std::ofstream(made / "python" / "bin" / "python3") << "#!/bin/sh\n";
+    std::ofstream(made / "python" / "lib.txt") << std::string(200000, 'x');
+    const util::Ran packed = util::run({"tar", "-czf", "python.tar.gz", "python"}, made, {}, 60);
+    CHECK(packed.started && packed.status == 0);
+    const fs::path archive = made / "python.tar.gz";
+    std::ifstream in(archive, std::ios::binary);
+    const std::string whole((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(!whole.empty());
+    const lab::python::Build build{"9.9.9", "file://" + archive.generic_string(), whole.size(),
+                                   util::sha256_file(archive)};
+    const fs::path got = lab::python::detail::download_file(build);
+
+    // A Python already there, which a stop must leave exactly as it was; the
+    // leftovers of a run that ended badly; and a part file of another build.
+    fs::create_directories(lab::python::root() / "bin");
+    std::ofstream(lab::python::root() / "bin" / "python3") << "old";
+    fs::create_directories(paths::data_dir() / "python-staging" / "python");
+    std::ofstream(paths::data_dir() / "python-download.tar.gz") << "an older Crucible's";
+    fs::create_directories(got.parent_path());
+    std::ofstream(got.parent_path() / "0123456789abcdef.tar.gz.part") << "another build";
+
+    const auto read = [](const fs::path& file) {
+        std::ifstream from(file, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(from)), std::istreambuf_iterator<char>());
+    };
+    const auto none = [](const lab::python::Progress&) {};
+
+    // Stopped: wherever it lands, nothing is put in place.
+    std::string error;
+    CHECK(!lab::python::detail::install(build, none, error, [] { return true; }));
+    CHECK_EQ(error, std::string("stopped"));
+    CHECK_EQ(read(lab::python::root() / "bin" / "python3"), std::string("old"));
+    CHECK(!fs::exists(lab::python::root() / "lib.txt"));
+    CHECK(!fs::exists(lab::python::marker_file()));
+    CHECK(!fs::exists(got.parent_path() / "0123456789abcdef.tar.gz.part"));
+    CHECK(!fs::exists(paths::data_dir() / "python-download.tar.gz"));
+
+    // The next start finishes it, from whatever the stop kept.
+    error.clear();
+    CHECK(lab::python::detail::install(build, none, error, {}));
+    CHECK_EQ(error, std::string());
+    CHECK_EQ(read(lab::python::root() / "bin" / "python3"), std::string("#!/bin/sh\n"));
+    CHECK_EQ(read(lab::python::root() / "lib.txt").size(), std::size_t{200000});
+    CHECK_EQ(lab::python::installed_version(), std::string("9.9.9"));
+    CHECK(!fs::exists(got.parent_path()));                       // nothing left over
+    CHECK(!fs::exists(paths::data_dir() / "python-staging"));
+
+    // Half of it already fetched, as a stop leaves it: carried on from.
+    fs::remove_all(lab::python::root());
+    fs::create_directories(got.parent_path());
+    std::ofstream(got.string() + ".part", std::ios::binary) << whole.substr(0, whole.size() / 2);
+    error.clear();
+    CHECK(lab::python::detail::install(build, none, error, {}));
+    CHECK_EQ(read(lab::python::root() / "lib.txt").size(), std::size_t{200000});
+    CHECK(!fs::exists(got.string() + ".part"));
+
+    // Carried on from, not started again -- which is why what comes of it is
+    // checked whole. A part that was never this file is caught and removed,
+    // nothing is put in place, and the next start fetches it afresh.
+    fs::remove_all(lab::python::root());
+    fs::create_directories(got.parent_path());
+    std::ofstream(got.string() + ".part", std::ios::binary) << std::string(whole.size() / 2, 'z');
+    error.clear();
+    CHECK(!lab::python::detail::install(build, none, error, {}));
+    CHECK(error.find("not the file it should be") != std::string::npos);
+    CHECK(!fs::exists(lab::python::root()));
+    CHECK(!fs::exists(got) && !fs::exists(got.string() + ".part"));
+    error.clear();
+    CHECK(lab::python::detail::install(build, none, error, {}));
+    CHECK_EQ(read(lab::python::root() / "lib.txt").size(), std::size_t{200000});
+#endif
 }
 
 TEST(a_child_can_be_written_to_and_its_errors_kept_apart) {
@@ -244,6 +354,52 @@ TEST(the_orchestrator_answers_over_the_pipe) {
     link.stop();
     CHECK(!link.running());
     CHECK_EQ(link.call("ping", {{"say", "again"}}).value("pong", ""), "again");
+    link.stop();
+    if (previous.empty()) {
+        unset_env("CRUCIBLE_PYTHON");
+    } else {
+        set_env("CRUCIBLE_PYTHON", previous);
+    }
+}
+
+TEST(an_old_conversation_is_named_only_by_a_delegator_already_loaded) {
+    const std::string python = test_python();
+    if (python.empty()) {
+        std::printf("      (no Python on PATH; skipped)\n");
+        return;
+    }
+    TempDir dir;
+    ScopedDataHome home(dir.path());
+    const char* had = std::getenv("CRUCIBLE_PYTHON");
+    const std::string previous = had != nullptr ? had : "";
+    set_env("CRUCIBLE_PYTHON", python);
+
+    // A core with no delegator in memory, which says what it was asked.
+    orchestra::Link link;
+    std::vector<json> ready;
+    std::mutex        ready_mutex;
+    link.set_handler([&](const std::string& method, const json& params) {
+        const std::lock_guard<std::mutex> lock(ready_mutex);
+        if (method == "delegator.ready") {
+            ready.push_back(params);
+        }
+        return json{{"available", false}};
+    });
+    const json excerpt = "Question: how fast is the ISS\nAnswer: 7.7 km/s";
+
+    // The conversation on screen is named by its opening words.
+    CHECK_EQ(link.call("name.session", {{"excerpt", excerpt}}).value("name", ""),
+             std::string("How fast is the ISS"));
+    // One from before names, in passing, is not -- and the core is told not
+    // to load a delegator for it.
+    CHECK_EQ(link.call("name.session", {{"excerpt", excerpt}, {"spare", true}}).value("name", "?"),
+             std::string());
+    CHECK_EQ(ready.size(), std::size_t{2});
+    if (ready.size() == 2) {
+        CHECK(!ready[0].contains("load"));
+        CHECK_EQ(ready[1].value("load", true), false);
+    }
+
     link.stop();
     if (previous.empty()) {
         unset_env("CRUCIBLE_PYTHON");

@@ -6,13 +6,19 @@
 #include <atomic>
 
 #include <chrono>
+#include <map>
+#include <mutex>
+#include <sstream>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/lab/condense.hpp"
 #include "crucible/lab/hub.hpp"
 #include "crucible/lab/recipe.hpp"
+#include "crucible/market/hub.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
+#include "crucible/util/subprocess.hpp"
 
 namespace crucible::api {
 namespace {
@@ -43,6 +49,36 @@ lab::Asset asset_from_json(const json& node) {
     asset.bytes  = node.value("bytes", std::uint64_t{0});
     asset.path   = node.value("path", "");
     return asset;
+}
+
+/// The held-out score, both ways: the base's and the fine-tune's loss and
+/// perplexity, how many records were held out, or why none were.
+json held_out_json(const lab::HeldOut& held) {
+    const auto score = [](const lab::Score& one) {
+        return json{{"loss", one.loss}, {"perplexity", one.perplexity}};
+    };
+    return json{{"records", held.records}, {"base", score(held.base)}, {"tuned", score(held.tuned)},
+                {"skipped", held.skipped}, {"measured", held.measured()}};
+}
+
+lab::HeldOut held_out_from_json(const json& node) {
+    lab::HeldOut held;
+    if (!node.is_object()) {
+        return held;
+    }
+    const auto score = [](const json& one) {
+        lab::Score out;
+        if (one.is_object()) {
+            out.loss       = one.value("loss", 0.0);
+            out.perplexity = one.value("perplexity", 0.0);
+        }
+        return out;
+    };
+    held.records = node.value("records", 0);
+    held.base    = score(node.value("base", json::object()));
+    held.tuned   = score(node.value("tuned", json::object()));
+    held.skipped = node.value("skipped", "");
+    return held;
 }
 
 /// The memory a fine-tune has to fit in: every card this machine can drive,
@@ -89,7 +125,8 @@ json recipe_json(const lab::Recipe& recipe, std::uint64_t memory) {
         there && std::filesystem::is_regular_file(recipe.trained_path, ec)
             ? std::filesystem::file_size(recipe.trained_path, ec) : 0;
 
-    return json{{"id", recipe.id}, {"name", recipe.name}, {"purpose", recipe.purpose},
+    const bool condense = recipe.method == lab::Method::Condense;
+    json out = json{{"id", recipe.id}, {"name", recipe.name}, {"purpose", recipe.purpose},
                 {"base", asset_json(recipe.base)}, {"data", data}, {"tools", tools},
                 {"method", std::string(lab::method_id(recipe.method))},
                 {"format", std::string(lab::export_id(recipe.format))},
@@ -104,12 +141,26 @@ json recipe_json(const lab::Recipe& recipe, std::uint64_t memory) {
                                         : format::short_path(recipe.trained_path)},
                 {"trained_there", there},
                 {"trained_bytes", trained_bytes},
+                {"held_out", held_out_json(recipe.held_out)},
                 {"stage", std::string(lab::stage_id(recipe.stage))},
-                {"stage_text", std::string(lab::stage_text(recipe.stage))},
+                {"stage_text", condense && recipe.stage == lab::Stage::Training
+                                   ? std::string("condensing") : std::string(lab::stage_text(recipe.stage))},
                 {"started_at", recipe.started_at}, {"finished_at", recipe.finished_at},
                 {"missing", lab::missing(recipe)},
                 {"export_bytes", lab::export_bytes(recipe.parameters_b, recipe.quantization)},
                 {"fit", fit_json(recipe.parameters_b, recipe.method, memory)}};
+    if (condense) {
+        // What it is condensed from, and whether what it comes out at runs on
+        // the cards: the number the whole recipe is for.
+        const std::string source = recipe.base.path.empty() ? recipe.base.id : recipe.base.path;
+        out["source_quantization"] = lab::quantization_in_name(std::filesystem::path(source).filename().string());
+        const std::uint64_t result = trained_bytes > 0 ? trained_bytes
+                                                       : lab::export_bytes(recipe.parameters_b, recipe.quantization);
+        out["runs"] = result > 0 ? std::string(market::fit_id(market::fit(result, market::Format::Gguf,
+                                                                              market::this_machine())))
+                                 : std::string();
+    }
+    return out;
 }
 
 lab::Recipe recipe_from_json(const json& node) {
@@ -131,6 +182,7 @@ lab::Recipe recipe_from_json(const json& node) {
     recipe.context       = node.value("context", 512);
     recipe.learning_rate = node.value("learning_rate", 1e-5F);
     recipe.trained_path  = node.value("trained_path", "");
+    recipe.held_out      = held_out_from_json(node.value("held_out", json::object()));
     recipe.stage         = lab::stage_from_id(node.value("stage", "draft"));
     recipe.started_at    = node.value("started_at", std::int64_t{0});
     recipe.finished_at   = node.value("finished_at", std::int64_t{0});
@@ -156,15 +208,14 @@ std::filesystem::path convert_script() {
     return std::filesystem::exists(script, ec) ? script : std::filesystem::path{};
 }
 
+/// A llama-quantize shipped beside Crucible, which none does today. Not one
+/// from the PATH: that is some other llama.cpp, and Crucible quantizes with
+/// its own when this is empty (see Trainer::run).
 std::filesystem::path quantize_bin() {
     std::error_code ec;
     const std::filesystem::path beside =
         util::executable_path().parent_path() / "llama-quantize";
-    if (std::filesystem::exists(beside, ec)) {
-        return beside;
-    }
-    return util::on_path("llama-quantize") ? std::filesystem::path("llama-quantize")
-                                           : std::filesystem::path{};
+    return std::filesystem::exists(beside, ec) ? beside : std::filesystem::path{};
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +369,7 @@ Reply lab_run(const json& params, Host& host) {
         {"device",  run.device},
         {"records", run.records},
         {"trainable", run.trainable},
+        {"held_out", held_out_json(run.held_out)},
         {"seconds_left", run.seconds_left()},
         {"seconds", running_for},
         {"error",   run.error},
@@ -388,6 +440,106 @@ Reply hub_search(const json& params, const Scene&) {
     return good(json{{"items", std::move(items)}});
 }
 
+/// What a model on this machine would weigh at each quantization the Create
+/// tab offers, whether each would then run on the cards, and which to suggest.
+///
+/// The sizes are llama.cpp's own, from a dry run of every quantization in a
+/// child Crucible (see lab/condense.hpp): exact where an average would be a
+/// gigabyte out on a mixture of experts. A few seconds for a large model, so
+/// the answer is kept for as long as the file is the same file.
+Reply lab_condense_sizes(const json& params, const Scene&) {
+    const std::filesystem::path file = paths::expand_user(params.value("path", std::string{}));
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec)) {
+        return bad(file.string() + " is not a file on this machine");
+    }
+    const auto stamp = std::filesystem::last_write_time(file, ec).time_since_epoch().count();
+    const std::string key = file.string() + "|" + std::to_string(stamp);
+
+    static std::mutex                  cache_mutex;
+    static std::map<std::string, json> cache;
+    json measured;
+    {
+        const std::lock_guard<std::mutex> lock(cache_mutex);
+        if (const auto found = cache.find(key); found != cache.end()) {
+            measured = found->second;
+        }
+    }
+    if (measured.is_null()) {
+        std::string types;
+        for (const lab::Quantization& q : lab::quantizations()) {
+            types += (types.empty() ? "" : ",") + std::string(q.name);
+        }
+        const util::Ran ran = util::run({util::executable_path().string(), "--quantize-sizes",
+                                         file.string(), types},
+                                        file.parent_path(), {}, 300);
+        if (!ran.started) {
+            return bad("could not measure it: " + ran.error);
+        }
+        // The child's answer is the one line that parses as an object with
+        // sizes in it; llama.cpp's warnings may be around it.
+        std::istringstream lines(ran.output);
+        std::string        line;
+        while (std::getline(lines, line)) {
+            json parsed = json::parse(line, nullptr, false);
+            if (parsed.is_object() && parsed.contains("sizes")) {
+                measured = std::move(parsed);
+            }
+        }
+        if (!measured.is_object() || !measured.value("ok", false)) {
+            return bad(measured.is_object() ? measured.value("error", std::string("could not read it"))
+                                            : std::string("could not measure it"));
+        }
+        const std::lock_guard<std::mutex> lock(cache_mutex);
+        cache[key] = measured;
+    }
+
+    const market::Machine machine = market::this_machine();
+    lab::Original source;
+    source.bits         = measured.value("bits", 0.0);
+    source.quantization = measured.value("quantization", std::string());
+    source.type         = measured.value("type", std::string());
+    json options = json::array();
+    int  best = -1;
+    int  best_rank = 99;
+    for (const lab::Quantization& q : lab::quantizations()) {
+        const json size = measured["sizes"].value(q.name, json());
+        if (!size.is_number_unsigned() && !size.is_number_integer()) {
+            continue;
+        }
+        const std::uint64_t bytes = size.get<std::uint64_t>();
+        const market::Fit   fit   = market::fit(bytes, market::Format::Gguf, machine);
+        // By the type, and by what the dry run measured: weights that do not
+        // divide into the type's blocks get a larger one, so a 2-bit type can
+        // come out nearly as big as the original.
+        const double elements = measured.value("elements", 0.0);
+        const bool   worth    = lab::worth_condensing(source, q.name)
+                           && (elements <= 0.0 || lab::shrinks_enough(source.bits, static_cast<double>(bytes) * 8.0 / elements));
+        // The one to suggest: the best that runs on the cards alone, or when
+        // none does, the best that runs at all. Best first, so the first of a
+        // rank is the one.
+        const int rank = !worth ? 99 : fit == market::Fit::Gpu ? 0 : fit == market::Fit::Partial ? 1
+                       : fit == market::Fit::Cpu ? 2 : 99;
+        if (rank < best_rank) {
+            best      = static_cast<int>(options.size());
+            best_rank = rank;
+        }
+        options.push_back(json{{"name", q.name}, {"note", q.note}, {"bytes", bytes},
+                               {"fit", std::string(market::fit_id(fit))}, {"worth", worth},
+                               {"samples", q.samples}});
+    }
+    if (best >= 0) {
+        options[static_cast<std::size_t>(best)]["recommended"] = true;
+    }
+    const std::uint64_t now_bytes = measured.value("bytes", std::uint64_t{0});
+    return good(json{{"path", file.string()}, {"file", file.filename().string()},
+                     {"bytes", now_bytes}, {"bits", source.bits},
+                     {"quantization", measured.value("quantization", std::string())},
+                     {"elements", measured.value("elements", std::uint64_t{0})},
+                     {"fit", std::string(market::fit_id(market::fit(now_bytes, market::Format::Gguf, machine)))},
+                     {"options", std::move(options)}});
+}
+
 }  // namespace
 
 void lab_methods(std::vector<Method>& table) {
@@ -401,6 +553,7 @@ void lab_methods(std::vector<Method>& table) {
     table.push_back({"lab.test",      nullptr, lab_test});
     table.push_back({"lab.test.stop", nullptr, lab_test_stop});
     table.push_back({"lab.keep",      nullptr, lab_keep});
+    table.push_back({"lab.condense.sizes", lab_condense_sizes, nullptr});
     table.push_back({"hub.search",    hub_search, nullptr});
 }
 

@@ -41,6 +41,7 @@ struct ModelUnit {
     std::uint64_t weights      = 0;  ///< the tensors in this unit
     std::uint64_t kv_per_token = 0;  ///< 0 for a block that keeps no KV cache
     std::uint64_t state        = 0;  ///< recurrent (SSM) state, fixed size
+    bool          sliding      = false;  ///< attends to the last ModelShape::window tokens only
 };
 
 /// The parts of a model's memory footprint that are knowable before loading.
@@ -65,20 +66,41 @@ struct ModelShape {
     /// Zero for an architecture whose attention shape could not be read.
     std::uint64_t kv_per_token = 0;
 
+    /// How far back a sliding-window layer attends, in tokens, or zero for a
+    /// model without such layers. gpt-oss attends 128 back on every other
+    /// layer; flint 513 back on most of its 49.
+    std::uint32_t window = 0;
+
+    /// The part of `kv_per_token` on the sliding-window layers: what a window
+    /// cache stops charging for every token past the window.
+    std::uint64_t sliding_kv_per_token = 0;
+
     /// Every placeable unit, in llama.cpp's order: `layers` blocks then the
     /// output. Empty when the tensor table could not be read, which is the
     /// signal to fall back to proportional splitting.
     std::vector<ModelUnit> units;
 
-    /// KV cache at `n_ctx` tokens.
-    std::uint64_t kv_bytes(int n_ctx) const;
+    /// How many cells a sliding-window layer keeps in a context of `n_ctx`.
+    ///
+    /// llama.cpp keeps the whole context on those layers too unless told not
+    /// to (swa_full), because a cache holding only the window cannot be
+    /// rewound past it. Told not to, it keeps the window and one batch beyond
+    /// it, padded to 256: 1280 cells for flint, against 32768 at 32K -- a
+    /// window for each of the context's `sequences`. Zero, which every figure
+    /// below reads as the whole context, when `window_cache` is off or the
+    /// model has no sliding window.
+    std::uint64_t sliding_cells(int n_ctx, int n_batch, bool window_cache, int sequences = 1) const;
+
+    /// KV cache at `n_ctx` tokens. `sliding` is what each sliding-window
+    /// layer keeps instead of the whole context; see sliding_cells.
+    std::uint64_t kv_bytes(int n_ctx, std::uint64_t sliding = 0) const;
 
     /// The recurrent state a hybrid model keeps: fixed-size, independent of
     /// the context length, and zero for an ordinary transformer.
     std::uint64_t state_bytes() const;
 
     /// What one unit costs on the card that holds it, cache included.
-    std::uint64_t unit_bytes(std::size_t index, int n_ctx) const;
+    std::uint64_t unit_bytes(std::size_t index, int n_ctx, std::uint64_t sliding = 0) const;
 
     /// The logits buffer. Large -- a 152k vocabulary at a batch of 512 is
     /// 300 MB -- and it lives only on the card holding the output unit, which
@@ -92,12 +114,12 @@ struct ModelShape {
     std::uint64_t compute_bytes(int n_batch) const;
 
     /// Everything: weights, cache and compute.
-    std::uint64_t total_bytes(int n_ctx, int n_batch) const;
+    std::uint64_t total_bytes(int n_ctx, int n_batch, std::uint64_t sliding = 0) const;
 
     /// Weights plus cache and state -- the part that is divided between cards,
     /// since all of it follows the layers. The compute buffers do not, and are
     /// covered by the per-card headroom in devices.hpp instead.
-    std::uint64_t resident_bytes(int n_ctx) const;
+    std::uint64_t resident_bytes(int n_ctx, std::uint64_t sliding = 0) const;
 };
 
 /// Read `file`'s header. Cheap: metadata only, no tensor data.

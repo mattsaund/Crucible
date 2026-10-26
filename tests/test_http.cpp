@@ -9,6 +9,18 @@
 // second is where a 401 would be mistaken for an answer.
 #include "test_helpers.hpp"
 
+#include <chrono>
+#include <cstdio>
+#include <thread>
+
+#if !defined(_WIN32)
+#  include <arpa/inet.h>
+#  include <netinet/in.h>
+#  include <poll.h>
+#  include <sys/socket.h>
+#  include <unistd.h>
+#endif
+
 #include "crucible/util/http.hpp"
 
 namespace {
@@ -22,6 +34,35 @@ using crucible::util::http::detail::status_from_marker;
 bool has(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
 }
+
+#if !defined(_WIN32)
+/// A socket on this machine for curl to connect to: what is done with the
+/// connection is the test's.
+class Listener {
+public:
+    Listener() : socket_(::socket(AF_INET, SOCK_STREAM, 0)) {
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t size          = sizeof(address);
+        if (::bind(socket_, reinterpret_cast<sockaddr*>(&address), size) == 0 && ::listen(socket_, 1) == 0
+            && ::getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &size) == 0) {
+            port_ = ntohs(address.sin_port);
+        }
+    }
+    ~Listener() { ::close(socket_); }
+    Listener(const Listener&)            = delete;
+    Listener& operator=(const Listener&) = delete;
+
+    int         socket() const { return socket_; }
+    std::string url() const { return "http://127.0.0.1:" + std::to_string(port_) + "/"; }
+    bool        ready() const { return port_ != 0; }
+
+private:
+    int socket_ = -1;
+    int port_   = 0;
+};
+#endif
 
 }  // namespace
 
@@ -133,3 +174,65 @@ TEST(curl_is_told_where_to_put_the_headers_only_when_asked) {
     CHECK(has(curl_config(request, {}, true, "/tmp/h"), "dump-header = \"/tmp/h\""));
     CHECK(!has(curl_config(request, {}, true), "dump-header"));
 }
+
+#if !defined(_WIN32)
+TEST(a_request_stops_when_told_to_and_not_before) {
+    std::string why;
+    if (!crucible::util::http::available(why)) {
+        std::printf("      (no curl; skipped)\n");
+        return;
+    }
+    // A server that takes the connection and never answers: busy for longer
+    // than anybody waiting on it wants. The stop ends the wait, not the
+    // minute the request was allowed.
+    {
+        Listener silent;
+        CHECK(silent.ready());
+        Request request;
+        request.url             = silent.url();
+        request.timeout_seconds = 60;
+        const auto started = std::chrono::steady_clock::now();
+        const Response response = crucible::util::http::send(request, [&started] {
+            return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(300);
+        });
+        CHECK_EQ(response.error, std::string("stopped"));
+        CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+    }
+    // And one that answers: a stop that never comes changes nothing.
+    {
+        Listener answering;
+        CHECK(answering.ready());
+        std::thread server([&answering] {
+            // Waited for a while, not forever: a curl that never came would
+            // otherwise hold the test here.
+            pollfd waiting{answering.socket(), POLLIN, 0};
+            if (::poll(&waiting, 1, 10'000) != 1) {
+                return;
+            }
+            const int connection = ::accept(answering.socket(), nullptr, nullptr);
+            if (connection < 0) {
+                return;
+            }
+            std::string asked;
+            char        chunk[1024];
+            while (asked.find("\r\n\r\n") == std::string::npos) {
+                const ssize_t got = ::recv(connection, chunk, sizeof(chunk), 0);
+                if (got <= 0) {
+                    break;
+                }
+                asked.append(chunk, static_cast<std::size_t>(got));
+            }
+            const std::string reply = "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nrows\r\n";
+            (void)::send(connection, reply.data(), reply.size(), 0);
+            ::close(connection);
+        });
+        Request request;
+        request.url = answering.url();
+        const Response response = crucible::util::http::send(request, [] { return false; });
+        server.join();
+        CHECK(response.ok());
+        CHECK_EQ(response.status, 200);
+        CHECK(has(response.body, "rows"));
+    }
+}
+#endif

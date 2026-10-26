@@ -4,7 +4,7 @@
    ⠀⠀⠀⠀⠀⠀⢸⣿⣿⣷⣧⠀⠀⠀
    ⠀⠀⠀⠀⡀⢠⣿⡟⣿⣿⣿⡇⠀⠀
    ⠀⠀⠀⠀⣳⣼⣿⡏⢸⣿⣿⣿⢀⠀   C R U C I B L E
-   ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   a local LLM engine that delegates.
+   ⠀⠀⠀⣰⣿⣿⡿⠁⢸⣿⣿⡟⣼⡆   An all in one local AI workshop.
    ⢰⢀⣾⣿⣿⠟⠀⠀⣾⢿⣿⣿⣿⣿
    ⢸⣿⣿⣿⡏⠀⠀⠀⠃⠸⣿⣿⣿⡿
    ⢳⣿⣿⣿⠀⠀⠀⠀⠀⠀⢹⣿⡿⡁
@@ -13,12 +13,10 @@
    ⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⠀⠀⠀⠀
 ```
 
-**Crucible** builds software from a sentence. An architect plans it, agents
-build it, and you tune it and keep it as a program of its own. Frontier models
-do the heavy lifting, local models the rest.
-
-It is also a local LLM workshop: a roster of small expert models, a delegator
-that routes each prompt to the right one, and a fine-tuner to make more.
+**Crucible** builds software from a sentence, answers with the right expert
+for each question, and gets, makes and measures the models it runs. Local
+models do what they can, and frontier models do the heavy lifting once you
+add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
@@ -35,20 +33,21 @@ From the [releases page](https://github.com/mattsaund/Crucible/releases):
 | Windows | `Crucible-Setup.exe` | run it, no administrator needed |
 | Linux | `Crucible-x86_64.AppImage` | `chmod +x`, run it |
 
-Not signed with a paid certificate. Windows: **More info → Run anyway**. macOS:
-open it once, then **System Settings → Privacy & Security → Open Anyway**.
+Not signed with a paid certificate. On Windows, click **More info → Run
+anyway**. On a Mac, open it once, then **System Settings → Privacy & Security →
+Open Anyway**.
 
 **The first start fetches the rest**, with progress shown and nothing to click:
 
 - Crucible's own Python (no system Python needed or touched)
-- the compute runtimes the machine can use: CPU, CUDA, Metal, Vulkan
-- the programs agents use: GitHub's CLI, Node.js, a headless browser, Git on
-  Windows, a text reader for pictures on Linux
+- the compute runtimes the machine can use (CPU, CUDA, Metal, Vulkan)
+- the programs agents use, like GitHub's CLI, Node.js, a headless browser, Git
+  on Windows and a text reader for pictures on Linux
 - with no model at all, an open coding model sized to the machine (Qwen,
   Apache-2.0), seated as **Programming**
 - the fine-tuner's environment
 
-**Or build from source:**
+**Or build from source**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash
@@ -58,16 +57,17 @@ curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh 
 irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 ```
 
-Options: `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`, `--no-trainer`,
-`-y`, `--uninstall`. Run from inside a clone, it builds that clone.
+The options are `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`,
+`--no-trainer`, `-y` and `--uninstall`. Run from inside a clone, it builds that
+clone.
 
 **Updating:** Settings → About → **Update now**, or run the installer again.
 Crucible checks GitHub once a day and says when there is one. Config, models
-and history are kept. Versions are tagged `v0.9.4`; what
-changed is in [CHANGELOG.md](CHANGELOG.md).
+and history are kept. Versions are tagged `v0.9.5`, and what changed is in
+[CHANGELOG.md](CHANGELOG.md).
 
 **Uninstall:** `crucible --uninstall`. It asks before deleting models. If the
-program will not run:
+program will not run, use one of these.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash -s -- --uninstall
@@ -82,110 +82,136 @@ ___
 
 ### Build
 
-- Type a directive in **Build**: "a budgeting app that charts my gross and net
-  revenue". The architect writes a plan; type *go*, or what to change.
-- Each task goes to the agent that fits it. When nobody on the roster fits, the
-  build adds one, and keeps it.
-- Agents work side by side: a task starts when the ones before it are done and
-  nothing running touches its files.
+- Type a directive in **Build**, like "a budgeting app that charts my gross and
+  net revenue". The architect writes a plan. Type *go*, or what to change.
+- Agents take the tasks side by side, each the expert that fits it. When
+  nobody on the roster fits, the build adds one and keeps it.
 - **Frontier and local together.** Large tasks go to a provider's model, small
   ones to a model on this machine.
-- The **agents** are listed under the experts in the side menu. Click one to see
-  its task, its steps and its code.
-- Each finished task is committed. A check runs at the end; the architect writes
-  up what was built.
+- Each finished task is committed. A check runs at the end, and the architect
+  writes up what was built.
 - **A change is a sentence.** "Make the button blue" is one task, made and shown.
+- The **agents** are listed under the experts in the side menu. Click one for
+  its task, its steps and its code.
 - The chat stays open while a build runs. Each has its own Stop.
 
-![The preview, with an element picked and its dashboard open](docs/images/preview.png)
+### Code
+
+- **An editor** beside the agents, with tabs, a file tree, find and replace,
+  search across the project, Ctrl+P to open a file by a few letters, and a
+  terminal.
+- A file an agent changes while it is open reloads. Unsaved work is never
+  written over.
+
+![The code editor, with the project's files beside it](docs/images/code.png)
 
 ### Preview, tune, ship
 
 - **Preview** shows the page being built and reloads as agents write it.
 - **Pick an element**, then nudge padding, margin, fonts, colors and more.
   **Apply to source** writes the change into the stylesheet.
-- **Make it an app** packages the page as a program: Applications on a Mac,
-  the Start menu on Windows, the applications menu on Linux. It runs without
-  Crucible and keeps its own data.
-- **Code** is the project's files, highlighted, editable.
-- **Source** is git: changes, diffs, commits, pull, push, history, CI runs.
-  **Publish to GitHub** and **Ship** a release with `gh`.
+- **Make it an app**, a program of its own in Applications, the Start menu or
+  the applications menu. It runs without Crucible and keeps its own data.
+- **Source** is git, with changes, diffs, commits, pull, push, history and CI
+  runs. **Publish to GitHub** and **Ship** a release with `gh`.
 
-### Delegate
+![The preview, with an element picked and its dashboard open](docs/images/preview.png)
 
-- A small router model sends each prompt to the expert that fits, with a
-  confidence threshold. It scores the roster, so it cannot name an expert that
-  does not exist.
-- A model is in memory only while something uses it. Several stay loaded when
-  memory allows; one in use is never freed.
-- Pin a prompt to one expert from the box, or with `/name`. Picking one loads
-  it, and it stays loaded while it is picked.
+### Chat
+
+- **A roster of experts.** A small router model, the delegator, sends each
+  prompt to the expert that fits. It scores the roster, so it cannot name one
+  that does not exist.
+- Pin a prompt to one expert from the box, or with `/name`.
 - Replies show Markdown, code and math, typeset from LaTeX.
+- **Providers** are Anthropic and anything that speaks the OpenAI API, like
+  OpenAI, Gemini, DeepSeek, Kimi, OpenRouter, Groq or a server on your network.
+- The corner of the right-hand panel shows the models in memory, and the
+  frontier model's tokens, cost at list prices, rate limits and context.
 
 ![The roster: each seat with a description and a model](docs/images/experts.png)
-
-### Models
-
-- **Download from Hugging Face** in the **Models** tab: search, sort by best
-  match, downloads, likes or recently updated, pick GGUF or MLX and a
-  quantization, and see whether it fits on the cards, runs partly on the CPU,
-  or is too large. Downloads go to the models folder, carry on after a dropped
-  line or a restart, and are checked against Hugging Face's checksum.
-- GGUF everywhere, MLX on Apple Silicon. Models folder read four levels deep,
-  so LM Studio and Hugging Face layouts work as they are.
-- Local models that see pictures work when their `mmproj` projector sits beside
-  them.
-- **Providers**: Anthropic, and anything that speaks the OpenAI API: OpenAI,
-  Gemini, DeepSeek, Kimi, OpenRouter, Groq, or a server on your network.
-  Nothing leaves the machine until you add one and point a seat at it.
-- The corner of the right-hand panel shows the local models in memory, and the
-  frontier model in use: tokens, cost at list prices, rate limits, context.
-
-![The Models tab: a repository's quantizations, each marked by how it fits](docs/images/models.png)
 
 ### Tools
 
 Every model, local or not, gets the same tools in a trusted folder:
 
-- **Files:** LIST, READ (PDF, Word, sheets, pictures too), FIND, WRITE, EDIT
-- **Commands:** RUN in any shell, PYTHON, GIT, GH, and START, LOGS, STOP for
-  servers
-- **Web:** SEARCH (DuckDuckGo, no key) and FETCH in a headless browser
-- **RENDER** an HTML page or SVG to PDF or PNG
-- **TOOL** calls any MCP server added in Settings
-- **This computer** (off by default): SCREENSHOT, CLICK, MOVE, TYPE, KEY, SCROLL
+- LIST, READ, FIND, WRITE and EDIT **files**, PDFs, Word, sheets and pictures
+  too
+- RUN **commands** in any shell, and PYTHON, GIT, GH, and START, LOGS and STOP
+  for servers
+- SEARCH **the web** (DuckDuckGo, no key) and FETCH pages in a headless browser
+- RENDER an HTML page or SVG to PDF or PNG
+- TOOL calls any MCP server added in Settings
+- SCREENSHOT, CLICK, MOVE, TYPE, KEY and SCROLL on **this computer**, off by
+  default
 - Edits wait for your OK unless Auto is on. RUN is not a sandbox.
 
 ![The question Crucible asks once per folder](docs/images/trust.png)
 
 ### Attach
 
-- **+**, Ctrl+U, or drop files on the window: documents, code, pictures,
-  folders.
+- Attach documents, code, pictures and folders with **+**, Ctrl+U, or by
+  dropping them on the window. Paste a picture with Ctrl+V.
 - PDFs, Office files, EPUB and text are read into the prompt. Pictures go to
-  models that see; others get the words in them (Vision on a Mac, Windows OCR,
-  a reader on Linux).
+  models that see, and the others get the words in them.
+
+### Models
+
+- **Download from Hugging Face** in **Models**. Search, sort by best match,
+  downloads, likes or recently updated, pick GGUF or MLX and a quantization,
+  and see whether it fits on the cards, runs partly on the CPU, or is too
+  large. Downloads carry on after a dropped line or a restart and are checked
+  against Hugging Face's checksum.
+- GGUF everywhere, MLX on Apple Silicon. LM Studio and Hugging Face folders
+  work as they are.
+- Models that see pictures work when their `mmproj` projector sits beside them.
+- A model is in memory only while something uses it. Several stay loaded when
+  memory allows, and one in use is never freed.
+
+![The Models tab: a repository's quantizations, each marked by how it fits](docs/images/models.png)
 
 ### Create
 
-- Make an expert: pick a base model and data, train it on your card (LoRA, or
-  QLoRA with CUDA), test it, keep it.
+- **Fine-tune an expert.** Pick a base model and data, train it on your card
+  (LoRA, or QLoRA with CUDA), test it and keep it. A tenth of the data is held
+  out and scored before and after, so you see what training did.
+- **Condense a model.** A Q8 that does not fit becomes a Q4 that does, and the
+  largest models go down to IQ2 or IQ1, made after a pass over sample text that
+  finds the weights that matter most. Every size is measured first and marked
+  by how it fits.
 - Builds keep what frontier models did as data to teach local ones.
+
+![Condensing: every size, measured, and how each fits](docs/images/condense.png)
 
 ![The experts made here](docs/images/create.png)
 
-![Talking to a fine-tune before keeping it](docs/images/create-test.png)
+### Bench
 
-![The training environment](docs/images/training.png)
+- **Nine benchmarks** in seven skills (MMLU-Pro, ARC-Challenge, GSM8K,
+  MATH-500, HumanEval, MBPP, IFEval, HellaSwag and TruthfulQA). Quick asks 50
+  items of each, Standard 200, Full every one.
+- Every Crucible asks the same items the same way, so a score from one machine
+  stands beside a score from another.
+- **Spider charts** compare up to three models. A result opens to every
+  benchmark, its margin of error, and the answers that were wrong.
+- **Post** a result to the [public board](https://github.com/mattsaund/crucible-bench)
+  from your GitHub account. Everybody's results sit side by side in the tab. A
+  result is names and numbers, nothing typed, and its model has to be a public
+  file on Hugging Face.
+- HumanEval and MBPP run the code a model writes on this machine, with time
+  and memory limits. It is not a sandbox.
+
+![Bench: one model condensed to three sizes, on a spider chart with the numbers under it](docs/images/bench.png)
 
 ### Hardware
 
 - Runtimes (CPU, CUDA, Metal, Vulkan) install from Settings, downloaded or
   compiled. A downloaded CUDA runtime needs only the NVIDIA driver, 580 or
   newer.
-- Several GPUs: auto, even, priority or single.
+- Several GPUs work as one, split automatically, evenly, by priority, or kept
+  to a single card.
 
-![Runtimes: CPU, CUDA and Vulkan, two of them downloaded](docs/images/runtimes.png)
+![Runtimes: CPU, CUDA and Vulkan, all three active](docs/images/runtimes.png)
 
 ### History
 
@@ -196,14 +222,16 @@ Every model, local or not, gets the same tools in a trusted folder:
 ![Every build and chat of a project](docs/images/history.png)
 
 ___
-## Configuration
+## Settings and keys
 
 Everything is in Settings and applies at once. The file is
-`~/.config/crucible/config.json` (Windows: `%APPDATA%\crucible\config.json`).
-The window uses the system's font; **Settings → General** picks another.
+`~/.config/crucible/config.json`, or `%APPDATA%\crucible\config.json` on
+Windows.
 
-Ctrl+1 to 5: Chat, Build, Create, History, Models. Ctrl+, Settings. Ctrl+U
-attach.
+- Ctrl+1 to 6 open Chat, Build, Create, History, Models and Bench.
+- Ctrl+, opens Settings, and Ctrl+U attaches.
+- In the editor, Ctrl+P opens a file, Ctrl+Shift+F searches the project, Ctrl+S
+  saves, Ctrl+F finds, Ctrl+H replaces and Ctrl+G goes to a line.
 
 ___
 ## Build from source
@@ -229,19 +257,20 @@ specific guidelines:
 3. Contributor MUST look at/document code and code changes. You need to
    understand the code that is being written.
 
-Every push is built and tested on Linux, macOS and Windows. How to test a
-change or a release: [docs/testing](docs/testing/README.md).
+Every push is built and tested on Linux, macOS and Windows.
+[docs/testing](docs/testing/README.md) says how to test a change or a release.
 
 ___
 ## License
 
 MIT, see [LICENSE](LICENSE). What is compiled in is listed in
-[THIRD_PARTY.md](THIRD_PARTY.md); `crucible --licenses` prints the notices.
+[THIRD_PARTY.md](THIRD_PARTY.md), and `crucible --licenses` prints the notices.
 
-Fetched, not shipped: Crucible's Python (PSF License), the fine-tuner (mostly
-Apache-2.0, BSD and MIT; NVIDIA's CUDA libraries on NVIDIA machines are
-proprietary), the agents' programs, and the starter model (Apache-2.0). Model
-weights carry their own licenses.
+Some things are fetched rather than shipped, each under its own license.
+Crucible's Python (PSF License), the fine-tuner (mostly Apache-2.0, BSD and
+MIT, with NVIDIA's proprietary CUDA libraries on NVIDIA machines), the agents'
+programs, the starter model (Apache-2.0), the benchmarks' questions and every
+model's weights.
 
 Provided "as is", without warranty. You are responsible for what your models
 read, write and run.

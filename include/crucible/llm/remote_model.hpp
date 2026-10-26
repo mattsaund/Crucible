@@ -40,10 +40,11 @@ namespace crucible::remote {
 
 /// What is known about one model at one provider. Asked for, not configured.
 ///
-/// Only Anthropic publishes this in a form worth reading: its Models API says
-/// how big the context is and which features a model takes. For everything
-/// else these stay at "unknown" and the request is shaped by what the provider
-/// turns out to accept.
+/// Anthropic's Models API says the most: how big the context is and which
+/// features a model takes. Of the rest, those whose models API says how long
+/// a context is (OpenRouter, Groq, Mistral, Together, Gemini's own) are read
+/// for that; everything else stays "unknown", and the request is shaped by
+/// what the provider turns out to accept.
 struct ModelFacts {
     int  context_tokens    = 0;      ///< 0 when unknown
     int  max_output        = 0;      ///< 0 when unknown
@@ -144,10 +145,23 @@ namespace detail {
 /// allows, when that is known.
 inline constexpr int kUnboundedReply = 64000;
 
-/// The context assumed for a model that will not say what it has. Large on
-/// purpose: guessing small drops history that would have fit, and guessing
-/// large costs one request the provider refuses in plain words.
+/// The context assumed for a model that will not say what it has and is not
+/// one known by name (see known_context). Large on purpose: guessing small
+/// drops history that would have fit, and guessing large costs one request
+/// the provider refuses in plain words.
 inline constexpr int kAssumedContext = 128000;
+
+/// The context of a well-known model whose provider does not say, by its
+/// id ("gpt-4.1-mini", "openai/gpt-4o"), or 0 when it is not one of them.
+int known_context(std::string_view model);
+
+/// Where to ask what `model` is: Anthropic's entry for it, Gemini's own
+/// (its chat-completions door lists no sizes), or everybody else's listing.
+std::string facts_url(const Provider& provider, std::string_view model);
+
+/// What a model listing says about `model`, or what one model's own entry
+/// says when that is the answer. Only the context is read.
+ModelFacts facts_from_listing(std::string_view body, std::string_view model);
 
 /// The body of a Messages API request.
 std::string anthropic_body(std::string_view model, const ChatRequest& request,
@@ -170,6 +184,11 @@ struct Event {
     int  cache_read    = -1; ///< of input_tokens, read from the provider's cache
     int  cache_write   = -1; ///< of input_tokens, written to it
     bool done          = false;
+
+    /// A block of the reply started: the model is writing now, whether or not
+    /// any of it is shown yet. A thinking block's summary arrives only once
+    /// the thinking is over, and the thinking is counted in the output.
+    bool begun         = false;
 };
 
 /// Read one `data:` payload of a Messages stream.

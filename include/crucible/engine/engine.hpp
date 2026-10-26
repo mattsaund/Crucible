@@ -6,11 +6,12 @@
 // The engine blocks for seconds at a time loading a 30B expert; keeping it off
 // the UI thread is what lets the window keep drawing while that happens.
 //
-// A chat turn runs on the worker. A build runs on a thread of its own, its
-// agents asking for models at the same time as each other and as the chat:
-// a provider's model is asked in parallel, a model on this machine is held
-// by a lease while a seat has it and answers one caller at a time. See
-// leases.hpp for why a model in use is never freed under its user.
+// A chat turn is asked for by the worker, and its loop is the orchestrator's,
+// as a build's is. A build runs on a thread of its own, its agents asking for
+// models at the same time as each other and as the chat: a provider's model
+// is asked in parallel, a model on this machine is held by a lease while a
+// seat has it and answers one caller at a time. See leases.hpp for why a
+// model in use is never freed under its user.
 #pragma once
 
 #include <atomic>
@@ -62,6 +63,9 @@ public:
     ///
     /// `attachments` are read when the expert is known, not before: how much
     /// of a long document fits is a question about that expert's context.
+    ///
+    /// One that reaches the worker while a benchmark runs is not answered: its
+    /// turn fails, and says why. See benching.
     void submit(std::string prompt, std::optional<ExpertId> pinned = std::nullopt,
                 std::vector<attach::Attachment> attachments = {});
 
@@ -129,7 +133,8 @@ public:
     ///
     /// Runs on a thread of its own, not the worker: the chat stays open while
     /// a build works, and its turns are answered beside the build's agents.
-    /// One build at a time -- a second is refused, with the reason returned.
+    /// One build at a time -- a second is refused, with the reason returned,
+    /// and so is one asked for while a benchmark runs.
     ///
     /// `pinned` starts it with that expert rather than whoever the goal routes
     /// to. A HANDOFF still goes through the delegator: the pin is where the
@@ -194,6 +199,24 @@ public:
     /// True from the moment a cook starts until its finishing pass is done.
     bool cooking() const { return cooking_.load(std::memory_order_relaxed); }
 
+    // --- benchmarks, in engine_bench.cpp -----------------------------------
+
+    /// Run models through the benchmark suite. `request` is what the Bench
+    /// tab asked for -- which model files, which benchmarks, what size --
+    /// and goes to the orchestrator's bench.run, which asks for each item and
+    /// checks each answer. Refused while a run, a build or a reply is going:
+    /// all three want the cards. Returns why it was refused, or nothing.
+    std::string start_bench(nlohmann::json request);
+
+    /// Stop the run: the item in progress is abandoned and what was finished
+    /// is kept, marked as stopped.
+    void stop_bench();
+
+    /// True while a run goes. A chat turn and a build are refused meanwhile,
+    /// and nothing is loaded for one: the run has the cards to itself, and
+    /// what it times is its model alone.
+    bool benching() const { return benching_.load(std::memory_order_relaxed); }
+
     /// Ask the delegator to write worked examples for a seat that has none.
     ///
     /// Two example questions per expert are worth seven points of routing
@@ -222,15 +245,21 @@ public:
     /// exchange. Queued like write_examples, so it runs between prompts and
     /// never competes with one; with no delegator, the first words of the
     /// first prompt stand in. The name comes back through take_session_names.
-    void name_session(std::string session, std::filesystem::path root, std::string excerpt);
+    ///
+    /// `spare` is for one named in passing, from before names existed: only
+    /// a delegator already in memory names it, and nothing does when there
+    /// is none -- it is listed by its first words already.
+    void name_session(std::string session, std::filesystem::path root, std::string excerpt,
+                      bool spare = false);
 
     struct SessionName {
         std::string           session;
         std::filesystem::path root;   ///< the project it belongs to
-        std::string           name;
+        std::string           name;   ///< empty when none could be written
     };
 
-    /// Names written since this was last called, and clears them.
+    /// What naming has come to since this was last called, and clears it:
+    /// a name, or none, for each conversation asked about.
     std::vector<SessionName> take_session_names();
 
     /// Replace the running configuration, as the settings screen does.
@@ -265,9 +294,13 @@ private:
         // for NameSession, with `prompt` (the excerpt)
         std::filesystem::path root;
         std::string           session;
+        bool                  spare = false;
     };
 
     void run();
+
+    /// A prompt: the turn opened in the transcript and handed to the
+    /// orchestrator, which answers it. In engine_chat.cpp.
     void handle(const Request& request);
 
     /// Load the delegator model, when one is set. A failure is said on the
@@ -315,6 +348,10 @@ private:
     /// The model file of the expert chosen in the box (see choose()), when
     /// one is chosen and it is a model on this machine; else empty.
     std::string chosen_path() const;
+
+    /// Whether an expert is chosen in the box, a provider's included: then
+    /// nothing is routed, and the delegator has no business being loaded.
+    bool seat_chosen() const;
     mutable std::mutex      chosen_mutex_;
     std::optional<ExpertId> chosen_;
 
@@ -335,9 +372,10 @@ private:
 
     // --- the orchestrator ----------------------------------------------------
     //
-    // Routing and the cook loop are Python, in a process of their own: see
-    // orchestra/link.hpp. They ask the core for what only the core may do, and
-    // it answers here, on threads of the link's own: see serve().
+    // Routing, a chat turn's rounds and the cook and build loops are Python,
+    // in a process of their own: see orchestra/link.hpp. They ask the core for
+    // what only the core may do, and it answers here, on threads of the
+    // link's own: see serve().
 
     /// Answer one of the orchestrator's requests. Throws with the reason when
     /// it cannot be answered, which goes back to the orchestrator as an error.
@@ -349,9 +387,14 @@ private:
     nlohmann::json serve(const std::string& method, const nlohmann::json& params);
 
     /// What the orchestrator needs to route: the prompt, the roster as the
-    /// delegator is shown it, which seats have a model, and the policy.
-    nlohmann::json routing_request(const std::string& prompt,
-                                   const std::optional<ExpertId>& pinned) const;
+    /// delegator is shown it, which seats have a model, and the policy, all
+    /// as `config` has them.
+    static nlohmann::json routing_request(const Config& config, const std::string& prompt,
+                                          const std::optional<ExpertId>& pinned);
+
+    /// A tool call as the orchestrator sends one back: the fields tools.parse
+    /// handed it, kind by name.
+    static tools::ToolCall call_from(const nlohmann::json& params);
 
     /// Have Crucible's Python, waiting for it while it is being downloaded.
     /// False, with `error` saying why, when it is not coming.
@@ -475,18 +518,35 @@ private:
     /// The cook's half of serve(): the seat, the tools, the journal.
     nlohmann::json serve_cook(const std::string& method, const nlohmann::json& params);
 
+    /// A benchmark run's half of serve(): the model under test, its replies,
+    /// the datasets, the results. See engine_bench.cpp.
+    nlohmann::json serve_bench(const std::string& method, const nlohmann::json& params);
+    void do_bench(nlohmann::json request);
+
     /// Block until the user answers the question a cook is waiting on, or the
     /// cook is stopped. Returns the answer, or nothing if it was stopped.
     std::optional<std::string> await_cook_answer();
 
+    // --- a chat turn, in engine_chat.cpp -------------------------------------
+    //
+    // The turn's loop -- the route, the rounds, the tools between them, how it
+    // ends -- is the orchestrator's: see scripts/orchestrator's chat.py. The
+    // worker opens the turn and asks for it; what the core keeps for it
+    // between the calls the orchestrator makes is a ChatTurn.
+    struct ChatTurn;
+
+    /// The turn being answered, or nothing between turns. One at a time: the
+    /// chat's turns are the worker's, and it asks for one after another.
+    std::shared_ptr<ChatTurn> chat_turn_;
+    std::mutex                chat_mutex_;   ///< guards chat_turn_
+
+    /// The chat turn's half of serve(): its seat, its conversation, its
+    /// rounds, its tools and what its transcript says.
+    nlohmann::json serve_turn(const std::string& method, const nlohmann::json& params);
+
     /// One question to the person at a time, whoever is asking: the window
     /// shows one, and two agents asking at once would answer each other's.
     std::mutex asking_mutex_;
-
-    /// Pick the expert that will actually answer: the orchestrator's decision,
-    /// policy included. `error` says why there is none, when routing could not
-    /// be done at all.
-    RouteDecision resolve(const Request& request, std::string& error);
 
     /// The model behind `id`, held and ready to be asked: loaded onto the
     /// cards if it is a file, looked up if it is a provider's. No model, with
@@ -599,27 +659,28 @@ private:
     /// guards the log it is saved to.
     Cook                         cook_;
     std::unique_ptr<CookLog>     cook_log_;
+    std::chrono::steady_clock::time_point cook_saved_at_{};   // see cook.publish
     std::mutex                   cook_mutex_;
     std::thread                  cook_thread_;
     std::atomic<bool>            cooking_{false};
     std::atomic<bool>            cook_stop_{false};
     std::atomic<bool>            cook_cancel_{false};
 
-    /// Ask the user about one edit and block until they answer.
-    ///
-    /// Returns false when the edit was declined, and also when the turn was
-    /// canceled or the engine is shutting down while parked here -- all three
-    /// mean "do not write the file", which is the only question the caller has.
-    /// `reply` is what the turn should say while the user decides: everything
-    /// it had said, without the protocol line, so the file is not on screen
-    /// twice.
-    bool await_edit_approval(std::size_t turn, const std::string& reply,
-                             const tools::ToolCall& call,
-                             const tools::WorkshopSettings& workshop);
+    /// The benchmark run, on its own thread like a cook, and the one seat it
+    /// holds: the model being tested.
+    std::thread                  bench_thread_;
+    std::atomic<bool>            benching_{false};
+    std::atomic<bool>            bench_stop_{false};
+    std::mutex                   bench_mutex_;
+    std::shared_ptr<AgentSeat>   bench_seat_;
 
-    /// The same question without a turn to tidy: what a cook asks. True means
-    /// write it. `cancel` is whose Stop ends the wait -- the chat's or the
-    /// build's.
+    /// Ask the user about one edit and block until they answer: what a chat
+    /// turn and a build's agent both ask. True means write it.
+    ///
+    /// False when the edit was declined, and also when the work was canceled
+    /// or the engine is shutting down while parked here -- all three mean "do
+    /// not write the file", which is the only question the caller has.
+    /// `cancel` is whose Stop ends the wait: the chat's or the build's.
     bool ask_about_edit(const tools::ToolCall& call, const tools::WorkshopSettings& workshop,
                         const CancelCallback& cancel);
 

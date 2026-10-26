@@ -109,7 +109,7 @@ std::string Sha256::hex() {
     return out;
 }
 
-std::string sha256_file(const std::filesystem::path& path) {
+std::string sha256_file(const std::filesystem::path& path, const std::function<bool()>& stop) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         return {};
@@ -117,6 +117,11 @@ std::string sha256_file(const std::filesystem::path& path) {
     Sha256 hash;
     std::vector<char> chunk(1 << 16);
     while (in) {
+        // Asked between chunks: a tenth of a millisecond of hashing each, so
+        // a stop is seen at once, and the question costs nothing beside them.
+        if (stop && stop()) {
+            return {};
+        }
         in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
         const std::streamsize got = in.gcount();
         if (got > 0) {

@@ -705,7 +705,12 @@ void Installer::run(Flavor flavor) {
                     on_change_();
                 }
             },
-            why);
+            why, [this] { return cancel_.load(); });
+        if (!fetched && cancel_.load()) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            progress_.phase = Progress::Phase::Canceled;
+            return;
+        }
         if (!fetched) {
             fail(why);
             return;

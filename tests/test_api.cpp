@@ -10,6 +10,8 @@
 // words, and a mistake comes back as a sentence rather than a crash.
 #include "test_helpers.hpp"
 
+#include <fstream>
+
 #include <nlohmann/json.hpp>
 
 #include "crucible/api/surface.hpp"
@@ -328,4 +330,131 @@ TEST(a_backend_that_does_not_exist_is_refused_by_name) {
     // Not "this build cannot compile runtimes": the backend is the problem,
     // and saying the other thing sends them to check their build options.
     CHECK(reply["error"].get<std::string>().find("backend") != std::string::npos);
+}
+
+TEST(a_bench_result_is_posted_without_what_stays_on_this_machine) {
+    const TempDir        temp;
+    const ScopedDataHome scoped(temp.path());
+    const std::filesystem::path bench   = temp.path() / "crucible" / "bench";
+    const std::filesystem::path results = bench / "results";
+    std::filesystem::create_directories(results);
+    // A result as the runner keeps it: the board's fields, the names that are
+    // free text and stay here, and then what is this machine's -- where the
+    // model is, every answer, the worked scores.
+    const json kept{
+        {"schema", 1}, {"suite", "crucible-bench-1"}, {"size", "quick"}, {"crucible", "0.9.5"},
+        {"llama", "b11846"}, {"date", "2026-10-26"},
+        {"model", {{"file", "tiny.gguf"}, {"sha256", std::string(64, 'a')}, {"bytes", 1000}, {"name", "Tiny"},
+                   {"arch", "llama"}, {"params", 1000000}, {"quant", "Q4_K_M"}}},
+        {"settings", {{"context", 20480}, {"max_tokens", 16384}, {"temperature", 0}, {"effort", "default"}}},
+        {"hardware", {{"backend", "CUDA"}, {"gpus", json::array({"A card"})}, {"gpu_count", 1}, {"memory_gb", 12.0}}},
+        {"benchmarks", {{"gsm8k", {{"n", 50}, {"correct", 40}}}}},
+        {"speed", {{"gen_tps", 100.5}}}, {"seconds", 90},
+        {"id", "run-0"}, {"path", "/home/someone/models/tiny.gguf"}, {"stopped", false},
+        {"skills", {{"math", 0.8}}}, {"overall", 0.8},
+        {"items", {{"gsm8k", json::array({json{{"i", 1}, {"ok", true}, {"answer", "#### 4"}}})}}}};
+    std::ofstream(results / "run-0.json") << kept.dump();
+    // Where Hugging Face has the file, found before and kept by its hash, so
+    // nothing here asks the network: under the name it has there.
+    std::ofstream(bench / "public.json")
+        << json{{std::string(64, 'a'), {{"repo", "someone/tiny-GGUF"}, {"file", "tiny-Q4_K_M.gguf"}}}}.dump();
+
+    api::Surface surface = bare();
+    const json reply = ask(surface, R"({"id":1,"method":"bench.posting","params":{"id":"run-0"}})");
+    CHECK(reply["ok"] == true);
+    CHECK(reply["result"]["public"] == true);
+    CHECK(!reply["result"].contains("offline"));
+    const json posting = reply["result"]["posting"];
+    for (const char* mine : {"id", "path", "stopped", "skills", "overall", "items"}) {
+        CHECK(!posting.contains(mine));
+    }
+    // The board's format exactly: no model name, no card names, and the file
+    // as Hugging Face has it.
+    CHECK((posting["model"] == json{{"file", "tiny-Q4_K_M.gguf"}, {"sha256", std::string(64, 'a')}, {"bytes", 1000},
+                                     {"repo", "someone/tiny-GGUF"}, {"arch", "llama"}, {"params", 1000000},
+                                     {"quant", "Q4_K_M"}}));
+    CHECK((posting["hardware"] == json{{"backend", "CUDA"}, {"gpu_count", 1}, {"memory_gb", 12.0}}));
+    CHECK((posting["benchmarks"] == json{{"gsm8k", {{"n", 50}, {"correct", 40}}}}));
+    CHECK(reply["result"]["repo"] == "mattsaund/crucible-bench");
+
+    // An id that could be a path is no result.
+    CHECK(ask(surface, R"({"id":2,"method":"bench.posting","params":{"id":"../../config"}})")["ok"] == false);
+    // The list leaves out every answer; the one result opened has them.
+    const json list = ask(surface, R"({"id":3,"method":"bench.results"})");
+    CHECK(list["result"]["results"].size() == 1);
+    CHECK(!list["result"]["results"][0].contains("items"));
+    CHECK(ask(surface, R"({"id":4,"method":"bench.result","params":{"id":"run-0"}})")["result"].contains("items"));
+    CHECK(ask(surface, R"({"id":5,"method":"bench.delete","params":{"id":"run-0"}})")["ok"] == true);
+    CHECK(!std::filesystem::exists(results / "run-0.json"));
+}
+
+TEST(a_bench_result_posts_only_names_of_the_boards_form) {
+    const TempDir        temp;
+    const ScopedDataHome scoped(temp.path());
+    const std::filesystem::path results = temp.path() / "crucible" / "bench" / "results";
+    std::filesystem::create_directories(results);
+    // Names the board would turn away, card names from before results kept a
+    // count, and no hash: nothing to look for on Hugging Face, so no network.
+    const json kept{
+        {"schema", 1}, {"suite", "crucible-bench-1"}, {"size", "quick"}, {"crucible", "0.9.5"},
+        {"llama", "b11846"}, {"date", "2026-10-26"},
+        {"model", {{"file", "my model.gguf"}, {"bytes", 1000}, {"name", "Mine"}, {"arch", "Llama 3"},
+                   {"quant", "q4 k m"}}},
+        {"settings", {{"context", 20480}, {"max_tokens", 16384}, {"temperature", 0}, {"effort", "default"}}},
+        {"hardware", {{"backend", "MUSA"}, {"gpus", json::array({"One", "Two"})}, {"memory_gb", -1}}},
+        {"benchmarks", {{"gsm8k", {{"n", 50}, {"correct", 40}}}}},
+        {"id", "run-1"}};
+    std::ofstream(results / "run-1.json") << kept.dump();
+
+    api::Surface surface = bare();
+    const json reply = ask(surface, R"({"id":1,"method":"bench.posting","params":{"id":"run-1"}})");
+    CHECK(reply["ok"] == true);
+    CHECK(reply["result"]["public"] == false);
+    const json posting = reply["result"]["posting"];
+    CHECK((posting["model"] == json{{"file", "my model.gguf"}, {"bytes", 1000}}));
+    CHECK((posting["hardware"] == json{{"gpu_count", 2}}));
+    // And it does not go.
+    CHECK(ask(surface, R"({"id":2,"method":"bench.post","params":{"id":"run-1"}})")["ok"] == false);
+}
+
+TEST(the_page_is_sent_a_turn_it_already_has_as_a_stub) {
+    Snapshot snapshot;
+    Turn finished;
+    finished.prompt = "is 7 prime?";
+    finished.reply  = "Yes.";
+    finished.revision = 11;
+    Turn streaming;
+    streaming.prompt = "and 9?";
+    streaming.reply  = "No";
+    streaming.streaming = true;
+    streaming.revision = 12;
+    snapshot.turns.push_back(finished);
+    snapshot.turns.push_back(streaming);
+
+    api::PageTurns page;
+    const json first = json::parse(page.turns_json(snapshot.turns));
+    CHECK(first[0]["reply"] == "Yes.");
+    CHECK(first[1]["rev"] == 12);
+
+    // The same turns again: both stubs. One changed: that one whole.
+    const json again = json::parse(page.turns_json(snapshot.turns));
+    CHECK(again[0]["stub"] == true);
+    CHECK(again[0]["rev"] == 11);
+    CHECK(!again[0].contains("reply"));
+    Snapshot later;
+    later.turns.push_back(finished);
+    streaming.reply = "No: 3 x 3.";
+    streaming.revision = 13;
+    later.turns.push_back(streaming);
+    const json next = json::parse(page.turns_json(later.turns));
+    CHECK(next[0]["stub"] == true);
+    CHECK(next[1]["reply"] == "No: 3 x 3.");
+
+    // A turn made by hand has no revision, and is always sent whole.
+    Snapshot hand;
+    Turn plain;
+    plain.prompt = "hi";
+    hand.turns.push_back(plain);
+    page.turns_json(hand.turns);
+    CHECK(json::parse(page.turns_json(hand.turns))[0]["prompt"] == "hi");
 }
