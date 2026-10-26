@@ -233,6 +233,7 @@ class Running(unittest.TestCase):
         self.assertFalse(last["running"])
         self.assertIn("ended", last)
         self.assertEqual(last["models"][0]["state"], "done")
+        self.assertIn("started", last["models"][0])   # its own clock, for the time left
         self.assertNotIn("stopped", last)
 
     def test_what_is_posted_has_no_empty_values(self):

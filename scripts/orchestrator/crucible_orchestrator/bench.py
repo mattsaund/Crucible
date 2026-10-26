@@ -333,6 +333,9 @@ def run(core, params):
         entry["state"] = "running"
         publish()
         began = time.time()
+        # Its own clock: the time left goes at this model's pace, not at
+        # the pace of a faster one before it.
+        entry["started"] = int(began)
         counts = {}
         items = {}
         timing = {"prompt_tokens": 0, "prompt_ms": 0.0, "output_tokens": 0, "output_ms": 0.0}

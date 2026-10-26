@@ -2526,12 +2526,20 @@ TEST(the_bench_tab_runs_compares_and_posts) {
     // A run on its way: a bar per benchmark, and how long is left.
     page().eval("state.snapshot.bench = { running: true, id: 'x', size: 'quick', started: Date.now() / 1000 - 120,"
                 " benchmarks: ['mmlu_pro', 'gsm8k'], models: [{ path: '/m/tiny-Q4_K_M.gguf', name: 'tiny-Q4_K_M.gguf',"
-                " state: 'running', current: 'gsm8k', benchmarks: { mmlu_pro: { done: 50, n: 50, correct: 30 },"
-                " gsm8k: { done: 10, n: 50, correct: 8 } } }] }");
+                " state: 'running', started: Date.now() / 1000 - 120, current: 'gsm8k', benchmarks: {"
+                " mmlu_pro: { done: 50, n: 50, correct: 30 }, gsm8k: { done: 10, n: 50, correct: 8 } } }] }");
     CHECK_EQ(drawn("views.bench()"), "ok");
     const std::string live = page().eval("views.bench()");
     CHECK(live.find("60 of 100 questions") != std::string::npos);
-    CHECK(live.find("left") != std::string::npos);
+    CHECK(live.find("about 1 min left") != std::string::npos);   // 40 to go at 2 seconds each
+    // A quick model done in a minute, then one taking 100 seconds a question:
+    // 90 to go at its pace, not at the whole run's.
+    page().eval("state.snapshot.bench = { running: true, id: 'x', size: 'quick', started: Date.now() / 1000 - 1060,"
+                " benchmarks: ['mmlu_pro', 'gsm8k'], models: [{ path: '/m/tiny.gguf', name: 'tiny.gguf', state: 'done',"
+                " started: Date.now() / 1000 - 1060, benchmarks: { mmlu_pro: { done: 50, n: 50, correct: 30 },"
+                " gsm8k: { done: 50, n: 50, correct: 40 } } }, { path: '/m/big.gguf', name: 'big.gguf', state: 'running',"
+                " started: Date.now() / 1000 - 1000, current: 'mmlu_pro', benchmarks: { mmlu_pro: { done: 10, n: 50, correct: 8 } } }] }");
+    CHECK(page().eval("views.bench()").find("about 2h 30m left") != std::string::npos);
     CHECK(live.find("data-act=\"bench-stop\"") != std::string::npos);
     page().eval("state.snapshot.bench.fetching = 'truthfulqa'");
     CHECK(page().eval("views.bench()").find("Fetching TruthfulQA") != std::string::npos);

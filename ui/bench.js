@@ -238,13 +238,21 @@ setTimeout(benchTick, 1000);
 function benchLiveView() {
   const live = state.snapshot.bench;
   if (!live || !live.models || !live.models.length) return '';
-  const done = live.models.reduce((sum, m) => sum + Object.values(m.benchmarks || {}).reduce((a, x) => a + (x.done || 0), 0), 0);
-  const total = live.models.length * live.benchmarks.reduce((sum, id) => {
+  const doneOf = (m) => Object.values(m.benchmarks || {}).reduce((a, x) => a + (x.done || 0), 0);
+  const done = live.models.reduce((sum, m) => sum + doneOf(m), 0);
+  const each = live.benchmarks.reduce((sum, id) => {
     const per = (BENCH_SIZES.find(([s]) => s === live.size) || BENCH_SIZES[0])[2];
     return sum + (per ? Math.min(per, BENCH_TOTALS[id] || per) : BENCH_TOTALS[id] || 0);
   }, 0);
+  const total = live.models.length * each;
   const seconds = Math.max(1, Math.round((live.running || !live.ended ? Date.now() / 1000 : live.ended) - (live.started || 0)));
-  const left = live.running && done > 4 ? Math.round((seconds / done) * Math.max(0, total - done)) : 0;
+  // At the pace of the model answering now, and the same for those after it.
+  // The whole run's pace had a quick model before a slow one say minutes for
+  // what took hours.
+  const on = live.models.find((m) => m.state === 'running' && m.started);
+  const pace = on && doneOf(on) > 4 ? (Date.now() / 1000 - on.started) / doneOf(on) : 0;
+  const after = live.models.slice(live.models.indexOf(on) + 1).filter((m) => m.state === 'waiting').length;
+  const left = live.running && pace ? Math.round(pace * (Math.max(0, each - doneOf(on)) + after * each)) : 0;
   const rows = live.models.map((m) => {
     const benches = live.benchmarks.map((id) => {
       const p = (m.benchmarks || {})[id];
