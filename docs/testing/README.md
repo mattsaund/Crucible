@@ -32,8 +32,9 @@ needs more nudging.
    aside, start Crucible. It fetches its Python, the runtimes, the kit
    (gh, Node, a headless browser, RapidOCR), and a model when there is none.
    Nothing to click.
-2. **Build.** In Build: *I need a budgeting software that gives me charts of
-   my gross and net revenue.* Reply *go* to the plan.
+2. **Build.** In the chat box: *I need a budgeting software that gives me
+   charts of my gross and net revenue.* It becomes a build (the turn says
+   build, not an expert's name). Reply *go* to the plan.
    - The agents are listed under the experts in the side menu.
    - The status line and the working agent are orange.
    - The bottom right shows the model in memory (and the provider's cost,
@@ -42,6 +43,8 @@ needs more nudging.
 4. **Change a color.** *Change the color from red to blue* (whatever color it
    came out). One task, no plan question; the preview updates.
 5. **Move a button.** *Move the Save button farther away from the side.*
+   Then ask a question about it (*what does app.js do?*): it is answered as
+   a chat turn, and knows the files the build wrote.
 6. **Ship it.** Make it an app. Open it from the applications menu, type
    numbers, Save, close it, open it again: the numbers are still there.
 7. **Tune by eye.** Preview, Pick an element, change padding or color,
@@ -52,7 +55,9 @@ Note what failed and how long each step took.
 ## Before a release: the Models tab
 
 1. **Search.** Models, type a name. Best match puts the used repositories
-   first; Most likes and the others reorder it.
+   first; Most likes and the others reorder it. Each row has its maker's
+   logo, the original maker's for a repack (Qwen's on unsloth's Qwen); after
+   a restart they show without being fetched again.
 2. **Choose.** Open one: its quantizations, each marked Fits on GPU, Partial
    offload, CPU only or Too large, the suggested one starred.
 3. **Download a small one** (SmolLM2-135M-Instruct, 270 MB). The bar fills,
@@ -64,17 +69,21 @@ Note what failed and how long each step took.
 
 ## Before a release: Bench
 
-1. **Run.** Bench, pick a small model (LFM2.5-1.2B), Quick, every benchmark.
-   A bar fills per benchmark, with how long is left. The first run fetches
+1. **The board first.** Bench opens on the public board: the top models,
+   each with a Download that opens it in Models on that file (or "here"),
+   the chart with the top three, and every result, searchable.
+2. **Run.** Add benchmark, pick a small model (LFM2.5-1.2B), Quick, every
+   benchmark. A bar fills per benchmark, with how long is left at the pace of
+   the model answering. The first run fetches
    the rows from Hugging Face; later ones read them from
    `bench/rows/`.
-2. **Read it.** The result opens to each benchmark with its margin of error,
+3. **Read it.** The result opens to each benchmark with its margin of error,
    and a wrong answer shows what the model said and what was read from it.
-3. **Compare.** Compare two or three results: the spider chart, a color
+4. **Compare.** Compare two or three results: the spider chart, a color
    each, and the numbers under it.
-4. **Stop.** Start another run and Stop it halfway: what finished is kept,
+5. **Stop.** Start another run and Stop it halfway: what finished is kept,
    marked stopped, and a benchmark that did not finish is not counted.
-5. **Post** (on a test copy of the board, or delete the issue after): the
+6. **Post** (on a test copy of the board, or delete the issue after): the
    dialog shows exactly what is sent. With `gh` signed in it opens an issue;
    the board's Action comments with the scores and `board.json` takes it.
 
@@ -84,10 +93,22 @@ Note what failed and how long each step took.
    with how it fits. Condense to Q4_K_M, then Test it. Then IQ2_XXS: it says
    it is running the model over sample text, then condenses. A second
    sampled size of the same model skips that step.
-2. **Edit.** Open a project, Build, Code. Open two files, change one (the
-   tab and the tree mark it), Ctrl+S. Ctrl+P finds a file by a few letters;
+2. **Edit.** Open a project, then Code above the chat. Open two files,
+   change one (the tab and the tree mark it), Ctrl+S. Ctrl+P finds a file by a few letters;
    Ctrl+Shift+F searches the project. While an agent writes a file that is
    open and changed, the editor says so and keeps your text.
+
+## Before a release: the server
+
+1. **On.** Settings, Server, On, with the delegator or a model. It says
+   Running and shows `http://localhost:8338/v1`.
+2. **Ask it.** `curl http://localhost:8338/v1/models`, then a chat completion,
+   whole and with `"stream": true`. Both show under Recent.
+3. **A key.** Set one: a request without `Authorization: Bearer <key>` gets
+   401 in OpenAI's shape; with it, an answer.
+4. **Beside a chat.** A request while a chat turn answers waits ("Waiting for
+   the chat") and then answers.
+5. **Off.** Turn it off: nothing answers on the port.
 
 ## Before a release that moves llama.cpp: an update
 
@@ -241,3 +262,25 @@ alone), 0.9.5.
   finished the change. Fixed along the way: the apply_patch hint, the plan
   reader, the tune panel's 19.200001px, and the bench clock that stood still
   while pages were fetched.
+
+## Seen on 2026-10-26, 0.9.6
+
+Linux (Arch, KDE Plasma on Wayland), the 4070 only: the 5060 Ti's and the
+3060's fans read 0% under load, and the 3060 reached its 98 C shutdown
+temperature in a routing run, so both were left alone.
+
+- **A model larger than the card** (gpt-oss-20b, 12 GB at 8K, on the 4070
+  with 8 GB free) failed with "unable to allocate CUDA0 buffer": with "Keep
+  every layer on the GPU" off, every layer was still asked for. It now puts
+  17 of 24 layers on the card and the rest on the processor, and answered.
+- **The README's own example**, *A budgeting app that charts my gross and net
+  revenue*, was answered by Writing instead of built: the words asked for no
+  software with a verb. A described app is a build now. The build: 4 tasks, 5
+  files, 13 minutes on gpt-oss partly on the processor, and the page worked.
+- **The server**, LFM2.5 on the processor: the models list, a completion
+  ("red, blue, and yellow") and a streamed one, each under Recent.
+- **The loop guard.** gpt-oss-20b's IFEval at Quick took 7 minutes instead of
+  hours; all 29 replies it stopped were the same lines over ("We'll mention
+  the product."), and a second run on the same card gave the same 25 of 50.
+- **Not seen:** a Dolphin copy pasted on the native Wayland session (checked
+  on X11 only).
