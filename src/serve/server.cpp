@@ -1280,9 +1280,11 @@ Status Server::status() const {
                                                        [](const auto& job) { return !job->dropped.load(); }));
         out.recent.assign(s.recent.begin(), s.recent.end());
         current = s.current;
-        if (out.listening && out.network) {
+        if (out.listening) {
             // Asked again now and then, not on every snapshot: a laptop
-            // moves between networks, and the address with it.
+            // moves between networks, and the address with it. Asked with
+            // the network off too, so the page can say where another
+            // computer would reach it before it is let in.
             const auto now = Clock::now();
             if (s.lan.empty() || now - s.lan_at > std::chrono::seconds(10)) {
                 s.lan    = lan_address();
@@ -1319,6 +1321,7 @@ json status_json(const Status& status) {
                 {"network", status.network},     {"key", status.key},             {"error", status.error},
                 {"model", status.model},         {"answering", status.answering}, {"waiting", status.waiting},
                 {"queued", status.queued},       {"addresses", std::move(addresses)},
+                {"lan", status.listening ? status.lan : std::string()},
                 {"recent", std::move(recent)}};
 }
 

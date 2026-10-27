@@ -6,9 +6,10 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
-## 0.9.7 (2026-10-27)
+## 0.9.8 (2026-10-27)
 
-A hotfix.
+A hotfix. (0.9.7 was tagged and withdrawn before it was released; this is it,
+with the server's address added.)
 
 - **A vision model no longer crashes Crucible at 100%.** Its projector, the
   file that lets it read pictures, went on the first card whatever was on
@@ -17,6 +18,10 @@ A hotfix.
   been loaded. The projector now goes on the card with the most room, or,
   when no card has room for it, on the processor, where pictures are read
   more slowly.
+- **The server says where another computer reaches it.** Settings, Server
+  shows this machine's IP and the port (`192.168.1.20:8338`, say) to type
+  into another program, ready to copy, and marked off until Serve on the
+  local network is on.
 
 ## 0.9.6 (2026-10-26)
 

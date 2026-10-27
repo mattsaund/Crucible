@@ -844,9 +844,16 @@ function serverAddresses(s) {
   const where = s.addresses || {};
   const rows = [['This machine', where.local], ['Network', where.network]].filter(([, url]) => url);
   if (!rows.length) return '';
+  // What another computer is given: this machine's address on the network
+  // and the port, plainly, as an app's host and port fields ask for them.
+  // Shown with the network off too, marked so, to be read off before then.
+  const host = s.lan ? `${s.lan}:${s.port}` : '';
+  const reach = host ? `<div class="order-row">
+        <span class="order-name">IP and port <code>${escape(host)}</code>${
+          s.network ? '' : ' <span class="tag">off</span>'}</span>${s.network ? serverCopy(host) : ''}</div>` : '';
   return `<h2 style="margin-top:1.8rem">ADDRESSES</h2>
     <div class="field">${rows.map(([label, url]) => `<div class="order-row">
-        <span class="order-name">${label} <code>${escape(url)}</code></span>${serverCopy(url)}</div>`).join('')}</div>`;
+        <span class="order-name">${label} <code>${escape(url)}</code></span>${serverCopy(url)}</div>`).join('')}${reach}</div>`;
 }
 
 /// The last requests: when, which model, the tokens each way, how long.

@@ -2983,6 +2983,7 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
                 "state.snapshot.server = { enabled: true, listening: true, port: 8338, network: true, key: true,"
                 "  error: '', model: 'physics.gguf', answering: true, waiting: 'the chat', queued: 2,"
                 "  addresses: { local: 'http://localhost:8338/v1', network: 'http://192.168.1.20:8338/v1' },"
+                "  lan: '192.168.1.20',"
                 "  recent: [{ at: 1761500000, model: 'physics.gguf', path: '/v1/chat/completions',"
                 "             from: '192.168.1.30', status: 200, prompt: 12, completion: 40, ms: 1500, stream: true },"
                 "           { at: 1761500100, model: '', path: '/v1/chat/completions', from: '192.168.1.31',"
@@ -2992,9 +2993,17 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(on.find("Waiting for the chat, 2 queued") != std::string::npos);
     CHECK(on.find("<code>http://localhost:8338/v1</code>") != std::string::npos);
     CHECK(on.find("<code>http://192.168.1.20:8338/v1</code>") != std::string::npos);
-    // A copy for each address and one for the key, which is never on the
-    // page as text.
-    CHECK_EQ(page().eval("(views.settings().match(/data-act=\"server-copy\"/g) || []).length"), "3");
+    // What another computer is given, plainly: the IP and the port.
+    CHECK(on.find("IP and port <code>192.168.1.20:8338</code>") != std::string::npos);
+    // A copy for each address and the IP and port, and one for the key,
+    // which is never on the page as text.
+    CHECK_EQ(page().eval("(views.settings().match(/data-act=\"server-copy\"/g) || []).length"), "4");
+    // With the network off, the IP and port is still there to read, marked
+    // off and with nothing to copy.
+    CHECK(page().eval("(function () { var s = state.snapshot.server, n = s.network, a = s.addresses;"
+                      " s.network = false; s.addresses = { local: a.local }; var out = views.settings();"
+                      " s.network = n; s.addresses = a; return out; })()")
+              .find("IP and port <code>192.168.1.20:8338</code> <span class=\"tag\">off</span>") != std::string::npos);
     CHECK(on.find("type=\"password\" data-path=\"server.api_key\"") != std::string::npos);
     // The expert's model, chosen under the expert's name.
     CHECK(on.find("value=\"physics.gguf\" selected>Physics: physics.gguf") != std::string::npos);
