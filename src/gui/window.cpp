@@ -56,6 +56,7 @@ extern const unsigned int  kMarkSvg_size;
 
 #include "crucible/api/surface.hpp"
 #include "crucible/app/starter.hpp"
+#include "crucible/tools/page_storage.hpp"
 #include "crucible/util/resources.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"
@@ -518,7 +519,8 @@ int App::run() {
     // it loads and keeps copies of what it is handed instead. See drops.hpp.
     //
     // CRUCIBLE_PAGE_DROPS=1 takes the other road on a machine that has this
-    // one: the road Windows and macOS take, and a GTK 4 build would.
+    // one, for drops and for pastes: the road Windows and macOS take, and a
+    // GTK 4 build would.
     const char* page_drops = std::getenv("CRUCIBLE_PAGE_DROPS");
     const auto  widget     = view.widget();
     const bool paths_on_drop =
@@ -532,6 +534,42 @@ int App::run() {
                         });
     view.init(std::string("window.crucibleNativeDrops = ") + (paths_on_drop ? "true" : "false")
               + "; window.crucibleToken = \"" + token + "\";");
+
+    // --- files copied in a file manager --------------------------------------
+    //
+    // Pasted, they reach the page as their paths, as text, on WebKitGTK. Where
+    // the clipboard can be read here the page is told which files are on it
+    // whenever that changes, and a paste of them in the box attaches them as
+    // a drop does. The page asks once as it starts, since what was copied
+    // before then was said to nobody. The binding reads nothing it is given
+    // and says nothing back, so a frame may call it too. See drops.hpp.
+    const bool paths_on_paste =
+        (page_drops == nullptr || *page_drops == '\0')
+        && drops::watch_clipboard(widget.ok() ? widget.value() : nullptr,
+                                  [&view, gate](std::vector<std::string> paths) {
+                                      if (gate->open) {
+                                          view.eval("window.crucibleCopied && window.crucibleCopied("
+                                                    + json(paths).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + ")");
+                                      }
+                                  });
+    if (paths_on_paste) {
+        void* const watched = widget.value();
+        view.bind("readClipboard",
+                  [&view, watched](const std::string& id, const std::string&, void*) {
+                      view.resolve(id, 0, "null");
+                      drops::read_clipboard(watched);
+                  },
+                  nullptr);
+    }
+
+    // --- the preview's storage -----------------------------------------------
+    //
+    // What stands in for localStorage in a page the preview shows, which the
+    // page puts into the frame's document (ui/preview.js). crucible-app runs
+    // the same one, so it is compiled into both rather than a file of the
+    // page's own.
+    view.init("window.cruciblePageStorage = "
+              + json(std::string(tools::kPageStorage)).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + ";");
 
     // --- closing over unsaved work ---------------------------------------------
     //

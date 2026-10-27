@@ -334,6 +334,9 @@ json Surface::state_json_of(const Snapshot& frame, bool with_turns) {
             frontier.push_back(std::move(one));
         }
         out["frontier"] = std::move(frontier);
+        // The API server: Settings, Server draws it, and it moves when a
+        // request comes and goes. See serve/server.hpp.
+        out["server"] = serve::status_json(engine->server_status());
     }
     out["memory_total"] = memory_total();
 

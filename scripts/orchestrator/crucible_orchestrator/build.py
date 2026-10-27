@@ -337,8 +337,12 @@ def order_tasks(tasks):
     return order
 
 
-def plan_prompt(directive, root, survey, feedback="", machine=""):
+def plan_prompt(directive, root, survey, feedback="", machine="", before=""):
+    # A directive typed into a conversation can lean on what was said before
+    # it ("now add dark mode"), so that comes with it when there was some.
     text = ("You are the architect of a software build. The directive is:\n\n" + directive
+            + ("\n\nIt was asked in a conversation, which had gone like this:\n\n" + before
+               if before else "")
             + "\n\nThe project folder is " + root + ". " + survey
             + ("\n\n" + machine if machine else "")
             + "\n\nWrite a plan as JSON and nothing else, in exactly this shape:\n\n" + PLAN_SHAPE
@@ -382,6 +386,26 @@ def task_system_prompt(base, directive, plan, task, index, count, root, account,
               "agents, some of them working at the same time as you. When it is finished, say "
               "DONE: and what you made, with anything the next agent must know.\n\n" + APP_NOTE
             + tools)
+
+
+def routed_on(task):
+    """What a task is routed on: what it needs, and its title.
+
+    Not its detail. The detail is prose about the work -- "Write style.css
+    with a clean, modern look" -- and prose is what a small delegator takes
+    for Writing. Measured in 0.9.6 on tools/routes/build-tasks.json,
+    LFM2.5-1.2B shown the detail alone gave Writing 15 of the 19 programming
+    tasks; shown the needs and the title it routed 19 of the 31 tasks right,
+    against 16 with the detail as well, and 18 against 12 with Programming's
+    examples taken away. gpt-oss-20b routed 30 and 28 either way. The needs
+    alone are too little: "technical writing" by itself went to Mathematics.
+    A task that names no needs keeps its detail, which is then all there is
+    to go on.
+    """
+    needs = task.get("needs") or ""
+    if not needs:
+        return task["title"] + "\n" + task["detail"]
+    return needs + ": " + task["title"]
 
 
 # --- the build --------------------------------------------------------------------
@@ -470,10 +494,18 @@ class Build:
 
     # --- the seats ------------------------------------------------------------------
 
+    def pinned(self):
+        """The seat the person sent this to (with a slash and its name, or by
+        choosing it over the box), when it has a model: it plans the build and
+        works every task, the way it answers every prompt it is sent."""
+        pinned = self.params.get("pinned") or ""
+        return pinned if ((self.params.get("seats") or {}).get(pinned) or {}).get("model") else ""
+
     def take_architect(self):
-        """The seat that plans and reviews: the one the settings name, or the
-        one the delegator picks for the directive."""
-        pinned = self.settings.get("architect") or ""
+        """The seat that plans and reviews: the one the build was sent to,
+        else the one the settings name, else the one the delegator picks for
+        the directive."""
+        pinned = self.pinned() or self.settings.get("architect") or ""
         seats = self.params.get("seats") or {}
         if pinned and not (seats.get(pinned) or {}).get("model"):
             pinned = ""
@@ -483,15 +515,17 @@ class Build:
     def decide_task(self, task):
         """Who should do `task`: the delegator's pick, or a seat made for it.
 
-        A task's "needs" is what is routed on, with the title and detail
-        beside it: a delegator shown "CSS layout" alone leans on the word, and
-        shown the detail alone leans on the project. When the pick was nobody
-        in particular -- a fallback, or a guess below the confidence floor --
-        and a model for new agents is configured, a seat is made and the task
-        pinned to it, so the next task that needs the same thing finds it.
+        A task's "needs" is what is routed on, with its title beside it (see
+        routed_on). When the pick was nobody in particular -- a fallback, or a
+        guess below the confidence floor -- and a model for new agents is
+        configured, a seat is made and the task pinned to it, so the next task
+        that needs the same thing finds it. A build sent to one seat is that
+        seat's, every task of it.
         """
+        if self.pinned():
+            return routing.Decision(self.pinned(), 1.0, routing.PINNED, "the build was sent to it")
         needs = task.get("needs") or ""
-        work = ((needs + ": ") if needs else "") + task["title"] + "\n" + task["detail"]
+        work = routed_on(task)
         # A seat already named for exactly this expertise is the obvious pick,
         # whatever the delegator thinks: it was made for it, perhaps by this
         # build a task ago.
@@ -502,7 +536,7 @@ class Build:
         unsure = (decision.source == routing.FALLBACK or not decision.expert
                   or decision.detail.startswith("undecided"))
         if unsure and needs and self.settings.get("can_make"):
-            made = self.make_seat(needs, task)
+            made = self.make_seat(needs, task, decision.expert)
             if made is not None:
                 decision = routing.Decision(made, 1.0, routing.PINNED, "made for this build")
         return self.mixed(decision, task, work)
@@ -553,9 +587,15 @@ class Build:
         provider's."""
         return ((self.params.get("seats") or {}).get(expert_id) or {}).get("local", "")
 
-    def make_seat(self, needs, task):
+    def make_seat(self, needs, task, routed=""):
         """Add a seat named for `needs` to the roster, on the model configured
-        for new agents. Returns its id, or None when the core would not."""
+        for new agents. Returns its id, or None when the core would not.
+
+        That model was chosen for a whole machine, and on fewer cards it does
+        not load. The core then puts the seat on the model of a seat this
+        build is using -- `routed`, whom the task would have gone to, then the
+        architect -- which loads here already, and the notes say so.
+        """
         name = " ".join(w[:1].upper() + w[1:] for w in needs.split()[:4])
         # The expertise and nothing of the task: the words of the blurb are
         # what the keyword router matches on, and a blurb that carried the
@@ -563,7 +603,8 @@ class Build:
         # later task that mentioned the project, whatever it needed.
         blurb = (needs + ": an expert a build made for the tasks that need " + needs.lower()
                  + ". It takes questions and work of that kind.")
-        reply = self.core.call("roster.make", {"name": name, "blurb": blurb}) or {}
+        instead = [e for e in dict.fromkeys((routed, self.seat.id)) if e]
+        reply = self.core.call("roster.make", {"name": name, "blurb": blurb, "instead": instead}) or {}
         if not reply.get("ok"):
             self.note("note", "could not add an expert for " + needs + ": "
                       + str(reply.get("error", "")), ok=False)
@@ -582,8 +623,11 @@ class Build:
             self.params["seats"] = seats
             self.roster = routing.Roster(self.params.get("roster"))
             self.made.append(expert_id)
-        self.note("note", "added " + entry["name"] + " to the experts, for " + needs,
-                  expert=expert_id)
+        said = "added " + entry["name"] + " to the experts, for " + needs
+        if reply.get("instead_of"):
+            said += ", on %s: %s %s" % (reply.get("model", ""), reply["instead_of"],
+                                        reply.get("why") or "does not load here")
+        self.note("note", said, expert=expert_id)
         return expert_id
 
     def attachments_for(self, seat, system):
@@ -600,7 +644,12 @@ class Build:
                 "attached": True}
 
     def round(self, seat, messages):
-        return self.core.call("seat.chat", {"seat": seat.handle, "messages": messages}) or {}
+        reply = self.core.call("seat.chat", {"seat": seat.handle, "messages": messages}) or {}
+        # That another model answered in place of the one in the seat, which
+        # the journal says rather than letting its work pass as the seat's.
+        for said in reply.get("notes") or []:
+            self.note("note", said, expert=seat.id)
+        return reply
 
     def run_tool(self, call, seat=None):
         asked = dict(call)
@@ -672,7 +721,8 @@ class Build:
         if attached is not None:
             messages.append(attached)
             messages.append({"role": "assistant", "content": "Read. I will plan from these."})
-        prompt = plan_prompt(self.directive, self.root, survey, feedback, self.machine)
+        prompt = plan_prompt(self.directive, self.root, survey, feedback, self.machine,
+                             self.params.get("conversation") or "")
         messages.append({"role": "user", "content": prompt})
         why = ""
         text = ""
@@ -1120,11 +1170,11 @@ class Build:
         nothing leaves the machine."""
         seats = self.params.get("seats") or {}
         # Who a finished task went to: what a local delegator learns to split
-        # the work by. The task as the question, the seat's name as the answer.
-        needs = task.get("needs") or ""
+        # the work by. The task as the question, worded as the delegator is
+        # shown one, and the seat's name as the answer.
         self.core.call("teach.record", {
             "expert": "delegator",
-            "prompt": ((needs + ": ") if needs else "") + task["title"] + "\n" + task["detail"],
+            "prompt": routed_on(task),
             "completion": self.roster.label(task["expert"]),
             "files": [],
         })

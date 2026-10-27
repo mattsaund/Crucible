@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// The conversation: what was asked, who answered and how, and the box the
-// next question goes in.
+// The conversation: what was asked, who answered and how, the builds that
+// messages became, and the one box the next message goes in.
 
 // --- one turn -------------------------------------------------------------------
 
@@ -154,6 +154,13 @@ function turnsView(turns, from, where) {
   const out = [];
   for (let index = from; index < turns.length; index += 1) {
     const turn = turns[index];
+    if (turn.build) {
+      // A message that became a build: its journal changes while the build
+      // runs and is read later for one that ran, so it is never kept.
+      out.push(`<div class="turn build-turn" data-key="t${index}" id="build-${escape(turn.build)}">${
+        buildTurnView(turn, index, busy)}</div>`);
+      continue;
+    }
     if (turn.streaming) {
       // Changing with every push, so not worth remembering.
       out.push(`<div class="turn" data-key="t${index}">${
@@ -208,9 +215,10 @@ afterDraw.push(() => {
 
 /// Somewhere to start: about the project, when one is open. A chat with no
 /// project, or only its scratch folder with nothing in it yet, has no files
-/// to ask about, and is offered things that need none.
+/// to ask about, and is offered things that need none, a build among them:
+/// the same box makes software as answers questions.
 const OPENERS = ['What is in this project?', 'Explain a file to me', 'Find and fix a failing test'];
-const SCRATCH_OPENERS = ['Explain something to me', 'Write a small script', 'Summarize a document'];
+const SCRATCH_OPENERS = ['Explain something to me', 'Summarize a document', 'Build a small web app'];
 
 /// What Crucible is fetching for itself, while it is: its Python, the
 /// runtimes, the training environment. Shown above whatever the empty view
@@ -254,7 +262,7 @@ actions['setup-stop'] = () => guard(() => call('setup.stop'));
 /// One thing at a time, in the order they have to be fixed: there is no point
 /// saying a model is missing to somebody who has not got a runtime to load
 /// it with. Each names the one button that fixes it.
-function readiness(ready) {
+function readiness() {
   const s = state.snapshot;
   const getting = setupView();
   const seated = (s.experts || []).some((e) => e.phase !== 'unconfigured');
@@ -276,13 +284,12 @@ function readiness(ready) {
     fix = '<button class="action" data-act="settings-page" data-page="experts">Settings</button>';
   }
   if (fix) return getting + `<div class="empty"><div class="empty-label">${label}</div>${fix}</div>`;
-  // Nothing in the way. `ready` is what the view says then: Chat offers
-  // somewhere to start, Cook says what a cook is.
+  // Nothing in the way: somewhere to start.
   const project = s.project || {};
   const openers = project.open && !project.scratchpad ? OPENERS : SCRATCH_OPENERS;
-  return getting + (ready || `<div class="empty"><div class="empty-label quiet">Ask anything</div>
+  return getting + `<div class="empty"><div class="empty-label quiet">Ask anything</div>
       <div class="chips">${openers.map((text) =>
-        `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`);
+        `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`;
 }
 
 // --- the box ------------------------------------------------------------------------
@@ -312,8 +319,10 @@ function tallyView() {
 // Two menus beside the plus, opening upward like it. The first is where a
 // prompt goes: to the delegator, which picks an expert for each one, or
 // straight to one expert -- what `/physics` does for a single prompt, kept
-// until it is changed back. The second is how hard a reasoning model thinks;
-// a model with no such setting is never sent it.
+// until it is changed back; a build sent to one is that expert's to plan and
+// work. The second is how hard a reasoning model thinks in a chat turn; a
+// model with no such setting is never sent it, and a build's rounds are sent
+// none (engine_cook.cpp, cook_round).
 
 const PICK = {
   route: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
@@ -407,73 +416,62 @@ actions['effort-pick'] = (item) => {
   configure({ reasoning_effort: item.dataset.value || '' });
 };
 
-/// The box a prompt, a directive or an answer is typed into.
+/// The box everything is typed into: a question, something to build, or the
+/// answer to what a build is asking.
 ///
-/// One function for Chat and Build, because it is one box: the same place on
-/// the screen, the same Enter. What differs is the hint in it and the word on
-/// the button -- and that on the Build view, while a build runs, the box is
-/// the build's: for its question when it asks one, and otherwise shut.
-///
-/// The chat is never shut by a build. Its turns are answered beside the
-/// build's agents, by the same experts, one model at a time each.
-function composerView(options) {
+/// One box, because what a message becomes is decided rather than chosen
+/// (the orchestrator's intent.py): a question is answered, a request for
+/// software becomes a build drawn in the conversation. While a build asks
+/// something, the box is for the answer. Otherwise it is never shut by one:
+/// a message typed while a build works is answered beside its agents, by the
+/// same experts, one model at a time each.
+function composerView() {
   const s = state.snapshot;
   const cook = s.cook && s.cook.running ? s.cook : null;
-  const owns = cook && options.build;
-  const asking = owns && cook.state === 'asking';
+  const asking = !!cook && cook.state === 'asking';
+  const finishing = !!cook && cook.state === 'finishing';
   const auto_ = !!s.auto_edits;
-
-  let hint = options.hint;
-  let disabled = false;
-  if (asking) hint = 'answer the question above';
+  const hint = asking ? 'answer the question above' : 'Ask or build anything';
 
   // Auto sits beside the box rather than in Settings because whether you are
   // watching an expert edit your files is a decision that changes between one
   // prompt and the next, and a switch you have to go and find is a switch that
-  // stays wherever it was last left. A cook asks too, when it is off, and the
+  // stays wherever it was last left. A build asks too, when it is off, and the
   // switch takes effect from its next write -- so it is here while one runs.
   const autoButton = `<button type="button" class="action toggle" data-act="auto-edits"
       aria-pressed="${auto_}">${auto_ ? 'Auto on' : 'Auto off'}</button>`;
 
-  let buttons;
-  if (owns && !asking) {
-    // Two stops, because they are different things. The first makes a
-    // finishing pass so the project is left in a state that runs; the second
-    // is a cancel and leaves it wherever it got to.
-    const finishing = cook.state === 'finishing';
-    buttons = `${finishing ? '<span class="status composer-note">finishing up</span>' : ''}
-      ${autoButton}
+  // A build's two stops stay at hand while it runs, whichever pane is up,
+  // because they are different things: the first makes a finishing pass so
+  // the project is left in a state that runs, the second is a cancel and
+  // leaves it wherever it got to.
+  const stops = cook ? `${finishing ? '<span class="status composer-note">finishing up</span>' : ''}
       <button type="button" class="action" data-act="cook-stop" ${finishing ? 'disabled' : ''}
-              title="Finish cleanly, then stop">Stop and finish</button>
-      <button type="button" class="action" data-act="build-cancel" title="Stop at once">Stop now</button>`;
-    disabled = true;
-    hint = finishing ? 'finishing up' : 'building';
-  } else {
-    const send = asking ? 'Answer' : options.send;
-    buttons = `${autoButton}
+              title="Finish the build cleanly, then stop">Stop and finish</button>
+      <button type="button" class="action" data-act="build-cancel" title="Stop the build at once">Stop now</button>` : '';
+  const send = asking ? 'Answer' : 'Send';
+  const buttons = `${stops}${autoButton}
       ${s.busy && !asking
         ? `<button type="button" class="send stop" data-act="stop" aria-label="${
              s.status === 'stopping' ? 'Stopping' : 'Stop'}">${PICK.stop}</button>`
-        : `<button class="send" aria-label="${escape(send)}" ${disabled ? 'disabled' : ''}>${PICK.up}</button>`}`;
-  }
+        : `<button class="send" aria-label="${escape(send)}">${PICK.up}</button>`}`;
 
   // One rounded box: what is attached, then the text, then a row along the
   // bottom with the plus at one end and the buttons at the other. More can
   // be typed with tiles in it; they go with whatever is.
-  const mode = options.build ? 'build' : 'chat';
   return `<div class="foot">
       <div class="splitter-y" id="composer-splitter" title="Drag to resize"></div>
-      <form class="composer" data-submit="send" data-mode="${mode}">
-        <div class="box${disabled ? ' shut' : ''}">
-          ${disabled ? '' : attachTiles(mode)}
+      <form class="composer" data-submit="send" data-mode="chat">
+        <div class="box">
+          ${asking ? '' : attachTiles('chat')}
           <textarea id="prompt" data-draft data-sized data-key="composer-key" data-input="composer-grow"
                     data-paste="composer-paste"
                     rows="${state.composerRows}" placeholder="${escape(hint)}" autocomplete="off"
-                    spellcheck="false" ${disabled ? 'disabled' : ''}>${escape(state.drafts[mode] || '')}</textarea>
+                    spellcheck="false">${escape(state.drafts.chat || '')}</textarea>
           <div class="box-bar">
-            ${attachButton(mode, disabled || asking)}
-            ${routePicker(mode, disabled || asking)}
-            ${effortPicker(mode, disabled || asking)}
+            ${attachButton('chat', asking)}
+            ${routePicker('chat', asking)}
+            ${effortPicker('chat', asking)}
             <span class="spacer"></span>
             ${buttons}
           </div>
@@ -485,31 +483,33 @@ function composerView(options) {
 
 // --- the view -------------------------------------------------------------------------
 
-views.chat = () => {
+/// The conversation: every turn, those that became builds drawn as their
+/// builds, or somewhere to start when there are none.
+///
+/// No notices here: the transcript is the conversation and nothing else.
+/// What the program has to say goes to the side menu's status line, and a
+/// seat that would not load says so on its own row.
+function conversationView() {
   const s = state.snapshot;
   const turns = s.turns || [];
-  // No notices here: the transcript is the conversation and nothing else.
-  // What the program has to say goes to the side menu's status line, and a
-  // seat that would not load says so on its own row.
-  //
-  // A build running beside the chat is drawn at the foot of it, its last few
-  // steps and any question it is waiting on: the same experts are answering
-  // both, and a question from the build is answered on the Build view.
-  const asking = s.cook && s.cook.running && s.cook.state === 'asking';
-  const cooking = s.cook && s.cook.running
-    ? `<div class="turn cook-here"><div class="who"><span class="seat">◆ building</span>
-         <span>${escape(s.cook.goal)}</span></div>
-         ${cookSteps(s.cook.steps.slice(-6))}
-         ${asking ? `<div class="asking"><div class="caption">THE BUILD IS ASKING</div>
-             <div>${escape(s.cook.question)}</div></div>` : ''}
-         <button class="link" data-act="view" data-view="build">${asking ? 'Answer it in Build' : 'Open the build'}</button></div>`
-    : '';
-  const body = turns.length || cooking ? turnsView(turns, 0) + cooking : readiness();
-  return sideView() + `<div class="pane">
-      <div class="scroller"><div id="transcript">${body}${
-          s.pending_edit ? pendingEdit(s.pending_edit) : ''}</div>
+  return (turns.length ? turnsView(turns, 0) : readiness()) + (s.pending_edit ? pendingEdit(s.pending_edit) : '');
+}
+
+views.chat = () => {
+  // The panes beside the conversation, once there is a folder to show (see
+  // build.js). The switcher sits above the scroller, not inside it: a long
+  // conversation scrolled it out of reach. Only the conversation keeps to
+  // its bottom as it grows; the other panes are read from the top, and a
+  // tree or a preview toolbar scrolled out of sight is a pane with nothing
+  // to click.
+  const pane = shownPane();
+  const nav = paneNav();
+  const body = pane === 'code' ? codePane() : pane === 'source' ? sourcePane()
+             : pane === 'preview' ? previewView() : conversationView();
+  return sideView() + `<div class="pane${nav ? ' with-nav' : ''}">${nav}
+      <div class="scroller"><div id="${pane === 'chat' ? 'transcript' : 'pane-body'}">${body}</div>
         <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
-      ${composerView({ hint: 'Ask it something', send: 'Send' })}
+      ${composerView()}
     </div>` + recentsView();
 };
 
@@ -517,18 +517,18 @@ views.chat = () => {
 
 /// What is typed, kept by the page rather than only by the box: a box is
 /// redrawn new whenever the view changes, and with it went whatever was
-/// half written. Per mode, since Chat and Build each have their own.
-function keepDraft(mode, text) { state.drafts[mode] = text; }
+/// half written.
+function keepDraft(text) { state.drafts.chat = text; }
 
 /// Clear the box for a send, and put the words back if the send failed.
-async function sending(mode, box, text, work) {
+async function sending(box, text, work) {
   box.value = '';
-  keepDraft(mode, '');
+  keepDraft('');
   growComposer(box);
   try {
     await work();
   } catch (error) {
-    keepDraft(mode, text);
+    keepDraft(text);
     const now = document.getElementById('prompt');
     if (now && !now.value) { now.value = text; growComposer(now); }
     throw error;
@@ -538,37 +538,28 @@ async function sending(mode, box, text, work) {
 actions.send = (form) => {
   const box = form.querySelector('textarea');
   const text = box.value.trim();
-  const mode = form.dataset.mode;
   const s = state.snapshot;
-  const building = s.cook && s.cook.running;
-  // Text typed on the Build view while its build is asking is the answer to
-  // it: the question is on screen, and the box under it answers it. What is
-  // attached stays where it is for the next prompt. On Chat it is a prompt,
-  // whatever the build is doing.
-  if (mode === 'build' && building) {
-    if (s.cook.state !== 'asking' || !text) return;
-    return guard(() => sending(mode, box, text, () => call('cook.answer', { answer: text })));
+  // While a build asks something, what is typed is the answer to it: the
+  // question is on screen, and the box under it answers it. What is
+  // attached stays where it is for the next prompt.
+  if (s.cook && s.cook.running && s.cook.state === 'asking') {
+    if (!text) return;
+    state.follow = true;
+    return guard(() => sending(box, text, () => call('cook.answer', { answer: text })));
   }
-  if (mode !== 'build' && s.busy) return;
-  const files = state.attached[mode] || [];
-  // A question can be only its attachments -- "here" and a PDF says enough
-  // -- but a goal has to say what it is.
-  if (!text && (mode === 'build' || !files.length)) return;
-  const attachments = attachmentsFor(mode);
+  if (s.busy) return;
+  // A question can be only its attachments: "here" and a PDF says enough.
+  if (!text && !(state.attached.chat || []).length) return;
+  const attachments = attachmentsFor('chat');
   if (!attachments) {
     state.error = 'Still reading the attachments';
     return render();
   }
-  if (mode === 'build') {
-    return guard(() => sending(mode, box, text, async () => {
-      await call('build.start', { directive: text, attachments, expert: routeTarget() });
-      state.attached.build = [];
-      state.buildPane = 'agents';
-      state.open.task = null;
-    }));
-  }
   state.follow = true;
-  return guard(() => sending(mode, box, text, async () => {
+  // A build this becomes opens on whichever of its agents is at work.
+  state.open.task = null;
+  state.open.taskOf = '';
+  return guard(() => sending(box, text, async () => {
     // A slash and a name for this prompt wins over the menu's choice.
     const asked = pinned(text);
     if (!asked.expert && routeTarget()) asked.expert = routeTarget();
@@ -615,7 +606,7 @@ function growComposer(box) {
   box.style.height = `${Math.max(asked, Math.min(fits, window.innerHeight / 3))}px`;
 }
 actions['composer-grow'] = (box) => {
-  if (box.form) keepDraft(box.form.dataset.mode, box.value);
+  keepDraft(box.value);
   growComposer(box);
 };
 
@@ -623,7 +614,7 @@ actions.opener = (chip) => {
   const box = document.getElementById('prompt');
   if (!box || box.disabled) return;
   box.value = chip.textContent;
-  if (box.form) keepDraft(box.form.dataset.mode, box.value);
+  keepDraft(box.value);
   growComposer(box);
   box.focus();
 };
@@ -631,7 +622,7 @@ actions.opener = (chip) => {
 actions.stop = () => {
   // Said at once. Stopping a model mid-thought can take a moment, and a
   // button that does nothing visible gets pressed again. The chat's turn
-  // only: a build running beside it is stopped from the Build view.
+  // only: a build running beside it has two stops of its own.
   state.snapshot.status = 'stopping';
   guard(() => call('cancel'));
 };

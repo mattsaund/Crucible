@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 """A chat turn: a question, the expert's answer, and the tools in between.
 
-A prompt typed into Chat -- or into the Test window in Create -- is routed, the
-expert that wins is seated, and it answers. Ordinarily that is one round and
-the end of it. When the expert reaches for a tool instead -- READ a file, RUN
-the tests, SEARCH the web -- the tool is run, what came of it goes back, and
-the expert goes round again, until it writes an answer for the person who
-asked or the turn runs out of rounds.
+A prompt typed into Chat -- or into the Test window in Create -- is first
+decided: a request to make or change software becomes a build, which the
+core starts on the turn's own words, and the turn is the build's from there
+(see intent.py). Anything else is routed, the expert that wins is seated, and
+it answers. Ordinarily that is one round and the end of it. When the expert
+reaches for a tool instead -- READ a file, RUN the tests, SEARCH the web -- the
+tool is run, what came of it goes back, and the expert goes round again, until
+it writes an answer for the person who asked or the turn runs out of rounds.
 
 Three things are worth knowing before reading it.
 
@@ -35,7 +37,7 @@ import re
 import sys
 import traceback
 
-from . import routing
+from . import intent, routing
 from .rpc import Disconnected
 
 # How many times one chat turn may act on the project before it has to answer.
@@ -304,9 +306,18 @@ class Turn:
 
     def run(self):
         params = self.params
+        pinned = params.get("pinned") or ""
+
+        # --- what it becomes ---------------------------------------------------
+        #
+        # Before who answers, because a build needs nobody to answer: its
+        # architect is chosen for the plan, and its agents for their tasks.
+        # The core says when a build cannot start (one is running already),
+        # and then the message is a turn like any other.
+        if params.get("can_build") and self.became_a_build():
+            return
 
         # --- who answers -------------------------------------------------------
-        pinned = params.get("pinned") or ""
         try:
             decision = routing.route(self.core, {
                 "prompt": routed_prompt(params.get("prompt", ""), pinned,
@@ -375,6 +386,37 @@ class Turn:
 
         self.rounds(seat)
 
+    def became_a_build(self):
+        """Decide whether this message is a build, and start it when it is.
+
+        True when the turn is over because a build has it now. A decision
+        that could not be made, a Stop while it was, or a build the core
+        would not start leaves the message to be answered, which a turn can
+        always do.
+        """
+        params = self.params
+        try:
+            decided = intent.decide(self.core, {"prompt": params.get("prompt", ""),
+                                                "attachments": params.get("attachments") or [],
+                                                "files": bool(params.get("files"))})
+        except Disconnected:
+            raise
+        except Exception as error:   # the delegator's calls failed outright
+            print("chat: the message could not be decided (%s), so it is answered" % error,
+                  file=sys.stderr)
+            return False
+        if decided.kind != intent.BUILD or self.flags().get("cancel"):
+            return False
+        started = self.call("turn.build", {"decision": decided.to_json()})
+        if not started.get("ok"):
+            print("chat: the build was not started (%s), so it is answered" % started.get("error", ""),
+                  file=sys.stderr)
+            return False
+        # Over for the chat. What the build leaves becomes the reply, and is
+        # remembered, when it ends; the status line is the build's meanwhile.
+        self.end("finished", status="building")
+        return True
+
     def rounds(self, seat):
         """Ask, and act on what the expert reached for, until it answers."""
         params = self.params
@@ -405,6 +447,10 @@ class Turn:
                 reply = None
                 if said.get("discard"):
                     reply = earlier   # what streamed before a refusal is not half an answer
+                    if earlier:
+                        # A reply that is not empty is kept in place of the
+                        # reason, which would then go unsaid.
+                        notes.append({"summary": error})
                 elif answer:
                     # A reply that had started is kept -- but then nothing would
                     # say why it stops where it does.

@@ -55,6 +55,10 @@ struct ModelShape {
     std::uint32_t layers  = 0;
     std::uint32_t vocab   = 0;
 
+    /// The context the model was trained to, or zero when the file does not
+    /// say: as far as a context grown to fit the cards may go.
+    std::uint32_t trained = 0;
+
     /// The input embedding, which llama.cpp keeps in system memory whatever
     /// the offload settings say -- "there is very little benefit to offloading
     /// the input layer", llama-model.cpp. It is part of `weights` but never

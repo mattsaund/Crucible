@@ -48,6 +48,7 @@ struct Listing {
     bool          reasoning = false;  ///< its chat template has a place for thinking
     bool          gated     = false;  ///< needs a license accepted in a browser first
     std::string   license;            ///< "apache-2.0"
+    std::string   base_model;         ///< what its card says it was made from: "Qwen/Qwen3-8B"
 };
 
 /// A page of a search, and where the next one is.
@@ -94,7 +95,6 @@ struct Option {
 /// A repository's own page: its listing, and what it can be downloaded as.
 struct Detail {
     Listing             listing;
-    std::string         base_model;
     std::vector<Option> options;   ///< smallest first
 };
 

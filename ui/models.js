@@ -40,7 +40,8 @@ function shortCount(n) {
 /// "27B", "600M", "2.4T".
 function paramsLabel(b) {
   if (!b || b <= 0) return '';
-  if (b < 1) return `${Math.round(b * 1000)}M`;
+  // Under a billion by more than rounding: 999,885,952 weights are "1B".
+  if (b < 0.9995) return `${Math.round(b * 1000)}M`;
   if (b >= 1000) return `${Number((b / 1000).toFixed(1))}T`;
   return `${b >= 10 ? Math.round(b) : Number(b.toFixed(1))}B`;
 }
@@ -102,9 +103,128 @@ function capabilityIcons(l) {
           l.reasoning ? `<span class="cap" title="Reasoning">${MARKET_ICONS.reasoning}</span>` : ''].join('');
 }
 
+// --- logos ---------------------------------------------------------------------
+//
+// Beside each repository, the logo of whose model it is: Qwen's beside a GGUF
+// of Qwen3 that unsloth made. The core fetches each owner's picture once and
+// keeps it (market/logos.hpp); the page asks after a list is drawn, so the
+// list never waits for a picture.
+
+/// Logos by whose they are, in lower case: { image, light } once known, the
+/// image a data: URL or '' for none, and null while one is on its way.
+function logosNow() {
+  return state.logos || (state.logos = {});
+}
+
+/// Whose logo a repository known only by its id has, by that id in lower
+/// case: what the core said when asked. A list of results says it itself;
+/// a benchmark's model, say, is only a repository.
+const logoOwners = {};
+
+/// Whose logo `l` has, in lower case, or '' while that is not known.
+function logoOwner(l) {
+  return String(l.logo || logoOwners[String(l.id || '').toLowerCase()] || '').toLowerCase();
+}
+
+/// The logo beside `l`, a listing, a repository's detail or just { id }: the
+/// picture once it has come, and until then, or when there is none, a square
+/// of the same size with an initial in it, so nothing moves when one lands.
+function repoLogo(l) {
+  const owner = logoOwner(l);
+  const logo = logosNow()[owner];
+  const name = owner || String(l.author || String(l.id || '').split('/')[0]);
+  return logo && logo.image ? `<img class="logo${logo.light ? ' on-dark' : ''}" src="${escape(logo.image)}" alt="">`
+    : `<span class="logo" aria-hidden="true">${escape(name.charAt(0).toUpperCase())}</span>`;
+}
+
+/// Whether a picture is light strokes on nothing, measured from its pixels
+/// once it has come. Such a logo goes on the dark square; every other goes
+/// on white, the ground the hub's own pages give it, so a black one does not
+/// vanish here. False where there is nothing to measure with.
+function lightOnNothing(src) {
+  return new Promise((done) => {
+    if (typeof Image === 'undefined' || !document.createElement) { done(false); return; }
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const side = 16;
+        const canvas = document.createElement('canvas');
+        canvas.width = side;
+        canvas.height = side;
+        const context = canvas.getContext('2d');
+        context.drawImage(image, 0, 0, side, side);
+        const pixels = context.getImageData(0, 0, side, side).data;
+        let covered = 0;
+        let light = 0;
+        let dark = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          const alpha = pixels[i + 3] / 255;
+          const luma = (0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2]) / 255;
+          covered += alpha;
+          light += alpha * luma;
+          if (luma < 0.35) dark += alpha;
+        }
+        // Mostly see-through, mostly light, and next to nothing dark in it.
+        done(covered > 0 && covered < side * side * 0.9 && light / covered > 0.7 && dark / covered < 0.1);
+      } catch (_) {
+        done(false);
+      }
+    };
+    image.onerror = () => done(false);
+    image.src = src;
+  });
+}
+
+/// Waiting to be asked for, and how many are being asked now. Two at a time:
+/// each is a lookup that holds one of the window's few worker threads while
+/// the hub answers, and a search or a repository asked for meanwhile must not
+/// wait behind a page of pictures.
+const logoQueue = [];
+let logosAsking = 0;
+
+/// Ask for the logos of `rows` the page does not have, ahead of any asked for
+/// before: these are the ones on screen now.
+function askLogos(rows) {
+  const known = logosNow();
+  const first = [];
+  for (const l of rows) {
+    // By whose it is, or by the repository's id until the core says whose.
+    // An id with no owner in it names nobody, and is not asked about.
+    const id = String(l.id || '');
+    const key = logoOwner(l) || (id.includes('/') ? `@${id.toLowerCase()}` : '');
+    if (!key || first.some((q) => q.key === key)) continue;
+    const waiting = logoQueue.findIndex((q) => q.key === key);
+    if (waiting >= 0) first.push(logoQueue.splice(waiting, 1)[0]);
+    else if (!(key in known)) { known[key] = null; first.push({ id, key }); }
+  }
+  logoQueue.unshift(...first);
+  nextLogo();
+}
+
+function nextLogo() {
+  while (logosAsking < 2 && logoQueue.length) {
+    const { id, key } = logoQueue.shift();
+    logosAsking += 1;
+    call('market.logo', { id })
+      .then((logo) => (logo.image ? lightOnNothing(logo.image) : Promise.resolve(false))
+        .then((light) => {
+          let at = key;
+          if (key.startsWith('@')) {
+            delete logosNow()[key];
+            at = logoOwners[key.slice(1)] = String(logo.owner || '').toLowerCase();
+          }
+          if (at) logosNow()[at] = { image: logo.image || '', light };
+        }))
+      // Not known after all: asked for again the next time it is shown.
+      .catch(() => { delete logosNow()[key]; })
+      .finally(() => { logosAsking -= 1; render(); nextLogo(); });
+  }
+}
+
 function resultRow(l) {
   const m = market();
   return `<button class="market-row${m.selected === l.id ? ' here' : ''}" data-act="market-pick" data-id="${escape(l.id)}">
+      ${repoLogo(l)}
       <div class="market-row-head"><strong>${escape(l.name)}</strong><span class="caps">${capabilityIcons(l)}</span></div>
       <div class="market-row-meta"><span class="who">${apart(escape(l.author), paramsLabel(l.params_b),
         `${MARKET_ICONS.down} ${shortCount(l.downloads)}`, `${MARKET_ICONS.like} ${shortCount(l.likes)}`)}</span>
@@ -189,6 +309,7 @@ function detailView() {
   const readme = m.readme === null ? '<div class="status">Reading...</div>'
     : m.readme ? `<div class="md readme">${markdown(m.readme)}</div>` : '<div class="status">No README.</div>';
   return `<div class="market-head">
+      ${repoLogo(d)}
       <h1>${escape(d.id)}</h1>
       <div class="status">${apart(`${MARKET_ICONS.down} ${shortCount(d.downloads)}`,
         `${MARKET_ICONS.like} ${shortCount(d.likes)}`, d.updated ? `updated ${escape(updatedAgo(d.updated))}` : '',
@@ -256,7 +377,12 @@ function marketSearch() {
   m.error = '';
   render();
   call('market.search', { query: m.query.trim(), format: m.format, sort: m.sort })
-    .then((page) => { if (asked === m.asked) { m.results = page.listings; m.next = page.next; } })
+    .then((page) => {
+      if (asked !== m.asked) return;
+      m.results = page.listings;
+      m.next = page.next;
+      askLogos(page.listings);
+    })
     .catch((error) => { if (asked === m.asked) { m.error = error.message; m.results = []; } })
     .finally(() => { if (asked === m.asked) { m.loading = false; render(); } });
 }
@@ -295,13 +421,19 @@ actions['market-more'] = () => {
   m.more = true;
   render();
   call('market.search', { next: m.next, sort: m.sort })
-    .then((page) => { if (asked === m.asked) { m.results = m.results.concat(page.listings); m.next = page.next; } })
+    .then((page) => {
+      if (asked !== m.asked) return;
+      m.results = m.results.concat(page.listings);
+      m.next = page.next;
+      askLogos(page.listings);
+    })
     .catch((error) => { m.error = error.message; })
     .finally(() => { m.more = false; render(); });
 };
 
-/// A repository, and its README beside it.
-function marketOpen(id) {
+/// A repository, and its README beside it. `file`, when there is one, is the
+/// file to choose of its options: a model from Bench's board.
+function marketOpen(id, file) {
   const m = market();
   m.selected = id;
   m.detail = null;
@@ -313,9 +445,11 @@ function marketOpen(id) {
     .then((detail) => {
       if (m.selected !== id) return;
       m.detail = detail;
-      // The suggestion, or else the one that was clicked: an MLX
-      // repository's siblings are its other quantizations.
-      const suggested = detail.options.find((o) => o.recommended) || detail.options.find((o) => o.repo === id);
+      askLogos([detail]);
+      // The file asked for, or the suggestion, or else the one that was
+      // clicked: an MLX repository's siblings are its other quantizations.
+      const asked = file ? detail.options.find((o) => (o.names || []).includes(file)) : null;
+      const suggested = asked || detail.options.find((o) => o.recommended) || detail.options.find((o) => o.repo === id);
       m.option = suggested ? suggested.name : (detail.options[0] || {}).name || '';
     })
     .catch((error) => { if (m.selected === id) m.error = error.message; })
@@ -326,6 +460,25 @@ function marketOpen(id) {
     .finally(render);
 }
 actions['market-pick'] = (row) => marketOpen(row.dataset.id);
+
+/// The tab, opened from another: searching for `query`, and on the
+/// repository `id` with its option holding `file` chosen, when those are
+/// given. How Bench's board and Create's base model reach a download: the
+/// one this tab makes, not a second one.
+function marketShow(query, id, file) {
+  const m = market();
+  m.query = query;
+  m.format = 'gguf';
+  m.results = null;
+  m.next = '';
+  m.selected = '';
+  m.detail = null;
+  m.error = '';
+  state.menu = null;
+  enter('models');   // which searches, the list being empty
+  if (id) marketOpen(id, file);
+}
+
 /// The menu opens at the option chosen, not at the smallest.
 let choicesOpen = false;
 afterDraw.push(() => {

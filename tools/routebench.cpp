@@ -7,6 +7,19 @@
 // of prompts whose subject is not in doubt, and reports how many it got right.
 //
 //   crucible-routebench ~/.local/share/crucible/models/LFM2-1.2B-Q8_0.gguf
+//   crucible-routebench model.gguf --cases tools/routes/build-tasks.json
+//   crucible-routebench model.gguf --decide tools/routes/answer-or-build.json
+//
+// The built-in cases are questions for nine seats. tools/routes has five seats
+// of questions, and the tasks a build hands out, worded the way a build words
+// them for the delegator; each file says what it is. --method names a way of
+// routing to compare with the shipped one (ModelRouter in the orchestrator's
+// routing.py lists them), so trying one needs no change here.
+//
+// --decide measures the delegator's other job instead: whether a message
+// typed into the box is answered or built (the orchestrator's intent.py),
+// with the keywords it falls back on beside it, and how the score would move
+// with the line between the two drawn somewhere else.
 //
 // Sampling is greedy, so repeated runs give identical results and a change in
 // the score is a real change rather than sampling noise.
@@ -18,6 +31,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -36,6 +50,103 @@
 
 using namespace crucible;
 
+namespace {
+
+/// --decide: each message of `file` decided answer or build as the box
+/// decides it, beside the delegator's odds alone and the keywords alone, and
+/// what the delegator alone would score with its line drawn elsewhere.
+int decide(orchestra::Link& orchestrator, const std::string& file, const std::string& method,
+           float calibration, bool calibrated) {
+    using json = nlohmann::json;
+    struct Case {
+        std::string want;
+        std::string prompt;
+        bool        files = false;
+        double      odds  = 0.0;
+        std::string box;
+        std::string keywords;
+    };
+    std::vector<Case> cases;
+    try {
+        json doc;
+        std::ifstream in(file);
+        in >> doc;
+        for (const json& one : doc.at("cases")) {
+            Case c;
+            c.want   = one.at(0).get<std::string>();
+            c.prompt = one.at(1).get<std::string>();
+            c.files  = one.size() > 2 && one.at(2).value("files", false);
+            cases.push_back(std::move(c));
+        }
+    } catch (const std::exception& e) {
+        std::printf("could not read %s: %s\n", file.c_str(), e.what());
+        return 1;
+    }
+
+    double total_ms = 0.0;
+    for (Case& c : cases) {
+        json asked{{"prompt", c.prompt}, {"files", c.files}};
+        if (!method.empty()) {
+            asked["method"] = method;
+        }
+        if (calibrated) {
+            asked["calibration"] = calibration;   // otherwise intent.CALIBRATION
+        }
+        const auto start = std::chrono::steady_clock::now();
+        c.box = orchestrator.call("decide", asked).value("kind", std::string());
+        total_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const json odds = orchestrator.call("decide.odds", asked);
+        c.odds = odds.value("build", 0.0);
+        // Each order's raw lean to a build, the label scores less each other:
+        // where the two orders disagree is where the order is deciding.
+        std::string orders;
+        for (const json& one : odds.value("orders", json::array())) {
+            const json& s = one["scores"];
+            char margin[32];
+            std::snprintf(margin, sizeof(margin), " %+5.1f", s[1].get<double>() - s[0].get<double>());
+            orders += margin;
+        }
+        asked["method"] = "keywords";
+        c.keywords = orchestrator.call("decide", asked).value("kind", std::string());
+        std::printf("%s  %-6s (want %-6s) odds %.2f %s  keywords %-6s %s %.60s\n",
+                    c.box == c.want ? "ok  " : "MISS", c.box.c_str(), c.want.c_str(), c.odds, orders.c_str(),
+                    c.keywords.c_str(), c.files ? "[files]" : "       ", c.prompt.c_str());
+    }
+
+    // Right of each kind: as the box decides, by the delegator alone with
+    // its line drawn here and there, and by the keywords alone. A build
+    // started for a question costs far more than the other mistake, so the
+    // answers column is the one to watch.
+    const auto score = [&cases](const std::string& kind, const std::function<std::string(const Case&)>& got) {
+        int right = 0;
+        int of    = 0;
+        for (const Case& c : cases) {
+            if (c.want == kind) {
+                ++of;
+                right += got(c) == c.want ? 1 : 0;
+            }
+        }
+        return std::make_pair(right, of);
+    };
+    const auto row = [&score](const std::string& name, const std::function<std::string(const Case&)>& got) {
+        const auto [a, as] = score("answer", got);
+        const auto [b, bs] = score("build", got);
+        std::printf("%-16s %d/%-8d %d/%-8d %d/%d\n", name.c_str(), a, as, b, bs, a + b, as + bs);
+    };
+    std::printf("\n%-16s %-10s %-10s %s\n", "", "answers", "builds", "all");
+    row("the box", [](const Case& c) { return c.box; });
+    for (const double at : {0.3, 0.4, 0.5, 0.6, 0.7}) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "odds %.1f", at);
+        row(name, [at](const Case& c) { return std::string(c.odds >= at ? "build" : "answer"); });
+    }
+    row("keywords", [](const Case& c) { return c.keywords; });
+    std::printf("\n%.0fms per message\n", total_ms / static_cast<double>(cases.empty() ? 1 : cases.size()));
+    return 0;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::printf("usage: crucible-routebench <router-model.gguf> [--gpu-layers N]\n");
@@ -52,6 +163,7 @@ int main(int argc, char** argv) {
     // against the shipped one without a rebuild.
     std::string cases_file;
     std::string method;
+    std::string decide_file;
 
     ModelParams params;
     params.path        = paths::expand_user(argv[1]).string();
@@ -64,6 +176,7 @@ int main(int argc, char** argv) {
     params.max_tokens  = 16;
 
     bool quiet = false;
+    bool calibrated = false;   // --calibration given, rather than the default above
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--quiet") { quiet = true; }
     }
@@ -73,6 +186,7 @@ int main(int argc, char** argv) {
         }
         if (std::string(argv[i]) == "--calibration") {
             calibration = static_cast<float>(std::atof(argv[i + 1]));
+            calibrated  = true;
         }
         if (std::string(argv[i]) == "--explain") {
             explain = argv[i + 1];
@@ -82,6 +196,9 @@ int main(int argc, char** argv) {
         }
         if (std::string(argv[i]) == "--method") {
             method = argv[i + 1];
+        }
+        if (std::string(argv[i]) == "--decide") {
+            decide_file = argv[i + 1];
         }
     }
 
@@ -196,6 +313,10 @@ int main(int argc, char** argv) {
     if (!orchestrator.start(started)) {
         std::printf("the orchestrator would not start: %s\n", started.c_str());
         return 1;
+    }
+
+    if (!decide_file.empty()) {
+        return decide(orchestrator, decide_file, method, calibration, calibrated);
     }
 
     if (!explain.empty()) {

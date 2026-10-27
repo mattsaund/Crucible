@@ -54,4 +54,13 @@ std::string console_to_utf8(std::string_view text);
 /// the string and the rest been read as script; they are doubled as well.
 std::string powershell_literal(std::string_view text);
 
+/// Whether `text` has fallen into a loop: its last `span` bytes appear at
+/// least `times` times in its last `window`. A model decoding greedily that
+/// starts to say the same lines over has no way out, and says them until its
+/// budget is spent; an answer that is going somewhere does not repeat the
+/// same 160 bytes eight times. Any loop shorter than an eighth of the window
+/// is caught, however short its period.
+bool ends_in_loop(std::string_view text, std::size_t span = 160, int times = 8,
+                  std::size_t window = 16384);
+
 }  // namespace crucible::detail

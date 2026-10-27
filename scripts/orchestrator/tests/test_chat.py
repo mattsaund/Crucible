@@ -56,8 +56,10 @@ class ScriptedCore:
 
     def __init__(self, rounds, seat=None, has_model=True, cancel=False, auto_edits=False,
                  approve=True, used=100, size=1000, dropped=0, results=1, pictures="",
-                 sees=True):
+                 sees=True, refuse_build=""):
         self.rounds = list(rounds)
+        self.refuse_build = refuse_build
+        self.built = None      # what turn.build was asked with
         self.seat = {"ok": True, "remote": False, "sees_images": True, "takes_effort": False,
                      "workshop": True, "tools": "\n\nTOOLS"}
         self.seat.update(seat or {})
@@ -104,6 +106,11 @@ class ScriptedCore:
         if method == "turn.route":
             self.routed = params["decision"]
             return {"has_model": self.has_model}
+        if method == "turn.build":
+            self.built = params["decision"]
+            if self.refuse_build:
+                return {"ok": False, "error": self.refuse_build}
+            return {"ok": True, "id": "20261026-210000"}
         if method == "turn.load":
             return dict(self.seat)
         if method == "turn.open":
@@ -220,6 +227,66 @@ class OneRound(unittest.TestCase):
         # A round that produced nothing at all is not dressed up as anything.
         nothing = run(ScriptedCore([said("", output_tokens=0)]))
         self.assertNotIn("reply", nothing.ended)
+
+
+class BecomingABuild(unittest.TestCase):
+    """What a message becomes is decided first (intent.py). With no delegator,
+    as here, by its words."""
+
+    def test_software_asked_for_becomes_a_build_and_the_turn_is_over_for_the_chat(self):
+        core = run(ScriptedCore([]), prompt="Make me a todo app.", can_build=True, files=False)
+        self.assertEqual(core.built["kind"], "build")
+        self.assertEqual(core.built["source"], "keywords")
+        self.assertEqual(core.ended["state"], "finished")
+        self.assertEqual(core.ended["status"], "building")
+        # Remembered when the build ends, by the core, as what it left.
+        self.assertFalse(core.ended["remember"])
+        self.assertNotIn("turn.route", core.calls)
+        self.assertNotIn("turn.load", core.calls)
+        self.assertEqual(core.sent, [])
+
+    def test_a_question_is_answered_as_it_always_was(self):
+        core = run(ScriptedCore([said("Use a list.")]), prompt="How do I build a todo app in React?",
+                   can_build=True)
+        self.assertIsNone(core.built)
+        self.assertEqual(core.calls.count("delegator.ready"), 2)   # the decision's, then the route's
+        self.assertEqual(core.reply, "Use a list.")
+        self.assertTrue(core.ended["remember"])
+
+    def test_a_change_is_a_build_in_a_folder_with_files_and_an_answer_in_an_empty_one(self):
+        built = run(ScriptedCore([]), prompt="Now add dark mode.", can_build=True, files=True)
+        self.assertEqual(built.built["kind"], "build")
+        answered = run(ScriptedCore([said("Here is how.")]), prompt="Now add dark mode.",
+                       can_build=True, files=False)
+        self.assertIsNone(answered.built)
+
+    def test_nothing_is_decided_while_a_build_runs_and_the_message_is_answered_beside_it(self):
+        core = run(ScriptedCore([said("Sure.")]), prompt="Make me a todo app.", can_build=False)
+        self.assertIsNone(core.built)
+        # The route's, and no decision's before it.
+        self.assertEqual(core.calls.count("delegator.ready"), 1)
+        self.assertEqual(core.reply, "Sure.")
+
+    def test_a_build_the_core_would_not_start_is_answered_instead(self):
+        core = run(ScriptedCore([said("I can write it here.")], refuse_build="a build is already running"),
+                   prompt="Make me a todo app.", can_build=True)
+        self.assertEqual(core.built["kind"], "build")
+        self.assertEqual(core.reply, "I can write it here.")
+        self.assertEqual(core.ended["state"], "finished")
+
+    def test_a_pinned_message_is_decided_the_same_way(self):
+        core = run(ScriptedCore([]), prompt="Make me a todo app.", pinned="writing", can_build=True)
+        self.assertEqual(core.built["kind"], "build")
+        answered = run(ScriptedCore([said("Words.")]), prompt="What is a sonnet?", pinned="writing",
+                       can_build=True)
+        self.assertIsNone(answered.built)
+        self.assertEqual(answered.routed["expert"], "writing")
+
+    def test_a_stop_while_it_is_decided_starts_no_build(self):
+        core = run(ScriptedCore([], cancel=True), prompt="Make me a todo app.", can_build=True)
+        self.assertIsNone(core.built)
+        self.assertEqual(core.ended["state"], "failed")
+        self.assertEqual(core.ended["reason"], "canceled before routing finished")
 
 
 class Routing(unittest.TestCase):
@@ -405,7 +472,13 @@ class Ending(unittest.TestCase):
         refused = run(ScriptedCore([said("Before.\nREAD: a.txt"),
                                     said("Sure, here", error="declined", discard=True)]))
         self.assertEqual(refused.reply, "Before.")
-        self.assertEqual(refused.actions, ["read a.txt"])
+        # The prose before it stands, so the reason is said above it.
+        self.assertEqual(refused.actions, ["read a.txt", "declined"])
+        self.assertEqual(refused.ended["reason"], "declined")
+        # Declined in the first round, the reason is the reply itself.
+        first = run(ScriptedCore([said("Sure, here", error="declined", discard=True)]))
+        self.assertEqual(first.actions, [])
+        self.assertEqual(first.ended["reason"], "declined")
 
     def test_a_stopped_turn_ends_canceled_without_being_remembered(self):
         core = run(ScriptedCore([said("one two", canceled=True), said("never")]))

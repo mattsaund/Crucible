@@ -36,6 +36,7 @@
 #include "crucible/orchestra/link.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/engine/state.hpp"
+#include "crucible/serve/server.hpp"
 #include "crucible/tools/attachments.hpp"
 #include "crucible/tools/mcp.hpp"
 #include "crucible/tools/processes.hpp"
@@ -66,8 +67,13 @@ public:
     ///
     /// One that reaches the worker while a benchmark runs is not answered: its
     /// turn fails, and says why. See benching.
+    ///
+    /// A prompt that asks for software to be made becomes a build (see the
+    /// orchestrator's intent.py), unless `answer_only` says it is to be
+    /// answered whatever it asks: a model under test in Create is asked
+    /// questions, never set to work.
     void submit(std::string prompt, std::optional<ExpertId> pinned = std::nullopt,
-                std::vector<attach::Attachment> attachments = {});
+                std::vector<attach::Attachment> attachments = {}, bool answer_only = false);
 
     /// Ask the current generation to stop at the next token boundary.
     void cancel();
@@ -143,10 +149,15 @@ public:
     /// `kind` is "cook" or "build". A build is a cook with a plan: the
     /// orchestrator's build loop rather than its cook loop, on the same
     /// journal and the same tools. See scripts/orchestrator's build.py.
+    ///
+    /// `started`, when given, is told the new journal's id, so the turn that
+    /// asked for the build can be marked with it at once (Turn::build). When
+    /// a turn is marked so, the build's end is its reply and is remembered by
+    /// the conversation, as an answer is.
     std::string start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
                            std::vector<attach::Attachment> attachments = {},
                            std::optional<ExpertId> pinned = std::nullopt,
-                           std::string kind = "cook");
+                           std::string kind = "cook", std::string* started = nullptr);
 
     /// A seat a build made for itself: see take_made_seats.
     struct MadeSeat {
@@ -274,6 +285,12 @@ public:
 
     bool is_busy() const { return busy_.load(std::memory_order_relaxed); }
 
+    /// The API server: whether it listens and where, what it serves, and what
+    /// it has answered. It listens as the configuration says from start(),
+    /// and follows apply_config() at once rather than after the queue. See
+    /// serve/server.hpp.
+    serve::Status server_status() const;
+
 private:
     /// One unit of work for the engine thread. `kind` keeps config changes and
     /// expert releases on the same queue as prompts, so they are applied in
@@ -290,6 +307,7 @@ private:
 
         // for Prompt
         std::vector<attach::Attachment> attachments;
+        bool                            answer_only = false;   ///< never a build; see submit
 
         // for NameSession, with `prompt` (the excerpt)
         std::filesystem::path root;
@@ -403,10 +421,14 @@ private:
     orchestra::Link orchestra_;
 
     // --- the cook, in engine_cook.cpp ---------------------------------------
-    void do_cook(const std::string& goal, int budget_seconds,
+    void do_cook(const std::string& id, const std::string& goal, int budget_seconds,
                  const std::filesystem::path& root,
                  std::vector<attach::Attachment> attachments,
                  std::optional<ExpertId> pinned, const std::string& kind);
+
+    /// The turn that became the build `cook`, given what the build left as
+    /// its reply, and the conversation's memory of it: see Turn::build.
+    void settle_build_turn(const Cook& cook);
 
     /// The Stop a request from the orchestrator heeds: the build's for one of
     /// its agents, the chat's for a turn's routing.
@@ -440,6 +462,10 @@ private:
         /// Why there is no answer, when the model could not be asked at all.
         /// Only a provider produces one: a local model that is loaded answers.
         std::string error;
+
+        /// What the journal should say besides: that another model answered
+        /// in place of the one in the seat. See ChatResult::notes.
+        std::vector<std::string> notes;
     };
     CookRound cook_round(ChatModel& model, const ModelParams& params,
                          const std::vector<ChatMessage>& messages);
@@ -555,10 +581,12 @@ private:
     ///
     /// The one place that knows there are two kinds. When a local model will
     /// not fit beside the ones other seats are holding, this waits for one of
-    /// them to be let go, and says so on the status line. `load_ms` is how
-    /// long the swap took, and 0 when there was none.
+    /// them to be let go, and says so on the status line -- and to `waiting`,
+    /// when given. `load_ms` is how long the swap took, and 0 when there was
+    /// none.
     HeldModel hold_model(const ExpertId& id, const ModelParams& params, const std::string& name,
-                         const CancelCallback& cancel, long& load_ms, std::string& error);
+                         const CancelCallback& cancel, long& load_ms, std::string& error,
+                         const std::function<void()>& waiting = {});
 
     /// hold_model's two halves, with host_mutex_ held: an MLX model brought
     /// up in its server, or a GGUF loaded onto the cards. Null with
@@ -709,6 +737,86 @@ private:
     /// button is pressed: a configuration change is queued behind whatever is
     /// running, and a cook is an hour of running.
     std::atomic<bool>       auto_edits_{false};
+
+    // --- the API server, in engine_serve.cpp ----------------------------------
+    //
+    // The engine is what the server asks: serve::Backend's two questions,
+    // answered with the delegator or a model on this machine, held as a
+    // seat holds one.
+
+    class Served final : public serve::Backend {
+    public:
+        explicit Served(Engine& engine) : engine_(engine) {}
+        std::string   model() const override { return served_id(engine_.config()); }
+        serve::Answer answer(const serve::Ask& ask, const serve::Sink& sink) override {
+            return engine_.serve_request(ask, sink);
+        }
+
+    private:
+        Engine& engine_;
+    };
+
+    /// A request from the server, answered. On the server's own thread.
+    serve::Answer serve_request(const serve::Ask& ask, const serve::Sink& sink);
+
+    /// The seat a model the server serves is held under, and what the
+    /// right-hand panel says has it. Capitalized, which no seat's id is.
+    static constexpr const char* kServerSeat = "Server";
+
+    /// Listen as `config` says, or stop listening. From start() and
+    /// apply_config(), on the thread that calls them.
+    void configure_server(const Config& config);
+
+    /// The file the server answers with, as `config` has it: the
+    /// delegator's, or the model it names. Empty when there is none.
+    static std::string served_file(const Config& config);
+
+    /// What the server calls it: that file's name.
+    static std::string served_id(const Config& config);
+
+    /// How the served model loads: as the seat that has the same file does,
+    /// so one copy in memory answers both, or as every seat starts from.
+    /// `seat`, when given, is set to that seat, or to kServerSeat for none.
+    static ModelParams served_params(const Config& config, ExpertId* seat = nullptr);
+
+    /// Whoever a request waits behind while the models' lock is taken, in
+    /// the words Settings shows: "the chat", "the build", "loading".
+    std::string serve_blocker() const;
+
+    /// One request, answered by `model` with `params` for what the request
+    /// left out. `local` is the same model when it is one on this machine,
+    /// which a text completion needs; null otherwise.
+    serve::Answer serve_with(ChatModel& model, LoadedModel* local, ModelParams params,
+                             const serve::Ask& ask, const serve::Sink& sink, const CancelCallback& cancel);
+
+    /// Last, so they are gone before anything a request is answered from.
+    Served                         served_{*this};
+    std::unique_ptr<serve::Server> server_ =
+        std::make_unique<serve::Server>(served_, [this] {
+            if (wake_) {
+                wake_();
+            }
+        });
 };
+
+/// What a seat a build makes runs on. See made_seat_model.
+struct SeatModel {
+    std::string model;      ///< as a seat names one: a file in the models folder, or a provider's name for it
+    std::string provider;   ///< empty for a model on this machine
+
+    /// The model set for new agents and why it was passed over, when it was
+    /// ("does not fit the cards here"); empty when it is the one.
+    std::string passed_over;
+    std::string why;
+};
+
+/// The model for a seat a build makes: the one Settings, Build sets for new
+/// agents, unless `why_not` -- which says why a model cannot be loaded here,
+/// or nothing when it can -- has a reason; then the model of the first seat
+/// in `instead` that it has none for. Those are the build's own seats, the
+/// one the task was routed to first, which are loading here already. No
+/// model when none of them can be either. `config` has its models resolved.
+SeatModel made_seat_model(const Config& config, const std::vector<ExpertId>& instead,
+                          const std::function<std::string(const ModelParams&)>& why_not);
 
 }  // namespace crucible

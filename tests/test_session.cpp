@@ -231,6 +231,31 @@ TEST(utf8_lengths_are_read_from_the_lead_byte) {
     CHECK_EQ(detail::utf8_length(0x80), 1);  // stray continuation: make progress
 }
 
+TEST(a_reply_going_in_circles_is_told_from_one_going_somewhere) {
+    // The shape gpt-oss fell into on the benchmarks: the same few lines over.
+    std::string looping = "We need to count the words. ";
+    for (int i = 0; i < 40; ++i) {
+        looping += "Let's check again: the answer must have three paragraphs and no commas. ";
+    }
+    CHECK(detail::ends_in_loop(looping));
+    // A short period is caught as surely as a long one.
+    CHECK(detail::ends_in_loop(std::string(2000, '\n')));
+    // Varied text of any length is not, and neither is a thing said twice:
+    // "repeat the request word for word" is an instruction, not a loop.
+    std::string going;
+    for (int i = 0; i < 400; ++i) {
+        going += "Step " + std::to_string(i) + ": add " + std::to_string(i * 7) + " to the total.\n";
+    }
+    CHECK(!detail::ends_in_loop(going));
+    std::string twice = "Write a poem about the sea in exactly four lines, without commas. ";
+    twice += twice;
+    CHECK(!detail::ends_in_loop(twice + going));
+    // Only the end is read: a loop at the end of a long reply counts, and
+    // one the reply has left behind does not.
+    CHECK(detail::ends_in_loop(going + looping));
+    CHECK(!detail::ends_in_loop(looping + going));
+}
+
 TEST(complete_utf8_passes_straight_through) {
     std::string buffer = "hello";
     CHECK_EQ(detail::take_complete_utf8(buffer), std::string("hello"));
@@ -404,6 +429,30 @@ TEST(a_turns_thinking_is_kept_so_a_reopened_conversation_can_show_it) {
     const nlohmann::json saved = nlohmann::json::parse(in);
     CHECK(saved["turns"][0].contains("reasoning"));
     CHECK(!saved["turns"][1].contains("reasoning"));
+}
+
+TEST(a_message_that_became_a_build_is_kept_with_its_build_even_before_it_has_a_reply) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+
+    SessionStore store(Project::current());
+    // The build still running: no reply yet, and kept all the same, so a
+    // conversation closed mid-build opens with the build where it was. An
+    // ordinary turn with no reply is still not worth a line.
+    std::vector<Turn> turns{finished_turn("make me a todo app", "", 0),
+                            finished_turn("and nothing came", "", 0)};
+    turns[0].build = "20261026-210000";
+    std::string error;
+    CHECK(store.save(turns, TokenUsage{}, error));
+
+    std::vector<Turn> loaded;
+    TokenUsage loaded_usage;
+    CHECK(store.load(store.session_id(), loaded, loaded_usage, error));
+    CHECK_EQ(loaded.size(), std::size_t{1});
+    if (!loaded.empty()) {
+        CHECK_EQ(loaded[0].build, std::string("20261026-210000"));
+        CHECK_EQ(loaded[0].reply, std::string());
+    }
 }
 
 TEST(every_route_source_survives_a_round_trip_through_its_name) {

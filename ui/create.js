@@ -169,11 +169,13 @@ function condenseDetail(r) {
     stage = `<h2 style="margin-top:1.6rem">BEFORE YOU KEEP IT</h2>
       <div class="row">
         <button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${r.trained_there ? ''
-          : 'disabled title="File missing"'}>Test</button></div>`;
+          : 'disabled title="File missing"'}>Test</button>
+        ${versusButton(r)}</div>`;
   } else {
     stage = `<h2 style="margin-top:1.6rem">ON THE ROSTER</h2>
       <div class="row"><button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${
-        r.trained_there ? '' : 'disabled'}>Test again</button></div>`;
+        r.trained_there ? '' : 'disabled'}>Test again</button>
+        ${versusButton(r)}</div>`;
   }
   return `<button class="link" data-act="recipe-close">&larr; Create</button>
     <div class="row" style="margin-top:.6rem"><h1 style="flex:1">${escape(r.name || '(unnamed)')}
@@ -232,12 +234,14 @@ function createDetail(r) {
       <div class="row">
         <button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${r.trained_there ? ''
           : 'disabled title="Trained file missing"'}>Test</button>
+        ${versusButton(r)}
         <button class="action" data-act="recipe-edit" data-id="${escape(r.id)}" data-step="4">Edit</button></div>`;
   } else {
     stage = `<h2 style="margin-top:1.6rem">ON THE ROSTER</h2>
       <div class="row">
         <button class="action" data-act="recipe-test" data-id="${escape(r.id)}" ${
           r.trained_there ? '' : 'disabled'}>Test again</button>
+        ${versusButton(r)}
         <button class="action" data-act="recipe-edit" data-id="${escape(r.id)}" data-step="4">Edit</button></div>`;
   }
 
@@ -280,6 +284,8 @@ entering.create = () => {
   need('recipes', 'lab.recipes', true);
   need('trainer', 'trainer');
   need('run', 'lab.run', true);
+  // Where a made model's base is looked for, to be benched against it.
+  need('models', 'models', true);
 };
 
 const reloadRecipes = async () => { state.recipes = await call('lab.recipes'); };
@@ -680,7 +686,9 @@ actions['test-send'] = (form) => {
   const text = box.value.trim();
   if (!text || state.snapshot.busy) return;
   box.value = '';
-  guard(() => call('submit', { prompt: text, expert: state.modal.seat }));
+  // Answered, whatever it asks for: a model under test is asked questions,
+  // and "make me an app" here is one, not a build.
+  guard(() => call('submit', { prompt: text, expert: state.modal.seat, answer: true }));
 };
 actions['test-keep'] = () => guard(async () => {
   const m = state.modal;
@@ -701,6 +709,71 @@ actions['test-edit'] = () => {
 /// Keep the test window's own transcript at its bottom, as Chat's is.
 afterDraw.push(() => keepAtBottom('test-talk'));
 
+// --- measured against its base -------------------------------------------------------------------
+//
+// A fine-tune, or a condensed copy, run through Bench beside the model it was
+// made from: the same questions at the same size and effort, so the two
+// results say what the making did. The base has to be a GGUF on this machine.
+// A fine-tune's base is a Hugging Face repository of weights, so the one run
+// is a file in the models folder named for that repository, at the
+// fine-tune's own quantization when there is one.
+
+/// A GGUF file's name in its parts: without the extension or a split set's
+/// part number (the stem), and that again without its quantization (the
+/// model), and the quantization. "LFM2.5-1.2B-Instruct" and "Q8_0" from
+/// "LFM2.5-1.2B-Instruct-Q8_0.gguf".
+function ggufParts(file) {
+  const stem = fileName(file).replace(/\.gguf$/i, '').replace(/-\d{5}-of-\d{5}$/, '');
+  const quant = stem.match(/[-._]((UD-)?(I?Q\d(_[A-Z0-9]+)*|B?F16|F32|MXFP4(_MOE)?))$/i);
+  return { stem, model: quant ? stem.slice(0, quant.index) : stem, quant: quant ? quant[1] : '' };
+}
+
+/// The GGUF a made model's base is on this machine, or '': for a condensed
+/// copy the file it was condensed from; for a fine-tune of a repository like
+/// LiquidAI/LFM2.5-1.2B-Instruct, a file of that name and a quantization,
+/// bare or with the author in front as some converters write it. Never a file
+/// made here itself.
+function baseGguf(r) {
+  const base = r.base || {};
+  const source = base.path || base.id || '';
+  const models = (state.models ? state.models.models || [] : [])
+    .filter((m) => (m.format || 'gguf') === 'gguf' && !/mmproj/i.test(m.name));
+  if (/\.gguf$/i.test(source)) return models.some((m) => m.path === source) ? source : '';
+  const name = fileName(source).toLowerCase();
+  if (!name) return '';
+  const author = base.source === 'hub' && source.includes('/') ? source.split('/')[0].toLowerCase() : '';
+  const made = recipesList().map((x) => x.trained_path).filter(Boolean);
+  const found = models.filter((m) => !made.includes(m.path)
+    && [name, `${author}_${name}`].includes(ggufParts(m.name).model.toLowerCase()));
+  const same = found.find((m) => ggufParts(m.name).quant.toUpperCase() === String(r.quantization || '').toUpperCase());
+  return (same || found[0] || {}).path || '';
+}
+
+/// What a made model's base is called, to look for on Hugging Face.
+function baseName(r) {
+  const source = (r.base || {}).path || (r.base || {}).id || '';
+  return /\.gguf$/i.test(source) ? ggufParts(source).model : fileName(source);
+}
+
+/// Bench a made model against its base, for one that is a GGUF and is there.
+/// Without a GGUF of the base here, the Models tab looks for one.
+function versusButton(r) {
+  if (!r.trained_there || !/\.gguf$/i.test(r.trained_path || '')) return '';
+  if (!state.models) return '<button class="action" disabled>Bench vs base</button>';
+  return baseGguf(r) ? `<button class="action" data-act="recipe-bench" data-id="${escape(r.id)}">Bench vs base</button>`
+    : `<button class="action" data-act="recipe-base" data-id="${escape(r.id)}" title="${escape(baseName(r))}">Get base</button>`;
+}
+
+actions['recipe-bench'] = (e) => {
+  const r = recipesList().find((x) => x.id === e.dataset.id);
+  const base = r ? baseGguf(r) : '';
+  if (base) benchVersus(r.trained_path, base);
+};
+actions['recipe-base'] = (e) => {
+  const r = recipesList().find((x) => x.id === e.dataset.id);
+  if (r) marketShow(baseName(r));
+};
+
 // --- condensing a model -------------------------------------------------------------------------
 //
 // The same model in fewer bits, so one that does not fit on the cards can be
@@ -718,9 +791,8 @@ function condensable() {
 /// What a condensed copy is called before anybody names it: the file's name
 /// without its quantization, and the new one.
 function condenseName(file, quantization) {
-  const stem = fileName(file).replace(/\.gguf$/i, '').replace(/-\d{5}-of-\d{5}$/, '');
-  const bare = stem.replace(/[-._]((UD-)?(I?Q\d(_[A-Z0-9]+)*|B?F16|F32|MXFP4(_MOE)?))$/i, '');
-  return `${bare || stem} ${quantization}`;
+  const parts = ggufParts(file);
+  return `${parts.model || parts.stem} ${quantization}`;
 }
 
 modals.condense = (m) => {

@@ -4,7 +4,7 @@
 import platform
 import sys
 
-from . import PROTOCOL, bench, build, chat, cook, naming, routing
+from . import PROTOCOL, bench, build, chat, cook, intent, naming, routing
 from .rpc import Channel
 
 
@@ -14,6 +14,8 @@ def handlers(channel):
         "ping": lambda params: {"pong": params.get("say", "")},
         "route": lambda params: routing.route(channel, params).to_json(),
         "route.explain": lambda params: routing.explain(channel, params),
+        "decide": lambda params: intent.decide(channel, params).to_json(),
+        "decide.odds": lambda params: intent.odds(channel, params),
         "chat.turn": lambda params: chat.turn(channel, params),
         "cook.run": lambda params: cook.run(core, params),
         "build.run": lambda params: build.run(core, params),

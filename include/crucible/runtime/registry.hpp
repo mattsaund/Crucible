@@ -113,6 +113,9 @@ public:
     /// alone, because ggml would otherwise register a second copy of every one
     /// of them. Returns false with `error` set when the module is there but
     /// will not load -- an unsupported GPU, or a driver that is not installed.
+    ///
+    /// Waits for any model load under way, which reads the lists this
+    /// changes from start to finish: see Reading.
     static bool activate(BackendKind kind, std::string& error);
 
     /// True when at least one backend module is installed. False on a fresh
@@ -137,6 +140,40 @@ public:
     /// device in it stays valid for the life of the program, because a
     /// runtime is never unloaded.
     static std::vector<ggml_backend_device*> devices();
+
+    /// ggml's lists held still for a call into llama.cpp that reads them.
+    ///
+    /// llama.cpp walks them itself: a model's load to choose its cards and
+    /// find the processor, a context's creation, a projector's and a
+    /// quantization to find the processor again. Each of those is made with
+    /// one of these alive, and while any is, no runtime is loaded; one being
+    /// loaded is finished before any opens. Any number can be open at once,
+    /// so loads still go side by side, and only a runtime arriving waits for
+    /// them, as they wait for it.
+    ///
+    /// Held for the whole of a load, dry runs and all, which is what
+    /// covering llama.cpp's reads costs: a runtime installed during a load
+    /// is registered when the load is over.
+    ///
+    /// One opened inside another on the same thread, and devices() inside
+    /// either, take nothing more: the lock is not one a thread may take
+    /// twice, even to read, since on a Mac and on Windows a second read
+    /// waits behind a runtime that is waiting for the first. And a thread
+    /// with one open is refused a runtime of its own (activate, load_all)
+    /// rather than left waiting for itself.
+    class Reading {
+    public:
+        Reading();
+        ~Reading();
+        Reading(const Reading&)            = delete;
+        Reading& operator=(const Reading&) = delete;
+    };
+
+    /// llama_backend_init, made with ggml's lists to itself. With no runtime
+    /// registered it loads every ggml module beside the program and in the
+    /// working directory, which changes the lists as a runtime's load does.
+    /// Before any model is loaded, and never inside a Reading.
+    static void init_llama();
 
     /// Delete a runtime's module files. Takes effect on the next start, since
     /// ggml cannot unload a backend that loaded models may still be using.

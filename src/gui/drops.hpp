@@ -14,6 +14,13 @@
 // theirs inside, and GTK 4's drop target is WebKit's own; on those the page
 // reads the files it is handed and keeps a copy (see ui/attach.js and
 // attach::keep_dropped).
+//
+// Files copied in a file manager and pasted are the same story told again.
+// WebKitGTK pastes them as their paths, as text, and hands the page nothing
+// else; the clipboard itself says which files they are, in a format of the
+// file manager's own beside the text, and GTK 3 is where that can be read.
+// A cut is read as a copy: attaching a file never moves it, and the file
+// manager that cut it still has it to move.
 #pragma once
 
 #include <functional>
@@ -26,5 +33,16 @@ namespace crucible::gui::drops {
 /// webview's own widget, on the window's thread. Returns false when this
 /// platform's webview cannot say -- and `dropped` is never called.
 bool watch(void* widget, std::function<void(std::vector<std::string>)> dropped);
+
+/// Call `copied` with the paths of the files on the clipboard of `widget`'s
+/// display whenever what is on it changes, on the window's thread: the files
+/// a file manager copied or cut, and none when it holds anything else.
+/// Returns false when this platform's webview cannot say, and then `copied`
+/// is never called.
+bool watch_clipboard(void* widget, std::function<void(std::vector<std::string>)> copied);
+
+/// Call `copied` with what is on the clipboard now, changed or not. Does
+/// nothing where it is not watched.
+void read_clipboard(void* widget);
 
 }  // namespace crucible::gui::drops

@@ -1,0 +1,41 @@
+{
+  "about": "build-tasks.json with Programming's worked questions taken away, so that it is asked about in its description instead (Roster.asked in routing.py).",
+  "roster": [
+    {"id": "programming", "name": "Programming", "tag": "PROG", "blurb": "Writing and running code: apps, websites, Python, JavaScript, HTML and CSS, shell, tests, builds, fixing errors.", "keywords": ["code", "programming", "app", "website", "python", "javascript"], "examples": []},
+    {"id": "mathematics", "name": "Mathematics", "tag": "MATH", "blurb": "Algebra, calculus, statistics and proofs, worked step by step.", "keywords": ["math", "algebra", "calculus", "statistics", "proof"], "examples": ["How do I find the derivative of x^3 * ln(x) step by step?", "What is the probability of drawing two aces in a row from a standard deck?"]},
+    {"id": "writing", "name": "Writing", "tag": "WRIT", "blurb": "Documentation, READMEs, emails and plain explanations.", "keywords": ["writing", "docs", "readme", "email"], "examples": ["How should I structure the README for my open-source project?", "Can you help me write a polite email asking for a deadline extension?"]}
+  ],
+  "cases": [
+    ["programming", "CSS styling: Style the app"],
+    ["programming", "CSS styling: Make the header blue"],
+    ["programming", "CSS styling: Dark theme"],
+    ["programming", "CSS styling: Style the expense table"],
+    ["programming", "CSS styling: Buttons and form fields"],
+    ["programming", "CSS styling: Typography and spacing"],
+    ["programming", "CSS layout: Lay out the dashboard"],
+    ["programming", "HTML structure: Write index.html"],
+    ["programming", "JavaScript app logic: Add and list expenses"],
+    ["programming", "JavaScript charting: Draw the spending chart"],
+    ["programming", "Python back end: Build the API"],
+    ["programming", "SQL schema: Create the database tables"],
+    ["programming", "SQL query: Monthly totals report"],
+    ["programming", "Testing: Unit tests for the parser"],
+    ["programming", "Python testing: Test the API"],
+    ["programming", "Python documentation: Docstrings for the helpers"],
+    ["programming", "Shell scripting: Write the run script"],
+    ["programming", "JavaScript debugging: Fix the total"],
+    ["programming", "Python command line: Parse the arguments"],
+    ["writing", "technical writing: Write the README"],
+    ["writing", "Documentation: User guide"],
+    ["writing", "technical writing: Changelog"],
+    ["writing", "Copywriting: Landing page text"],
+    ["writing", "UX writing: Error and empty-state messages"],
+    ["writing", "Technical writing: Contributing guide"],
+    ["writing", "Writing: About page text"],
+    ["writing", "technical writing: API reference"],
+    ["mathematics", "Financial mathematics: Loan payment formula"],
+    ["mathematics", "Statistics: Fit the trend line"],
+    ["mathematics", "Probability: Odds table for two dice"],
+    ["mathematics", "Geometry: Hex grid coordinates"]
+  ]
+}

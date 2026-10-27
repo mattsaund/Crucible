@@ -211,11 +211,15 @@ void App::persist_session() {
         return;
     }
     const Snapshot snapshot = state_.snapshot();
-    std::size_t finished = 0;
+    std::size_t   finished = 0;
+    std::uint64_t newest   = 0;
     for (const Turn& turn : snapshot.turns) {
-        finished += turn.streaming ? 0 : 1;
+        if (!turn.streaming) {
+            ++finished;
+            newest = std::max(newest, turn.revision);
+        }
     }
-    if (finished == persisted_turns_) {
+    if (finished == persisted_turns_ && newest == persisted_revision_) {
         return;
     }
     std::string error;
@@ -225,7 +229,8 @@ void App::persist_session() {
         say("Chat not saved: " + error);
         save_error_ = error;
     }
-    persisted_turns_ = finished;
+    persisted_turns_    = finished;
+    persisted_revision_ = newest;
 }
 
 void App::absorb_written_examples() {
@@ -639,7 +644,13 @@ std::string App::open_session(const std::string& id) {
     }
     store_->adopt(id);
     rebuild_history();
-    persisted_turns_ = state_.snapshot().turns.size();
+    // As it is on disk already: nothing to save until something changes.
+    const Snapshot restored = state_.snapshot();
+    persisted_turns_    = restored.turns.size();
+    persisted_revision_ = 0;
+    for (const Turn& turn : restored.turns) {
+        persisted_revision_ = std::max(persisted_revision_, turn.revision);
+    }
     reopened_ = store_->project().root.string() + '\n' + id;
     return {};
 }

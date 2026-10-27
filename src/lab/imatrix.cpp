@@ -17,7 +17,9 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <utility>
 
 #include <ggml-backend.h>
 #include <ggml.h>
@@ -284,10 +286,14 @@ bool measure_importance(const std::filesystem::path& model, const std::string& t
     // condensing has quantized with nothing but the CPU until now.
     static std::once_flag loaded;
     std::call_once(loaded, [] {
-        llama_backend_init();
+        RuntimeRegistry::init_llama();
         RuntimeRegistry::load_all();
     });
 
+    // The plan, the load and the context's creation all read ggml's device
+    // lists, which are held still for them as for every load. Not for the
+    // measuring, which reads none of them and takes minutes.
+    std::optional<RuntimeRegistry::Reading> reading(std::in_place);
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = layers_for_cards(model);
     llama_model* loaded_model = llama_model_load_from_file(model.string().c_str(), model_params);
@@ -305,6 +311,7 @@ bool measure_importance(const std::filesystem::path& model, const std::string& t
     context_params.cb_eval_user_data = &collector;
     context_params.no_perf           = true;
     llama_context* context = llama_init_from_model(loaded_model, context_params);
+    reading.reset();
     if (context == nullptr) {
         llama_model_free(loaded_model);
         error = "could not make room to measure " + model.filename().string();

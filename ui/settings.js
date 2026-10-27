@@ -10,7 +10,8 @@
 const SETTINGS_PAGES = [
   ['general', 'General'], ['experts', 'Experts'], ['providers', 'Providers'],
   ['generation', 'Generation'], ['hardware', 'Hardware'], ['runtimes', 'Runtimes'],
-  ['training', 'Training'], ['tools', 'Tools'], ['build', 'Build'], ['about', 'About'],
+  ['training', 'Training'], ['tools', 'Tools'], ['build', 'Build'], ['server', 'Server'],
+  ['about', 'About'],
 ];
 
 // --- one setting -------------------------------------------------------------------
@@ -771,6 +772,138 @@ actions['worker-model'] = (e) => {
   configure({ build: { worker_model: chosen.model, worker_provider: chosen.provider } });
 };
 
+// --- Server --------------------------------------------------------------------------------------------
+
+/// A model on this machine, offered to other programs at an address in
+/// OpenAI's shape. What it is doing comes with every snapshot, so the page
+/// follows a request as it comes and goes. See src/serve/server.hpp.
+function pageServer(c) {
+  const conf = c.server || {};
+  const s = state.snapshot.server || {};
+  return `<h1>Server</h1>
+    ${setting('server.enabled', 'On', 'bool', serverLine(s, !!conf.enabled))}
+    <div class="field"><label for="server-model">Model</label>${serverModelSelect(c)}</div>
+    ${setting('server.port', 'Port', 'int', '')}
+    ${setting('server.network', 'Serve on the local network', 'bool', '')}
+    <div class="field"><label for="server-key">API key</label>
+      <div class="row">
+        <input id="server-key" type="password" data-path="server.api_key" data-change="set"
+               autocomplete="off" spellcheck="false" placeholder="None" value="${escape(conf.api_key || '')}">
+        <button class="action" data-act="server-key-new">New</button>
+        ${conf.api_key ? serverCopy(conf.api_key) : ''}</div>
+      <div class="hint">Empty is open.</div></div>
+    ${conf.enabled ? serverAddresses(s) : ''}
+    ${serverRecent(s)}`;
+}
+
+/// Whether it is running, in a word or two, and what a request waits for.
+function serverLine(s, on) {
+  if (!on) return 'Off';
+  if (s.error) return `<span class="bad">${escape(s.error)}</span>`;
+  if (!s.listening) return 'Starting';
+  const queued = s.queued ? `, ${s.queued} queued` : '';
+  if (!s.answering) return 'Running';
+  if (!s.waiting) return 'Answering' + queued;
+  return (s.waiting === 'loading' ? 'Loading' : `Waiting for ${escape(s.waiting)}`) + queued;
+}
+
+/// The delegator, the experts' models and the models folder: whatever on
+/// this machine can answer.
+function serverModelSelect(c) {
+  const chosen = at(c, 'server.model') || '';
+  const delegator = fileName(at(c, 'router.model'));
+  const names = {};
+  for (const e of state.snapshot.experts || []) names[e.id] = e.name;
+  const seats = (c.experts || []).filter((x) => x.model && !x.provider);
+  const files = (state.models ? state.models.models : [])
+    .filter((m) => m.format !== 'mlx' || !state.models.mlx_unavailable);
+  // The first option with the chosen value is the one shown: a model an
+  // expert has is listed under the expert and again in the folder.
+  let shown = false;
+  const option = (value, label) => {
+    const on = !shown && value === chosen;
+    shown = shown || on;
+    return `<option value="${escape(value)}"${on ? ' selected' : ''}>${escape(label)}</option>`;
+  };
+  let html = option('', delegator ? `Delegator (${delegator})` : 'Delegator (none)');
+  if (seats.length) {
+    html += `<optgroup label="Experts">${seats.map((x) =>
+      option(x.model, `${names[x.id] || x.id}: ${fileName(x.model)}`)).join('')}</optgroup>`;
+  }
+  if (files.length) {
+    html += `<optgroup label="Models folder">${files.map((m) =>
+      option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
+  }
+  if (chosen && !shown) html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+  return `<select id="server-model" data-change="server-model">${html}</select>`;
+}
+
+/// Where other programs reach it: this machine, and the network when it
+/// serves there.
+function serverAddresses(s) {
+  const where = s.addresses || {};
+  const rows = [['This machine', where.local], ['Network', where.network]].filter(([, url]) => url);
+  if (!rows.length) return '';
+  return `<h2 style="margin-top:1.8rem">ADDRESSES</h2>
+    <div class="field">${rows.map(([label, url]) => `<div class="order-row">
+        <span class="order-name">${label} <code>${escape(url)}</code></span>${serverCopy(url)}</div>`).join('')}</div>`;
+}
+
+/// The last requests: when, which model, the tokens each way, how long.
+function serverRecent(s) {
+  const recent = s.recent || [];
+  if (!recent.length) return '';
+  const time = (seconds) => new Date(seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit',
+                                                                             second: '2-digit' });
+  const took = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+  return `<h2 style="margin-top:1.8rem">RECENT</h2>
+    <div class="field">${recent.map((r) => `<div class="order-row" title="${escape(r.from || '')}">
+        <span class="order-name">${escape(time(r.at))} <code>${escape(r.model || 'refused')}</code></span>
+        <span class="status">${r.status === 200 ? apart(`${r.prompt} in`, `${r.completion} out`, took(r.ms))
+                                                : `<span class="bad">${r.status}</span>`}</span></div>`).join('')}</div>`;
+}
+
+/// A button that copies `text`, and says so for a moment.
+const serverCopy = (text) => `<button class="action" data-act="server-copy" data-text="${escape(text)}">${
+  state.open.copied === text ? 'Copied' : 'Copy'}</button>`;
+
+actions['server-model'] = (e) => configure({ server: { model: e.value } });
+
+actions['server-copy'] = (button) => {
+  const text = button.dataset.text || '';
+  const said = () => {
+    state.open.copied = text;
+    render();
+    setTimeout(() => {
+      if (state.open.copied === text) { state.open.copied = null; render(); }
+    }, 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(said, () => {});
+    return;
+  }
+  // A webview that keeps the clipboard from the page: the old way.
+  const area = document.createElement('textarea');
+  area.value = text;
+  document.body.appendChild(area);
+  area.select();
+  try { if (document.execCommand('copy')) said(); } finally { area.remove(); }
+};
+
+/// A new key, random, to paste into whatever will call the server. The old
+/// one stops working, so that is asked first.
+actions['server-key-new'] = async () => {
+  if (at(state.config, 'server.api_key')) {
+    const sure = await confirmIt({ title: 'Make a new key?', body: 'The old one stops working.',
+                                   yes: 'New key', no: 'Keep' });
+    if (!sure) return;
+  }
+  const random = new Uint8Array(24);
+  crypto.getRandomValues(random);
+  const key = 'sk-crucible-' + Array.from(random, (b) => b.toString(16).padStart(2, '0')).join('');
+  await configure({ server: { api_key: key } });
+};
+
 // --- About -----------------------------------------------------------------------------------------------
 
 /// Crucible's own source, as a project like any other: open it, build on
@@ -799,7 +932,7 @@ function selfView() {
 actions['self-open'] = () => guard(async () => {
   if (!(await leavingCode())) return;
   await call('project.open', { path: state.self.root });
-  enter('build');
+  enter('chat');
 });
 actions['self-rebuild'] = () => guard(async () => {
   await call('self.rebuild');
@@ -905,7 +1038,7 @@ views.settings = () => {
   const page = !c ? '<p class="lede">Reading...</p>' : ({
     general: pageGeneral, experts: pageExperts, providers: pageProviders,
     generation: pageGeneration, hardware: pageHardware, runtimes: pageRuntimes,
-    training: pageTraining, tools: pageTools, build: pageBuild, about: pageAbout,
+    training: pageTraining, tools: pageTools, build: pageBuild, server: pageServer, about: pageAbout,
   }[state.settingsPage] || pageGeneral)(c);
   return sideView() + `<div class="settings">
       <div class="settings-nav">${SETTINGS_PAGES.map(([id, label]) =>

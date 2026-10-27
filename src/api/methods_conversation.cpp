@@ -103,10 +103,11 @@ Reply submit(const json& params, Host& host) {
     }
     // An expert named here skips routing, which is what `/physics ...` does.
     // An empty one is not an error: it is the normal case, and it means "let
-    // the delegator decide".
+    // the delegator decide". "answer" keeps the prompt from becoming a build,
+    // whatever it asks for: see Engine::submit.
     const auto expert = params.value("expert", std::string{});
     host.engine()->submit(prompt, expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
-                          std::move(attachments));
+                          std::move(attachments), params.value("answer", false));
     return good();
 }
 
@@ -244,7 +245,8 @@ Reply edit_approve(const json& params, Host& host) {
 // A cook
 // ---------------------------------------------------------------------------
 
-Reply cook_start(const json& params, Host& host) {
+/// A cook or a build, started; `started` is told the journal's id.
+Reply start_work(const json& params, Host& host, std::string* started) {
     if (host.engine() == nullptr) {
         return no_engine();
     }
@@ -279,15 +281,23 @@ Reply cook_start(const json& params, Host& host) {
     const std::string refused =
         host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments),
                                   expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
-                                  params.value("kind", std::string("cook")) == "build" ? "build" : "cook");
+                                  params.value("kind", std::string("cook")) == "build" ? "build" : "cook",
+                                  started);
     if (!refused.empty()) {
         return bad(refused);
     }
     return good();
 }
 
+Reply cook_start(const json& params, Host& host) { return start_work(params, host, nullptr); }
+
 /// A build: a directive the architect plans and the agents carry out. The
 /// same door as a cook with the kind set, so the two cannot drift apart.
+///
+/// And a turn of the conversation on screen, as a build a message became is
+/// (Turn::build): the window draws it there, and what it leaves is
+/// remembered. Opened here, since nobody typed it into the box: Apply to
+/// source in the preview asks for one.
 Reply build_start(const json& params, Host& host) {
     json as_cook = params;
     if (params.contains("directive") && !params.contains("goal")) {
@@ -297,7 +307,22 @@ Reply build_start(const json& params, Host& host) {
     if (as_cook.value("goal", std::string{}).empty()) {
         return bad("build.start needs a directive");
     }
-    return cook_start(as_cook, host);
+    std::string id;
+    Reply started = start_work(as_cook, host, &id);
+    if (started.error.empty() && host.state() != nullptr && !id.empty()) {
+        std::vector<attach::Attachment> attachments;
+        std::string                     error;
+        read_attachments(as_cook, attachments, error);
+        Turn turn;
+        turn.prompt = as_cook.value("goal", std::string{});
+        turn.build  = id;
+        for (const attach::Attachment& one : attachments) {
+            turn.attachments.push_back(attach::tile_of(one));
+        }
+        host.state()->restore_turn(std::move(turn));
+        host.wake();
+    }
+    return started;
 }
 
 Reply cook_stop(const json&, Host& host) {

@@ -2,7 +2,12 @@
 //
 // History: every cook and every conversation this project has had.
 
-views.history = () => {
+// With the right-hand panel beside it, as Chat has: History is opened from
+// there, and a project picked in it shows that project's. A build a message
+// became is one of its builds, and opens here as any build does.
+views.history = () => historyPane() + recentsView();
+
+function historyPane() {
   const project = state.snapshot.project || {};
   if (!project.open) {
     return sideView() + `<div class="pane"><div class="empty">
@@ -35,7 +40,7 @@ views.history = () => {
       <h2>BUILDS</h2>${cooks}
       <h2 style="margin-top:1.8rem">CONVERSATIONS</h2>${sessions}
     </div></div>`;
-};
+}
 
 entering.history = () => {
   state.open.cook = null;

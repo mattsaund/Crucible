@@ -180,6 +180,17 @@ double tidy(float value) {
     return std::round(static_cast<double>(value) * 10000.0) / 10000.0;
 }
 
+/// The API server's block, the same in a saved file and a new one.
+json server_json(const ServerConfig& server) {
+    return json{
+        {"enabled", server.enabled},
+        {"model",   server.model},
+        {"port",    server.port},
+        {"network", server.network},
+        {"api_key", server.api_key},
+    };
+}
+
 /// `include_model` is false for the `defaults` block, which describes how to
 /// load models rather than naming one.
 json model_params_to_json(const ModelParams& params, bool include_model = true) {
@@ -324,6 +335,7 @@ json config_to_json(const Config& config) {
             {"source_dir",     config.ui.source_dir},
             {"font",           config.ui.font},
         }},
+        {"server", server_json(config.server)},
     };
     return doc;
 }
@@ -458,6 +470,7 @@ void write_default_config(const std::filesystem::path& file) {
             {"source_dir",     defaults.ui.source_dir},
             {"font",           defaults.ui.font},
         }},
+        {"server", server_json(defaults.server)},
     };
 
     std::error_code ec;
@@ -667,6 +680,19 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*ui, "check_updates", config.ui.check_updates, "ui", warnings);
         read_field(*ui, "source_dir", config.ui.source_dir, "ui", warnings);
         read_field(*ui, "font", config.ui.font, "ui", warnings);
+    }
+
+    if (const auto server = doc.find("server"); server != doc.end() && server->is_object()) {
+        read_field(*server, "enabled", config.server.enabled, "server", warnings);
+        read_field(*server, "model",   config.server.model,   "server", warnings);
+        read_field(*server, "port",    config.server.port,    "server", warnings);
+        read_field(*server, "network", config.server.network, "server", warnings);
+        read_field(*server, "api_key", config.server.api_key, "server", warnings);
+        if (config.server.port < 1 || config.server.port > 65535) {
+            warnings.emplace_back("server.port: " + std::to_string(config.server.port)
+                                  + " is outside 1..65535 (keeping the default)");
+            config.server.port = ServerConfig::kDefaultPort;
+        }
     }
 
     if (const auto providers = doc.find("providers");

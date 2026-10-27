@@ -18,10 +18,11 @@
 
 state.preview = { pages: null, page: '', url: '', html: '', inlined: [], skipped: [], picking: false,
                   picked: null, changes: [], error: '', loading: false, stale: false,
-                  making: null, made: null };
+                  making: null, made: null, shown: null, kept: '{}', storing: false };
 
 /// What pages in the preview have saved, by project and page, for as long
-/// as the window is open. See DATA_SCRIPT.
+/// as the window is open: with window.crucible.save, and in localStorage and
+/// sessionStorage. See DATA_SCRIPT and storageScript.
 const previewData = {};
 
 /// What a page of the project is given to keep its data with: the same
@@ -32,10 +33,12 @@ const previewData = {};
 /// it at the next reload of the preview.
 ///
 /// Put at the very start of the page, before any of its own scripts run.
+/// The ids start anywhere, so an answer meant for a page that has since
+/// reloaded itself is not taken by the one that replaced it.
 const DATA_SCRIPT = `
 (function () {
   if (window.crucible) return;
-  var waiting = {}, next = 0;
+  var waiting = {}, next = Math.floor(Math.random() * 1e9);
   function ask(what, data) {
     return new Promise(function (resolve) {
       var id = ++next;
@@ -144,13 +147,36 @@ const TUNE_PROPS = [
   ['border-radius', 'Rounding', 'text'], ['text-align', 'Align', 'text'], ['width', 'Width', 'text'],
 ];
 
-/// The page with the picker inside it, for the frame's srcdoc.
-function tunedDocument(html) {
+/// What stands in for the page's localStorage and sessionStorage, which a
+/// frame with no origin of its own does not have: crucible/tools/page_storage.hpp,
+/// which the window hands this page because crucible-app runs it too, holding
+/// `kept`, what the two held when the page last ran here. What they hold is
+/// sent back here to keep whenever it changes, after a word that the page has
+/// started (see previewMessage). Nothing without the window's copy.
+function storageScript(kept) {
+  if (typeof window.cruciblePageStorage !== 'string') return '';
+  // A string inside a script element: nothing a page has saved may close it.
+  const text = JSON.stringify(kept).replace(/[<\u2028\u2029]/g,
+    (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+  return `
+parent.postMessage({ crucible: 'data', what: 'hello' }, '*');
+(${window.cruciblePageStorage})(${text}, function (kind, items) {
+  parent.postMessage({ crucible: 'data', what: 'keep', kind: kind, data: items }, '*');
+});
+`;
+}
+
+/// The page with the picker inside it, for the frame's srcdoc. `kept` is
+/// what its storage held when it last ran here, as JSON.
+function tunedDocument(html, kept) {
   // The closing tags are split, because this file is itself inside a script
   // element of the bundled page, and the HTML parser would end that
   // element at the first closing script tag it saw, whatever string it was in.
   const script = `<script>${TUNE_SCRIPT}<\/script>`;
-  const data = `<script>${DATA_SCRIPT}<\/script>`;
+  // The storage in a script of its own, so the data calls are there even
+  // if it fails.
+  const storage = storageScript(kept || '{}');
+  const data = `<script>${DATA_SCRIPT}<\/script>${storage ? `<script>${storage}<\/script>` : ''}`;
   // The data calls first of all, so the page's own scripts find them; the
   // picker last, once there is a page to pick from.
   const head = /<head[^>]*>/i.exec(html);
@@ -161,9 +187,42 @@ function tunedDocument(html) {
   return out;
 }
 
-/// The key a page's preview data is remembered under, per project and page.
-function previewDataKey() {
-  return 'preview-data:' + ((state.snapshot.project || {}).root || '') + ':' + state.preview.page;
+/// The key a page's preview data is remembered under: its project and the
+/// page, as they were when it was loaded, so a page still running after the
+/// project has changed keeps its data in its own. `kind` is which data:
+/// "data" for window.crucible.save, "local" and "session" for its storage.
+function previewDataKey(kind) {
+  const p = state.preview;
+  const where = p.shown || [(state.snapshot.project || {}).root || '', p.page];
+  return `preview-${kind || 'data'}:${JSON.stringify(where)}`;
+}
+
+/// Keep what a page in the preview saved, under `kind`: in memory, and in
+/// this window's own storage when it has some. sessionStorage stays in
+/// memory only, the way a tab keeps it.
+function previewKeep(kind, value) {
+  const key = previewDataKey(kind);
+  previewData[key] = value;
+  if (kind === 'session') return;
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* no storage: memory will do */ }
+}
+
+/// What a page in the preview saved under `kind`, or `none`.
+function previewKept(kind, none) {
+  const key = previewDataKey(kind);
+  if (key in previewData) return previewData[key];
+  if (kind !== 'session') {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) return JSON.parse(raw);
+    } catch (e) { /* none, then */ }
+  }
+  return none;
+}
+
+/// What the page's storage holds now, as the stand-in for it starts from.
+function previewStorage() {
+  return JSON.stringify({ local: previewKept('local', {}), session: previewKept('session', {}) });
 }
 
 /// "rgb(255, 135, 0)" as "#ff8700", for a color input; anything else as is.
@@ -205,7 +264,7 @@ function previewView() {
          title="Preview of ${escape(p.url)}" src="${escape(p.url)}"></iframe>`
     : p.html
     ? `<iframe id="preview-frame" class="preview-frame" sandbox="allow-scripts allow-forms allow-modals"
-         title="Preview of ${escape(p.page)}" srcdoc="${escape(tunedDocument(p.html))}"></iframe>`
+         title="Preview of ${escape(p.page)}" srcdoc="${escape(tunedDocument(p.html, p.kept))}"></iframe>`
     : `<div class="preview-empty status">${p.error ? escape(p.error) : 'Choose a page, or give an address.'}</div>`;
   return `<div class="preview">${picker}<div class="preview-body">${frame}${p.url ? '' : tuneView()}</div></div>`;
 }
@@ -316,6 +375,8 @@ function tellFrame(message) {
 async function loadPreview(page) {
   const p = state.preview;
   p.page = page;
+  p.shown = [(state.snapshot.project || {}).root || '', page];
+  p.storing = false;
   p.html = '';
   p.picked = null;
   p.changes = [];
@@ -328,6 +389,9 @@ async function loadPreview(page) {
   try {
     const got = await call('preview.page', { path: page });
     p.html = got.html;
+    // Fixed for as long as this is shown: the document is drawn again on
+    // every redraw, and a different one would be a reload.
+    p.kept = previewStorage();
     p.inlined = got.inlined || [];
     p.skipped = got.skipped || [];
   } catch (error) {
@@ -407,8 +471,9 @@ actions['tune-reset'] = () => {
 
 /// The changes, made in the source. As a build of one task when nothing is
 /// building -- the person stays where they are, looking at the page, and it
-/// reloads with the change made -- and as a chat prompt when a build has the
-/// box already.
+/// reloads with the change made; the build is a turn of the conversation
+/// like any other -- and as a chat prompt beside a build that is running,
+/// answered in the conversation, which is where it goes to.
 actions['tune-apply'] = () => guard(async () => {
   const prompt = tunePrompt();
   if (!prompt) return;
@@ -421,7 +486,7 @@ actions['tune-apply'] = () => guard(async () => {
   }
   state.preview.changes = [];
   tellFrame({ crucible: 'reset' });
-  if (building) enter('chat');
+  if (building) setPane('chat');
   else render();
 });
 
@@ -460,17 +525,28 @@ function previewMessage(m) {
   if (m.crucible === 'data') {
     // Kept for as long as the window is open, and in this window's own
     // storage when it has some, under the project and the page.
-    const key = previewDataKey();
-    if (m.what === 'save') {
-      previewData[key] = m.data;
-      try { localStorage.setItem(key, JSON.stringify(m.data)); } catch (e) { /* no storage: memory will do */ }
+    const p = state.preview;
+    if (m.what === 'hello') {
+      // A page has started. One that reloaded itself starts again from the
+      // document it was shown with, and so from what its storage held then.
+      // When that has changed since, the page is shown again holding what
+      // it holds now, and nothing it keeps until then is taken: it was
+      // worked out from the old.
+      const now = previewStorage();
+      p.storing = now === p.kept;
+      if (!p.storing) {
+        p.kept = now;
+        render();
+      }
+    } else if (m.what === 'keep') {
+      if (p.storing && (m.kind === 'local' || m.kind === 'session') && m.data && typeof m.data === 'object') {
+        previewKeep(m.kind, m.data);
+      }
+    } else if (m.what === 'save') {
+      previewKeep('data', m.data);
       tellFrame({ crucible: 'data-answer', id: m.id, data: true });
     } else {
-      let saved = key in previewData ? previewData[key] : null;
-      if (saved === null) {
-        try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { saved = null; }
-      }
-      tellFrame({ crucible: 'data-answer', id: m.id, data: saved });
+      tellFrame({ crucible: 'data-answer', id: m.id, data: previewKept('data', null) });
     }
     return;
   }

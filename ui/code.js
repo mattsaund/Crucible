@@ -116,7 +116,12 @@ async function openFile(path, line) {
   }
   if (tab.error && !unsaved(tab)) { tab.error = ''; tab.loading = true; }
   state.open.file = tab;
-  if (state.view === 'build') state.buildPane = 'code';
+  // A file opened from the conversation (a chip a turn or a build left) is
+  // opened in the Code pane beside it.
+  if (state.view === 'chat' && state.chatPane !== 'code') {
+    state.chatPane = 'code';
+    if (!state.tree) loadTree();
+  }
   if (line) tab.goto = line;
   render();
   if (tab.loading) {
@@ -957,7 +962,7 @@ actions['run-key'] = (input, event) => {
 /// Ctrl+P and Ctrl+Shift+F while the Code pane is up, wherever focus is; and
 /// Ctrl+S, which the textarea handles itself when it has the focus.
 function codeShortcut(event) {
-  if (event.defaultPrevented || state.view !== 'build' || state.buildPane !== 'code' || state.modal) return;
+  if (event.defaultPrevented || state.view !== 'chat' || shownPane() !== 'code' || state.modal) return;
   const ctrl = event.ctrlKey || event.metaKey;
   if (!ctrl || event.altKey) return;
   if (event.key === 'p' || event.key === 'P') { event.preventDefault(); openQuick(); }

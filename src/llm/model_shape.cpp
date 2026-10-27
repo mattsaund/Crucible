@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -307,8 +308,11 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
     const std::vector<bool> sliding =
         window > 0 ? sliding_blocks(gguf, arch, layers) : std::vector<bool>(layers, false);
 
-    shape.layers = static_cast<std::uint32_t>(layers);
-    shape.window = static_cast<std::uint32_t>(window);
+    shape.layers  = static_cast<std::uint32_t>(layers);
+    shape.window  = static_cast<std::uint32_t>(window);
+    shape.trained = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(first_or(unsigned_values(gguf, key("context_length")), 0),
+                                std::numeric_limits<std::uint32_t>::max()));
 
     // The vocabulary, for the logits buffer. Its size is the length of the
     // token list rather than a key of its own in most files.

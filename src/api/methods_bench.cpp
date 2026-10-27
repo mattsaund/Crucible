@@ -19,11 +19,13 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <set>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/lab/recipe.hpp"
 #include "crucible/market/hub.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/util/http.hpp"
@@ -63,6 +65,43 @@ json summary_of(const json& result) {
     json out = result;
     out.erase("items");
     return out;
+}
+
+// --- models made here -----------------------------------------------------------
+// A fine-tune or a condensed copy from the Create tab is a file nobody else
+// has, so it is on nobody's Hugging Face, and the board takes no other kind
+// of model. A result of one says what it is, and is never offered to the
+// board: the post would only be turned away.
+
+using MadeHere = std::map<std::filesystem::path, std::string>;
+
+/// A path as the file it names, its links followed: the models list and a
+/// recipe can spell one file two ways.
+std::filesystem::path same_file(const std::string& path) {
+    std::error_code             ec;
+    const std::filesystem::path file = std::filesystem::weakly_canonical(path, ec);
+    return ec ? std::filesystem::path(path) : file;
+}
+
+/// Every file the lab has made, and what each is: "fine-tune" or "condensed".
+MadeHere made_here() {
+    MadeHere made;
+    for (const lab::Recipe& recipe : lab::saved_recipes()) {
+        if (!recipe.trained_path.empty()) {
+            made[same_file(recipe.trained_path)] = recipe.method == lab::Method::Condense ? "condensed" : "fine-tune";
+        }
+    }
+    return made;
+}
+
+/// What a result's model is when the lab made it, or empty.
+std::string made_of(const json& result, const MadeHere& made) {
+    const auto path = result.find("path");
+    if (made.empty() || path == result.end() || !path->is_string() || path->get<std::string>().empty()) {
+        return {};
+    }
+    const auto found = made.find(same_file(path->get<std::string>()));
+    return found == made.end() ? std::string() : found->second;
 }
 
 // --- the board's names --------------------------------------------------------
@@ -300,9 +339,11 @@ Reply bench_stop(const json&, Host& host) {
     return good(json{{"stopping", true}});
 }
 
-/// Every result kept here, newest first, without their items.
+/// Every result kept here, newest first, without their items. One of a model
+/// made here says what it is, as `made`.
 Reply bench_results(const json&, const Scene&) {
     std::vector<std::pair<std::filesystem::file_time_type, json>> found;
+    const MadeHere made = made_here();
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(bench_dir() / "results", ec)) {
         if (entry.path().extension() != ".json") {
@@ -312,7 +353,11 @@ Reply bench_results(const json&, const Scene&) {
         if (!result.is_object() || result.value("suite", std::string()).empty()) {
             continue;
         }
-        found.emplace_back(entry.last_write_time(ec), summary_of(result));
+        json summary = summary_of(result);
+        if (const std::string kind = made_of(result, made); !kind.empty()) {
+            summary["made"] = kind;
+        }
+        found.emplace_back(entry.last_write_time(ec), std::move(summary));
     }
     std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     json out = json::array();
@@ -325,7 +370,13 @@ Reply bench_results(const json&, const Scene&) {
 Reply bench_result(const json& params, const Scene&) {
     const std::filesystem::path file = result_file(params.value("id", std::string()));
     json result = file.empty() ? json() : read_json(file);
-    return result.is_object() ? good(std::move(result)) : bad("no such result");
+    if (!result.is_object()) {
+        return bad("no such result");
+    }
+    if (const std::string kind = made_of(result, made_here()); !kind.empty()) {
+        result["made"] = kind;
+    }
+    return good(std::move(result));
 }
 
 Reply bench_delete(const json& params, const Scene&) {
@@ -398,6 +449,10 @@ Reply bench_post(const json& params, const Scene& scene) {
     if (!result.is_object()) {
         return bad("no such result");
     }
+    if (const std::string kind = made_of(result, made_here()); !kind.empty()) {
+        return bad((kind == "condensed" ? std::string("a condensed copy") : std::string("a fine-tune"))
+                   + " made here is not public on Hugging Face, and the board takes no other model");
+    }
     market::Found found;
     std::string   error;
     if (!where_public(result, scene, found, error)) {
@@ -450,12 +505,17 @@ Reply bench_post(const json& params, const Scene& scene) {
 
 /// Exactly what would be posted, so the dialog that asks can show it, and
 /// whether it can be: only a model file public on Hugging Face can. `offline`
-/// says Hugging Face could not be asked.
+/// says Hugging Face could not be asked; `made`, that the model was made
+/// here, which nobody is asked about.
 Reply bench_posting(const json& params, const Scene& scene) {
     const std::filesystem::path file = result_file(params.value("id", std::string()));
     const json result = file.empty() ? json() : read_json(file);
     if (!result.is_object()) {
         return bad("no such result");
+    }
+    if (const std::string kind = made_of(result, made_here()); !kind.empty()) {
+        return good(json{{"posting", posting_of(result, market::Found{})}, {"repo", kBoardRepo}, {"gh", false},
+                         {"public", false}, {"made", kind}});
     }
     market::Found found;
     std::string   error;

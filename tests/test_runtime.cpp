@@ -5,8 +5,11 @@
 #include "test_helpers.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <thread>
 
+#include "crucible/llm/model_host.hpp"
 #include "crucible/runtime/builder.hpp"
 
 // ---------------------------------------------------------------------------
@@ -275,6 +278,104 @@ TEST(runtimes_are_loaded_and_listed_on_several_threads_at_once) {
     for (std::size_t i = 0; i < listed.size(); ++i) {
         CHECK(listed[i] == ggml_backend_dev_get(i));
     }
+}
+
+TEST(a_runtime_arriving_during_a_load_waits_and_the_load_reads_on) {
+    // A model's load holds ggml's lists still for as long as it takes, since
+    // llama.cpp walks them all through it, and a runtime that arrives then is
+    // registered once the load is over. The load asks for the devices again
+    // inside its own hold, and that must not take the lock a second time: on
+    // a Mac and on Windows a second read waits behind a runtime that is
+    // waiting for the first, and the load would wait for itself for good.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    std::filesystem::create_directories(runtimes);
+    {
+        std::ofstream out(runtimes / (std::string(module_prefix()) + "vulkan" + std::string(module_suffix())));
+        out << "not really a module";
+    }
+    llama_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
+
+    std::atomic<bool> answered{false};
+    std::thread       arriving;
+    {
+        const RuntimeRegistry::Reading loading;   // what a model's load holds
+        arriving = std::thread([&answered] {
+            std::string error;
+            RuntimeRegistry::activate(BackendKind::Vulkan, error);
+            answered = true;
+        });
+        // Time for it to reach the lock and wait there, the state the reads
+        // below must not be caught in. Nothing is decided by the time: on a
+        // slower machine this only tests less.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        RuntimeRegistry::devices();
+        compute_devices();
+        {
+            const RuntimeRegistry::Reading again;
+        }
+        CHECK(!answered.load());
+
+        // Asked for on the loading thread itself, a runtime is refused rather
+        // than waited for: the wait would be for this same load.
+        std::string error;
+        CHECK(!RuntimeRegistry::activate(BackendKind::Vulkan, error));
+        CHECK(!error.empty());
+        CHECK(!answered.load());
+    }
+    arriving.join();
+    CHECK(answered.load());
+    llama_log_set(nullptr, nullptr);
+}
+
+TEST(a_model_load_holds_off_a_runtime_until_it_is_over) {
+    // Only where a model is named: CRUCIBLE_TEST_MODEL, a small GGUF, with a
+    // runtime installed that loads it. A load used to walk ggml's lists with
+    // nothing held, and a runtime registered meanwhile moved them under it.
+    // Now one arriving halfway waits for the load to end, which is asked here
+    // from inside the load itself, between two of its tensors.
+    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
+    if (named == nullptr || *named == '\0') {
+        return;
+    }
+    TempDir dir;
+    ModelHost host(dir.path() / "llama.log");
+    ModelParams params;
+    params.model = named;
+    params.path  = named;
+    params.n_ctx = 2048;
+
+    std::atomic<bool> answered{false};
+    bool              asked  = false;
+    bool              during = false;
+    std::thread       arriving;
+    const CancelCallback halfway = [&] {
+        if (!asked) {
+            asked    = true;
+            arriving = std::thread([&answered] {
+                // ggml's lists to itself, as a runtime's registration takes them.
+                RuntimeRegistry::init_llama();
+                answered = true;
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            during = answered.load();
+        }
+        return false;
+    };
+    std::string error;
+    const LoadedModel* model = host.acquire_expert("probe", params, {}, halfway, error);
+    if (arriving.joinable()) {
+        arriving.join();
+    }
+    CHECK(model != nullptr);
+    if (model == nullptr) {
+        std::printf("      %s\n", error.c_str());
+    }
+    CHECK(asked);
+    CHECK(!during);
+    CHECK(answered.load());
+    llama_log_set(nullptr, nullptr);
 }
 
 TEST(the_cpu_backend_is_the_one_every_other_runtime_needs) {
@@ -634,6 +735,25 @@ TEST(a_stated_head_dimension_beats_dividing_the_embedding_by_the_heads) {
     const ModelShape shape = read_model_shape(file);
     CHECK(shape.known);
     CHECK_EQ(shape.kv_per_token, std::uint64_t{48} * 2 * 512 * 2);
+}
+
+TEST(the_header_says_what_context_the_model_was_trained_to) {
+    // As far as a context grown to fit the cards may go: gpt-oss says 131072.
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "trained.gguf";
+    gguf_context* gguf = gguf_init_empty();
+    gguf_set_val_str(gguf, "general.architecture", "testarch");
+    gguf_set_val_u32(gguf, "testarch.block_count", 4);
+    gguf_set_val_u32(gguf, "testarch.context_length", 131072);
+    gguf_write_to_file(gguf, file.string().c_str(), /*only_meta=*/true);
+    gguf_free(gguf);
+    CHECK_EQ(read_model_shape(file).trained, std::uint32_t{131072});
+
+    // A file that does not say is read as not saying.
+    const std::filesystem::path silent = dir.path() / "silent.gguf";
+    write_test_gguf(silent, /*layers=*/4, /*embd=*/64, /*heads=*/4, /*kv_heads=*/{4}, /*key_len=*/16,
+                    /*vocab=*/128);
+    CHECK_EQ(read_model_shape(silent).trained, std::uint32_t{0});
 }
 
 // ---------------------------------------------------------------------------

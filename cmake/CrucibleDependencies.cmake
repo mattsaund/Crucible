@@ -185,7 +185,7 @@ set(CRUCIBLE_ORCHESTRATOR_DIR ${CMAKE_CURRENT_LIST_DIR}/../scripts/orchestrator/
 set(CRUCIBLE_ORCHESTRATOR_CPP "")
 foreach(_entry "__init__.py:Init" "__main__.py:Run" "main.py:Main" "rpc.py:Rpc"
                "routing.py:Routing" "cook.py:Cook" "naming.py:Naming" "build.py:Build"
-               "chat.py:Chat" "bench.py:Bench" "bench_score.py:BenchScore")
+               "chat.py:Chat" "bench.py:Bench" "bench_score.py:BenchScore" "intent.py:Intent")
     string(REPLACE ":" ";" _parts "${_entry}")
     list(GET _parts 0 _file)
     list(GET _parts 1 _symbol)
@@ -538,6 +538,30 @@ FetchContent_MakeAvailable(llama)
 # suffixes. Safe in the monolithic build too, where all of them are static
 # archives and there is nothing to strip.
 crucible_unversion_directory("${llama_SOURCE_DIR}")
+
+# --- cpp-httplib: the API server ---------------------------------------------
+#
+# The OpenAI-compatible server (src/serve/server.cpp) speaks HTTP through
+# cpp-httplib, which llama.cpp carries in its vendor folder for its own server
+# and builds only with LLAMA_BUILD_COMMON, which is off here. Compiled from
+# that copy rather than fetched: it is the one this llama.cpp tag pins, and
+# nothing new comes down for it. Without TLS, as LM Studio's server and
+# llama-server are: it answers on this machine, or on its network when asked.
+set(CRUCIBLE_HTTPLIB_DIR "${llama_SOURCE_DIR}/vendor/cpp-httplib")
+add_library(crucible_httplib STATIC "${CRUCIBLE_HTTPLIB_DIR}/httplib.cpp")
+target_include_directories(crucible_httplib SYSTEM PUBLIC "${CRUCIBLE_HTTPLIB_DIR}")
+target_link_libraries(crucible_httplib PRIVATE Threads::Threads)
+set_target_properties(crucible_httplib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# Its warnings are its own business, as llama.cpp's build says too.
+if(MSVC)
+    target_compile_options(crucible_httplib PRIVATE /w)
+else()
+    target_compile_options(crucible_httplib PRIVATE -w)
+endif()
+# Winsock. MSVC is told by a pragma in the header; MinGW is not.
+if(WIN32)
+    target_link_libraries(crucible_httplib PUBLIC ws2_32)
+endif()
 
 # ---------------------------------------------------------------------------
 # Treat every dependency's headers as system headers, so Crucible can keep a

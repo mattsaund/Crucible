@@ -78,6 +78,13 @@ struct ModelParams {
     /// LoadedModel::score_labels.
     int sequences = 1;
 
+    /// The most context a load may take beyond `n_ctx` when the cards hold
+    /// it, or 0 for `n_ctx` exactly. A build's agent asks for more: it reads
+    /// whole files and thinks before every action, and a reply with no cap
+    /// stops where the context ends. Never written to the config. See
+    /// ModelHost::with_room.
+    int n_ctx_most = 0;
+
     // Sampling
     float temperature   = 0.7F;
     float top_p         = 0.95F;
@@ -464,6 +471,37 @@ struct UiConfig {
     std::string font;
 };
 
+/// The API server: one model on this machine, offered to other programs at
+/// an address in OpenAI's shape, the way LM Studio and llama-server offer
+/// one. See serve/server.hpp.
+///
+/// Off until somebody turns it on. Until then Crucible listens on no port at
+/// all, and when it does, it is on this machine alone unless `network` says
+/// otherwise.
+struct ServerConfig {
+    /// The port nobody else's local server sits on by default: LM Studio has
+    /// 1234, llama-server 8080, Ollama 11434. So Crucible's can run beside
+    /// any of them without either being moved.
+    static constexpr int kDefaultPort = 8338;
+
+    bool enabled = false;
+
+    /// What it serves: a model as a seat names one, a file in the models
+    /// folder or a path, or empty for the delegator.
+    std::string model;
+
+    int port = kDefaultPort;
+
+    /// Every address this machine has rather than 127.0.0.1 alone: LM
+    /// Studio's "Serve on Local Network".
+    bool network = false;
+
+    /// What a request must carry as `Authorization: Bearer <key>`. Empty
+    /// leaves the server open to whoever can reach it. Written to config.json
+    /// in plain text, like a provider's key.
+    std::string api_key;
+};
+
 /// The whole config file.
 struct Config {
     /// Where the GGUFs live. Empty means the built-in default,
@@ -501,6 +539,7 @@ struct Config {
     ToolsConfig   tools;
     BuildConfig   build;
     UiConfig      ui;
+    ServerConfig  server;
 
     /// How hard a reasoning model should think: low | medium | high.
     ///

@@ -64,7 +64,7 @@ std::vector<llama_token> tokenize(const llama_vocab* vocab, const std::string& t
 }
 
 /// How many prompt prefixes scoring keeps. See LoadedModel::kept_.
-constexpr std::size_t kKeptPrompts = 4;
+constexpr std::size_t kKeptPrompts = 6;
 
 /// What a logit at one position is less, to be a natural log-probability
 /// there: the log of the softmax's denominator. Once per position, however

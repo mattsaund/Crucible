@@ -21,6 +21,7 @@
 
 #include "crucible/lab/imatrix.hpp"
 #include "crucible/lab/recipe.hpp"
+#include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
 
 namespace crucible::lab {
@@ -621,8 +622,14 @@ Quantized quantize(const std::filesystem::path& in, const std::filesystem::path&
         std::filesystem::create_directories(out.parent_path(), ec);
         std::filesystem::remove(part, ec);
     }
-    const std::uint32_t status =
-        llama_model_quantize(in.string().c_str(), (dry_run ? out : part).string().c_str(), &params);
+    std::uint32_t status = 0;
+    {
+        // llama.cpp asks ggml's device list for the processor before it
+        // reads a tensor, so this is made with the list held still as a
+        // model's load is. A child's only, where nothing else loads.
+        const RuntimeRegistry::Reading reading;
+        status = llama_model_quantize(in.string().c_str(), (dry_run ? out : part).string().c_str(), &params);
+    }
     llama_log_set(nullptr, nullptr);
 
     if (status != 0) {
@@ -675,7 +682,7 @@ int condense_main(const std::vector<std::string>& args) {
     if (args.empty()) {
         return 2;
     }
-    llama_backend_init();
+    RuntimeRegistry::init_llama();
     const std::string& mode = args[0];
 
     if (mode == "--condense") {

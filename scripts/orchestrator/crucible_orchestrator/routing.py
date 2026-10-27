@@ -12,13 +12,19 @@ and does the arithmetic. Everything about *how* a route is chosen is here, so it
 can be changed and measured without rebuilding anything; everything about the
 weights stays where the weights are.
 
-Measured with crucible-routebench: on Crucible's 54-prompt benchmark, 49/54
-with LFM2.5-1.2B and 54/54 with gpt-oss-20b; on a five-seat roster of fifty
-prompts, 49/50 with LFM -- a pH question sits on its line between Chemistry
-and Mathematics -- and 48/50 with gpt-oss. See ModelRouter and Roster.orders for why three
-orders rather than one. LFM's 54-prompt score was 50 while its later labels
-were scored behind the ones before them, which a cache it cannot cut back
-used to leave in place.
+Measured with crucible-routebench in 0.9.6 on an RTX 4070, with each order's
+prompt kept between routes and gpt-oss-20b given 12 of its 24 layers there:
+on Crucible's 54-prompt benchmark, 49/54 with LFM2.5-1.2B and 54/54 with
+gpt-oss-20b; on the five seats of tools/routes/five-seats.json, 48/50 and
+49/50; and on tools/routes/build-tasks.json, the tasks a build hands out,
+worded the way it words them, 19/31 and 30/31. LFM gives all six "CSS
+styling" tasks there to Writing, and still does with the seats shown in
+balanced orders: the lean comes with the task, not with where Programming is
+listed. The card matters to a close call: worded as 0.9.5 worded them, with
+their detail, gpt-oss routed 28 of these tasks on an RTX 3060 and 30 on the
+4070. See ModelRouter and Roster.orders for why three orders rather than one.
+LFM's 54-prompt score was 50 while its later labels were scored behind the
+ones before them, which a cache it cannot cut back used to leave in place.
 """
 
 import math
@@ -34,11 +40,23 @@ PINNED = "pinned"
 # How much of the delegator's measured lean to take out. With two worked
 # examples per subject the benchmark no longer separates 0, 0.25 and 0.5 --
 # all score 50/54 -- and a quarter is the one that held up best with one.
+# Whether a tenth does better depends on the card more than on the
+# delegator. Measured again in 0.9.6, with build tasks worded as 0.9.5 worded
+# them, gpt-oss-20b routed all 31 with it on an RTX 3060 against 28 with a
+# quarter, and 29 against 30 on an RTX 4070; LFM2.5-1.2B, 48 of the 54
+# against 49 on the 3060 and 50 against 49 on the 4070. A quarter stays.
 CALIBRATION = 0.25
 
 # What a question with no content looks like. Whatever the delegator answers to
 # these is not about a question, because there is none: it is its prior.
 CONTENT_FREE = ("N/A", "", "...")
+
+# And a build's task with no content, its needs and title joined the way
+# build.routed_on joins them, for crucible-routebench's "task-lean". A task
+# is not a question, and the lean measured on questions need not be the one
+# a delegator has on tasks. Measured in 0.9.6, it changed none of LFM2.5-1.2B's
+# scores.
+CONTENT_FREE_TASK = "N/A: N/A"
 
 
 class Decision:
@@ -80,7 +98,7 @@ class Roster:
     def ids(self):
         return [e.get("id", "") for e in self.experts]
 
-    def orders(self, many=3):
+    def orders(self, many=3, thirds=False):
         """The orders the seats are shown in, each scored and the scores averaged.
 
         One order is not enough. A delegator leans towards a seat for where it
@@ -90,29 +108,48 @@ class Roster:
         listed, reversed, and rotated by half -- scored 49/50, and 54/54 on the
         nine-seat benchmark. LFM2.5-1.2B went from 45 to 49 of 50. Each order
         costs a forward pass, which is the price of not trusting the first.
+
+        Those three are not even on three seats: the first is shown last twice
+        and the second never. LFM leans away from the seat shown last (on one
+        CSS task Programming's score fell by 3.6 in log-probability from first
+        to last) and gpt-oss towards it. `thirds`, for crucible-routebench's
+        "thirds", turns the list a third of the way round each time instead,
+        which shows three seats each first, between and last once. LFM scored
+        50/54 and 48/50 with it, and 20/31 on the build tasks with and without
+        Programming's examples, against 49, 48, 19 and 18. But gpt-oss sent two
+        physics questions on the five seats to Chemistry with it, whatever the
+        calibration from none to a half (48/50 against 49/50), so it is not the
+        default.
         """
         n = len(self.experts)
         listed = list(range(n))
         if many <= 1 or n < 2:
             return [listed]
+        if thirds:
+            turns = sorted({k * n // 3 for k in range(3)})
+            return [listed[turn:] + listed[:turn] for turn in turns]
         out = [listed, listed[::-1]]
         if many >= 3 and n > 2:
             out.append(listed[n // 2:] + listed[:n // 2])
         return out
 
-    def system_prompt(self, order=None):
+    def system_prompt(self, order=None, requests=False):
         # Routable seats only, and never a way to decline: a closing line
         # naming a catch-all was answered for almost everything (16%). Asked
         # for the subject's name, which is what is scored; the tag stays beside
         # it, where reading the list as a labeled menu is worth 6 points.
-        prompt = ("You label a question with the one subject it belongs to.\n"
-                  "Reply with only the subject's name.\n\n")
+        # `requests`, for crucible-routebench's "requests", names what is
+        # labeled a request: a build's tasks are work to do, not questions.
+        # With it LFM routed 20 of the 31 build tasks against 19, but 17
+        # against 18 without Programming's examples (0.9.6).
+        prompt = ("You label a %s with the one subject it belongs to.\n"
+                  "Reply with only the subject's name.\n\n") % ("request" if requests else "question")
         for i in order if order is not None else range(len(self.experts)):
             e = self.experts[i]
             prompt += "%s  %s: %s\n" % (e.get("tag", ""), e.get("name", ""), e.get("blurb", ""))
         return prompt
 
-    def asked(self):
+    def asked(self, blurbs=False):
         """Each seat's worked questions: its examples, or when it has none and
         another seat has some, its own description.
 
@@ -125,18 +162,31 @@ class Roster:
         twelve, and every writing request was still Writing's. When no seat
         has examples there is nothing to even out, and the delegator reads the
         descriptions alone, as it always did.
+
+        With `blurbs`, for crucible-routebench's "blurbs", every seat is asked
+        about in its description first, examples or not. A small delegator
+        goes by the worked turns far more than by the list above them (see
+        ModelRouter.conversation), the examples a delegator writes are
+        questions where a build's tasks are work, and a description such as
+        Programming's names the work: HTML and CSS, shell, tests. With it LFM
+        routed 19 of the 31 build tasks with Programming's examples and 19
+        without them, against 19 and 18 (0.9.6), and every "CSS styling" task
+        still went to Writing.
         """
         asked = [[q for q in e.get("examples") or [] if q] for e in self.experts]
+        if blurbs:
+            return [([e["blurb"]] if e.get("blurb") else []) + questions
+                    for questions, e in zip(asked, self.experts)]
         if not any(asked):
             return asked
         return [questions or ([e["blurb"]] if e.get("blurb") else [])
                 for questions, e in zip(asked, self.experts)]
 
-    def examples(self, order=None):
+    def examples(self, order=None, blurbs=False):
         # The answer to each is exactly a label and nothing more: an example
         # that showed anything else would teach the delegator to keep writing
         # past the string being scored.
-        asked = self.asked()
+        asked = self.asked(blurbs)
         pairs = []
         for i in order if order is not None else range(len(self.experts)):
             for question in asked[i]:
@@ -232,14 +282,29 @@ class ModelRouter:
         self.path = delegator_path
         self.calibration = calibration
         self.labels = roster.labels()
-        # "single" scores the one order, for crucible-routebench to compare.
-        self.orders = roster.orders(1 if method == "single" else 3)
+        # Ways of routing for crucible-routebench to compare with this one,
+        # any of them at once, comma-separated: "single" scores the one order,
+        # "thirds" turns it by thirds (Roster.orders), "blurbs" asks about
+        # every seat in its description too (Roster.asked), "requests" names
+        # what is labeled a request (Roster.system_prompt), and "task-lean"
+        # measures the lean on a task as well (CONTENT_FREE_TASK).
+        methods = set((method or "").split(","))
+        self.orders = roster.orders(1 if "single" in methods else 3, thirds="thirds" in methods)
+        self.blurbs = "blurbs" in methods
+        self.requests = "requests" in methods
+        self.content_free = CONTENT_FREE + ((CONTENT_FREE_TASK,) if "task-lean" in methods else ())
+
+    def shown(self, order):
+        """The instructions and the worked examples, in `order`."""
+        return (self.roster.system_prompt(order, self.requests),
+                tuple(self.roster.examples(order, self.blurbs)))
 
     def conversation(self, question, order):
         # The worked examples as real turns: pasted into the system prompt
         # instead, the 1.2B delegator scored 42% against 74%.
-        messages = [{"role": "system", "content": self.roster.system_prompt(order)}]
-        for example, answer in self.roster.examples(order):
+        system, examples = self.shown(order)
+        messages = [{"role": "system", "content": system}]
+        for example, answer in examples:
             messages.append({"role": "user", "content": example})
             messages.append({"role": "assistant", "content": answer})
         messages.append({"role": "user", "content": question})
@@ -255,7 +320,7 @@ class ModelRouter:
         gpt-oss-20b route went from 1.8 s to 0.4 s, with the core scoring a
         roster's labels at once besides.
         """
-        key = (self.path, self.roster.system_prompt(order), tuple(self.roster.examples(order)))
+        key = (self.path,) + self.shown(order)
         if key not in ModelRouter._prefix:
             # Rendered around two different questions, what the two have in
             # common is all that comes before the question, in whatever shape
@@ -277,12 +342,11 @@ class ModelRouter:
         return [float(s) for s in scores]
 
     def bias(self, order):
-        key = (self.path, self.roster.system_prompt(order), tuple(self.roster.examples(order)),
-               tuple(self.labels))
+        key = (self.path,) + self.shown(order) + (tuple(self.labels), self.content_free)
         if key not in ModelRouter._bias:
             total = [0.0] * len(self.labels)
             measured = 0
-            for question in CONTENT_FREE:
+            for question in self.content_free:
                 # Not stopped by Stop: a lean half measured is a wrong one.
                 scores = self.score(question, order, cancelable=False)
                 if not isinstance(scores, list):

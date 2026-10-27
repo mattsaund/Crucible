@@ -9,6 +9,8 @@
 
 #include "crucible/market/downloads.hpp"
 #include "crucible/market/hub.hpp"
+#include "crucible/market/logos.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/text.hpp"
 
 namespace crucible::api {
@@ -25,7 +27,8 @@ json listing_json(const market::Listing& l) {
                 {"downloads", l.downloads}, {"likes", l.likes}, {"updated", l.updated},
                 {"params_b", l.params_b}, {"architecture", l.architecture}, {"context", l.context},
                 {"pipeline", l.pipeline}, {"vision", l.vision}, {"tools", l.tools},
-                {"reasoning", l.reasoning}, {"gated", l.gated}, {"license", l.license}};
+                {"reasoning", l.reasoning}, {"gated", l.gated}, {"license", l.license},
+                {"base_model", l.base_model}, {"logo", market::logo_owner(l.id, l.base_model)}};
 }
 
 /// A page of a search: the first, or the one the last page said was next.
@@ -44,6 +47,8 @@ Reply market_search(const json& params, const Scene&) {
     if (sort == market::Sort::Best) {
         market::rank_best(page.listings);
     }
+    // So market.logo, asked by each one's id, does not ask what was just said.
+    market::remember_logos(page.listings);
     json listings = json::array();
     for (const market::Listing& listing : page.listings) {
         listings.push_back(listing_json(listing));
@@ -64,6 +69,7 @@ Reply market_model(const json& params, const Scene& scene) {
     if (!market::model(id, format, detail, error)) {
         return bad(error);
     }
+    market::remember_logos({detail.listing});
     const market::Machine       machine = market::this_machine();
     const std::filesystem::path models  = scene.config.resolved_models_dir();
 
@@ -93,15 +99,24 @@ Reply market_model(const json& params, const Scene& scene) {
             best      = static_cast<int>(i);
             best_rank = rank;
         }
-        options.push_back(json{{"name", option.name}, {"repo", option.repo}, {"bytes", option.bytes},
-                               {"files", option.files.size()},
-                               {"fit", std::string(market::fit_id(fit))}, {"here", here}});
+        json one{{"name", option.name}, {"repo", option.repo}, {"bytes", option.bytes},
+                 {"files", option.files.size()},
+                 {"fit", std::string(market::fit_id(fit))}, {"here", here}};
+        // A GGUF option's files by name, so the page can open the repository
+        // on the one file it was asked for: a model on Bench's board.
+        if (format == market::Format::Gguf) {
+            json names = json::array();
+            for (const market::File& file : option.files) {
+                names.push_back(std::filesystem::path(file.path).filename().string());
+            }
+            one["names"] = std::move(names);
+        }
+        options.push_back(std::move(one));
     }
     if (best >= 0) {
         options[static_cast<std::size_t>(best)]["recommended"] = true;
     }
     json out          = listing_json(detail.listing);
-    out["base_model"] = detail.base_model;
     out["format"]     = std::string(market::format_id(format));
     out["options"]    = std::move(options);
     out["machine"]    = json{{"vram", machine.vram}, {"ram", machine.ram}, {"gpus", machine.gpus},
@@ -122,6 +137,22 @@ Reply market_readme(const json& params, const Scene&) {
         text.resize(200000);
     }
     return good(json{{"text", crucible::detail::scrub_utf8(text)}});
+}
+
+/// The logo beside a repository, by its id: whose it is, and the picture as
+/// a data: URL the page can show, or empty for none. The Models tab asks
+/// once per owner a list shows, after the list; anything else that names a
+/// repository can ask the same. See market/logos.hpp.
+Reply market_logo(const json& params, const Scene&) {
+    const std::string id = text_of(params, "id");
+    market::Logo      logo;
+    std::string       error;
+    if (!market::logo(id, logo, error)) {
+        return bad(error);
+    }
+    return good(json{{"id", id}, {"owner", logo.owner},
+                     {"image", logo.mime.empty() ? std::string()
+                                                 : "data:" + logo.mime + ";base64," + format::base64(logo.bytes)}});
 }
 
 /// Start one. An action: it only starts a thread, and what the option holds
@@ -164,6 +195,7 @@ void market_methods(std::vector<Method>& table) {
     table.push_back({"market.search",   market_search, nullptr});
     table.push_back({"market.model",    market_model, nullptr});
     table.push_back({"market.readme",   market_readme, nullptr});
+    table.push_back({"market.logo",     market_logo, nullptr});
     table.push_back({"market.download", nullptr, market_download});
     table.push_back({"market.cancel",   nullptr, market_cancel});
     table.push_back({"market.dismiss",  nullptr, market_dismiss});

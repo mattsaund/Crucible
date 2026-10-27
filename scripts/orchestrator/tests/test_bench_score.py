@@ -811,8 +811,14 @@ class Instructions(unittest.TestCase):
         self.assertEqual(score.ifeval_follows("Hi.", ["keywords:frequency"], [{"keyword": "hi"}], ""), [False])
         self.assertEqual(score.ifeval_follows("Hi.", ["length_constraints:number_words"],
                                               [{"relation": "about", "num_words": 3}], ""), [False])
-        self.assertEqual(score.ifeval_follows(None, ["punctuation:no_comma"], None, None), [True])
         self.assertEqual(score.ifeval_follows("Hi.", [], [], ""), [])
+
+    def test_an_empty_reply_follows_nothing(self):
+        # What a reply cut off before its answer leaves, and true of "no
+        # commas" and "lowercase" only because nothing was said.
+        for empty in (None, "", "  \n"):
+            self.assertEqual(score.ifeval_follows(empty, ["punctuation:no_comma", "change_case:english_lowercase"],
+                                                  None, None), [False, False])
 
 
 class IfevalScore(unittest.TestCase):

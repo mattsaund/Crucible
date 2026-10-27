@@ -115,6 +115,34 @@ class Prompt(unittest.TestCase):
         bare = routing.Roster([dict(e, examples=[]) for e in ROSTER])
         self.assertEqual(bare.examples(), [])
 
+    def test_turned_by_thirds_three_seats_are_each_first_between_and_last_once(self):
+        three = routing.Roster(ROSTER[:3])
+        orders = three.orders(thirds=True)
+        self.assertEqual(orders, [[0, 1, 2], [1, 2, 0], [2, 0, 1]])
+        for seat in range(3):
+            self.assertEqual(sorted(order.index(seat) for order in orders), [0, 1, 2])
+        # As listed, reversed and rotated by half, the first of three is last twice.
+        self.assertEqual([order[-1] for order in three.orders()], [2, 0, 0])
+        # A longer list is started a third of the way further down each time,
+        # and two seats are shown both ways round, as before.
+        self.assertEqual([order[0] for order in roster().orders(thirds=True)], [0, 2, 4])
+        self.assertEqual(routing.Roster(ROSTER[:2]).orders(thirds=True), [[0, 1], [1, 0]])
+        self.assertEqual(roster().orders(1, thirds=True), [list(range(len(ROSTER)))])
+
+    def test_with_blurbs_every_seat_is_asked_about_in_its_description_first(self):
+        asked = dict(zip(roster().labels(), roster().asked(blurbs=True)))
+        self.assertEqual(asked["Mathematics"], ["Proofs, algebra, calculus",
+                                                "Prove that the square root of 2 is irrational."])
+        # Once, for a seat whose description is all it has.
+        self.assertEqual(asked["Physics"], ["Mechanics and relativity"])
+        self.assertIn(("Code in many languages", "Programming"), roster().examples(blurbs=True))
+        self.assertNotIn(("Code in many languages", "Programming"), roster().examples())
+
+    def test_asked_to_label_requests_the_instructions_say_so(self):
+        prompt = roster().system_prompt(requests=True)
+        self.assertTrue(prompt.startswith("You label a request with the one subject it belongs to."))
+        self.assertEqual(prompt.split("\n\n", 1)[1], roster().system_prompt().split("\n\n", 1)[1])
+
     def test_harmony_is_asked_where_its_answer_goes(self):
         self.assertEqual(routing.answer_prefix("...<|start|>assistant"), "<|channel|>final<|message|>")
         self.assertEqual(routing.answer_prefix("<|im_start|>assistant\n"), "")
@@ -183,6 +211,7 @@ class FakeCore:
         self.available = available
         self.calls = []
         self.scored = []
+        self.formatted = []
 
     def call(self, method, params=None):
         self.calls.append(method)
@@ -193,6 +222,7 @@ class FakeCore:
         if method == "delegator.done":
             return {}
         if method == "delegator.format":
+            self.formatted.append(params["messages"])
             # The last user message is the question; the format is the model's.
             listed = params["messages"][0]["content"].split("\n\n", 1)[1].split("\n")[0]
             first = listed.split("  ", 1)[1].split(":")[0]
@@ -298,6 +328,33 @@ class Delegator(unittest.TestCase):
         routing.ModelRouter._bias.clear()
         out = routing.route(FakeCore(scores), request("why is the sky blue"))
         self.assertEqual(out.expert, "physics")
+
+    def test_routebench_methods_change_what_they_name_and_nothing_else(self):
+        firsts = []
+
+        def scores(question, labels, first):
+            firsts.append(first)
+            return [0.0] * len(labels)
+        core = FakeCore(scores)
+        routing.route(core, request("why is the sky blue", method="thirds,blurbs,requests,task-lean"))
+        # Started from the first, the third and the fifth seat; the lean
+        # measured on four content-free prompts in each order, the task among
+        # them; then the question in each.
+        self.assertEqual(sorted(set(firsts)), ["Biology", "Mathematics", "Physics"])
+        self.assertEqual(core.calls.count("delegator.score"), 3 * 4 + 3)
+        self.assertIn(routing.CONTENT_FREE_TASK,
+                      [params["prompt"].split("\nQ:", 1)[1].split("<|start|>")[0] for params in core.scored])
+        messages = core.formatted[-1]
+        self.assertTrue(messages[0]["content"].startswith("You label a request"))
+        self.assertIn({"role": "user", "content": "Code in many languages"}, messages)
+        # Unasked, a route is what it was.
+        routing.ModelRouter._bias.clear()
+        routing.ModelRouter._prefix.clear()
+        plain = FakeCore(lambda q, labels: [0.0] * len(labels))
+        routing.route(plain, request("why is the sky blue"))
+        self.assertEqual(plain.calls.count("delegator.score"), 3 * 3 + 3)
+        self.assertTrue(plain.formatted[-1][0]["content"].startswith("You label a question"))
+        self.assertNotIn({"role": "user", "content": "Code in many languages"}, plain.formatted[-1])
 
     def test_unscorable_falls_back_to_keywords(self):
         def scores(question, labels):

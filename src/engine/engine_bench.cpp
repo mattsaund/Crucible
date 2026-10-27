@@ -399,17 +399,38 @@ json Engine::serve_bench(const std::string& method, const json& params) {
         std::string reasoning;
         ResponseFilter filter;
         ChatSink sink;
-        sink.cancel = stopped;
+        // Greedy decoding has no way out of a loop: a thinking model that
+        // starts saying the same lines over says them until the budget is
+        // spent. gpt-oss-20b did on 73 of 450 Quick items, three minutes each,
+        // for answers that were wrong either way. Stopped once the text ends
+        // in a loop, which changes no score and gives the minutes back.
+        bool        looped  = false;
+        std::size_t watched = 0;
+        const auto  watch   = [&] {
+            if (answer.size() + reasoning.size() < watched + 512) {
+                return;
+            }
+            watched = answer.size() + reasoning.size();
+            looped  = detail::ends_in_loop(reasoning) || detail::ends_in_loop(answer);
+        };
+        sink.cancel = [&] { return looped || stopped(); };
         if (seat->held.model->reasons_inline()) {
             sink.on_text = [&](std::string_view chunk) {
                 const ResponseFilter::Piece piece = filter.feed(chunk);
                 answer += piece.answer;
                 reasoning += piece.reasoning;
+                watch();
             };
         } else {
-            sink.on_text = [&](std::string_view chunk) { answer += chunk; };
+            sink.on_text = [&](std::string_view chunk) {
+                answer += chunk;
+                watch();
+            };
         }
-        sink.on_reasoning = [&](std::string_view chunk) { reasoning += chunk; };
+        sink.on_reasoning = [&](std::string_view chunk) {
+            reasoning += chunk;
+            watch();
+        };
         const auto start = Clock::now();
         const ChatResult result = seat->held.model->chat(ChatRequest{messages, asked, effort}, sink);
         const ResponseFilter::Piece tail = filter.flush();
@@ -422,7 +443,7 @@ json Engine::serve_bench(const std::string& method, const json& params) {
                     {"prompt_reused", result.stats.prompt_reused},
                     {"output_tokens", result.stats.output_tokens},
                     {"prompt_ms", result.stats.prompt_ms}, {"output_ms", result.stats.output_ms},
-                    {"hit_limit", result.stats.hit_limit}};
+                    {"hit_limit", result.stats.hit_limit}, {"looped", looped}};
     }
 
     // --- what the run needs to know --------------------------------------

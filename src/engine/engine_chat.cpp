@@ -58,6 +58,22 @@ Mood mood_named(const std::string& mood) {
                               : Mood::Idle;
 }
 
+/// Whether `root` has anything in it a person put there: a file or a folder
+/// whose name does not start with a dot. The first one found is enough.
+bool has_files(const std::filesystem::path& root) {
+    std::error_code ec;
+    if (root.empty() || !std::filesystem::is_directory(root, ec)) {
+        return false;
+    }
+    for (std::filesystem::directory_iterator it{root, ec}, end; it != end && !ec; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (!name.empty() && name.front() != '.') {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 /// What the core keeps of the chat turn being answered, between the calls the
@@ -66,6 +82,7 @@ struct Engine::ChatTurn {
     std::size_t                     index = 0;   ///< the turn, in the transcript
     std::string                     prompt;
     std::vector<attach::Attachment> attachments;
+    std::optional<ExpertId>         pinned;      ///< sent to one seat, for a build it becomes
 
     /// The settings as they are when the turn starts, kept for the whole of
     /// it: a build running beside it can add a seat to the engine's own copy
@@ -126,6 +143,7 @@ void Engine::handle(const Request& request) {
     chat->index       = turn;
     chat->prompt      = request.prompt;
     chat->attachments = request.attachments;
+    chat->pinned      = request.pinned;
     chat->config      = this->config();
 
     state_.set_mood(Mood::Routing, "Crucible is reading the prompt");
@@ -161,6 +179,12 @@ void Engine::handle(const Request& request) {
     asked["search_rounds"] = chat->config.tools.search_rounds;
     asked["search_tools"]  = tools::tool_instructions();
     asked["overflow"]      = chat->config.tools.overflow;
+    // Whether this message may become a build (see the orchestrator's
+    // intent.py), and whether the folder it would be built in has anything
+    // in it yet. Not while a build runs: one at a time, and a message typed
+    // beside one is answered. Nor one sent to be answered whatever it asks.
+    asked["can_build"] = !request.answer_only && !cooking() && !project_root_.empty();
+    asked["files"]     = has_files(project_root_);
 
     {
         const std::lock_guard<std::mutex> lock(chat_mutex_);
@@ -210,6 +234,25 @@ json Engine::serve_turn(const std::string& method, const json& params) {
     const CancelCallback cancel = [this] {
         return cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
     };
+
+    // --- or a build ------------------------------------------------------------
+    if (method == "turn.build") {
+        // The message is a build: started now, on its own words and what came
+        // with them, in the folder this turn is about, and sent to the seat
+        // it was sent to when it was. The turn is the build's from here (see
+        // Turn::build), and over for the chat; the build's end is its reply.
+        std::string id;
+        const std::string refused =
+            start_cook(chat->prompt, 0, project_root_, chat->attachments, chat->pinned, "build", &id);
+        if (!refused.empty()) {
+            return json{{"ok", false}, {"error", refused}};
+        }
+        state_.set_build(turn, id);
+        if (wake_) {
+            wake_();
+        }
+        return json{{"ok", true}, {"id", id}};
+    }
 
     // --- who answers ---------------------------------------------------------
     if (method == "turn.route") {

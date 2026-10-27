@@ -22,6 +22,7 @@
 #endif
 
 #include <ggml-backend.h>
+#include <llama.h>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/runtime/cuda_libraries.hpp"
@@ -104,15 +105,31 @@ std::map<BackendKind, std::vector<std::filesystem::path>> modules_in(
 /// while Setup, the API's workers and the window read the lists, so a load
 /// holds this alone and a read shares it.
 ///
-/// Held for the call into ggml and for nothing around it: never while
-/// modules are scored or NVIDIA's libraries preloaded, and never taken by a
-/// thread that already holds it. A load runs llama.cpp's log callback with
-/// it held, so nothing that callback does may read the devices.
+/// Held alone for the call into ggml and for nothing around it: never while
+/// modules are scored or NVIDIA's libraries preloaded. A load runs
+/// llama.cpp's log callback with it held, so nothing that callback does may
+/// read the devices.
 ///
-/// llama.cpp reads the lists too, inside a model load, and those reads are
-/// not under it: held across a load, it would keep every reader waiting for
-/// the minute a large model takes, with the load's callbacks run inside it.
+/// llama.cpp reads the lists too, all through a model load, and shares this
+/// for the whole of it. Shared only through RuntimeRegistry::Reading, which
+/// knows when its thread already holds it.
+///
+/// Why that cannot deadlock, for whoever adds a lock around it. The engine
+/// takes this inside its host lock: shared for a load, and alone only as the
+/// host starts; nothing takes the host lock with this held. Inside a load
+/// the only calls out are the progress and stop callbacks and llama.cpp's
+/// log, and held alone only the log: they set the window's state, wake it,
+/// read flags and write a line, under locks nothing holds while it waits.
+/// And a runtime arrives on the builder's thread with nothing held, and asks
+/// for the reload once it is registered, on the engine's queue rather than
+/// by waiting. So a thread holding this, either way, never waits for one
+/// that is waiting for it.
 std::shared_mutex g_ggml_registry;
+
+/// How many Readings this thread has open. The first takes the lock and the
+/// last lets it go; any between, and devices() asked inside a load, read
+/// under the hold the thread already has.
+thread_local int t_reading = 0;
 
 /// ggml's device list as it is now, nulls and all, so a position in it is
 /// ggml's index. With g_ggml_registry held, shared or alone.
@@ -325,6 +342,13 @@ bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
         cuda_libraries::preload();   // before the module, which needs them
     }
 
+    // Never from inside a load on this thread: the registry to itself waits
+    // for every Reading to close, this thread's own among them.
+    if (t_reading > 0) {
+        error = "could not load " + best.filename().string() + " while this thread loads a model";
+        return false;
+    }
+
     // The load is the one change to ggml's registry, so it is made with the
     // registry to itself. And "already loaded" is asked again first, under
     // the same lock: another thread may have loaded this backend while this
@@ -352,6 +376,9 @@ void RuntimeRegistry::load_all() {
     if (!loadable_backends_supported()) {
         return;  // the backend is compiled in; there is nothing to load
     }
+    if (t_reading > 0) {
+        return;  // inside a load on this thread, which this would wait on: see activate
+    }
     // NVIDIA's libraries first, when Crucible fetched them: the CUDA module
     // names them as dependencies and would otherwise not load at all.
     cuda_libraries::preload();
@@ -369,8 +396,26 @@ void RuntimeRegistry::load_all() {
 }
 
 std::vector<ggml_backend_dev_t> RuntimeRegistry::devices() {
-    const std::shared_lock<std::shared_mutex> reading(g_ggml_registry);
+    const Reading reading;
     return listed_devices();
+}
+
+RuntimeRegistry::Reading::Reading() {
+    if (t_reading == 0) {
+        g_ggml_registry.lock_shared();
+    }
+    ++t_reading;
+}
+
+RuntimeRegistry::Reading::~Reading() {
+    if (--t_reading == 0) {
+        g_ggml_registry.unlock_shared();
+    }
+}
+
+void RuntimeRegistry::init_llama() {
+    const std::unique_lock<std::shared_mutex> loading(g_ggml_registry);
+    llama_backend_init();
 }
 
 std::vector<BackendKind> RuntimeRegistry::loadable() {

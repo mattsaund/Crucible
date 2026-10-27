@@ -377,9 +377,15 @@ def run(core, params):
                     timing[key] += float(reply.get(key) or 0.0)
                 progress["done"] += 1
                 progress["correct"] += 1 if right else 0
-                kept.append({"i": index, "ok": bool(right), "read": seen if isinstance(seen, (str, list)) else str(seen),
-                             "answer": answer[-800:], "ms": reply.get("ms", 0),
-                             "tokens": reply.get("output_tokens", 0), "limit": bool(reply.get("hit_limit"))})
+                # A reply stopped in a loop is one that would have run to the
+                # budget: counted as cut off, and marked so it can be told apart.
+                looped = bool(reply.get("looped"))
+                item = {"i": index, "ok": bool(right), "read": seen if isinstance(seen, (str, list)) else str(seen),
+                        "answer": answer[-800:], "ms": reply.get("ms", 0),
+                        "tokens": reply.get("output_tokens", 0), "limit": bool(reply.get("hit_limit")) or looped}
+                if looped:
+                    item["looped"] = True
+                kept.append(item)
                 publish()
             items[bench["id"]] = kept
             if progress["done"] == progress["n"]:

@@ -4,13 +4,14 @@
 // History shows it.
 //
 // There was a Cook tab beside Build -- one goal worked in passes until it
-// was stopped -- and it is folded into Build, which does the same work with
-// a plan on top. The journal it kept is the journal a build keeps, so what
+// was stopped -- and it was folded into Build, which does the same work with
+// a plan on top, and Build into Chat, where a message that asks for software
+// becomes one. The journal a cook kept is the journal a build keeps, so what
 // draws one draws the other, and a cook from before opens from History as it
-// always did. Chat shows the tail of whichever is running.
+// always did.
 
-/// The steps of a journal. Shared with Chat, which shows the tail of a cook
-/// that is running, and with History, which shows a finished one whole.
+/// The steps of a journal. Shared by a build's turn in the conversation and
+/// by History, which shows a finished one whole.
 ///
 /// Each step is a verb and what it did. One with something to show for it --
 /// the diff of a write, the output of a command -- opens to show it, in a
@@ -67,7 +68,11 @@ function cookChain(cook) {
 }
 
 /// A past build's agent, chosen where it is drawn.
-actions['task-open'] = (button) => { state.open.task = Number(button.dataset.index); render(); };
+actions['task-open'] = (button) => {
+  state.open.task = Number(button.dataset.index);
+  state.open.taskOf = button.dataset.build || '';
+  render();
+};
 
 /// A cook's state as it stands. A journal left in the middle of one --
 /// Crucible closed, or the build was ended, while it worked -- was

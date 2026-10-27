@@ -208,6 +208,11 @@ private:
     /// Loaded with the window cache. See ModelParams::window_cache.
     bool window_cache_ = false;
 
+    /// What it holds on each card, by ggml device index, as llama.cpp said
+    /// when it was loaded: weights, cache and compute buffers. What the
+    /// cards would have back were it let go. See ModelHost::could_hold.
+    std::vector<std::uint64_t> on_cards_;
+
     /// A prompt prefix scoring has read, kept so the next prompt starting
     /// with it does not read it again. See score_labels.
     struct KeptPrompt {
@@ -216,9 +221,12 @@ private:
         std::uint64_t             used = 0;  ///< when it was last asked for
     };
 
-    /// Four at most, the least recently used going first: the delegator
-    /// shows its roster in three orders, and each is a prefix of its own.
-    /// Each is no larger than the cache it came from.
+    /// Six at most, the least recently used going first: the delegator
+    /// shows its roster in three orders, and each is a prefix of its own,
+    /// and decides whether a message is a build in two more (the
+    /// orchestrator's intent.py). Five taking turns in four places would
+    /// each be gone by the time it came round again. Each is no larger than
+    /// the cache it came from.
     std::vector<KeptPrompt> kept_;
     std::uint64_t           kept_clock_ = 0;
 

@@ -275,6 +275,10 @@ private:
     market::Downloads     downloads_{[this] { wake(); }};
 
     std::size_t persisted_turns_ = 0;
+    /// The newest revision among the finished turns last saved: a turn can
+    /// change after it finished (a build's reply arrives when it ends), and
+    /// that is a change to save as much as a new turn is.
+    std::uint64_t persisted_revision_ = 0;
     std::string save_error_;   ///< the last save that failed, said once
 
     /// A rebuild of Crucible's own source, when somebody asks for one. See

@@ -144,7 +144,8 @@ class FakeCore:
     """The core as bench.run sees it: a model that answers A, and dataset rows
     where the even items' answer is A and the odd ones' is B."""
 
-    def __init__(self, stop_after=None, load_error=None, rows_error=None, rows_fail=0, fits=None, cut=False):
+    def __init__(self, stop_after=None, load_error=None, rows_error=None, rows_fail=0, fits=None, cut=False,
+                 looped=False):
         self.published = []
         self.saved = []
         self.chats = 0
@@ -156,6 +157,7 @@ class FakeCore:
         self.rows_asked = 0
         self.fits = fits             # the largest context the model loads with, or any
         self.cut = cut               # every reply runs into the budget
+        self.looped = looped         # every reply is stopped going in circles
         self.budgets = set()
 
     def call(self, method, params=None):
@@ -197,7 +199,7 @@ class FakeCore:
             self.chats += 1
             self.budgets.add(params["max_tokens"])
             return {"answer": "Answer: A", "ms": 10, "prompt_tokens": 40, "prompt_ms": 20.0,
-                    "output_tokens": 10, "output_ms": 100.0, "hit_limit": self.cut}
+                    "output_tokens": 10, "output_ms": 100.0, "hit_limit": self.cut, "looped": self.looped}
         if method == "bench.save":
             self.saved.append(params["result"])
             return {"path": "/results/%s.json" % params["result"]["id"]}
@@ -340,6 +342,16 @@ class Running(unittest.TestCase):
         core = FakeCore(cut=True)
         self.run_arc(core)
         self.assertEqual(core.saved[0]["cut_off"], {"arc": 50})
+
+    def test_replies_stopped_in_a_loop_count_as_cut_off(self):
+        core = FakeCore(looped=True)
+        self.run_arc(core)
+        self.assertEqual(core.saved[0]["cut_off"], {"arc": 50})
+        self.assertTrue(all(item.get("looped") for item in core.saved[0]["items"]["arc"]))
+        # Only the replies that went in circles say so.
+        core = FakeCore()
+        self.run_arc(core)
+        self.assertFalse(any("looped" in item for item in core.saved[0]["items"]["arc"]))
 
 
 if __name__ == "__main__":

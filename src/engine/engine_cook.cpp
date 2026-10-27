@@ -13,9 +13,12 @@
 // still say what it changed.
 #include "crucible/engine/engine.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -25,6 +28,7 @@
 
 #include "crucible/config/paths.hpp"
 #include "crucible/lab/python.hpp"
+#include "crucible/llm/model_catalog.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/tools/web_search.hpp"
@@ -37,6 +41,16 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using json  = nlohmann::json;
+
+/// The most context an agent of a build or a cook is given, when the cards
+/// hold it. Its rounds are long: the task, the plan, the tools, the last few
+/// exchanges with the files they read, and then the thinking before the
+/// action, all in one context. A reply with no cap stops where the context
+/// ends, and at 8K gpt-oss's plans stopped short of their last brace, twice.
+/// A ceiling, not a demand: ModelHost::load gives what the cards hold of it
+/// and never less than the seat's own context. gpt-oss-20b at 32K is 13.1 GB
+/// on a card by its header, against 12.0 at 8K.
+constexpr int kAgentContext = 32768;
 
 long ms_between(Clock::time_point start) {
     return static_cast<long>(
@@ -74,7 +88,51 @@ ModelParams params_for(const Config& config, const std::string& model, const std
     return params;
 }
 
+/// The last few exchanges of a conversation, as a build's architect reads
+/// them: who said what, each cut to a length that leaves the plan room.
+std::string conversation_excerpt(const std::vector<ChatMessage>& history) {
+    constexpr std::size_t kMessages = 6;
+    constexpr std::size_t kLength   = 1500;
+    std::string out;
+    const std::size_t from = history.size() > kMessages ? history.size() - kMessages : 0;
+    for (std::size_t i = from; i < history.size(); ++i) {
+        std::string said = history[i].content;
+        if (said.size() > kLength) {
+            said = crucible::detail::scrub_utf8(said.substr(0, kLength)) + "...";
+        }
+        out += (out.empty() ? "" : "\n\n") + std::string(history[i].role == "user" ? "Person: " : "Crucible: ")
+             + said;
+    }
+    return out;
+}
+
 }  // namespace
+
+SeatModel made_seat_model(const Config& config, const std::vector<ExpertId>& instead,
+                          const std::function<std::string(const ModelParams&)>& why_not) {
+    const SeatModel worker{config.build.worker_model, config.build.worker_provider, {}, {}};
+    ModelParams wanted = params_for(config, worker.model, worker.provider);
+    if (!wanted.remote()) {
+        wanted.path = resolve_model_ref(config.resolved_models_dir(), wanted.model).string();
+    }
+    const std::string why = why_not(wanted);
+    if (why.empty()) {
+        return worker;
+    }
+    // Named the way the build's notes name a model: its file, or a
+    // provider's name for it.
+    const std::string passed = wanted.remote() ? wanted.model : std::filesystem::path(wanted.path).filename().string();
+    for (const ExpertId& id : instead) {
+        const ModelParams& seat = config.expert(id);
+        if (!config.has_expert(id) || (seat.model == worker.model && seat.provider == worker.provider)) {
+            continue;
+        }
+        if (why_not(seat).empty()) {
+            return SeatModel{seat.model, seat.provider, passed, why};
+        }
+    }
+    return SeatModel{{}, {}, passed, why};
+}
 
 tools::ToolCall Engine::call_from(const json& params) {
     tools::ToolCall call;
@@ -122,7 +180,7 @@ tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) 
 
 std::string Engine::start_cook(std::string goal, int budget_seconds, std::filesystem::path root,
                                std::vector<attach::Attachment> attachments,
-                               std::optional<ExpertId> pinned, std::string kind) {
+                               std::optional<ExpertId> pinned, std::string kind, std::string* started) {
     // A benchmark has the cards to itself: an agent beside it would wait on
     // the memory its model holds, or load next to it and slow what it times.
     if (benching()) {
@@ -139,9 +197,14 @@ std::string Engine::start_cook(std::string goal, int budget_seconds, std::filesy
     }
     cook_stop_.store(false, std::memory_order_relaxed);
     cook_cancel_.store(false, std::memory_order_relaxed);
-    cook_thread_ = std::thread([this, goal = std::move(goal), budget_seconds, root = std::move(root),
-                                attachments = std::move(attachments), pinned = std::move(pinned),
-                                kind = std::move(kind)]() mutable {
+    // Named here rather than on the thread, so whoever asked knows it now.
+    std::string id = CookLog::new_id();
+    if (started != nullptr) {
+        *started = id;
+    }
+    cook_thread_ = std::thread([this, id = std::move(id), goal = std::move(goal), budget_seconds,
+                                root = std::move(root), attachments = std::move(attachments),
+                                pinned = std::move(pinned), kind = std::move(kind)]() mutable {
         // The worker makes the model host as it starts, and a build started
         // in the same breath as the engine -- a script, the smoke test -- must
         // not ask for a model before there is anything to ask.
@@ -152,7 +215,7 @@ std::string Engine::start_cook(std::string goal, int budget_seconds, std::filesy
         // whatever a model asks for, so an exception escaping here would take
         // the process, and the window with it, down mid-edit.
         try {
-            do_cook(goal, budget_seconds, root, std::move(attachments), std::move(pinned), kind);
+            do_cook(id, goal, budget_seconds, root, std::move(attachments), std::move(pinned), kind);
         } catch (const std::exception& e) {
             state_.set_mood(Mood::Error, e.what());
             state_.add_notice(std::string("build failed: ") + e.what());
@@ -235,6 +298,37 @@ void Engine::publish_cook() {
     }
 }
 
+void Engine::settle_build_turn(const Cook& cook) {
+    // A build no message became (one started through the API) has no turn,
+    // and the conversation is not told of it.
+    const std::optional<std::size_t> turn = state_.turn_of_build(cook.id);
+    if (!turn) {
+        return;
+    }
+    // What the build left, as the turn's reply: what its architect wrote of
+    // it, and the files it changed, which is what a message after it ("now
+    // add dark mode") is about. Said plainly when it did not get there.
+    std::string reply;
+    if (cook.state != CookState::Done) {
+        reply = "The build " + std::string(cook_state_name(cook.state)) + ". ";
+    }
+    reply += cook.outcome;
+    const std::vector<std::string> files = cook.files_touched();
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        reply += (i == 0 ? "\n\nFiles changed: " : ", ") + files[i];
+    }
+    state_.set_reply(*turn, reply);
+
+    // And remembered as an answer is: the turns after this one read it.
+    const Snapshot now = state_.snapshot();
+    if (*turn < now.turns.size()) {
+        const Turn& asked = now.turns[*turn];
+        const std::lock_guard<std::mutex> lock(mutex_);
+        history_.push_back({"user", attach::recalled(asked.attachments) + asked.prompt});
+        history_.push_back({"assistant", reply});
+    }
+}
+
 // ---------------------------------------------------------------------------
 // One round with the expert
 // ---------------------------------------------------------------------------
@@ -274,6 +368,7 @@ Engine::CookRound Engine::cook_round(ChatModel& model, const ModelParams& params
     round.answer    += tail.answer;
     round.reasoning += tail.reasoning;
     round.error = outcome.error;
+    round.notes = outcome.notes;
     if (outcome.discard_partial) {
         round.answer.clear();
     }
@@ -307,7 +402,12 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         if (!config.has_expert(id)) {
             return json{{"ok", false}, {"error", name + " has no model"}};
         }
-        const ModelParams seat_params = config.expert(id);
+        ModelParams seat_params = config.expert(id);
+        if (!seat_params.remote()) {
+            // As much more context as the cards hold, up to kAgentContext:
+            // see there. The host decides how much when it loads the model.
+            seat_params.n_ctx_most = std::max(seat_params.n_ctx, kAgentContext);
+        }
         // The delegator has done its routing, and an expert on this machine is
         // about to want every byte it was holding. See resolve().
         if (!config.routing.keep_delegator_loaded && !seat_params.remote()) {
@@ -373,7 +473,7 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         const CookRound round = cook_round(*seat->held.model, seat->params, messages);
         seat->tool_images.clear();
         return json{{"answer", round.answer}, {"reasoning", round.reasoning},
-                    {"error", round.error}, {"ms", round.ms}};
+                    {"error", round.error}, {"notes", round.notes}, {"ms", round.ms}};
     }
     if (method == "seat.attachments") {
         const std::shared_ptr<AgentSeat> seat = seat_named(params);
@@ -455,17 +555,21 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         // task can use it; the session is handed a copy to keep.
         const std::string name  = format::trim(params.value("name", ""));
         const std::string blurb = format::trim(params.value("blurb", ""));
-        // Read and written under the lock in one go: two agents making the
-        // same seat at once must make one seat.
-        std::unique_lock<std::mutex> configuring(config_mutex_);
-        if (config_.build.worker_model.empty()) {
-            return json{{"ok", false}, {"error", "no model is set for new agents (Settings, Build)"}};
+        // The seats the build is using, to stand in for a model that cannot
+        // load here.
+        std::vector<ExpertId> instead;
+        for (const json& one : params.value("instead", json::array())) {
+            if (one.is_string() && !one.get<std::string>().empty()) {
+                instead.push_back(one.get<std::string>());
+            }
         }
-        if (name.empty()) {
-            return json{{"ok", false}, {"error", "a seat needs a name"}};
-        }
-        if (const std::optional<std::size_t> at = config_.roster.find(name)) {
-            // Already there, by that name: it is the seat, when it can answer.
+        // Already there, by that name: it is the seat, when it can answer.
+        // With config_mutex_ held.
+        const auto existing = [this, &name]() -> std::optional<json> {
+            const std::optional<std::size_t> at = config_.roster.find(name);
+            if (!at) {
+                return std::nullopt;
+            }
             const Expert seat = config_.roster.at(*at);
             const bool   able = config_.has_expert(seat.id);
             const ModelParams seated = config_.expert(seat.id);
@@ -473,6 +577,44 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
                         {"keywords", seat.keywords}, {"remote", seated.remote()},
                         {"local", seated.remote() ? std::string() : seated.path},
                         {"error", able ? std::string() : seat.name + " is on the roster with no model"}};
+        };
+        {
+            const std::lock_guard<std::mutex> configuring(config_mutex_);
+            if (config_.build.worker_model.empty()) {
+                return json{{"ok", false}, {"error", "no model is set for new agents (Settings, Build)"}};
+            }
+            if (name.empty()) {
+                return json{{"ok", false}, {"error", "a seat needs a name"}};
+            }
+            if (std::optional<json> seat = existing()) {
+                return *seat;
+            }
+        }
+        // Which model, by what loads on the cards there are now. The one set
+        // for new agents was chosen for a whole machine, and on fewer cards
+        // than that -- some of them hidden, or taken by something else -- it
+        // did not load and the task given to the seat failed. Asked outside
+        // the config's lock: the cards are the host's to say, and its lock is
+        // taken before the config's everywhere else.
+        const Config current = config();
+        const SeatModel chosen = made_seat_model(current, instead, [this, &current](const ModelParams& model) {
+            std::error_code ec;
+            if (!model.remote() && !std::filesystem::exists(model.path, ec)) {
+                return std::string("is not in the models folder");
+            }
+            const std::lock_guard<std::mutex> host(host_mutex_);
+            return host_ == nullptr || host_->could_hold(model, current.routing.keep_delegator_loaded)
+                       ? std::string()
+                       : std::string("does not fit the cards here");
+        });
+        if (chosen.model.empty()) {
+            return json{{"ok", false}, {"error", chosen.passed_over + " " + chosen.why}};
+        }
+        // Read and written under the lock in one go: two agents making the
+        // same seat at once must make one seat.
+        std::unique_lock<std::mutex> configuring(config_mutex_);
+        if (std::optional<json> seat = existing()) {
+            return *seat;
         }
         Expert expert;
         expert.name   = name;
@@ -484,7 +626,7 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
             return json{{"ok", false}, {"error", error}};
         }
         const ExpertId id = make_expert_id(name);
-        edited.experts[id] = params_for(edited, edited.build.worker_model, edited.build.worker_provider);
+        edited.experts[id] = params_for(edited, chosen.model, chosen.provider);
         edited.resolve_models();
         const Expert      made   = edited.roster.at(*edited.roster.find(id));
         const ModelParams seated = edited.expert(id);
@@ -500,9 +642,13 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
         if (wake_) {
             wake_();
         }
+        // And on what, when it is not the model set for new agents: the
+        // build says so in its notes.
         return json{{"ok", true}, {"id", id}, {"name", made.name}, {"tag", made.tag},
                     {"keywords", made.keywords}, {"remote", seated.remote()},
-                    {"local", seated.remote() ? std::string() : seated.path}};
+                    {"local", seated.remote() ? std::string() : seated.path},
+                    {"model", seated.remote() ? seated.model : std::filesystem::path(seated.path).filename().string()},
+                    {"instead_of", chosen.passed_over}, {"why", chosen.why}};
     }
 
     // --- what this machine has -------------------------------------------------
@@ -701,7 +847,7 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
 // A cook
 // ---------------------------------------------------------------------------
 
-void Engine::do_cook(const std::string& goal, int budget_seconds,
+void Engine::do_cook(const std::string& id, const std::string& goal, int budget_seconds,
                      const std::filesystem::path& root,
                      std::vector<attach::Attachment> attachments,
                      std::optional<ExpertId> pinned, const std::string& kind) {
@@ -714,7 +860,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     {
         const std::lock_guard<std::mutex> lock(cook_mutex_);
         cook_                = Cook{};
-        cook_.id             = CookLog::new_id();
+        cook_.id             = id;
         cook_.goal           = goal;
         cook_.kind           = kind;
         cook_.state          = CookState::Working;
@@ -737,11 +883,9 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
     cook_attachments_ = std::move(attachments);
 
     json request = routing_request(config, goal, pinned);
-    std::string id;
-    json        tiles;
+    json tiles;
     {
         const std::lock_guard<std::mutex> lock(cook_mutex_);
-        id    = cook_.id;
         tiles = cook_to_json(cook_)["attachments"];
     }
     request["context"]         = "build";
@@ -763,6 +907,14 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
                                     {"rounds_per_task", config.build.rounds_per_task},
                                     {"agents", config.build.agents},
                                     {"split", config.build.split}};
+        // The conversation the directive was typed into, its last few
+        // exchanges: "now add dark mode" is about what came before it.
+        std::vector<ChatMessage> before;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            before = history_;
+        }
+        request["conversation"] = conversation_excerpt(before);
     }
 
     std::string error;
@@ -798,6 +950,7 @@ void Engine::do_cook(const std::string& goal, int budget_seconds,
             std::string save_error;
             cook_log_->save(cook_, save_error);
         }
+        settle_build_turn(cook_);
         if (!busy_.load(std::memory_order_relaxed)) {
             // The status line is the chat's while a turn is being answered.
             state_.set_linked(std::nullopt);

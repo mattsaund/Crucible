@@ -49,7 +49,8 @@ struct ModelFacts {
     int  context_tokens    = 0;      ///< 0 when unknown
     int  max_output        = 0;      ///< 0 when unknown
     bool adaptive_thinking = false;  ///< takes thinking: {type: "adaptive"}
-    bool effort            = false;  ///< takes output_config.effort
+    bool effort            = false;  ///< takes an effort: Claude's output_config.effort,
+                                     ///< or reasoning_effort at Gemini's door
     bool server_fallback   = false;  ///< can re-run a declined request on another model
 };
 
@@ -60,7 +61,8 @@ struct ModelFacts {
 /// true: a provider that rejected a field once is not asked again.
 struct Quirks {
     // The chat-completions shape.
-    bool no_sampling       = false;  ///< rejects temperature / top_p
+    bool no_sampling       = false;  ///< rejects temperature / top_p, or is
+                                     ///< asked to be left without them: Gemini
     bool completion_tokens = false;  ///< wants max_completion_tokens, not max_tokens
     bool no_stream_usage   = false;  ///< rejects stream_options
     bool no_images         = false;  ///< a text-only model: pictures are refused
@@ -73,6 +75,9 @@ struct Quirks {
     bool no_fallbacks     = false;
     bool no_cache_control = false;
     bool no_thinking      = false;
+
+    // Either: Claude's output_config through a gateway, or reasoning_effort
+    // to a Gemini model that does not think.
     bool no_effort        = false;
 };
 
@@ -169,7 +174,19 @@ std::string anthropic_body(std::string_view model, const ChatRequest& request,
 
 /// The body of a chat-completions request.
 std::string openai_body(std::string_view model, const ChatRequest& request,
-                        const Quirks& quirks);
+                        const ModelFacts& facts, const Quirks& quirks);
+
+/// One model's part of a request that more than one model ran: the one asked,
+/// which declined, and the one that answered in its place. Each is billed
+/// apart, at its own model's rates.
+struct Attempt {
+    std::string model;
+    bool fallback      = false;  ///< ran in place of the model asked
+    int  input_tokens  = 0;      ///< read fresh
+    int  output_tokens = 0;
+    int  cache_read    = 0;
+    int  cache_write   = 0;
+};
 
 /// One event out of a stream, reduced to what the caller does with it.
 struct Event {
@@ -178,7 +195,24 @@ struct Event {
     std::string stop;        ///< why it stopped, in the provider's own word
     std::string detail;      ///< what it said about stopping, when it said anything
     std::string error;       ///< the stream reported a failure
-    std::string note;        ///< something to tell the reader; see ChatResult::notes
+
+    /// More of a model's own words declining, which OpenAI's models put in a
+    /// field beside the answer rather than in it.
+    std::string refusal;
+
+    /// A model to ask instead, which a refusal names when the provider could
+    /// not hand the request on to it itself.
+    std::string recommended;
+
+    /// A hand-over: `declined` would not answer, and `takes_over` carries on
+    /// in its place. Whether that one answered is only known at the end.
+    std::string declined;
+    std::string takes_over;
+
+    /// Every model that ran, when more than one did or one ran in place of
+    /// the model asked. Empty otherwise: the token counts below say it all.
+    std::vector<Attempt> attempts;
+
     int  input_tokens  = -1; ///< the whole prompt, cached or not; -1 when this event did not say
     int  output_tokens = -1;
     int  cache_read    = -1; ///< of input_tokens, read from the provider's cache
@@ -196,6 +230,15 @@ Event parse_anthropic(std::string_view data);
 
 /// Read one `data:` payload of a chat-completions stream.
 Event parse_openai(std::string_view data);
+
+/// Read a reply that came whole rather than as a stream, as the events the
+/// stream would have carried. `kind` is the provider's, "anthropic" or not.
+/// Empty when `body` is not a reply.
+std::vector<Event> parse_reply(std::string_view kind, std::string_view body);
+
+/// Whether a stop reason says the answer was withheld rather than finished:
+/// the model, or a filter in front of it, declined.
+bool withheld(std::string_view stop);
 
 /// Learn from a refused request. True when `quirks` changed, which is the
 /// signal that sending it again is worth doing.

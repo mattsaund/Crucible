@@ -6,6 +6,69 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.6 (2026-10-26)
+
+One view for asking and building, a model served on your network, and a
+Bench that opens on everybody's results.
+
+- **Ask or build, in one box.** Build is no longer a tab. A question is
+  answered, and a request for software (an app, a site, a tool) becomes a
+  build, decided by the delegator from the message's words. The build's plan,
+  agents and check are a turn of the conversation, which remembers what was
+  built, so "now add dark mode" knows the project. Code, Source and Preview
+  open above the conversation once there are files. Ctrl+1 to 4 open Chat,
+  Create, Models and Bench.
+- **Serve a model on your network**, the way LM Studio does. In
+  **Settings → Server**, turn it on, pick the delegator or any model here,
+  the port (8338), this machine or the local network, and an optional API
+  key. It speaks the OpenAI API (the models list, chat completions streamed
+  or whole, and completions), shows the addresses to point a client at, and
+  lists the last requests. Chats and builds keep working beside it, and a
+  request waits its turn.
+- **The Bench opens on the public board.** The best models on it come
+  first, each with its maker's logo and a Download that opens it in Models,
+  then the spider chart with the top three, then every result, the board's
+  and yours, searchable. **Add benchmark** in the corner is where a run is set
+  up, and where it is posted from.
+- **Bench vs base.** A fine-tune, or a condensed copy, is benched against
+  the model it came from, and the two land on the chart side by side. Results
+  of models made here say Not public, since the board takes only files that
+  are on Hugging Face.
+- **Logos in Models.** Each search result shows its maker's logo, the
+  original maker's for a repack, fetched from Hugging Face while you search
+  and kept on disk.
+- **History is in the right-hand panel**, under the recent chats, with the
+  panel kept beside it.
+- **A reply that goes in circles is stopped.** A model decoding greedily
+  that starts saying the same lines over never stops, so the Bench ends such
+  a reply, counts it as cut off and marks it looped. gpt-oss-20b's IFEval went
+  from hours to minutes with the same score. An empty IFEval answer no longer
+  passes instructions like "no commas".
+- **Build tasks find their expert more often.** A task is routed on what it
+  needs and its title rather than its whole description, which pulled
+  programming tasks towards Writing. With LFM2.5 as the delegator, 19 of 31
+  test tasks go where they should, up from 16 (18 from 12 with no examples on
+  Programming); gpt-oss-20b holds at 30. The test tasks are in `tools/routes/`.
+- **A model larger than the card runs partly on the processor.** With
+  "Keep every layer on the GPU" off, as many layers as a dry run says fit go
+  on the cards and the rest on the processor. Before, such a model failed to
+  load, though Models had said it would run.
+- **Room for builds.** A build's agents get the context the cards can hold,
+  up to 32K where they had 8K, and an expert a build adds goes on a model
+  that fits the cards in view, and says so, instead of failing its task.
+- **Providers.** A refusal shows as one, from Anthropic or an OpenAI-style
+  API, and a build fails only that task. Claude's server-side fallback is
+  asked for under its current name, and noted when it answers. Gemini is sent
+  what Google documents. Context sizes are checked again against each
+  provider's documentation.
+- **Pages that save** with localStorage work in the preview, and in an app
+  made from them.
+- **Files copied in a file manager** paste as files on Linux, the way a drop
+  attaches them.
+- **Steadier runtimes.** A runtime installed while a model loads waits for
+  the load to finish, and the delegator checks that it fits beside an MLX
+  model in use.
+
 ## 0.9.5 (2026-10-26)
 
 Benchmarks with a public board, a model condensed to fit, and an editor in

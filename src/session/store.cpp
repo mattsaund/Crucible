@@ -128,6 +128,11 @@ json turn_to_json(const Turn& turn) {
     if (!turn.reasoning.empty()) {
         entry["reasoning"] = turn.reasoning;
     }
+    // A message that became a build, so the conversation opened again draws
+    // the build where the message was.
+    if (!turn.build.empty()) {
+        entry["build"] = turn.build;
+    }
     if (!turn.attachments.empty()) {
         json attachments = json::array();
         for (const TurnAttachment& one : turn.attachments) {
@@ -152,6 +157,7 @@ Turn turn_from_json(const json& entry) {
     turn.prompt            = entry.value("prompt", "");
     turn.reply             = entry.value("reply", "");
     turn.reasoning         = entry.value("reasoning", "");
+    turn.build             = entry.value("build", "");
     turn.output_tokens     = entry.value("output_tokens", 0);
     turn.tokens_per_second = entry.value("tokens_per_second", 0.0);
     turn.load_ms           = entry.value("load_ms", 0L);
@@ -527,12 +533,13 @@ namespace {
 
 /// The turns worth keeping, as they are written. A reply still arriving is
 /// not resumable, and a failed turn is noise -- its "reply" is the error
-/// that stopped it.
+/// that stopped it. A build still running is kept with no reply yet: its
+/// journal is on disk, and the conversation opened again draws it.
 template <typename Turns>
 json stored_turns_of(const Turns& turns) {
     json stored = json::array();
     for (const Turn& turn : turns) {
-        if (turn.streaming || turn.failed || turn.reply.empty()) {
+        if (turn.streaming || turn.failed || (turn.reply.empty() && turn.build.empty())) {
             continue;
         }
         stored.push_back(turn_to_json(turn));

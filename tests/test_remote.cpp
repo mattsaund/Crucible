@@ -45,9 +45,9 @@ json anthropic(const std::vector<ChatMessage>& messages, const ModelParams& para
 }
 
 json openai(const std::vector<ChatMessage>& messages, const ModelParams& params,
-            const Quirks& quirks = {}) {
-    const ChatRequest request{messages, params, {}};
-    return json::parse(wire::openai_body("deepseek-chat", request, quirks));
+            const Quirks& quirks = {}, const ModelFacts& facts = {}, std::string_view effort = {}) {
+    const ChatRequest request{messages, params, effort};
+    return json::parse(wire::openai_body("deepseek-chat", request, facts, quirks));
 }
 
 }  // namespace
@@ -270,6 +270,25 @@ TEST(a_chat_completions_request_keeps_the_system_message_in_line) {
     CHECK(body["temperature"].get<double>() > 0.24 && body["temperature"].get<double>() < 0.26);
 }
 
+TEST(only_a_provider_that_takes_an_effort_is_sent_one) {
+    // Gemini's door: the effort becomes the model's thinking level.
+    ModelFacts gemini;
+    gemini.effort = true;
+    CHECK_EQ(openai(conversation(), ModelParams{}, {}, gemini, "high")["reasoning_effort"].get<std::string>(),
+             std::string("high"));
+    // Left to the model, or a word the field does not have.
+    CHECK(!openai(conversation(), ModelParams{}, {}, gemini, "").contains("reasoning_effort"));
+    CHECK(!openai(conversation(), ModelParams{}, {}, gemini, "none").contains("reasoning_effort"));
+    // Everybody else, whom a field it does not know is a 400.
+    CHECK(!openai(conversation(), ModelParams{}, {}, {}, "high").contains("reasoning_effort"));
+
+    // A model there that does not think says so, and is not sent one again.
+    Quirks quirks;
+    CHECK(wire::adapt(quirks, "openai", "Thinking is not enabled for models/gemma-3-27b-it"));
+    CHECK(quirks.no_effort);
+    CHECK(!openai(conversation(), ModelParams{}, quirks, gemini, "high").contains("reasoning_effort"));
+}
+
 TEST(an_unbounded_chat_completions_reply_names_no_limit) {
     ModelParams params;
     params.max_tokens = -1;
@@ -342,9 +361,40 @@ TEST(a_claude_stream_says_when_the_model_declined_and_why) {
 TEST(a_claude_stream_says_when_another_model_answered) {
     const auto event = wire::parse_anthropic(
         R"({"type":"content_block_start","index":1,"content_block":{"type":"fallback","from":{"model":"claude-fable-5-1"},"to":{"model":"claude-opus-5-5"}}})");
-    CHECK(event.note.find("claude-fable-5-1") != std::string::npos);
-    CHECK(event.note.find("claude-opus-5-5") != std::string::npos);
+    CHECK_EQ(event.declined, std::string("claude-fable-5-1"));
+    CHECK_EQ(event.takes_over, std::string("claude-opus-5-5"));
     CHECK(event.text.empty());
+
+    // The last delta says who ran and what each used, the one that declined
+    // as a message and the one that answered as a fallback_message.
+    const auto end = wire::parse_anthropic(R"({"type":"message_delta",
+        "delta":{"stop_reason":"end_turn","stop_details":null},
+        "usage":{"output_tokens":264,"iterations":[
+            {"type":"message","model":"claude-fable-5-1","input_tokens":535,"output_tokens":0,
+             "cache_read_input_tokens":0,"cache_creation_input_tokens":0},
+            {"type":"fallback_message","model":"claude-opus-5-5","input_tokens":412,"output_tokens":264,
+             "cache_read_input_tokens":100,"cache_creation_input_tokens":7}]}})");
+    CHECK_EQ(end.attempts.size(), std::size_t{2});
+    if (end.attempts.size() == 2) {
+        CHECK(!end.attempts[0].fallback);
+        CHECK_EQ(end.attempts[0].input_tokens, 535);
+        CHECK(end.attempts[1].fallback);
+        CHECK_EQ(end.attempts[1].model, std::string("claude-opus-5-5"));
+        CHECK_EQ(end.attempts[1].output_tokens, 264);
+        CHECK_EQ(end.attempts[1].cache_read, 100);
+        CHECK_EQ(end.attempts[1].cache_write, 7);
+    }
+    // A list with no fallback in it is not a hand-over, whatever else it holds.
+    CHECK(wire::parse_anthropic(R"({"type":"message_delta","delta":{"stop_reason":"end_turn"},
+        "usage":{"output_tokens":5,"iterations":[{"type":"message","model":"m","input_tokens":3}]}})")
+              .attempts.empty());
+
+    // A refusal the API could not hand on names a model to ask instead.
+    const auto busy = wire::parse_anthropic(R"({"type":"message_delta","delta":{"stop_reason":"refusal",
+        "stop_details":{"type":"refusal","category":"cyber","explanation":null,
+                        "recommended_model":"claude-opus-4-8"}}})");
+    CHECK_EQ(busy.detail, std::string("cyber"));
+    CHECK_EQ(busy.recommended, std::string("claude-opus-4-8"));
 }
 
 TEST(a_claude_stream_error_is_an_error) {
@@ -390,6 +440,83 @@ TEST(a_chat_completions_stream_reports_usage_from_the_chunk_with_no_choices) {
         R"({"choices":[],"usage":{"prompt_tokens":25,"completion_tokens":7,"total_tokens":32}})");
     CHECK_EQ(event.input_tokens, 25);
     CHECK_EQ(event.output_tokens, 7);
+}
+
+TEST(a_chat_completions_refusal_is_read_in_both_its_shapes) {
+    // OpenAI's models decline in a field of their own, a piece at a time.
+    const auto piece = wire::parse_openai(
+        R"({"choices":[{"index":0,"delta":{"content":null,"refusal":"I can't help"},"finish_reason":null}]})");
+    CHECK_EQ(piece.refusal, std::string("I can't help"));
+    CHECK(piece.text.empty());
+    // A filter in front of the model says so in the finish reason instead.
+    const auto filtered = wire::parse_openai(
+        R"({"choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]})");
+    CHECK(wire::withheld(filtered.stop));
+    CHECK(wire::withheld("refusal"));
+    CHECK(!wire::withheld("stop"));
+    CHECK(!wire::withheld("length"));
+    CHECK(!wire::withheld("end_turn"));
+    // OpenRouter's word for a provider that broke off is an error, not a refusal.
+    const auto broke = wire::parse_openai(
+        R"({"error":{"code":"server_error","message":"Provider disconnected"},"choices":[{"delta":{"content":""},"finish_reason":"error"}]})");
+    CHECK_EQ(broke.error, std::string("Provider disconnected"));
+}
+
+TEST(a_reply_that_came_whole_is_read_as_its_stream_would_have_been) {
+    // Chat completions, from a server that did not stream: a refusal...
+    const auto refused = wire::parse_reply("openai", R"({"object":"chat.completion","choices":[{"index":0,
+        "message":{"role":"assistant","content":null,"refusal":"I'm sorry, I cannot assist with that request."},
+        "finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":11}})");
+    CHECK_EQ(refused.size(), std::size_t{1});
+    if (!refused.empty()) {
+        CHECK_EQ(refused[0].refusal, std::string("I'm sorry, I cannot assist with that request."));
+        CHECK_EQ(refused[0].input_tokens, 9);
+        CHECK(refused[0].done);
+    }
+    // ...and an answer, with its reasoning.
+    const auto answered = wire::parse_reply("openai", R"({"choices":[{"message":{"content":"42.",
+        "reasoning_content":"Six sevens."},"finish_reason":"stop"}]})");
+    CHECK(answered.size() == 1 && answered[0].text == "42." && answered[0].reasoning == "Six sevens.");
+    CHECK(wire::parse_reply("openai", R"({"object":"list","data":[]})").empty());
+    CHECK(wire::parse_reply("openai", "<html>Bad gateway</html>").empty());
+
+    // A Messages reply that fell back: the hand-over first, then the answer.
+    const auto fell_back = wire::parse_reply("anthropic", R"({"id":"msg_1","type":"message",
+        "role":"assistant","model":"claude-opus-4-8",
+        "content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}},
+                   {"type":"text","text":"Hi! How can I help you today?"}],
+        "stop_reason":"end_turn","stop_details":null,
+        "usage":{"input_tokens":412,"output_tokens":264,"cache_read_input_tokens":0,
+                 "cache_creation_input_tokens":0,"iterations":[
+            {"type":"message","model":"claude-fable-5","input_tokens":535,"output_tokens":0},
+            {"type":"fallback_message","model":"claude-opus-4-8","input_tokens":412,"output_tokens":264}]}})");
+    std::string text;
+    std::string declined;
+    std::string stop;
+    std::size_t attempts = 0;
+    for (const auto& event : fell_back) {
+        text += event.text;
+        declined += event.declined;
+        stop = event.stop.empty() ? stop : event.stop;
+        attempts += event.attempts.size();
+    }
+    CHECK_EQ(text, std::string("Hi! How can I help you today?"));
+    CHECK_EQ(declined, std::string("claude-fable-5"));
+    CHECK_EQ(stop, std::string("end_turn"));
+    CHECK_EQ(attempts, std::size_t{2});
+
+    // A Messages refusal, which has no content at all.
+    const auto declined_whole = wire::parse_reply("anthropic", R"({"type":"message","model":"claude-fable-5",
+        "content":[],"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber",
+        "explanation":"This request was declined because it could enable cyber harm."},
+        "usage":{"input_tokens":412,"output_tokens":0}})");
+    CHECK(!declined_whole.empty());
+    if (!declined_whole.empty()) {
+        CHECK_EQ(declined_whole.back().stop, std::string("refusal"));
+        CHECK_EQ(declined_whole.back().detail,
+                 std::string("cyber: This request was declined because it could enable cyber harm."));
+    }
+    CHECK(wire::parse_reply("anthropic", R"({"type":"error","error":{"message":"x"}})").empty());
 }
 
 // --- learning what a provider takes ----------------------------------------
@@ -531,9 +658,22 @@ TEST(a_model_whose_provider_will_not_say_is_known_by_name_or_not_at_all) {
     CHECK_EQ(wire::known_context("gpt-5.1"), 272000);
     CHECK_EQ(wire::known_context("gpt-5-chat-latest"), 128000);
     CHECK_EQ(wire::known_context("deepseek-reasoner"), 128000);
-    CHECK_EQ(wire::known_context("grok-4-fast-reasoning"), 2000000);
-    CHECK_EQ(wire::known_context("grok-4-0709"), 256000);
+    CHECK_EQ(wire::known_context("deepseek-v4-pro"), 1000000);
     CHECK_EQ(wire::known_context("models/gemini-2.5-pro"), 1048576);
+    // A newer model comes before the family it would fall into.
+    CHECK_EQ(wire::known_context("gpt-5.5"), 922000);
+    CHECK_EQ(wire::known_context("gpt-5.4-mini-2026-03-17"), 272000);
+    CHECK_EQ(wire::known_context("gpt-6-astra"), 922000);
+    CHECK_EQ(wire::known_context("claude-haiku-5-5"), 1000000);
+    CHECK_EQ(wire::known_context("anthropic/claude-sonnet-4.6"), 1000000);
+    CHECK_EQ(wire::known_context("claude-haiku-4-5-20251001"), 200000);
+    CHECK_EQ(wire::known_context("anthropic/claude-opus-4.5"), 200000);
+    CHECK_EQ(wire::known_context("grok-4.7"), 500000);
+    CHECK_EQ(wire::known_context("grok-4.3-latest"), 1000000);
+    // A retired name, answered now by the model that replaced it.
+    CHECK_EQ(wire::known_context("grok-4-fast-reasoning"), 1000000);
+    CHECK_EQ(wire::known_context("grok-code-fast-1"), 256000);
+    CHECK_EQ(wire::known_context("kimi-k3.1-pro"), 1048576);
     // Only the whole of a part of the name: o10 is not o1.
     CHECK_EQ(wire::known_context("o10-preview"), 0);
     // An open model runs with whatever context its server gave it.

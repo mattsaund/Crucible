@@ -29,12 +29,12 @@ constexpr const char* kAnthropicVersion = "2023-06-01";
 /// The form of server-side fallback that names no substitute: a request the
 /// model declines is re-run on whichever model Anthropic recommends for the
 /// reason it was declined, inside the same call.
+///
+/// The same header makes a model's own entry in the Models API list what it
+/// may fall back to, which is how a model with none (Claude Haiku 5.5) is told
+/// apart. The earlier 2026-06-01 header takes only a named list of models, and
+/// the docs promise the listing under this one.
 constexpr const char* kFallbackBeta = "server-side-fallback-2026-07-01";
-
-/// The header under which a model's own entry lists what it may fall back to.
-/// A different date from the one above, and that is not a typo: this one gates
-/// the listing, that one gates the request field.
-constexpr const char* kFallbackListingBeta = "server-side-fallback-2026-06-01";
 
 bool contains(std::string_view haystack, std::string_view needle) {
     return haystack.find(needle) != std::string_view::npos;
@@ -263,7 +263,7 @@ std::string anthropic_body(std::string_view model, const ChatRequest& request,
 }
 
 std::string openai_body(std::string_view model, const ChatRequest& request,
-                        const Quirks& quirks) {
+                        const ModelFacts& facts, const Quirks& quirks) {
     json messages = json::array();
     for (const ChatMessage& message : request.messages) {
         const bool with_images = !message.images.empty() && message.role == "user" && !quirks.no_images;
@@ -323,12 +323,134 @@ std::string openai_body(std::string_view model, const ChatRequest& request,
     if (limit > 0) {
         body[quirks.completion_tokens ? "max_completion_tokens" : "max_tokens"] = limit;
     }
+    if (facts.effort && !quirks.no_effort && is_effort(request.effort)) {
+        // Gemini's door turns this into the model's own thinking level. Only
+        // a provider known to take it is sent it: a field a server does not
+        // know is a 400 at most of the rest.
+        body["reasoning_effort"] = request.effort;
+    }
     return dump(body);
 }
 
 // ---------------------------------------------------------------------------
 // Streams
 // ---------------------------------------------------------------------------
+
+namespace {
+
+/// What a Messages usage says was read, wherever it was read from. The three
+/// are reported apart because they are billed apart; the transcript wants the
+/// size of the prompt.
+void read_prompt_usage(const json& usage, Event& event) {
+    event.cache_read   = int_at(usage, "cache_read_input_tokens", 0);
+    event.cache_write  = int_at(usage, "cache_creation_input_tokens", 0);
+    event.input_tokens = int_at(usage, "input_tokens", 0) + event.cache_read + event.cache_write;
+}
+
+/// Every model that ran, from a Messages usage that lists them: the one asked
+/// and the one that answered after it declined, or the second alone when a
+/// conversation that fell back before is sent straight to it. Empty when no
+/// fallback ran, whatever else the list holds.
+std::vector<Attempt> attempts_in(const json& usage) {
+    std::vector<Attempt> attempts;
+    bool any_fallback = false;
+    const json& iterations = child(usage, "iterations");
+    if (!iterations.is_array()) {
+        return attempts;
+    }
+    for (const json& one : iterations) {
+        const std::string type = string_at(one, "type");
+        if (type != "message" && type != "fallback_message") {
+            continue;
+        }
+        Attempt attempt;
+        attempt.model         = string_at(one, "model");
+        attempt.fallback      = type == "fallback_message";
+        attempt.input_tokens  = int_at(one, "input_tokens", 0);
+        attempt.output_tokens = int_at(one, "output_tokens", 0);
+        attempt.cache_read    = int_at(one, "cache_read_input_tokens", 0);
+        attempt.cache_write   = int_at(one, "cache_creation_input_tokens", 0);
+        any_fallback = any_fallback || attempt.fallback;
+        if (!attempt.model.empty()) {
+            attempts.push_back(std::move(attempt));
+        }
+    }
+    if (!any_fallback) {
+        attempts.clear();
+    }
+    return attempts;
+}
+
+/// Why a Messages reply stopped, from whatever holds `stop_reason`: the
+/// stream's last delta, or a whole message.
+void read_stop(const json& holder, Event& event) {
+    event.stop = string_at(holder, "stop_reason");
+
+    // Present only on a refusal, where its category and explanation may each
+    // be null. Shown rather than read: what is acted on is the stop reason.
+    const json& details = child(holder, "stop_details");
+    const std::string category    = string_at(details, "category");
+    const std::string explanation = string_at(details, "explanation");
+    event.detail = category;
+    if (!explanation.empty()) {
+        event.detail += (event.detail.empty() ? "" : ": ") + explanation;
+    }
+    event.recommended = string_at(details, "recommended_model");
+}
+
+/// One block of a Messages reply, as it starts.
+void read_block(const json& block, Event& event) {
+    const std::string kind = string_at(block, "type");
+    event.begun = true;
+    if (kind == "text") {
+        event.text = string_at(block, "text");
+    } else if (kind == "thinking") {
+        event.reasoning = string_at(block, "thinking");
+    } else if (kind == "fallback") {
+        // The model that was asked declined, and another carries on in its
+        // place: from the start, or from where the first one stopped, whose
+        // words then stand. Said in the transcript once it is known how that
+        // went. Which model wrote a reply is not a detail to keep from the
+        // person reading it.
+        event.declined   = string_at(child(block, "from"), "model");
+        event.takes_over = string_at(child(block, "to"), "model");
+    }
+}
+
+/// The failure a chat-completions payload reports, or nothing.
+std::string error_in(const json& node) {
+    const json& error = child(node, "error");
+    if (error.is_null()) {
+        return {};
+    }
+    std::string said = error.is_string() ? error.get<std::string>() : string_at(error, "message");
+    return said.empty() ? "the stream reported an error" : said;
+}
+
+/// What a chat-completions message, or a piece of one, says.
+void read_said(const json& said, Event& event) {
+    event.text = string_at(said, "content");
+    // Where a reasoning model's working goes is the one thing the
+    // chat-completions imitators did not agree on. DeepSeek and Moonshot say
+    // reasoning_content; OpenRouter says reasoning.
+    event.reasoning = string_at(said, "reasoning_content");
+    if (event.reasoning.empty()) {
+        event.reasoning = string_at(said, "reasoning");
+    }
+    // OpenAI's models decline in a field of their own, and leave the answer
+    // empty.
+    event.refusal = string_at(said, "refusal");
+}
+
+/// What a chat-completions usage says was read and written.
+void read_openai_usage(const json& usage, Event& event) {
+    event.input_tokens  = int_at(usage, "prompt_tokens", -1);
+    event.output_tokens = int_at(usage, "completion_tokens", -1);
+    // Part of prompt_tokens, not beside it, and billed for less.
+    event.cache_read    = int_at(child(usage, "prompt_tokens_details"), "cached_tokens", -1);
+}
+
+}  // namespace
 
 Event parse_anthropic(std::string_view data) {
     Event event;
@@ -349,46 +471,16 @@ Event parse_anthropic(std::string_view data) {
         // signature_delta and input_json_delta are bookkeeping for features
         // Crucible does not use; they carry nothing to show.
     } else if (type == "content_block_start") {
-        const json&       block = child(node, "content_block");
-        const std::string kind  = string_at(block, "type");
-        event.begun = true;
-        if (kind == "text") {
-            event.text = string_at(block, "text");
-        } else if (kind == "thinking") {
-            event.reasoning = string_at(block, "thinking");
-        } else if (kind == "fallback") {
-            // The model that was asked declined, and another one is about to
-            // answer in its place. Said in the transcript: which model wrote a
-            // reply is not a detail to keep from the person reading it.
-            const std::string from = string_at(child(block, "from"), "model");
-            const std::string to   = string_at(child(block, "to"), "model");
-            event.note = (from.empty() ? "the model" : from) + " declined this request, and "
-                       + (to.empty() ? "another model" : to) + " answered instead";
-        }
+        read_block(child(node, "content_block"), event);
     } else if (type == "message_start") {
-        const json& usage = child(child(node, "message"), "usage");
-        if (usage.is_object()) {
-            // What was read, wherever it was read from. The three are reported
-            // apart because they are billed apart; the transcript wants the
-            // size of the prompt.
-            event.cache_read   = int_at(usage, "cache_read_input_tokens", 0);
-            event.cache_write  = int_at(usage, "cache_creation_input_tokens", 0);
-            event.input_tokens = int_at(usage, "input_tokens", 0) + event.cache_read + event.cache_write;
+        if (const json& usage = child(child(node, "message"), "usage"); usage.is_object()) {
+            read_prompt_usage(usage, event);
         }
     } else if (type == "message_delta") {
-        const json& delta = child(node, "delta");
-        event.stop          = string_at(delta, "stop_reason");
-        event.output_tokens = int_at(child(node, "usage"), "output_tokens", -1);
-
-        // Present only on a refusal, and not always then. Informational: what
-        // is acted on is the stop reason.
-        const json& details = child(delta, "stop_details");
-        const std::string category    = string_at(details, "category");
-        const std::string explanation = string_at(details, "explanation");
-        event.detail = category;
-        if (!explanation.empty()) {
-            event.detail += (event.detail.empty() ? "" : ": ") + explanation;
-        }
+        read_stop(child(node, "delta"), event);
+        const json& usage = child(node, "usage");
+        event.output_tokens = int_at(usage, "output_tokens", -1);
+        event.attempts      = attempts_in(usage);
     } else if (type == "message_stop") {
         event.done = true;
     } else if (type == "error") {
@@ -414,35 +506,79 @@ Event parse_openai(std::string_view data) {
     if (!node.is_object()) {
         return event;
     }
-    if (const json& error = child(node, "error"); !error.is_null()) {
-        event.error = error.is_string() ? error.get<std::string>() : string_at(error, "message");
-        if (event.error.empty()) {
-            event.error = "the stream reported an error";
-        }
+    if (event.error = error_in(node); !event.error.empty()) {
         return event;
     }
-
     const json& choices = child(node, "choices");
     if (choices.is_array() && !choices.empty()) {
         const json& choice = choices.front();
-        const json& delta  = child(choice, "delta");
-        event.text = string_at(delta, "content");
-        // Where a reasoning model's working goes is the one thing the
-        // chat-completions imitators did not agree on. DeepSeek and Moonshot
-        // say reasoning_content; OpenRouter says reasoning.
-        event.reasoning = string_at(delta, "reasoning_content");
-        if (event.reasoning.empty()) {
-            event.reasoning = string_at(delta, "reasoning");
-        }
+        read_said(child(choice, "delta"), event);
         event.stop = string_at(choice, "finish_reason");
     }
     if (const json& usage = child(node, "usage"); usage.is_object()) {
-        event.input_tokens  = int_at(usage, "prompt_tokens", -1);
-        event.output_tokens = int_at(usage, "completion_tokens", -1);
-        // Part of prompt_tokens, not beside it, and billed for less.
-        event.cache_read    = int_at(child(usage, "prompt_tokens_details"), "cached_tokens", -1);
+        read_openai_usage(usage, event);
     }
     return event;
+}
+
+std::vector<Event> parse_reply(std::string_view kind, std::string_view body) {
+    std::vector<Event> events;
+    const json node = json::parse(trimmed(body), nullptr, /*allow_exceptions=*/false);
+    if (!node.is_object()) {
+        return events;
+    }
+    if (kind == "anthropic") {
+        if (string_at(node, "type") != "message") {
+            return events;
+        }
+        // The blocks in order, between what was read and how it ended, the
+        // way the stream would have said them. A fallback block comes first
+        // here even when the first model had started: a reply that is not
+        // streamed leaves out what it wrote.
+        const json& usage = child(node, "usage");
+        Event start;
+        read_prompt_usage(usage, start);
+        events.push_back(std::move(start));
+        if (const json& content = child(node, "content"); content.is_array()) {
+            for (const json& block : content) {
+                Event one;
+                read_block(block, one);
+                events.push_back(std::move(one));
+            }
+        }
+        Event end;
+        read_stop(node, end);
+        end.output_tokens = int_at(usage, "output_tokens", -1);
+        end.attempts      = attempts_in(usage);
+        end.done          = true;
+        events.push_back(std::move(end));
+        return events;
+    }
+
+    Event event;
+    event.error = error_in(node);
+    const json& choices = child(node, "choices");
+    const json& usage   = child(node, "usage");
+    if (event.error.empty() && !(choices.is_array() && !choices.empty()) && !usage.is_object()) {
+        return events;   // JSON, and not a reply
+    }
+    if (choices.is_array() && !choices.empty()) {
+        const json& choice = choices.front();
+        read_said(child(choice, "message"), event);
+        event.stop = string_at(choice, "finish_reason");
+    }
+    if (usage.is_object()) {
+        read_openai_usage(usage, event);
+    }
+    event.done = true;
+    events.push_back(std::move(event));
+    return events;
+}
+
+bool withheld(std::string_view stop) {
+    // Anthropic's word, and OpenAI's -- which is everybody else's who copied
+    // its finish reasons: DeepSeek's, OpenRouter's.
+    return stop == "refusal" || stop == "content_filter";
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +622,12 @@ bool adapt(Quirks& quirks, std::string_view kind, std::string_view message) {
     }
     if (contains(said, "stream_options") || contains(said, "include_usage")) {
         learn(quirks.no_stream_usage);
+    }
+    // Only Gemini is sent an effort, and a model there that does not think
+    // may well complain about thinking rather than name the field.
+    if (contains(said, "reasoning_effort") || contains(said, "reasoning effort")
+        || contains(said, "thinking")) {
+        learn(quirks.no_effort);
     }
     return changed;
 }
@@ -631,23 +773,50 @@ int known_context(std::string_view model) {
     // know is assumed 128k as before. An open model behind somebody's server
     // runs with whatever context the server was started with, which no
     // table knows.
+    //
+    // Each figure is what a prompt may fill: the window, less the reply's
+    // share where the provider keeps one back. The first that fits wins, so
+    // a model comes before the family it would otherwise fall into. Checked
+    // against each provider's own pages on 2026-10-26, named above each group.
     struct Known {
         std::string_view prefix;
         int              tokens;
     };
     static constexpr Known kKnown[] = {
-        // OpenAI. GPT-5's window is 400k, and 128k of it is the reply's.
+        // developers.openai.com/api/docs/models/<id>. The 1,050,000 windows
+        // keep 128,000 for the reply ("Maximum input tokens: 922,000", where
+        // the page says), the 400,000 ones the same.
+        {"gpt-6", 922000},
+        {"gpt-5.6-cyber", 272000}, {"gpt-5.6", 922000}, {"gpt-5.5", 922000},
+        {"gpt-5.4-mini", 272000}, {"gpt-5.4-nano", 272000}, {"gpt-5.4", 922000},
         {"gpt-5-chat", 128000}, {"gpt-5", 272000}, {"gpt-4.1", 1047576},
         {"gpt-4o", 128000}, {"gpt-4-turbo", 128000},
         {"o1-mini", 128000}, {"o1", 200000}, {"o3", 200000}, {"o4-mini", 200000},
         // Anthropic's own API says; this is for a gateway in front of it
-        // with no Models API.
-        {"claude-", 200000},
+        // with no Models API. platform.claude.com/docs/en/build-with-claude/
+        // context-windows: 1M from the 4.6 models on, 200k before them, in
+        // either spelling a gateway gives the version.
+        {"claude-opus-4-5", 200000}, {"claude-opus-4.5", 200000},
+        {"claude-sonnet-4-5", 200000}, {"claude-sonnet-4.5", 200000},
+        {"claude-haiku-4-5", 200000}, {"claude-haiku-4.5", 200000},
+        {"claude-3", 200000}, {"claude-", 1000000},
+        // ai.google.dev/gemini-api/docs/models: every model that writes text.
         {"gemini-", 1048576},
+        // api-docs.deepseek.com/quick_start/pricing: "1M". DeepSeek's own API
+        // retired the two older names on 2026-07-24 (news/news260424).
+        {"deepseek-v4", 1000000}, {"deepseek-flash", 1000000},
         {"deepseek-chat", 128000}, {"deepseek-reasoner", 128000},
-        {"grok-4-fast", 2000000}, {"grok-4-1-fast", 2000000}, {"grok-code-fast", 256000},
-        {"grok-4", 256000}, {"grok-3", 131072},
-        {"kimi-k2-0711", 131072}, {"kimi-k2", 262144},
+        // docs.x.ai/developers/models. The names retired on 2026-05-15 are
+        // answered by grok-4.3 since, and grok-code-fast by grok-build
+        // (migration/may-15-retirement); grok-3-mini is on neither page and
+        // keeps what it had.
+        {"grok-4.20", 1000000}, {"grok-4.3", 1000000},
+        {"grok-4-fast", 1000000}, {"grok-4-1-fast", 1000000}, {"grok-4-0709", 1000000},
+        {"grok-build", 256000}, {"grok-code-fast", 256000},
+        {"grok-4", 500000}, {"grok-3-mini", 131072}, {"grok-3", 1000000},
+        // platform.kimi.ai/docs/pricing/chat: 1,048,576 for K3, 262,144 for
+        // K2. The first K2 preview, discontinued, had less.
+        {"kimi-k3", 1048576}, {"kimi-k2-0711", 131072}, {"kimi-k2", 262144},
     };
     // The name without whose it is: "openai/gpt-4o" is "gpt-4o".
     std::string name = format::to_lower(model);
@@ -727,15 +896,14 @@ struct Flight {
     }
 };
 
-std::vector<http::Header> headers_for(const Provider& provider, bool with_fallback_beta,
-                                      const char* beta) {
+std::vector<http::Header> headers_for(const Provider& provider, bool with_fallback_beta) {
     std::vector<http::Header> headers{{"content-type", "application/json"}};
     const std::string key = provider.resolved_key();
     if (provider.kind == "anthropic") {
         headers.push_back({"x-api-key", key});
         headers.push_back({"anthropic-version", kAnthropicVersion});
         if (with_fallback_beta) {
-            headers.push_back({"anthropic-beta", beta});
+            headers.push_back({"anthropic-beta", kFallbackBeta});
         }
     } else if (!key.empty()) {
         // Optional on purpose. A llama.cpp or Ollama server on your own
@@ -769,6 +937,18 @@ std::string describe_failure(const Provider& provider, int status, const std::st
     return out;
 }
 
+/// Names in a sentence: "a", "a and b", "a, b and c".
+std::string listed(const std::vector<std::string>& names) {
+    std::string out;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) {
+            out += i + 1 == names.size() ? " and " : ", ";
+        }
+        out += names[i];
+    }
+    return out;
+}
+
 /// One model at one provider.
 ///
 /// Asked from more than one thread at a time -- a build's agents share a
@@ -783,7 +963,17 @@ class Client final : public ChatModel {
 public:
     /// `ledger` counts what is asked of it; see spend.hpp.
     Client(Provider provider, std::string model, Flight& flight, spend::Ledger& ledger)
-        : provider_(std::move(provider)), model_(std::move(model)), flight_(flight), ledger_(&ledger) {}
+        : provider_(std::move(provider)), model_(std::move(model)), flight_(flight), ledger_(&ledger) {
+        if (gemini(provider_)) {
+            // Google asks that Gemini 3 be left at its own temperature and
+            // says a lower one can make it loop; Gemini 4 ignores the field.
+            // The Generation page's sliders are about a local model's logits
+            // anyway. What its door does take is an effort, which it turns
+            // into the model's thinking level.
+            quirks_.no_sampling = true;
+            facts_.effort       = true;
+        }
+    }
 
     /// One whose facts and quirks are known before it is asked anything: a
     /// server on this machine, which publishes neither -- and costs nothing,
@@ -845,11 +1035,12 @@ public:
         return !quirks_.no_images;
     }
 
-    /// Claude's that say so in the Models API. Nobody else is sent one.
+    /// Claude's that say so in the Models API, and Gemini's. Nobody else is
+    /// sent one.
     bool takes_effort() const override {
         const_cast<Client*>(this)->learn_facts();
         const std::lock_guard<std::mutex> lock(learned_);
-        return provider_.kind == "anthropic" && facts_.effort && !quirks_.no_effort;
+        return facts_.effort && !quirks_.no_effort;
     }
 
 private:
@@ -890,7 +1081,7 @@ private:
         request.url             = detail::facts_url(provider_, model_);
         request.timeout_seconds = 15;
         if (anthropic) {
-            request.headers = headers_for(provider_, official_anthropic(), kFallbackListingBeta);
+            request.headers = headers_for(provider_, official_anthropic());
         } else if (gemini(provider_)) {
             // Google's own API takes the key in a header of its own; the
             // bearer token the door takes is refused there.
@@ -898,7 +1089,7 @@ private:
                 request.headers.push_back({"x-goog-api-key", key});
             }
         } else {
-            request.headers = headers_for(provider_, false, "");
+            request.headers = headers_for(provider_, false);
         }
         const http::Response response = http::send(request);
         const std::lock_guard<std::mutex> lock(learned_);
@@ -909,7 +1100,9 @@ private:
                 // through and still not implement the feature it describes.
                 facts_.server_fallback = facts_.server_fallback && official_anthropic();
             } else {
-                facts_ = detail::facts_from_listing(response.body, model_);
+                // Only the context: what else is known of these, a listing
+                // does not say.
+                facts_.context_tokens = detail::facts_from_listing(response.body, model_).context_tokens;
             }
             facts_known_ = true;
         } else if (response.status >= 400 && response.status < 500) {
@@ -938,13 +1131,13 @@ private:
         outgoing.method          = "POST";
         outgoing.timeout_seconds = 0;    // a long answer is not a hung request
         outgoing.connect_seconds = 20;
-        outgoing.headers         = headers_for(provider_, fallback, kFallbackBeta);
+        outgoing.headers         = headers_for(provider_, fallback);
         if (anthropic) {
             outgoing.url  = provider_.endpoint() + "/v1/messages";
             outgoing.body = detail::anthropic_body(model_, request, facts, quirks);
         } else {
             outgoing.url  = provider_.endpoint() + "/chat/completions";
-            outgoing.body = detail::openai_body(model_, request, quirks);
+            outgoing.body = detail::openai_body(model_, request, facts, quirks);
         }
 
         http::Stream stream;
@@ -958,6 +1151,7 @@ private:
         const Clock::time_point started = Clock::now();
         Clock::time_point       first_piece{};
         bool        any_piece    = false;
+        bool        framed       = false;   // whether anything came as a stream's event
         bool        canceled     = false;
         int         input_tokens = -1;
         int         output_tokens = -1;
@@ -966,14 +1160,49 @@ private:
         std::size_t answer_bytes = 0;
         std::string stop;
         std::string stop_detail;
+        std::string refusal;       // the model's own words declining
+        std::string recommended;   // a model to ask instead, when a refusal names one
         std::string stream_error;
-        std::string unframed;   // what arrived that was not an event: an error body
+        std::string unframed;      // what arrived that was not an event: an error body, or a whole reply
+        std::vector<std::pair<std::string, std::string>> handovers;   // who declined, and who took over
+        std::vector<detail::Attempt> attempts;
 
         const auto piece = [&]() {
             if (!any_piece) {
                 any_piece   = true;
                 first_piece = Clock::now();
             }
+        };
+        const auto take = [&](const detail::Event& event) {
+            if (event.begun) {
+                piece();   // the clock for the reply starts with its first block, shown or not
+            }
+            if (!event.reasoning.empty()) {
+                piece();
+                if (sink.on_reasoning) {
+                    sink.on_reasoning(event.reasoning);
+                }
+            }
+            if (!event.text.empty()) {
+                piece();
+                answer_bytes += event.text.size();
+                if (sink.on_text) {
+                    sink.on_text(event.text);
+                }
+            }
+            if (!event.declined.empty() || !event.takes_over.empty()) {
+                handovers.emplace_back(event.declined.empty() ? model_ : event.declined, event.takes_over);
+            }
+            refusal += event.refusal;
+            if (!event.stop.empty())        { stop = event.stop; }
+            if (!event.detail.empty())      { stop_detail = event.detail; }
+            if (!event.recommended.empty()) { recommended = event.recommended; }
+            if (!event.attempts.empty())    { attempts = event.attempts; }
+            if (!event.error.empty())       { stream_error = event.error; }
+            if (event.input_tokens >= 0)    { input_tokens = event.input_tokens; }
+            if (event.output_tokens >= 0)   { output_tokens = event.output_tokens; }
+            if (event.cache_read >= 0)      { cache_read = event.cache_read; }
+            if (event.cache_write >= 0)     { cache_write = event.cache_write; }
         };
 
         std::string line;
@@ -993,36 +1222,19 @@ private:
                 }
                 continue;
             }
+            framed = true;
             const std::string_view data = trimmed(std::string_view(line).substr(5));
-            const detail::Event event = anthropic ? detail::parse_anthropic(data)
-                                                  : detail::parse_openai(data);
-            if (event.begun) {
-                piece();   // the clock for the reply starts with its first block, shown or not
-            }
-            if (!event.reasoning.empty()) {
-                piece();
-                if (sink.on_reasoning) {
-                    sink.on_reasoning(event.reasoning);
-                }
-            }
-            if (!event.text.empty()) {
-                piece();
-                answer_bytes += event.text.size();
-                if (sink.on_text) {
-                    sink.on_text(event.text);
-                }
-            }
-            if (!event.note.empty())      { result.notes.push_back(event.note); }
-            if (!event.stop.empty())      { stop = event.stop; }
-            if (!event.detail.empty())    { stop_detail = event.detail; }
-            if (!event.error.empty())     { stream_error = event.error; }
-            if (event.input_tokens >= 0)  { input_tokens = event.input_tokens; }
-            if (event.output_tokens >= 0) { output_tokens = event.output_tokens; }
-            if (event.cache_read >= 0)    { cache_read = event.cache_read; }
-            if (event.cache_write >= 0)   { cache_write = event.cache_write; }
+            take(anthropic ? detail::parse_anthropic(data) : detail::parse_openai(data));
         }
         flight_.leave(&stream);
         const http::Response response = stream.finish();
+        // Asked for a stream, a server that does not stream sends the reply
+        // whole: one document where the events would have been.
+        if (!framed && !canceled && response.status == 200) {
+            for (const detail::Event& event : detail::parse_reply(provider_.kind, unframed)) {
+                take(event);
+            }
+        }
         const Clock::time_point ended = Clock::now();
 
         const auto ms = [](Clock::time_point from, Clock::time_point to) {
@@ -1038,7 +1250,8 @@ private:
         stats.output_tokens += output_tokens >= 0 ? output_tokens
                                                   : static_cast<int>(answer_bytes / 4);
         count(response, input_tokens >= 0 ? input_tokens : stats.prompt_tokens, cache_read, cache_write,
-              output_tokens >= 0 ? output_tokens : static_cast<int>(answer_bytes / 4), any_piece, facts);
+              output_tokens >= 0 ? output_tokens : static_cast<int>(answer_bytes / 4), any_piece, facts,
+              attempts);
 
         if (canceled || response.error == "stopped") {
             stats.canceled = true;
@@ -1064,16 +1277,46 @@ private:
             return false;
         }
 
-        if (stop == "refusal") {
+        if (detail::withheld(stop) || !trimmed(refusal).empty()) {
             // Not an error from the API's side -- the request succeeded and
             // the model, or a classifier in front of it, declined. What had
             // streamed before that is not an answer and is not kept as one.
-            result.error = model_ + " declined this request";
-            if (!stop_detail.empty()) {
-                result.error += " (" + stop_detail + ")";
+            // A model that took over and declined too is named with the one
+            // it took over from.
+            std::vector<std::string> declined;
+            for (const auto& handover : handovers) {
+                declined.push_back(handover.first);
+            }
+            declined.push_back(handovers.empty() || handovers.back().second.empty() ? model_
+                                                                                  : handovers.back().second);
+            result.error = listed(declined) + " declined this request";
+            const std::string why = !stop_detail.empty()            ? stop_detail
+                                  : !trimmed(refusal).empty()       ? std::string(trimmed(refusal))
+                                  : stop == "content_filter"        ? std::string("content filter")
+                                                                    : std::string();
+            if (!why.empty()) {
+                result.error += " (" + why + ")";
+            }
+            // Named when the provider could not hand the request on itself,
+            // its fallback being busy: a seat can be pointed at it by hand.
+            if (!recommended.empty()) {
+                result.error += ". Try " + recommended;
             }
             result.discard_partial = true;
             return false;
+        }
+        for (const auto& [from, to] : handovers) {
+            result.notes.push_back(from + " declined, " + (to.empty() ? "another model" : to) + " answered");
+        }
+        if (handovers.empty()) {
+            // A conversation that fell back before may be sent straight to the
+            // model that answered it then. Nothing declined this time, so only
+            // the count of who ran says so.
+            for (const detail::Attempt& attempt : attempts) {
+                if (attempt.fallback) {
+                    result.notes.push_back(attempt.model + " answered in place of " + model_);
+                }
+            }
         }
         stats.hit_limit = stop == "max_tokens" || stop == "length";
         return false;
@@ -1083,9 +1326,35 @@ private:
     /// what it bills for, a stopped answer's part included. A request that
     /// was refused before a word came back costs nothing, and only tells
     /// what is left of the rate limits.
+    ///
+    /// When another model answered in place of this one, each model that ran
+    /// is counted under its own name: each attempt is billed apart, at its
+    /// own model's rates, and the totals the response gives are only the
+    /// last one's.
     void count(const http::Response& response, int prompt, int cache_read, int cache_write, int output,
-               bool answered, const ModelFacts& facts) {
+               bool answered, const ModelFacts& facts, const std::vector<detail::Attempt>& attempts) {
         if (ledger_ == nullptr || response.status == 0) {
+            return;
+        }
+        if (!attempts.empty() && response.status < 400) {
+            for (std::size_t i = 0; i < attempts.size(); ++i) {
+                const detail::Attempt& attempt = attempts[i];
+                // The first, unless the model asked never ran, is the model
+                // asked, under the name its seat gives it. The rate limits
+                // the headers report go with the first, whoever that was.
+                const bool asked = i == 0 && !attempt.fallback;
+                spend::Tokens used;
+                used.input       = static_cast<std::uint64_t>(std::max(0, attempt.input_tokens));
+                used.cache_read  = static_cast<std::uint64_t>(std::max(0, attempt.cache_read));
+                used.cache_write = static_cast<std::uint64_t>(std::max(0, attempt.cache_write));
+                used.output      = static_cast<std::uint64_t>(std::max(0, attempt.output_tokens));
+                used.requests    = 1;
+                const std::string& name = asked ? model_ : attempt.model;
+                ledger_->record(provider_, name, used,
+                                attempt.input_tokens + attempt.cache_read + attempt.cache_write,
+                                asked ? context_known(facts) : detail::known_context(name),
+                                i == 0 ? response.headers : std::vector<http::Header>{});
+            }
             return;
         }
         spend::Tokens used;
@@ -1231,7 +1500,7 @@ void Hub::interrupt() { impl_->flight.interrupt(); }
 std::vector<std::string> list_models(const Provider& provider, std::string& error) {
     http::Request request;
     request.timeout_seconds = 20;
-    request.headers         = headers_for(provider, false, "");
+    request.headers         = headers_for(provider, false);
     request.url = provider.kind == "anthropic"
                       // The most a page holds, which is more models than there are.
                       ? provider.endpoint() + "/v1/models?limit=1000"

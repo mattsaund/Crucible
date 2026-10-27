@@ -121,6 +121,13 @@ struct Turn {
     /// and none of the code. It is kept now, for the life of the turn.
     std::vector<TurnAction> actions;
     std::optional<RouteDecision> route;
+
+    /// The build this message became, by its journal's id, or empty for a
+    /// turn that was answered. The journal is the turn's body while the
+    /// build runs and after (the window reads it from the project's cooks).
+    /// `reply` is what the build left, what was built and which files, set
+    /// when it ends so the turns after it know what is there.
+    std::string            build;
     bool                   streaming = false;
     bool                   canceled = false;
     bool                   failed    = false;
@@ -350,6 +357,12 @@ public:
 
     /// Record something this turn did. See Turn::actions.
     void add_action(std::size_t turn, TurnAction action);
+
+    /// Say that `turn` became the build `id`. See Turn::build.
+    void set_build(std::size_t turn, std::string id);
+
+    /// The turn that became the build `id`, when one did and is still there.
+    std::optional<std::size_t> turn_of_build(const std::string& id) const;
 
     /// The expert work is flowing to, or nothing between turns.
     void set_linked(std::optional<ExpertId> id);

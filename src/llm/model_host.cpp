@@ -199,14 +199,13 @@ std::pair<std::string, std::string> two_amounts(std::uint64_t a, std::uint64_t b
 /// is holding it is staying; it is named in the message, because on a machine
 /// where a large expert only just fits, that share is the number the user can
 /// actually act on.
-std::string vram_shortfall(const std::string& path, const ModelParams& params,
-                           std::uint64_t held, const std::string& holder) {
+std::string vram_shortfall(const std::vector<ComputeDevice>& gpus, const std::string& path,
+                           const ModelParams& params, std::uint64_t held, const std::string& holder) {
     const ModelShape shape = read_model_shape(path);
     if (shape.weights == 0) {
         return {};
     }
 
-    const std::vector<ComputeDevice> gpus = gpu_devices();
     if (gpus.empty()) {
         return {};
     }
@@ -375,6 +374,12 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
            " but only " + format::bytes(available) + " is free on " + where + advice;
 }
 
+/// The same, on the cards as they are now.
+std::string vram_shortfall(const std::string& path, const ModelParams& params,
+                           std::uint64_t held, const std::string& holder) {
+    return vram_shortfall(gpu_devices(), path, params, held, holder);
+}
+
 /// The projector beside a model file, when it has one: a GGUF in the same
 /// folder with "mmproj" in its name -- the way vision models are published,
 /// and the way LM Studio lays them out. With several, the one whose name
@@ -507,6 +512,29 @@ int scoring_branches(const ModelParams& params) {
     return static_cast<int>(std::clamp<std::uint64_t>((64ULL << 20) / state, 1, 16));
 }
 
+/// What a context has on each card, by ggml device index, in llama.cpp's own
+/// figures: what a load would put there, for a dry run's, and what a model
+/// holds there, for a loaded one's.
+std::vector<CardNeed> cards_of(llama_context* ctx) {
+    const std::vector<ggml_backend_dev_t> devices = RuntimeRegistry::devices();
+    std::vector<CardNeed> need(devices.size());
+    for (const auto& [type, bytes] : llama_get_memory_breakdown(ctx)) {
+        if (ggml_backend_buft_is_host(type)) {
+            continue;   // system memory, not a card's
+        }
+        const ggml_backend_dev_t device = ggml_backend_buft_get_device(type);
+        for (std::size_t i = 0; i < need.size(); ++i) {
+            if (devices[i] == device) {
+                need[i].weights += bytes.model;
+                need[i].cache   += bytes.context;
+                need[i].compute += bytes.compute;
+                break;
+            }
+        }
+    }
+    return need;
+}
+
 /// What a load of `params` would put on each card, by ggml device index, in
 /// llama.cpp's own figures.
 ///
@@ -531,22 +559,7 @@ std::vector<CardNeed> measured_need(const ModelParams& params,
         llama_model_free(model);
         return {};
     }
-    const std::vector<ggml_backend_dev_t> devices = RuntimeRegistry::devices();
-    std::vector<CardNeed> need(devices.size());
-    for (const auto& [type, bytes] : llama_get_memory_breakdown(ctx)) {
-        if (ggml_backend_buft_is_host(type)) {
-            continue;   // system memory, not a card's
-        }
-        const ggml_backend_dev_t device = ggml_backend_buft_get_device(type);
-        for (std::size_t i = 0; i < need.size(); ++i) {
-            if (devices[i] == device) {
-                need[i].weights += bytes.model;
-                need[i].cache   += bytes.context;
-                need[i].compute += bytes.compute;
-                break;
-            }
-        }
-    }
+    std::vector<CardNeed> need = cards_of(ctx);
     llama_free(ctx);
     llama_model_free(model);
     return need;
@@ -643,7 +656,108 @@ void note(const std::string& line) {
     log_to_file(GGML_LOG_LEVEL_INFO, ("crucible: " + line + "\n").c_str(), nullptr);
 }
 
+/// `params` divided over `cards` as refresh_gpu_split divides it over the
+/// cards as they are: for the cards as they would be, with memory given back
+/// to them or set aside on them.
+ModelParams planned_on(ModelParams params, const GpuConfig& gpu, const std::vector<ComputeDevice>& cards) {
+    const GpuSplitMode mode = gpu_split_mode_from_id(gpu.mode);
+    if (cards.empty() || mode == GpuSplitMode::Auto) {
+        return params;
+    }
+    const GpuPlan plan = plan_gpu_split(mode, cards, gpu.priority, gpu.main_gpu, model_fit(params));
+    if (!plan.split.empty()) {
+        params.tensor_split = plan.split;
+        params.main_gpu     = gpu.main_gpu;
+    }
+    return params;
+}
+
+/// How a load fits: not at all, with the whole cache, or with the window
+/// cache only. See ModelParams::window_cache.
+enum class Fit { No, Whole, Window };
+
+/// How a load of `asked` fits `cards`, decided the way ModelHost::load
+/// decides it: divided as `gpu` divides it, the whole cache before the window
+/// one, and llama.cpp's own figures asked before the header's no is believed.
+Fit fits_on(const std::vector<ComputeDevice>& cards, const ModelParams& asked, const GpuConfig& gpu) {
+    const ModelParams whole = planned_on(asked, gpu, cards);
+    if (vram_shortfall(cards, whole.path, whole, 0, {}).empty()) {
+        return Fit::Whole;
+    }
+    std::vector<CardNeed> need = measured_need(whole, cards);
+    if (!need.empty() && measured_shortfall(need, cards, 0, {}).empty()) {
+        return Fit::Whole;
+    }
+    if (!window_could_help(whole, cards)) {
+        return Fit::No;
+    }
+    ModelParams windowed = asked;
+    windowed.window_cache = true;
+    windowed = planned_on(windowed, gpu, cards);
+    if (vram_shortfall(cards, windowed.path, windowed, 0, {}).empty()) {
+        return Fit::Window;
+    }
+    need = measured_need(windowed, cards);
+    return !need.empty() && measured_shortfall(need, cards, 0, {}).empty() ? Fit::Window : Fit::No;
+}
+
+/// `cards` with the room the delegator `placed` takes set aside: on the card
+/// it is pinned to, or shared out as its split shares it. From its header,
+/// which is all there is of a model that is not loaded.
+std::vector<ComputeDevice> less_delegator(std::vector<ComputeDevice> cards, const ModelParams& placed) {
+    const ModelShape shape = read_model_shape(placed.path);
+    if (shape.weights == 0) {
+        return cards;
+    }
+    const std::uint64_t sliding =
+        shape.sliding_cells(placed.n_ctx, placed.n_batch, placed.window_cache, placed.sequences);
+    const std::uint64_t bytes =
+        shape.known ? shape.resident_bytes(placed.n_ctx, sliding) - shape.host_weights + shape.compute_bytes(placed.n_batch)
+                    : shape.weights + shape.weights / 10;
+    const auto share_of = [&placed](const ComputeDevice& card) -> double {
+        if (placed.split_mode == "none") {
+            return card.index == placed.main_gpu ? 1.0 : 0.0;
+        }
+        if (placed.tensor_split.empty()) {
+            return static_cast<double>(card.memory_free);   // llama.cpp's own rule: by what is free
+        }
+        const auto index = static_cast<std::size_t>(card.index);
+        return index < placed.tensor_split.size() ? static_cast<double>(placed.tensor_split[index]) : 0.0;
+    };
+    double total = 0.0;
+    for (const ComputeDevice& card : cards) {
+        total += share_of(card);
+    }
+    if (total <= 0.0) {
+        return cards;
+    }
+    for (ComputeDevice& card : cards) {
+        const auto set_aside = static_cast<std::uint64_t>(static_cast<double>(bytes) * share_of(card) / total);
+        card.memory_free = card.memory_free > set_aside ? card.memory_free - set_aside : 0;
+    }
+    return cards;
+}
+
 }  // namespace
+
+int roomiest_context(int n_ctx, int most, std::uint32_t trained, const std::function<bool(int)>& fits) {
+    if (trained > 0) {
+        most = static_cast<int>(std::min<std::uint64_t>(static_cast<std::uint64_t>(std::max(0, most)), trained));
+    }
+    // The most first, then three quarters of it and a half, and so on down:
+    // a few tries, each a header read and at most two dry runs, rather than
+    // a search to the last token for a figure the next load moves anyway.
+    // Whole kilotokens, which is how a context is written everywhere else.
+    for (int top = most; top > n_ctx; top /= 2) {
+        for (const int tried : {top, top / 4 * 3}) {
+            const int rounded = tried / 1024 * 1024;
+            if (rounded > n_ctx && fits(rounded)) {
+                return rounded;
+            }
+        }
+    }
+    return n_ctx;
+}
 
 // ---------------------------------------------------------------------------
 // ModelHost
@@ -682,7 +796,7 @@ ModelHost::ModelHost(std::filesystem::path log_path) {
     // starts, or from the settings screen.
     RuntimeRegistry::load_all();
 
-    llama_backend_init();
+    RuntimeRegistry::init_llama();
 }
 
 ModelHost::~ModelHost() {
@@ -746,11 +860,14 @@ std::uint64_t ModelHost::estimate_bytes(const ModelParams& params) {
 }
 
 bool ModelHost::fits_beside(const ModelParams& requested, bool beside_mlx) const {
+    return fits_beside(requested, Role::Expert, beside_mlx);
+}
+
+bool ModelHost::fits_beside(const ModelParams& requested, Role role, bool beside_mlx) const {
     if (experts_.empty() && !router_ && !beside_mlx) {
         return true;   // nothing to share with; the load's own checks speak
     }
-    ModelParams params = requested;
-    refresh_gpu_split(params, gpu_);
+    const ModelParams params = placed(requested, role);
 
     // The cards, where they say what is free. That figure is live, so what is
     // already resident is in it.
@@ -763,7 +880,7 @@ bool ModelHost::fits_beside(const ModelParams& requested, bool beside_mlx) const
         // the whole one does not fit (see load), so it fits when that does.
         ModelParams windowed = requested;
         windowed.window_cache = true;
-        refresh_gpu_split(windowed, gpu_);
+        windowed = placed(windowed, role);
         if (!window_could_help(params, gpus)
             || !vram_shortfall(windowed.path, windowed, resident_bytes(), "the models in use").empty()) {
             return false;
@@ -855,6 +972,12 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         error = "model file not found: " + requested.path;
         return nullptr;
     }
+    // From here to the end, ggml's device lists stay as they are: the split is
+    // planned on them, and llama.cpp walks them in each dry run, the load, the
+    // context and the projector. A runtime installed meanwhile waits for the
+    // load to be over, and a load waits for one being registered.
+    const RuntimeRegistry::Reading reading;
+
     // Ask before llama.cpp does. With no backend registered it throws "no CPU
     // backend found" from somewhere deep in the loader, which is a true
     // statement about ggml and a useless one about what to do next.
@@ -874,6 +997,8 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     ModelParams asked = requested;
     if (role == Role::Delegator) {
         asked.sequences = 1 + scoring_branches(asked);
+    } else {
+        asked = with_room(asked);
     }
     ModelParams params = placed(asked, role);
     const std::vector<ComputeDevice> cards = gpu_devices();
@@ -902,14 +1027,50 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         }
     }
 
+    // Layers left to the program, and the processor allowed some: when the
+    // whole model does not fit the cards, as many layers as a dry run says
+    // fit go on them and the rest on the processor. Without this every layer
+    // was asked for, and a model a little larger than the card did not load
+    // at all, though Models had said it would run partly on the processor.
+    // A layer count at a time, halving: a dry run is a quarter of a second.
+    if (!params.gpu_only && params.n_gpu_layers < 0 && !cards.empty()) {
+        if (need.empty()) {
+            need = measured_need(params, cards);
+        }
+        const int layers = static_cast<int>(read_model_shape(params.path).layers);
+        if (layers > 0 && !need.empty() && !measured_shortfall(need, cards, 0, {}).empty()) {
+            // `fits` holds on the cards and `over` does not; one past the
+            // repeating layers is the output layer, which the whole asked for.
+            int fits = 0;
+            int over = layers + 1;
+            std::vector<CardNeed> best;
+            while (over - fits > 1) {
+                ModelParams trial  = params;
+                trial.n_gpu_layers = (fits + over) / 2;
+                std::vector<CardNeed> got = measured_need(trial, cards);
+                if (!got.empty() && measured_shortfall(got, cards, 0, {}).empty()) {
+                    fits = trial.n_gpu_layers;
+                    best = std::move(got);
+                } else {
+                    over = trial.n_gpu_layers;
+                }
+            }
+            params.n_gpu_layers = fits;
+            need                = std::move(best);
+            note(std::filesystem::path(params.path).filename().string() + ": " + std::to_string(fits) + " of "
+                 + std::to_string(layers) + " layers on the cards, the rest on the processor");
+        }
+    }
+
     // Packed to llama.cpp's own figures. The split above is planned from the
     // header, which knows the weights and the cache and sets 512 MiB aside on
     // every card for the rest -- buffers a dry run of flint put at 194 MiB on
     // a card without the output. Planned again from what a dry run measured,
     // the split packs the cards first in the order closer to full. It is used
     // only when a dry run of it fits every card with the margins the refusal
-    // below keeps, so no card is handed more than it holds.
-    if (divided(params, gpu_)) {
+    // below keeps, so no card is handed more than it holds. Not for a model
+    // only partly on the cards: the packing plans every layer.
+    if (divided(params, gpu_) && params.n_gpu_layers < 0) {
         const ModelFit fit = model_fit(params);
         if (!fit.units.empty() && need.empty()) {
             need = measured_need(params, cards);
@@ -1022,6 +1183,9 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
 
     std::unique_ptr<LoadedModel> loaded(new LoadedModel(model, ctx, params.path));
     loaded->window_cache_ = params.window_cache;
+    for (const CardNeed& card : cards_of(ctx)) {
+        loaded->on_cards_.push_back(card.total());
+    }
     if (role == Role::Delegator) {
         // What routing kept the last time this delegator was loaded this way.
         router_key_ = context_key(params);
@@ -1056,10 +1220,13 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
                                        const CancelCallback& cancel,
                                        std::string& error,
                                        const Keep& keep,
-                                       bool* crowded) {
+                                       bool* crowded,
+                                       bool beside_mlx) {
     if (crowded != nullptr) {
         *crowded = false;
     }
+    // Kept for an expert's context to leave it room: see with_room.
+    router_asked_ = params;
     if (router_ && router_->path() == params.path) {
         return router_.get();
     }
@@ -1085,6 +1252,18 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
             error = "the experts in use leave no room for the delegator";
             return nullptr;
         }
+    }
+
+    // An MLX model in use is in a process of its own, where this host can
+    // neither see nor free it. The delegator is loaded beside it when both
+    // fit, asked the way an expert's load asks, and otherwise not at all:
+    // crowded out as it is by experts in use, until the MLX model is let go.
+    if (beside_mlx && !fits_beside(params, Role::Delegator, beside_mlx)) {
+        if (crowded != nullptr) {
+            *crowded = true;
+        }
+        error = "the models in use leave no room for the delegator";
+        return nullptr;
     }
 
     router_ = load(params, Role::Delegator, progress, cancel, error);
@@ -1119,6 +1298,91 @@ ModelParams ModelHost::placed(const ModelParams& requested, Role role) const {
     ModelParams params = requested;
     refresh_gpu_split(params, gpu_);
     return params;
+}
+
+ModelParams ModelHost::with_room(const ModelParams& asked) const {
+    if (asked.n_ctx_most <= asked.n_ctx) {
+        return asked;
+    }
+    // Only a model bound for the cards whole, on cards that say what they
+    // have free. With layers left on the processor a longer cache is the
+    // processor's memory and its time, which nobody asked to spend.
+    const ModelShape shape = read_model_shape(asked.path);
+    if (!shape.known || (asked.n_gpu_layers >= 0 && asked.n_gpu_layers < static_cast<int>(shape.layers))) {
+        return asked;
+    }
+    std::vector<ComputeDevice> cards = gpu_devices();
+    if (std::none_of(cards.begin(), cards.end(), [](const ComputeDevice& card) { return card.memory_total > 0; })) {
+        return asked;
+    }
+    // The delegator is let go while an expert loads and comes back to route
+    // the next task, which, with the agent still holding this model, it can
+    // only do beside it. Its room is kept when it had room beside the context
+    // asked for: the cache grows into memory nobody would have used, rather
+    // than into the delegator's, which would send routing to keywords.
+    if (!router_ && !router_asked_.path.empty()) {
+        ModelParams delegator = router_asked_;
+        delegator.sequences = 1 + scoring_branches(delegator);
+        const std::vector<ComputeDevice> spared = less_delegator(cards, placed_delegator(delegator));
+        if (fits_on(spared, asked, gpu_) != Fit::No) {
+            cards = spared;
+        }
+    }
+    ModelParams grown = asked;
+    Fit         fit   = Fit::No;   // how the last context tried fits: the one chosen, when one is
+    grown.n_ctx = roomiest_context(asked.n_ctx, asked.n_ctx_most, shape.trained, [&](int n_ctx) {
+        ModelParams tried = asked;
+        tried.n_ctx = n_ctx;
+        fit = fits_on(cards, tried, gpu_);
+        return fit != Fit::No;
+    });
+    if (grown.n_ctx == asked.n_ctx) {
+        return asked;
+    }
+    // The window cache when that is what makes room for the context, or
+    // the load, which knows nothing of the delegator's room, would take the
+    // whole cache wherever the cards hold it.
+    grown.window_cache = fit == Fit::Window;
+    note(std::filesystem::path(asked.path).filename().string() + ": a context of " + std::to_string(grown.n_ctx)
+         + " tokens rather than " + std::to_string(asked.n_ctx) + ", which the cards hold"
+         + (grown.window_cache ? " with the sliding-window layers keeping their window only" : ""));
+    return grown;
+}
+
+bool ModelHost::could_hold(const ModelParams& params, bool delegator_stays) const {
+    std::error_code ec;
+    if (params.remote() || params.path.empty() || std::filesystem::is_directory(params.path, ec)) {
+        return true;   // nothing of this host's to load: a provider's model, or an MLX one
+    }
+    const ModelShape shape = read_model_shape(params.path);
+    if (shape.weights == 0 || (params.n_gpu_layers >= 0 && params.n_gpu_layers < static_cast<int>(shape.layers))) {
+        return true;   // no header to judge by, or set to run partly on the processor: the load says
+    }
+    // The dry runs below walk ggml's device lists as a load does, and are
+    // asked from outside one: held still for them the same way. See load.
+    const RuntimeRegistry::Reading reading;
+    std::vector<ComputeDevice> cards = gpu_devices();
+    if (std::none_of(cards.begin(), cards.end(), [](const ComputeDevice& card) { return card.memory_total > 0; })) {
+        return true;
+    }
+    // Crucible's own models are let go for one that needs the room -- the
+    // ones in use when their agents are done with them -- so what they hold
+    // counts as free. The delegator does not when it stays loaded.
+    const auto give_back = [&cards](const LoadedModel& model) {
+        for (ComputeDevice& card : cards) {
+            const auto index = static_cast<std::size_t>(card.index);
+            if (index < model.on_cards_.size()) {
+                card.memory_free = std::min(card.memory_total, card.memory_free + model.on_cards_[index]);
+            }
+        }
+    };
+    for (const Resident& resident : experts_) {
+        give_back(*resident.model);
+    }
+    if (router_ && !delegator_stays) {
+        give_back(*router_);
+    }
+    return fits_on(cards, params, gpu_) != Fit::No;
 }
 
 /// Would these two be the same loaded model?
@@ -1158,7 +1422,11 @@ LoadedModel* ModelHost::acquire_expert(const ExpertId& id,
     // found nine different models to fill the table with. Moved to the back,
     // as the one most recently asked for.
     for (auto it = experts_.begin(); it != experts_.end(); ++it) {
-        if (it->params.path == params.path && (it->id == id || same_load(it->params, params))) {
+        // Except when it was loaded with less room than this load may take
+        // and nobody is using it: a chat's model, wanted now by a build's
+        // agent, is loaded again with the context the cards hold for it.
+        const bool roomier = params.n_ctx_most > it->params.n_ctx_most && !(keep && keep(it->params.path));
+        if (it->params.path == params.path && (it->id == id || same_load(it->params, params)) && !roomier) {
             Resident resident = std::move(*it);
             experts_.erase(it);
             resident.id = id;

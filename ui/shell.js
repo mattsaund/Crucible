@@ -132,11 +132,12 @@ function splitModel(value) {
 
 // --- the bar across the top ------------------------------------------------------
 
+// History is not one of them: it is the right-hand panel's, under the chats
+// it goes back from. Nor is building: a message that asks for software
+// becomes a build in the chat (build.js).
 const TABS = [
-  ['chat',    'Chat',    'Ask one question'],
-  ['build',   'Build',   'Plan and build'],
+  ['chat',    'Chat',    'Ask or build'],
   ['create',  'Create',  'Fine-tune an expert'],
-  ['history', 'History', 'Past builds and conversations'],
   ['models',  'Models',  'Download models'],
   ['bench',   'Bench',   'Benchmark models'],
 ];
@@ -240,6 +241,8 @@ function recentsView() {
           <button class="action small" data-act="new-chat"
                   ${busy ? 'disabled' : ''}>New chat</button></div>
         ${chats}
+        <button class="action wide r-history" data-act="view" data-view="history"
+                title="Past builds and conversations" aria-current="${state.view === 'history'}">History</button>
         <div class="r-head r-projects"><h2>PROJECTS</h2>
           <button class="action small" data-act="open-project"
                   ${busy ? 'disabled' : ''}>Open project</button></div>
@@ -424,9 +427,9 @@ function working(id) {
   return (cook.tasks || []).find((t) => t.expert === id && t.state === 'working') || null;
 }
 
-/// Click a seat: the work it is doing, when it is doing some -- the build, on
-/// that agent, with the file it touched last open -- and its settings when
-/// it is not.
+/// Click a seat: the work it is doing, when it is doing some -- the build's
+/// turn in the conversation, on that agent, with the file it touched last
+/// open -- and its settings when it is not.
 actions['seat-open'] = (button) => {
   const id = button.dataset.expert;
   const cook = state.snapshot.cook;
@@ -434,10 +437,7 @@ actions['seat-open'] = (button) => {
   const task = working(id) || (cook && cook.kind === 'build'
     ? tasks.filter((t) => t.expert === id && t.state !== 'waiting').slice(-1)[0] : null);
   if (task) {
-    // The pane is remembered, and entering Build reads it back.
-    remember.set('build-pane', 'agents');
-    state.open.task = task.index;
-    enter('build');
+    openAgent(cook, task.index);
     return;
   }
   enter('settings', 'experts');
@@ -502,8 +502,8 @@ function sideView() {
   const seats = experts.map(seatRow).join('') || '<div class="status">None yet.</div>';
   // Under the experts, the agents of the build: the architect and one per
   // task, each saying whose it is and how far it has got, and each opening
-  // its work. Here rather than only in the Build view, so what is at work
-  // is in sight from whichever view is open.
+  // its work. Here as well as in the build's turn, so what is at work is in
+  // sight from whichever view is open.
   const build = state.snapshot.cook;
   const agents = build ? `<h2 class="experts-head agents-head">AGENTS</h2>
       ${agentRows(build, agentShown(build))}` : '';
@@ -637,13 +637,12 @@ actions.gear = () => enter(state.view === 'settings' ? (state.lastView || 'chat'
 function shortcuts(event) {
   codeShortcut(event);
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-  const tab = { 1: 'chat', 2: 'build', 3: 'create', 4: 'history', 5: 'models', 6: 'bench' }[event.key];
+  const tab = { 1: 'chat', 2: 'create', 3: 'models', 4: 'bench' }[event.key];
   if (tab) { event.preventDefault(); enter(tab); }
   if (event.key === ',') { event.preventDefault(); actions.gear(); }
   // Attach, from wherever the box is. Not over a dialog: the box is not
   // what that is about.
-  if ((event.key === 'u' || event.key === 'U') && !state.modal
-      && (state.view === 'chat' || state.view === 'build')) {
+  if ((event.key === 'u' || event.key === 'U') && !state.modal && state.view === 'chat') {
     event.preventDefault();
     attachPick(false);
   }

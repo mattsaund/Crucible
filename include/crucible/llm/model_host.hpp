@@ -53,12 +53,17 @@ public:
     /// them -- the ones `keep` does not hold. When the ones it does hold leave
     /// no room, `crowded` is set and nothing is loaded: routing goes on
     /// keywords until they are let go.
+    ///
+    /// `beside_mlx` says an MLX model is in use, as acquire_expert's does:
+    /// the delegator has to fit beside it as an expert would, and `crowded`
+    /// is set the same way when it does not.
     LoadedModel* acquire_router(const ModelParams& params,
                                 const ProgressCallback& progress,
                                 const CancelCallback& cancel,
                                 std::string& error,
                                 const Keep& keep = {},
-                                bool* crowded = nullptr);
+                                bool* crowded = nullptr,
+                                bool beside_mlx = false);
 
     /// Make `id`'s expert a loaded one. This is the JIT swap, and the cost
     /// the design accepts in exchange for experts far larger than RAM would
@@ -106,6 +111,19 @@ public:
     /// header where it can be, and from the size of the weights otherwise --
     /// an MLX model's folder, or a file whose header would not read.
     static std::uint64_t estimate_bytes(const ModelParams& params);
+
+    /// Whether `params` would load on the cards this machine shows now, were
+    /// Crucible's own models let go for it, as they are for a model that
+    /// needs the room -- all but the delegator when `delegator_stays`.
+    /// Planned and measured the way a load is: the header, then a dry run
+    /// before saying no.
+    ///
+    /// Not whether it fits beside what is loaded this minute: a model in use
+    /// is waited for. Whether it can be loaded here at all, which a model
+    /// chosen for a machine of three cards cannot on one. True for whatever
+    /// is not the cards' question: a provider's model, an MLX folder, a model
+    /// set to run partly on the processor, a machine whose cards say nothing.
+    bool could_hold(const ModelParams& params, bool delegator_stays) const;
 
     /// Free the delegator, if any. The experts are untouched.
     ///
@@ -159,6 +177,16 @@ private:
     /// placed_delegator, an expert by refresh_gpu_split.
     ModelParams placed(const ModelParams& requested, Role role) const;
 
+    /// fits_beside, for a model placed as `role` is.
+    bool fits_beside(const ModelParams& requested, Role role, bool beside_mlx) const;
+
+    /// `asked` with its context grown towards ModelParams::n_ctx_most, as far
+    /// as the cards hold it now: the free memory once the experts nobody is
+    /// using have gone, less the delegator's room when it is away and had
+    /// room beside this model. Each context tried is judged as a load is.
+    /// `asked` as it is when it asks for no more, or none fits.
+    ModelParams with_room(const ModelParams& asked) const;
+
     /// The file and the context a model is loaded with, as far as what its
     /// cache holds goes: two loads with the same key hold the same thing for
     /// the same prompt. See kept_routing_.
@@ -185,6 +213,10 @@ private:
 
     GpuConfig                    gpu_;
     std::unique_ptr<LoadedModel> router_;
+
+    /// The delegator as it was last asked for, loaded or not: what an
+    /// expert's grown context leaves room for. See with_room.
+    ModelParams                  router_asked_;
     /// Least recently used first: the one at the back was asked for last.
     std::vector<Resident>        experts_;
 
@@ -198,5 +230,12 @@ private:
     std::string                          kept_key_;
     std::string                          router_key_;   ///< the loaded delegator's
 };
+
+/// The context a load that asked for `n_ctx`, and may have up to `most`,
+/// gets: the first of `most`, three quarters of it, a half, three eighths
+/// and so on down that `fits`, in whole kilotokens above `n_ctx`, and never
+/// past `trained`, the context the model was trained to (zero when it does
+/// not say). `n_ctx` when none of them fits.
+int roomiest_context(int n_ctx, int most, std::uint32_t trained, const std::function<bool(int)>& fits);
 
 }  // namespace crucible

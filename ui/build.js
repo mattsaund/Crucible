@@ -1,29 +1,28 @@
 // SPDX-License-Identifier: MIT
 //
-// Build: a directive, a plan, and an agent for each piece of it.
+// A build, where the message that asked for it was, and the panes beside the
+// conversation.
 //
-// The view is the whole of the work rather than a transcript of it: the
-// agents down one side, each a task with the expert that has it, and what
-// the chosen one is doing on the other -- its steps, the files it touched,
-// the file itself when one is clicked. Beside that, the project's code, its
-// version control and a preview of what it shows, because a person watching
-// software get built wants to read it, see it and keep it, not only watch a
-// log of it being made.
+// There is one box. A message that asks for software to be made becomes a
+// build (the orchestrator decides, in intent.py), and the build is drawn in
+// the conversation where the reply would be: its plan, an agent for each
+// piece of it with the expert that has it, and what the chosen one is doing,
+// its steps, the files it touched, the file itself. When it is done, what it
+// left is the turn's reply, and the conversation carries on from it.
+//
+// Beside the conversation, once there is a folder to show, the project's
+// code, its version control and a preview of what it shows: a person
+// watching software get built wants to read it, see it and keep it, not only
+// watch a log of it being made.
 
-const BUILD_PANES = [
-  ['agents',  'Agents',  'Who is doing what'],
+const CHAT_PANES = [
+  ['chat',    'Chat',    'The conversation'],
   ['code',    'Code',    'The project\'s files'],
   ['source',  'Source',  'Version control'],
   ['preview', 'Preview', 'What it shows'],
 ];
 
-const BUILD_OPENERS = [
-  'A command-line todo app in Python, with tests',
-  'A landing page for a bakery, one HTML file with its CSS',
-  'A REST API for notes in Node with Express, with tests and a README',
-];
-
-state.buildPane = 'agents';
+state.chatPane = 'chat';
 state.tree = null;
 state.source = null;
 state.diff = null;
@@ -31,12 +30,74 @@ state.log = null;
 state.ship = { command: '', tag: '', notes: '', output: '', running: false };
 state.teach = null;
 
-/// The build on screen: whatever journal the snapshot carries. A cook
-/// started through the API -- a build with no plan -- is drawn the same way,
-/// as one task that is the whole goal.
+/// Builds of this conversation that are not the one the snapshot carries,
+/// by id, read from the project's history for the turns they were:
+/// { reading }, { journal } or { error }.
+state.builds = {};
+
+/// The build running now, or the last one, as the snapshot carries it. A
+/// cook started through the API (a build with no plan) is drawn the same
+/// way, as one task that is the whole goal.
 function currentBuild() {
   return state.snapshot.cook || null;
 }
+
+/// The journal of the build `id` for its turn, or null while it is read.
+function journalOf(id) {
+  const now = currentBuild();
+  if (now && now.id === id) return now;
+  const kept = state.builds[id];
+  return kept && kept.journal ? kept.journal : null;
+}
+
+// --- the panes ----------------------------------------------------------------------
+
+/// Whether there is a folder to show beside the conversation: a project, or
+/// the chat's own scratch folder once something is in it.
+function folderShown() {
+  const project = state.snapshot.project || {};
+  if (!project.open) return false;
+  if (!project.scratchpad) return true;
+  return !!(state.tree && state.tree.entries && state.tree.entries.length);
+}
+
+/// The pane on screen: the one chosen, while there is a folder to show.
+function shownPane() {
+  return folderShown() ? state.chatPane : 'chat';
+}
+
+/// Above the conversation, its panes. The conversation's tab says when it
+/// wants somebody: the build asking, or an edit waiting on a yes.
+function paneNav() {
+  if (!folderShown()) return '';
+  const s = state.snapshot;
+  const wanted = !!s.pending_edit || !!(s.cook && s.cook.running && s.cook.state === 'asking');
+  const here = shownPane();
+  return `<div class="pane-nav">${CHAT_PANES.map(([id, label, tip]) =>
+    `<button data-act="chat-pane" data-pane="${id}" aria-current="${here === id}" title="${tip}">${label}${
+      id === 'chat' && wanted && here !== 'chat' ? '<span class="pip"></span>' : ''}</button>`).join('')}</div>`;
+}
+
+function setPane(pane) {
+  state.chatPane = pane;
+  render();
+  enterPane(pane);
+}
+
+actions['chat-pane'] = (button) => setPane(button.dataset.pane);
+
+/// What a pane reads as it opens. The tree every time: a turn or a build
+/// may have changed it while another pane was up.
+function enterPane(pane) {
+  if (pane === 'code') {
+    loadTree();
+    refreshTabs();
+  }
+  if (pane === 'source' && !state.source) loadSource();
+  if (pane === 'preview' && !state.preview.pages) enterPreview();
+}
+
+entering.chat = () => enterPane(shownPane());
 
 /// Which task a step belongs to. The wire leaves the field out for the
 /// build's own steps -- the plan, the check, the review -- and those are the
@@ -56,10 +117,12 @@ const TASK_PHASE = { waiting: 'unconfigured', working: 'active', done: 'dormant'
 // --- the agents -------------------------------------------------------------------------
 
 /// Which task is open: the one chosen, else the one working, else the last
-/// that did anything.
+/// that did anything. A choice is of one build's task (state.open.taskOf),
+/// and every other build in the conversation goes on showing its own.
 function openTask(build) {
   const tasks = build.tasks || [];
-  if (state.open.task !== undefined && state.open.task !== null) {
+  const mine = !state.open.taskOf || state.open.taskOf === build.id;
+  if (mine && state.open.task !== undefined && state.open.task !== null) {
     const chosen = Number(state.open.task);
     if (chosen === -1 || tasks.some((t) => t.index === chosen)) return chosen;
   }
@@ -70,8 +133,8 @@ function openTask(build) {
 }
 
 /// The agents, a row each: the architect's own, then one per task. The side
-/// menu draws them under the experts, so they are in sight from every view;
-/// the Build pane draws them itself only while the side menu is folded.
+/// menu draws the running build's under the experts, so they are in sight
+/// from every view, and each build in the conversation draws its own.
 /// `chosen` is the row to mark as the one open, or null for none; `act` is
 /// what a click does, which in History is to stay on the build it shows.
 function agentRows(build, chosen, act = 'agent-open') {
@@ -84,7 +147,7 @@ function agentRows(build, chosen, act = 'agent-open') {
     const working = live && phase === 'active';
     return `
     <button class="agent seat${index === chosen ? ' here' : ''}${working ? ' at-work' : ''}"
-            data-act="${act}" data-index="${index}" data-phase="${phase}"
+            data-act="${act}" data-index="${index}" data-build="${escape(build.id || '')}" data-phase="${phase}"
             title="${escape(`${title}\n${who}${extra ? `\n${extra}` : ''}`)}">
       <span class="dot"></span>
       <span class="agent-text"><span class="agent-title">${escape(title)}</span>
@@ -100,29 +163,51 @@ function agentRows(build, chosen, act = 'agent-open') {
                            t.expert ? expertName(t.expert) : (t.needs || 'not yet assigned'), t.state)).join('');
 }
 
-/// The row the agents mark as open: the task on screen in the Build pane,
-/// and none anywhere else, where nothing of an agent's is showing.
+/// The row the side menu marks as open: the task on screen in the
+/// conversation, and none anywhere else, where nothing of an agent's shows.
 function agentShown(build) {
-  return state.view === 'build' && state.buildPane === 'agents' ? openTask(build) : null;
+  return state.view === 'chat' && shownPane() === 'chat' ? openTask(build) : null;
 }
 
-/// The agents drawn inside a pane, for the Build view with the side menu
-/// folded and for a past build in History.
+/// The agents drawn beside an agent's work: in a build's turn, and in a
+/// past build in History.
 function agentsList(build, chosen, act) {
   return `<div class="agents"><div class="caption">AGENTS</div>${agentRows(build, chosen, act)}</div>`;
 }
 
-/// Click an agent, in the side menu or the pane: its work, in the Build view.
+/// Open task `index` of `build` in the conversation, and bring its turn into
+/// sight: from the side menu that is a click away from wherever it was.
+function openAgent(build, index) {
+  state.open.task = index;
+  state.open.taskOf = build ? build.id || '' : '';
+  state.revealBuild = state.open.taskOf;
+  state.chatPane = 'chat';
+  if (state.view !== 'chat') enter('chat');
+  else render();
+}
+
+/// Click an agent, in the side menu or a build's turn: its work, there.
 actions['agent-open'] = (button) => {
-  state.open.task = Number(button.dataset.index);
-  if (state.view === 'build' && state.buildPane === 'agents') {
+  const id = button.dataset.build || '';
+  const build = (id && journalOf(id)) || currentBuild();
+  // In the turn already on screen: just that agent, where it is.
+  if (state.view === 'chat' && shownPane() === 'chat' && button.closest && button.closest('.build-turn')) {
+    state.open.task = Number(button.dataset.index);
+    state.open.taskOf = build ? build.id || '' : '';
     render();
     return;
   }
-  // The pane is remembered, and entering Build reads it back.
-  remember.set('build-pane', 'agents');
-  enter('build');
+  openAgent(build, Number(button.dataset.index));
 };
+
+/// After a draw: the build's turn an agent was opened for, brought into
+/// sight once.
+afterDraw.push(() => {
+  if (!state.revealBuild || state.view !== 'chat') return;
+  const card = document.getElementById(`build-${state.revealBuild}`);
+  state.revealBuild = '';
+  if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
+});
 
 /// The files a task changed, as chips that open them.
 function taskFiles(build, index) {
@@ -159,8 +244,8 @@ function agentWork(build, chosen, live = true) {
       ${plan.check ? `<div class="hint">check: <code>${escape(plan.check)}</code></div>` : ''}
       ${plan.ship ? `<div class="hint">ship: <code>${escape(plan.ship)}</code></div>` : ''}</div>`;
   }
-  // The latest file only for the build on the Build view: it is read from
-  // there, and a past build in History waited on "Reading..." for good.
+  // The latest file only for the build running or just run: it is read for
+  // that one, and a past build in History waited on "Reading..." for good.
   return `<div class="work">${head}${taskFiles(build, chosen)}${cookSteps(steps, 0)}${
     live ? latestFile(build, chosen) : ''}</div>`;
 }
@@ -197,9 +282,9 @@ function lastChanged(build, index) {
 /// shown is not the one it last wrote, ask for it once.
 let readingTaskFile = '';
 afterDraw.push(() => {
-  if (state.view !== 'build' || state.buildPane !== 'agents') return;
+  if (state.view !== 'chat' || shownPane() !== 'chat') return;
   const build = currentBuild();
-  if (!build) return;
+  if (!build || !(state.snapshot.turns || []).some((t) => t.build === build.id)) return;
   const latest = lastChanged(build, openTask(build));
   const have = state.open.taskFile;
   if (!latest || (have && have.path === latest && !have.stale) || readingTaskFile === latest) return;
@@ -217,34 +302,76 @@ afterDraw.push(() => {
     .finally(() => { readingTaskFile = ''; render(); });
 });
 
-function buildBody(build) {
+/// A build, as its turn draws it under the message that asked for it: how
+/// far it is, what it is asking, its agents and the chosen one's work, and
+/// once it is over, what it left. `live` is the build the snapshot carries,
+/// running or just run, whose agents' files are read as they are now.
+function buildCard(build, live) {
   const chosen = openTask(build);
-  const running = build.running;
-  const dot = build.state === 'failed' ? 'missing' : running ? 'active' : 'dormant';
+  const running = live && build.running;
+  const said = live ? build.state : settled(build);
+  const dot = said === 'failed' ? 'missing' : running ? 'active' : 'dormant';
   const tasks = build.tasks || [];
   const done = tasks.filter((t) => t.state === 'done').length;
-  return `<div class="goal-card">
-        <div class="caption">DIRECTIVE</div>
-        <div class="goal">${escape(build.goal)}</div>
-        ${attachedChips(build.attachments)}
-        ${running ? `<button class="icon goal-stop" data-act="build-cancel" title="Stop now" aria-label="Stop now">${ICONS.stop}</button>` : ''}
-      </div>
-      <div class="cook-state seat" data-phase="${dot}">
-        <span class="dot"></span><strong${atWork(build) ? ' class="working"' : ''}>${escape(build.state)}</strong>
+  // Its two stops are the box's, at hand whichever pane is up, and Stop now
+  // is on the turn as a chat turn's Stop is: not here a third time.
+  return `<div class="cook-state seat" data-phase="${dot}">
+        <span class="dot"></span><strong${running && atWork(build) ? ' class="working"' : ''}>${escape(said)}</strong>
         <span class="status">${apart(tasks.length ? `${done} of ${count(tasks.length, 'task')} done` : 'planning',
           span(build.seconds), count(build.total !== undefined ? build.total : (build.steps || []).length, 'step'))}</span>
       </div>
-      ${build.state === 'asking' ? `<div class="asking"><div class="caption">IT IS ASKING</div>
+      ${running && build.state === 'asking' ? `<div class="asking"><div class="caption">IT IS ASKING</div>
           <div>${escape(build.question)}</div>
           <div class="status" style="margin-top:.5rem">answer below</div></div>` : ''}
-      ${sidebarOpen() ? `<div class="build-split solo">${agentWork(build, chosen)}</div>`
-        : `<div class="build-split">${agentsList(build, chosen)}${agentWork(build, chosen)}</div>`}
+      ${live && sidebarOpen()
+        // The side menu lists this build's agents, beside it: not twice.
+        ? `<div class="build-split solo">${agentWork(build, chosen, live)}</div>`
+        : `<div class="build-split">${agentsList(build, chosen)}${agentWork(build, chosen, live)}</div>`}
       ${build.outcome && !running ? `<hr class="rule"><div class="md outcome">${markdown(build.outcome)}</div>` : ''}
-      ${!running && build.state !== 'idle' ? (build.files && build.files.length
+      ${!running && said !== 'idle' ? (build.files && build.files.length
         ? `<div class="changed"><span class="status">changed</span> ${build.files.map((f) =>
             `<button class="link file-chip" data-act="file-open" data-path="${escape(f)}">${escape(f)}</button>`).join(' ')}</div>`
         : '<div class="changed bad">no files changed</div>') : ''}`;
 }
+
+/// A turn that became a build: the message, then the build where its reply
+/// would be. A build that cannot be read any more (its journal gone with
+/// the history) is what it left, as any reply is.
+function buildTurnView(turn, index, busy) {
+  const live = currentBuild();
+  const running = !!(live && live.running && live.id === turn.build);
+  const build = journalOf(turn.build);
+  const kept = state.builds[turn.build];
+  let body;
+  if (build) body = buildCard(build, !!(live && live.id === turn.build));
+  else if (kept && kept.error) body = turn.reply ? `<div class="body md">${markdown(turn.reply)}</div>` : '';
+  else body = '<div class="status">Reading...</div>';
+  // Over, it can be asked again or taken away like any turn; running, the
+  // one thing to do with it is stop it.
+  const controls = running
+    ? `<button class="icon" data-act="build-cancel" title="Stop now" aria-label="Stop now">${ICONS.stop}</button>`
+    : busy ? ''
+    : `<button class="icon" data-act="turn-retry" data-index="${index}" title="Ask again" aria-label="Ask again">${ICONS.retry}</button>
+       <button class="icon" data-act="turn-delete" data-index="${index}" title="Delete" aria-label="Delete">${ICONS.trash}</button>`;
+  return `${controls ? `<div class="turn-controls">${controls}</div>` : ''}
+      ${attachedChips(turn.attachments)}<div class="said">${escape(turn.prompt)}</div>
+      <div class="who"><span class="seat">◆ build</span></div>${body}`;
+}
+
+/// The journals of the conversation's builds that are not the snapshot's,
+/// read once each from the project's history.
+afterDraw.push(() => {
+  if (state.view !== 'chat') return;
+  const live = currentBuild();
+  for (const turn of state.snapshot.turns || []) {
+    const id = turn.build;
+    if (!id || (live && live.id === id) || state.builds[id]) continue;
+    state.builds[id] = { reading: true };
+    call('history.cook', { id }).then((journal) => { state.builds[id] = { journal }; })
+      .catch((error) => { state.builds[id] = { error: error.message }; })
+      .finally(render);
+  }
+});
 
 // --- the code -----------------------------------------------------------------------------
 //
@@ -313,7 +440,7 @@ function sourcePane() {
         <button class="action" ${busy || !s.gh ? 'disabled' : ''}>Release</button></form>
       ${ship.url ? `<div class="hint">Released: ${escape(ship.url)}</div>` : ''}
       <div class="row" style="margin-top:.8rem">
-        <button class="action small" data-act="build-pane" data-pane="preview">Make it an app</button></div>
+        <button class="action small" data-act="chat-pane" data-pane="preview">Make it an app</button></div>
     </div>`;
 }
 
@@ -416,60 +543,16 @@ actions['ship-release'] = (form) => guard(async () => {
   state.snapshot.status = `released ${state.ship.tag}`;
 });
 
-// --- the view -------------------------------------------------------------------------------
+// --- keeping what the panes read in step --------------------------------------------------
 
-views.build = () => {
-  const s = state.snapshot;
-  const build = currentBuild();
-  const nav = `<div class="build-nav">${BUILD_PANES.map(([id, label, tip]) =>
-    `<button data-act="build-pane" data-pane="${id}" aria-current="${state.buildPane === id}" title="${tip}">${label}</button>`).join('')}</div>`;
-  let body;
-  if (state.buildPane === 'code') body = codePane();
-  else if (state.buildPane === 'source') body = sourcePane();
-  else if (state.buildPane === 'preview') body = previewView();
-  else body = build ? buildBody(build)
-    : readiness(`<div class="empty"><div class="empty-label quiet">Give it a directive</div>
-        <div class="chips">${BUILD_OPENERS.map((text) => `<button class="chip" data-act="opener">${escape(text)}</button>`).join('')}</div></div>`);
-  const edit = s.pending_edit && state.buildPane === 'agents' ? pendingEdit(s.pending_edit) : '';
-  // The switcher sits above the scroller, not inside it: a long build's
-  // journal scrolled it out of reach, and the panes it leads to are the ones
-  // wanted most while a build is long.
-  // Only the journal keeps to its bottom as it grows; the other panes are
-  // read from the top, and a tree or a preview toolbar scrolled out of sight
-  // is a pane with nothing to click.
-  const journal = state.buildPane === 'agents';
-  return sideView() + `<div class="pane with-nav">${nav}
-      <div class="scroller"><div id="${journal ? 'transcript' : 'pane-body'}" class="build-transcript">${body}${edit}</div>
-        <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
-      ${composerView({ build: true, hint: 'what should it build?', send: 'Build' })}
-    </div>` + recentsView();
-};
-
-actions['build-pane'] = (button) => {
-  state.buildPane = button.dataset.pane;
-  remember.set('build-pane', state.buildPane);
-  render();
-  enterPane(state.buildPane);
-};
-
-function enterPane(pane) {
-  if (pane === 'code' && !state.tree) loadTree();
-  if (pane === 'code') refreshTabs();
-  if (pane === 'source' && !state.source) loadSource();
-  if (pane === 'preview' && !state.preview.pages) enterPreview();
-}
-
-entering.build = () => {
-  state.buildPane = remember.get('build-pane', 'agents');
-  enterPane(state.buildPane);
-};
-
-/// A project change empties what was read of the old one.
-let buildProject = '';
+/// A project change empties what was read of the old one. A chat's scratch
+/// folder is looked at at once: its panes show once it has something in it.
+let chatProject = '';
 onSnapshot.push(() => {
-  const root = (state.snapshot.project || {}).root || '';
-  if (root === buildProject) return;
-  buildProject = root;
+  const project = state.snapshot.project || {};
+  const root = project.root || '';
+  if (root === chatProject) return;
+  chatProject = root;
   state.tree = null;
   state.source = null;
   state.diff = null;
@@ -478,13 +561,28 @@ onSnapshot.push(() => {
   state.code.tabs = [];
   state.code.search.results = null;
   state.open.task = null;
+  state.open.taskOf = '';
+  state.builds = {};
   state.preview = Object.assign(state.preview, { pages: null, page: '', html: '', picked: null, changes: [] });
-  if (state.view === 'build') enterPane(state.buildPane);
+  if (project.scratchpad) loadTree();
+  if (state.view === 'chat') enterPane(shownPane());
 });
 
-/// A build that just finished leaves the tree and the status stale -- and
-/// another step by an agent may have rewritten the file on show, or the page
-/// in the preview.
+/// What a turn leaves in a scratch folder is what shows its panes: looked
+/// at again whenever a turn ends, until something is there.
+let turnsSeen = '';
+onSnapshot.push(() => {
+  const s = state.snapshot;
+  const project = s.project || {};
+  const key = `${project.root}|${(s.turns || []).length}|${!!s.busy}`;
+  if (key === turnsSeen) return;
+  turnsSeen = key;
+  if (project.scratchpad && !s.busy && !folderShown()) loadTree();
+});
+
+/// A build's step leaves the tree and the status stale, may have rewritten
+/// the file on show or the page in the preview, and in a scratch folder may
+/// be the first file there is.
 let buildWas = '';
 let buildRunning = false;
 let buildSteps = 0;
@@ -502,21 +600,19 @@ onSnapshot.push(() => {
   const added = Math.max(0, steps - buildSteps);
   const fresh = build && added ? (build.steps || []).slice(-added) : [];
   buildSteps = steps;
-  const touchedPage = fresh.some((step) => (step.changed || []).some((f) => /\.(html?|css|js|svg|png|jpe?g|gif)$/i.test(f)));
+  const changed = fresh.flatMap((step) => step.changed || []);
+  const touchedPage = changed.some((f) => /\.(html?|css|js|svg|png|jpe?g|gif)$/i.test(f));
   // An agent wrote a file somebody has open: it is read again, or marked.
-  codeFilesChanged(fresh.flatMap((step) => step.changed || []));
-  if (state.view === 'build') {
-    if (state.buildPane === 'code') loadTree();
-    if (state.buildPane === 'source' && (added || finished)) loadSource(false);
-    if (state.buildPane === 'preview' && (touchedPage || finished)) refreshPreview();
-    // A build that has just made or changed a page shows it, from the
-    // agents' pane: what was built is the thing to look at now. Not from a
-    // pane the person chose to be on.
-    if (finished && build.state === 'done' && state.buildPane === 'agents') showWhatWasBuilt();
-  } else {
-    state.tree = null;
-    state.source = null;
-  }
+  codeFilesChanged(changed);
+  const pane = state.view === 'chat' ? shownPane() : '';
+  if (pane === 'code' || (changed.length && !folderShown())) loadTree();
+  if (pane === 'source' && (added || finished)) loadSource(false);
+  else if (added || finished) state.source = null;   // read again when its pane opens
+  if (pane === 'preview' && (touchedPage || finished)) refreshPreview();
+  // A build that has just made or changed a page shows it: what was built
+  // is the thing to look at now. Only from the conversation, and not from
+  // under somebody typing or waiting on an answer.
+  if (finished && build.state === 'done' && pane === 'chat') showWhatWasBuilt();
 });
 
 /// The page again, unless the person is in the middle of tuning it: then it
@@ -532,10 +628,10 @@ function refreshPreview() {
 function showWhatWasBuilt() {
   call('preview.candidates').then((got) => {
     const pages = got.pages || [];
-    if (!pages.length || state.view !== 'build' || state.buildPane !== 'agents') return;
+    const typing = !!(state.drafts.chat || '').trim();
+    if (!pages.length || state.view !== 'chat' || shownPane() !== 'chat' || state.snapshot.busy || typing) return;
     state.preview.pages = pages;
-    state.buildPane = 'preview';
-    remember.set('build-pane', 'preview');
+    state.chatPane = 'preview';
     loadPreview(pages.includes('index.html') ? 'index.html' : pages[0]);
   }).catch(() => {});
 }

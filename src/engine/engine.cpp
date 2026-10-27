@@ -71,6 +71,8 @@ void Engine::start() {
     }
     worker_ = std::thread(&Engine::run, this);
     warm_mcp(config());
+    // Listening again, if it was when Crucible last closed.
+    configure_server(config());
 }
 
 void Engine::warm_mcp(const Config& config) {
@@ -142,6 +144,10 @@ void Engine::stop() {
     cook_answered_.notify_all();
     leases_.wake_all();
 
+    // The API server before anything is joined: what it is answering stops
+    // at the next token, and nothing more comes in while the rest goes.
+    server_->stop();
+
     // The build first: its agents hold models the worker is about to free.
     // Every wait it can be in has just been woken and told to stop, so it
     // ends within a round -- unless the orchestrator itself has hung, which
@@ -203,7 +209,7 @@ std::vector<Engine::MadeSeat> Engine::take_made_seats() {
 }
 
 void Engine::submit(std::string prompt, std::optional<ExpertId> pinned,
-                    std::vector<attach::Attachment> attachments) {
+                    std::vector<attach::Attachment> attachments, bool answer_only) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -211,6 +217,7 @@ void Engine::submit(std::string prompt, std::optional<ExpertId> pinned,
         request.prompt      = std::move(prompt);
         request.pinned      = std::move(pinned);
         request.attachments = std::move(attachments);
+        request.answer_only = answer_only;
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
@@ -307,6 +314,9 @@ std::vector<Engine::SessionName> Engine::take_session_names() {
 void Engine::apply_config(Config config) {
     // Now, not when the queue reaches it: see auto_edits_.
     auto_edits_.store(config.tools.auto_edits);
+    // And the server's port, address and key, which a turn in progress has
+    // nothing to do with. Which model it answers with follows the queue.
+    configure_server(config);
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -878,6 +888,10 @@ void Engine::load_router(const CancelCallback& cancel) {
 
     std::string error;
     bool        crowded = false;
+    // An MLX model somebody is using stays where it is, in its own process:
+    // the delegator has to fit beside it, as a GGUF expert does (see
+    // load_gguf). One nobody is using is not asked about, as before.
+    const bool beside_mlx = mlx_.running() && leases_.held(mlx_.served().string());
     LoadedModel* model = host_->acquire_router(
         router,
         [this](float progress) {
@@ -894,12 +908,13 @@ void Engine::load_router(const CancelCallback& cancel) {
             return (cancel ? cancel() : cancel_.load(std::memory_order_relaxed))
                 || !running_.load(std::memory_order_relaxed);
         },
-        error, in_use(), &crowded);
+        error, in_use(), &crowded, beside_mlx);
 
     if (model == nullptr && crowded) {
-        // Not a broken delegator: the experts a build is using leave it no
-        // room for now. Prompts go on keywords until they are let go, and it
-        // is tried again then -- so nothing is remembered as a failure.
+        // Not a broken delegator: the experts a build is using, or an MLX
+        // model in use, leave it no room for now. Prompts go on keywords
+        // until they are let go, and it is tried again then, so nothing is
+        // remembered as a failure.
         state_.set_delegator_problem({});
         state_.set_delegator_ready(true);
         return;
@@ -964,8 +979,13 @@ void Engine::tidy_models() {
         return;
     }
     const Snapshot    before = state_.snapshot();
-    const bool        demand = !config().routing.keep_delegator_loaded;
+    const Config      config = this->config();
+    const bool        demand = !config.routing.keep_delegator_loaded;
     const std::string chosen = chosen_path();
+    // The API server's model stays too, when it is serving one: the next
+    // request is for it. Both give way when the delegator needs their room.
+    const std::string served = config.server.enabled && !config.server.model.empty() ? served_file(config)
+                                                                                     : std::string();
     {
         const std::lock_guard<std::mutex> host(host_mutex_);
         // On demand: the experts nobody is using go, so the delegator has
@@ -973,15 +993,17 @@ void Engine::tidy_models() {
         // so does the one chosen in the box, which the next prompt is for.
         if (demand) {
             const std::optional<ExpertId> was = host_->loaded_expert();
-            host_->release_experts([this, &chosen](const std::string& path) {
-                return leases_.held(path) || (!chosen.empty() && path == chosen);
+            host_->release_experts([this, &chosen, &served](const std::string& path) {
+                return leases_.held(path) || (!chosen.empty() && path == chosen)
+                    || (!served.empty() && path == served);
             });
             if (was && host_->loaded_expert() != was) {
                 state_.set_seat(*was, SeatPhase::Dormant);
             }
             state_.set_resident(host_->loaded_expert());
             show_loaded();
-            if (!leases_.held(mlx_.served().string()) && mlx_.served().string() != chosen) {
+            if (!leases_.held(mlx_.served().string()) && mlx_.served().string() != chosen
+                && mlx_.served().string() != served) {
                 stop_mlx();
             }
         }
@@ -1083,8 +1105,14 @@ void Engine::do_apply_config(Config config) {
     // nobody is using: a build's agent keeps the model it has until it lets
     // go, and the next seat to want it loads it the new way.
     if (resident) {
-        const ModelParams now = current.expert(*resident);
-        if (now.path.empty() || hardware || loads_differently(before.expert(*resident), now)) {
+        // The API server's model is not a seat's: it is what the server
+        // would load now, and nothing once the server is off.
+        const auto loaded_as = [](const Config& in, const ExpertId& id) {
+            return id != kServerSeat ? in.expert(id)
+                 : in.server.enabled ? served_params(in) : ModelParams{};
+        };
+        const ModelParams now = loaded_as(current, *resident);
+        if (now.path.empty() || hardware || loads_differently(loaded_as(before, *resident), now)) {
             host_->release_experts(in_use());
             if (host_->loaded_expert() != resident) {
                 state_.set_seat(*resident, SeatPhase::Dormant);
@@ -1427,7 +1455,8 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
 
 Engine::HeldModel Engine::hold_model(const ExpertId& id, const ModelParams& params,
                                      const std::string& name, const CancelCallback& cancel,
-                                     long& load_ms, std::string& error) {
+                                     long& load_ms, std::string& error,
+                                     const std::function<void()>& waiting) {
     load_ms = 0;
     HeldModel held;
     if (params.remote()) {
@@ -1466,6 +1495,9 @@ Engine::HeldModel Engine::hold_model(const ExpertId& id, const ModelParams& para
             state_.set_mood(Mood::Loading, name + " is waiting for memory the build's agents are using");
             if (wake_) {
                 wake_();
+            }
+            if (waiting) {
+                waiting();
             }
         }
         if (!leases_.wait_for_release(cancel, since) && cancel && cancel()) {

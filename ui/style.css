@@ -114,6 +114,11 @@ aside.recents .r-head h2 {
 }
 .r-head button { flex: none; white-space: nowrap; }
 .r-head.r-projects { margin-top: 1.5rem; }
+/* History, under the chats. Inset as the headings are: the panel's rows run
+   edge to edge, and a button that did would touch both sides. Open, it is
+   marked as a tab in the bar is, since it was one. */
+aside.recents .action.r-history { width: calc(100% - 1.8rem); margin: 1rem .9rem 0; }
+aside.recents .action.r-history[aria-current="true"] { border-color: var(--flame); color: var(--text); }
 button.action.small { padding: .25rem .65rem; font-size: .88em; }
 button.recent {
   display: block; width: 100%; text-align: left; background: none; border: 0;
@@ -640,7 +645,6 @@ aside h2.agents-head { padding-top: 1.4rem; }
 .turn-controls button.icon:hover { background: var(--hover); }
 .act .code { margin: .5rem 0 .8rem; }
 details.thought > div { color: var(--faint); font-style: italic; }
-.cook-here { border-left: 2px solid var(--panel-edge); padding-left: 1rem; }
 
 /* The box. It grows with what is typed and can be dragged taller. */
 .splitter-y { height: 5px; margin-top: -3px; cursor: row-resize; }
@@ -880,18 +884,20 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .setup-item .bar { margin-top: .35rem; }
 .setup .action { margin-top: .6rem; }
 
-/* --- build ---------------------------------------------------------------------- */
+/* --- the panes beside the conversation, and a build in it ------------------------------ */
 .pane.with-nav { grid-template-rows: auto 1fr auto; }
-.build-nav { display: flex; gap: .3rem; margin: 0; padding: .5rem 2.5rem 0; border-bottom: 1px solid var(--panel-edge); }
-.build-nav button {
-  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+.pane-nav { display: flex; gap: .3rem; margin: 0; padding: .5rem 2.5rem 0; border-bottom: 1px solid var(--panel-edge); }
+.pane-nav button {
+  position: relative; background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
   padding: .4rem .8rem; color: var(--faint); cursor: pointer;
 }
-.build-nav button:hover { color: var(--dim); }
-.build-nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
+.pane-nav button:hover { color: var(--dim); }
+.pane-nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
+.pane-nav .pip { top: .35rem; right: .15rem; }
 /* The agents down one side, the work on the other. The work takes what is
    left, and the list keeps its width however long a title is. With the side
-   menu open the agents are in it, and the work has the whole width. */
+   menu open the running build's agents are in it, and the work has the
+   whole width. */
 .build-split { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1.4rem; margin-top: .6rem; }
 .build-split.solo { grid-template-columns: minmax(0, 1fr); }
 .agents { min-width: 0; }
@@ -1012,9 +1018,24 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
 .segmented .action:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
 .market-results { overflow-y: auto; min-height: 0; flex: 1; margin: 0 -.4rem; }
 button.market-row {
-  display: block; width: 100%; text-align: left; background: none; border: 0;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: .75rem; align-items: center;
+  width: 100%; text-align: left; background: none; border: 0;
   border-radius: 6px; padding: .55rem .6rem; color: var(--text); cursor: pointer; font: inherit;
 }
+/* Whose model it is, LM Studio's way, beside both lines of a row: the
+   picture once it has come, and until then, or when there is none, a square
+   with an initial, the same size, so nothing moves when one lands. A picture
+   has white behind it, as on the hub's own pages, so a black logo on nothing
+   does not vanish here, and a light one has the dark square (models.js,
+   lightOnNothing). */
+.logo {
+  flex: none; width: 2.3rem; height: 2.3rem; border-radius: 7px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--raised); border: 1px solid var(--panel-edge); color: var(--faint); font-weight: 500;
+}
+img.logo { background: #fff; border: 0; object-fit: cover; }
+img.logo.on-dark { background: var(--raised); }
+.market-row .logo { grid-row: span 2; }
 button.market-row:hover { background: var(--hover); }
 button.market-row.here { background: var(--raised); }
 .market-row-head { display: flex; align-items: center; gap: .5rem; min-width: 0; }
@@ -1025,6 +1046,8 @@ button.market-row.here { background: var(--raised); }
 .caps { display: flex; gap: .35rem; margin-left: auto; color: var(--dim); flex: none; }
 .cap, .market .hint svg, .market .status svg { vertical-align: -1px; }
 .market-detail { overflow-y: auto; min-height: 0; padding: 1.6rem 2.2rem; }
+.market-head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: .9rem; align-items: center; }
+.market-head .logo { grid-row: span 2; width: 2.9rem; height: 2.9rem; border-radius: 9px; font-size: 1.15em; }
 .market-head h1 { color: var(--flame); font-size: 1.25em; font-weight: 400; margin: 0 0 .3rem; overflow-wrap: anywhere; }
 .facts { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; margin: .9rem 0; max-width: 46rem; }
 .fact .caption { color: var(--faint); font-size: 11px; letter-spacing: .06em; margin-right: .3rem; }
@@ -1219,3 +1242,29 @@ button.icon.toggle.on { color: var(--flame); }
 .bench-result .title strong { font-weight: 400; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-page.bench .spacer { flex: 1; }
 .bench-overall { font-size: 1.35em; color: var(--text); }
+/* The board first: the add button in the corner, the best models ranked in
+   rows, and a model's name that opens it, in a row or a table alike. */
+.bench-head h1 { margin: 0; }
+.settings-page .order.bench-best { max-width: 58rem; }
+.bench-best .order-name { display: flex; align-items: baseline; gap: .8rem; overflow: hidden; }
+.bench-best .order-name .bench-name { flex: none; }
+.bench-best .order-name .status { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bench-best .bench-overall { font-size: 1.1em; min-width: 3.2rem; text-align: right; }
+.bench-best .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px; font-size: .9em; }
+.bench-best .here { min-width: 5.2rem; text-align: center; }
+button.bench-name {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--text); cursor: pointer;
+  text-align: left; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+}
+button.bench-name:hover { color: var(--flame); }
+/* A long name, or a long login, is cut rather than widening the table past
+   the page. */
+.bench-table button.bench-name { max-width: 22rem; }
+.bench-table .by {
+  display: inline-block; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+}
+/* One result: its chart beside its benchmarks, under them when narrow. */
+.bench-compare.bench-one { align-items: flex-start; margin-top: .6rem; }
+.bench-one .bench-table.detail { flex: 0 1 auto; min-width: 0; }

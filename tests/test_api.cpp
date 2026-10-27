@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/lab/recipe.hpp"
 
 using namespace crucible;
 using json = nlohmann::json;
@@ -415,6 +416,54 @@ TEST(a_bench_result_posts_only_names_of_the_boards_form) {
     CHECK((posting["hardware"] == json{{"gpu_count", 2}}));
     // And it does not go.
     CHECK(ask(surface, R"({"id":2,"method":"bench.post","params":{"id":"run-1"}})")["ok"] == false);
+}
+
+TEST(a_bench_result_of_a_model_made_here_says_so_and_is_not_offered_to_the_board) {
+    const TempDir        temp;
+    const ScopedDataHome scoped(temp.path());
+    const std::filesystem::path results = temp.path() / "crucible" / "bench" / "results";
+    std::filesystem::create_directories(results);
+    // A fine-tune the lab made, in the models folder.
+    const std::filesystem::path made = temp.path() / "models" / "kitchen-Q4_K_M.gguf";
+    std::filesystem::create_directories(made.parent_path());
+    std::ofstream(made) << "GGUF";
+    lab::Recipe recipe;
+    recipe.name         = "Kitchen";
+    recipe.id           = "kitchen";
+    recipe.trained_path = made.string();
+    recipe.stage        = lab::Stage::Finished;
+    std::string error;
+    CHECK(lab::save(recipe, error));
+    // Its result, with a fingerprint Hugging Face would be asked about if
+    // anything asked; and a result of some other file.
+    const auto result = [](const std::string& id, const std::string& path) {
+        return json{{"schema", 1}, {"suite", "crucible-bench-1"}, {"size", "quick"}, {"crucible", "0.9.5"},
+                    {"llama", "b11846"}, {"date", "2026-10-26"},
+                    {"model", {{"file", std::filesystem::path(path).filename().string()}, {"sha256", std::string(64, 'c')},
+                               {"bytes", 4}}},
+                    {"settings", {{"context", 20480}, {"max_tokens", 16384}, {"temperature", 0}, {"effort", "default"}}},
+                    {"benchmarks", {{"gsm8k", {{"n", 50}, {"correct", 40}}}}},
+                    {"id", id}, {"path", path}};
+    };
+    std::ofstream(results / "made-0.json") << result("made-0", made.string()).dump();
+    std::ofstream(results / "other-0.json") << result("other-0", (temp.path() / "models" / "other.gguf").string()).dump();
+
+    api::Surface surface = bare();
+    const json list = ask(surface, R"({"id":1,"method":"bench.results"})")["result"]["results"];
+    CHECK(list.size() == 2);
+    for (const json& one : list) {
+        CHECK(one.value("made", std::string()) == (one["id"] == "made-0" ? "fine-tune" : ""));
+    }
+    CHECK(ask(surface, R"({"id":2,"method":"bench.result","params":{"id":"made-0"}})")["result"]["made"] == "fine-tune");
+    // Nobody is asked where it is public: it is not, and the dialog says why.
+    const json posting = ask(surface, R"({"id":3,"method":"bench.posting","params":{"id":"made-0"}})");
+    CHECK(posting["ok"] == true);
+    CHECK(posting["result"]["public"] == false);
+    CHECK(posting["result"]["made"] == "fine-tune");
+    CHECK(!posting["result"]["posting"]["model"].contains("repo"));
+    const json post = ask(surface, R"({"id":4,"method":"bench.post","params":{"id":"made-0"}})");
+    CHECK(post["ok"] == false);
+    CHECK(post["error"].get<std::string>().find("fine-tune") != std::string::npos);
 }
 
 TEST(the_page_is_sent_a_turn_it_already_has_as_a_stub) {

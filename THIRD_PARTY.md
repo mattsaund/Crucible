@@ -21,6 +21,7 @@ ask.
 | [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the interface in the platform's own webview |
 | [miniz](https://github.com/richgel999/miniz) | `3.1.2` | MIT | opens the zip inside a `.docx`, `.xlsx`, `.pptx` or OpenDocument file attached to a prompt, and inflates a PDF's streams |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | `0.19.0` | MIT | draws math in replies; its script, stylesheet and fonts are compiled in |
+| [cpp-httplib](https://github.com/yhirose/cpp-httplib) | `0.62.0` | MIT | the local API server's HTTP, from the copy llama.cpp carries |
 
 The interface has no typeface of its own: it is drawn in the system's font,
 or in whichever installed one is named in **Settings → General**.
@@ -55,6 +56,11 @@ it ships with the system; on Linux the installer checks for it.
 Request headers and bodies are handed to it in a file only this user can read
 rather than on its command line, so a key is never somewhere another process
 on the machine can see it.
+
+Crucible accepts connections in one place: the local API server in
+**Settings → Server**, and only while it is on. It listens on this machine
+alone (127.0.0.1) unless **Serve on the local network** is on, and it answers
+the OpenAI API for the one model chosen there, and nothing else.
 
 ## What an attachment is read with
 
@@ -196,6 +202,11 @@ download.
 Condensing a model to one of the smallest sizes (IQ3_XXS and below) first
 runs it over the start of [WikiText-2](https://huggingface.co/datasets/Salesforce/wikitext)
 (CC BY-SA 3.0 and GFDL), fetched the same way, once, and kept in the same folder.
+
+While you search in **Models**, the logos beside the results are the pictures
+of the organizations and people on Hugging Face, fetched from huggingface.co
+and cdn-avatars.huggingface.co and kept in Crucible's data folder. Each logo
+belongs to its owner.
 
 ## The training environment
 

@@ -696,7 +696,12 @@ class Cook:
         self.attached_for = self.seat.id
 
     def round(self, messages):
-        return self.core.call("seat.chat", {"seat": self.seat.handle, "messages": messages}) or {}
+        reply = self.core.call("seat.chat", {"seat": self.seat.handle, "messages": messages}) or {}
+        # That another model answered in place of the one in the seat, which
+        # the journal says rather than letting its work pass as the seat's.
+        for said in reply.get("notes") or []:
+            self.note("note", said)
+        return reply
 
     def run_tool(self, call):
         asked = dict(call)

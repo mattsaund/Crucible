@@ -20,7 +20,7 @@ add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
-![A build: its agents in the side menu, the model at work in the corner](docs/images/build.png)
+![A build asked for in the chat: its agents in the side menu, the model at work in the corner](docs/images/build.png)
 
 ___
 ## Install
@@ -80,10 +80,12 @@ curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh 
 ___
 ## What it does
 
-### Build
+### Ask or build
 
-- Type a directive in **Build**, like "a budgeting app that charts my gross and
-  net revenue". The architect writes a plan. Type *go*, or what to change.
+- **One box.** Ask a question and the right expert answers it. Ask for
+  software, like "a budgeting app that charts my gross and net revenue", and it
+  becomes a build. There is no mode to pick.
+- For a build, the architect writes a plan. Type *go*, or what to change.
 - Agents take the tasks side by side, each the expert that fits it. When
   nobody on the roster fits, the build adds one and keeps it.
 - **Frontier and local together.** Large tasks go to a provider's model, small
@@ -93,11 +95,12 @@ ___
 - **A change is a sentence.** "Make the button blue" is one task, made and shown.
 - The **agents** are listed under the experts in the side menu. Click one for
   its task, its steps and its code.
-- The chat stays open while a build runs. Each has its own Stop.
+- The build is a turn of the conversation, so "now add dark mode" knows the
+  project. Ask something else while it runs, and it answers beside it.
 
 ### Code
 
-- **An editor** beside the agents, with tabs, a file tree, find and replace,
+- **An editor** beside the conversation, with tabs, a file tree, find and replace,
   search across the project, Ctrl+P to open a file by a few letters, and a
   terminal.
 - A file an agent changes while it is open reloads. Unsaved work is never
@@ -117,7 +120,7 @@ ___
 
 ![The preview, with an element picked and its dashboard open](docs/images/preview.png)
 
-### Chat
+### Experts
 
 - **A roster of experts.** A small router model, the delegator, sends each
   prompt to the expert that fits. It scores the roster, so it cannot name one
@@ -162,6 +165,7 @@ Every model, local or not, gets the same tools in a trusted folder:
   and see whether it fits on the cards, runs partly on the CPU, or is too
   large. Downloads carry on after a dropped line or a restart and are checked
   against Hugging Face's checksum.
+- Each result shows its maker's logo, the original maker's for a repack.
 - GGUF everywhere, MLX on Apple Silicon. LM Studio and Hugging Face folders
   work as they are.
 - Models that see pictures work when their `mmproj` projector sits beside them.
@@ -187,21 +191,36 @@ Every model, local or not, gets the same tools in a trusted folder:
 
 ### Bench
 
-- **Nine benchmarks** in seven skills (MMLU-Pro, ARC-Challenge, GSM8K,
-  MATH-500, HumanEval, MBPP, IFEval, HellaSwag and TruthfulQA). Quick asks 50
-  items of each, Standard 200, Full every one.
+- **Bench opens on the [public board](https://github.com/mattsaund/crucible-bench).**
+  The best local models come first, each with a Download that opens it in
+  Models, then the spider chart, then every result there is, searchable.
+- **Add benchmark** runs your models through nine benchmarks in seven skills
+  (MMLU-Pro, ARC-Challenge, GSM8K, MATH-500, HumanEval, MBPP, IFEval,
+  HellaSwag and TruthfulQA). Quick asks 50 items of each, Standard 200, Full
+  every one.
 - Every Crucible asks the same items the same way, so a score from one machine
   stands beside a score from another.
 - **Spider charts** compare up to three models. A result opens to every
   benchmark, its margin of error, and the answers that were wrong.
-- **Post** a result to the [public board](https://github.com/mattsaund/crucible-bench)
-  from your GitHub account. Everybody's results sit side by side in the tab. A
-  result is names and numbers, nothing typed, and its model has to be a public
-  file on Hugging Face.
+- **Post** a result from your GitHub account. A result is names and numbers,
+  nothing typed, and its model has to be a public file on Hugging Face.
+- **Bench vs base** puts a fine-tune beside the model it was made from.
 - HumanEval and MBPP run the code a model writes on this machine, with time
   and memory limits. It is not a sandbox.
 
-![Bench: one model condensed to three sizes, on a spider chart with the numbers under it](docs/images/bench.png)
+![Bench: the board's best models, a spider chart, and every result](docs/images/bench.png)
+
+### Serve
+
+- **Serve a model to other programs**, the way LM Studio does. Turn it on in
+  Settings, Server, pick the delegator or any model here, and point any OpenAI
+  client at the address it shows.
+- It answers on this machine only, or on your network when you say so. An
+  API key is optional.
+- Chats and builds keep working while it serves. A request waits its turn.
+- It listens only while it is on.
+
+![The local server: on, its address, and the last requests](docs/images/server.png)
 
 ### Hardware
 
@@ -215,7 +234,8 @@ Every model, local or not, gets the same tools in a trusted folder:
 
 ### History
 
-- History is per project, and a reopened chat carries on where it stopped.
+- History is per project, in the right-hand panel, and a reopened chat carries
+  on where it stopped.
 - A chat with no project gets a folder of its own in `~/.crucible/Scratchpad`
   (hidden). The right-hand panel lists recent chats and projects.
 
@@ -228,7 +248,7 @@ Everything is in Settings and applies at once. The file is
 `~/.config/crucible/config.json`, or `%APPDATA%\crucible\config.json` on
 Windows.
 
-- Ctrl+1 to 6 open Chat, Build, Create, History, Models and Bench.
+- Ctrl+1 to 4 open Chat, Create, Models and Bench.
 - Ctrl+, opens Settings, and Ctrl+U attaches.
 - In the editor, Ctrl+P opens a file, Ctrl+Shift+F searches the project, Ctrl+S
   saves, Ctrl+F finds, Ctrl+H replaces and Ctrl+G goes to a line.

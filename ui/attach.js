@@ -11,8 +11,9 @@
 // which are shrunk to what a provider takes before they are sent, because a
 // canvas is the one image codec this program has.
 //
-// Chat and Build each keep their own: a file attached to a question is not
-// meant for the directive on the other tab.
+// There is one box, and a message's attachments go with it whatever it
+// becomes: a question about them, or a build made from them. "chat" names
+// that box wherever a mode is asked for.
 
 const CLIP = {
   plus: `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor"
@@ -33,14 +34,14 @@ const CLIP = {
 const PICTURE_SIDE = 1568;
 const PICTURE_BYTES = 3.5 * 1024 * 1024;
 
-state.attached = { chat: [], build: [] };
+state.attached = { chat: [] };
 // The one small menu open over the box, as "<which>:<mode>" -- "attach:chat",
-// "route:cook" -- or null. One at a time, and any click outside it shuts it.
+// "route:chat" -- or null. One at a time, and any click outside it shuts it.
 state.menu = null;
 
-/// Which box the menu and the tiles belong to: the view's.
+/// Which box the menu and the tiles belong to: the one there is.
 function attachMode() {
-  return state.view === 'build' ? 'build' : 'chat';
+  return 'chat';
 }
 
 /// The tiles, in the order they were added. Nothing when there are none, so
@@ -290,18 +291,15 @@ CLIP.drop = `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" 
   stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/>
   <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>`;
 
-/// Which box a drop would go in, or why it cannot go in one: the same
-/// reasons the box itself is shut for. A running build shuts only its own
-/// box; the chat's takes a drop whatever the build is doing.
+/// Which box a drop would go in, or why it cannot go in one. The box takes
+/// one whatever a build is doing, except while it asks something: then
+/// what is typed is the answer, and an answer has no attachments.
 function dropTarget() {
   const s = state.snapshot || {};
   if (state.modal) return { why: 'Close the dialog first' };
   const cook = s.cook && s.cook.running ? s.cook : null;
-  if (cook && state.view === 'build') {
-    return { why: cook.state === 'asking' ? 'Answer the build\'s question first'
-                                          : 'A build is running. Drop it on Chat, or wait' };
-  }
-  return { mode: state.view === 'build' ? 'build' : 'chat' };
+  if (cook && cook.state === 'asking') return { why: 'Answer the build\'s question first' };
+  return { mode: 'chat' };
 }
 
 /// The middle of the overlay: what a drop will do, or why it will not.
@@ -542,7 +540,46 @@ function base64Of(bytes) {
 // is kept, and attached. Text pastes as text, as it always has.
 //
 // WebKitGTK hands over a picture but not copied files: those it pastes as
-// their paths, as text, and tells the page nothing more.
+// their paths, as text, and tells the page nothing more. The window reads
+// the clipboard there instead (src/gui/drops.hpp) and says which files are on
+// it, and a paste of those attaches the files themselves, as a drop the
+// window can place does: nothing is copied.
+
+/// The files on the clipboard, as the window last said. Empty where it does
+/// not say, and whenever the clipboard holds anything else.
+let copiedFiles = [];
+window.crucibleCopied = (paths) => {
+  copiedFiles = Array.isArray(paths) ? paths.filter((path) => typeof path === 'string' && path) : [];
+};
+// What was copied before this page was here to be told.
+if (window.readClipboard) window.readClipboard().catch(() => {});
+
+/// When the middle button was last pressed or let go of. WebKitGTK pastes
+/// the selection a moment after it is let go of, and hands the page the
+/// clipboard's contents with it rather than the selection's. What goes in
+/// the box is the selection, so a paste within a second of it is that one.
+let middleAt = 0;
+function middleButton(event) {
+  if (event.button === 1) middleAt = Date.now();
+}
+document.addEventListener('mousedown', middleButton, true);
+document.addEventListener('mouseup', middleButton, true);
+
+/// The files a paste carries by the window's word, or none. What WebKitGTK
+/// hands the page with them is their paths as text, their URIs, or nothing;
+/// text that names none of them was copied since, and is a paste of text.
+function copiedPaths(transfer) {
+  if (!copiedFiles.length) return [];
+  const text = ((transfer && transfer.getData && transfer.getData('text/plain')) || '').trim();
+  if (!text) return copiedFiles.slice();
+  let plain = text;
+  try { plain = decodeURIComponent(text); } catch (_) { /* as it is */ }
+  const named = copiedFiles.some((path) => {
+    const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+    return name && (text.includes(name) || plain.includes(name));
+  });
+  return named ? copiedFiles.slice() : [];
+}
 
 /// What a paste carries that is files rather than text, as keepDropped takes
 /// them. None when it is text.
@@ -576,9 +613,10 @@ function pastedFiles(transfer) {
 /// Ctrl+V in the box: files go in it as tiles, and anything else is the
 /// box's own to paste.
 actions['composer-paste'] = (box, event) => {
-  if (box.disabled) return;
-  const tops = pastedFiles(event.clipboardData);
-  if (!tops.length) return;
+  if (box.disabled || Date.now() - middleAt < 1000) return;
+  const paths = copiedPaths(event.clipboardData);
+  const tops = paths.length ? [] : pastedFiles(event.clipboardData);
+  if (!paths.length && !tops.length) return;
   event.preventDefault();
   const target = dropTarget();
   if (!target.mode) {
@@ -586,5 +624,6 @@ actions['composer-paste'] = (box, event) => {
     render();
     return;
   }
-  keepDropped(target.mode, tops);
+  if (paths.length) attachPaths(target.mode, paths);
+  else keepDropped(target.mode, tops);
 };

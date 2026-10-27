@@ -9,10 +9,12 @@
 
 #include "crucible/market/downloads.hpp"
 #include "crucible/market/hub.hpp"
+#include "crucible/market/logos.hpp"
 #include "crucible/util/sha256.hpp"
 #include "crucible/util/http.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <fstream>
 
 namespace {
@@ -139,7 +141,7 @@ TEST(a_draft_head_is_not_offered_but_a_model_with_mtp_layers_is) {
 TEST(a_gguf_repository_is_offered_as_its_quantizations) {
     const Detail detail = parse_model(kModel, Format::Gguf);
     CHECK_EQ(detail.listing.id, std::string("unsloth/Qwen3.8-27B-GGUF"));
-    CHECK_EQ(detail.base_model, std::string("Qwen/Qwen3.8-27B"));
+    CHECK_EQ(detail.listing.base_model, std::string("Qwen/Qwen3.8-27B"));
     // A projector in the repository means it reads pictures, whatever its card.
     CHECK(detail.listing.vision);
     // The importance matrix and the MTP draft head are not things to talk to;
@@ -383,6 +385,252 @@ TEST(the_hub_answers_when_asked_for_real) {
     Detail detail;
     CHECK(model("unsloth/Qwen3-0.6B-GGUF", Format::Gguf, detail, error));
     CHECK(!detail.options.empty());
+    if (!error.empty()) {
+        std::printf("      %s\n", error.c_str());
+    }
+}
+
+// --- logos ---------------------------------------------------------------------
+//
+// Beside each repository, the picture of whose model it is, fetched once per
+// owner and kept on disk. See market/logos.hpp.
+
+namespace {
+
+/// Bytes that start the way each kind of picture does, `size` of them.
+std::string picture(const char* kind, std::size_t size) {
+    std::string out = std::string(kind) == "png"  ? std::string("\x89" "PNG\r\n\x1a\n", 8)
+                    : std::string(kind) == "jpeg" ? std::string("\xFF\xD8\xFF\xE0")
+                    : std::string(kind) == "gif"  ? std::string("GIF89a")
+                                                  : std::string("RIFF\x10\0\0\0WEBPVP8 ", 16);
+    out.resize(size, 'x');
+    return out;
+}
+
+/// Make a kept file `days` old, as if it had been fetched then.
+void age(const std::filesystem::path& file, int days) {
+    std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * days));
+}
+
+/// No curl to be found while it lives: what a machine that cannot reach the
+/// hub looks like to the code that would ask it.
+class NoCurl {
+public:
+    NoCurl() {
+        if (const char* path = std::getenv("PATH"); path != nullptr) {
+            path_ = path;
+            had_  = true;
+        }
+        set_env("PATH", "");
+    }
+    ~NoCurl() {
+        if (had_) {
+            set_env("PATH", path_);
+        } else {
+            unset_env("PATH");
+        }
+    }
+    NoCurl(const NoCurl&)            = delete;
+    NoCurl& operator=(const NoCurl&) = delete;
+
+private:
+    std::string path_;
+    bool        had_ = false;
+};
+
+}  // namespace
+
+TEST(a_repository_shows_the_logo_of_whose_model_it_is) {
+    // A GGUF of somebody else's model: theirs, as its card says.
+    CHECK_EQ(logo_owner("unsloth/Qwen3.8-27B-GGUF", "Qwen/Qwen3.8-27B"), std::string("Qwen"));
+    // Its own owner's, when the card names no base model or one with no owner.
+    CHECK_EQ(logo_owner("bartowski/Original-7B-GGUF", ""), std::string("bartowski"));
+    CHECK_EQ(logo_owner("someone/gpt2-GGUF", "gpt2"), std::string("someone"));
+    // Nothing that could leave an address or a folder is a name.
+    CHECK_EQ(logo_owner("someone/x", "../../etc/passwd"), std::string("someone"));
+    CHECK_EQ(logo_owner("someone/x", "a b/c"), std::string("someone"));
+    CHECK(logo_owner("no-slash", "").empty());
+    CHECK(logo_owner("../x", "..").empty());
+
+    // The card says what it was made from, and the hub repeats that as a tag,
+    // and again with how it was made, for each repository it knows. The tag,
+    // in the hub's own capitals, is believed first; the card when there is
+    // none, as for a base model spelled in other capitals or since deleted.
+    const Page page = parse_search(R"([
+      {"id": "unsloth/Qwen3.8-27B-GGUF", "cardData": {"base_model": "qwen/qwen3.8-27b"},
+       "tags": ["gguf", "base_model:quantized:Qwen/Qwen3.8-27B", "base_model:Qwen/Qwen3.8-27B"]},
+      {"id": "HauhauCS/Gemma-4-E4B-Uncensored-GGUF", "cardData": {"base_model": "google/gemma-4-e4b-it"},
+       "tags": ["gguf"]},
+      {"id": "ttindall/Defiance-GGUF", "cardData": {"base_model": ["gone/Deleted", "DavidAU/Brilliance"]},
+       "tags": ["base_model:DavidAU/Brilliance", "base_model:quantized:DavidAU/Brilliance"]},
+      {"id": "a/Merged-GGUF", "tags": ["base_model:merge:A/one", "base_model:A/one", "base_model:B/two"]},
+      {"id": "b/Original", "cardData": {"license": "mit"}, "tags": ["gguf"]}])", "");
+    CHECK_EQ(page.listings.size(), std::size_t{5});
+    if (page.listings.size() == 5) {
+        CHECK_EQ(page.listings[0].base_model, std::string("Qwen/Qwen3.8-27B"));
+        CHECK_EQ(page.listings[1].base_model, std::string("google/gemma-4-e4b-it"));
+        CHECK_EQ(logo_owner(page.listings[1].id, page.listings[1].base_model), std::string("google"));
+        CHECK_EQ(page.listings[2].base_model, std::string("DavidAU/Brilliance"));
+        CHECK_EQ(page.listings[3].base_model, std::string("A/one"));
+        CHECK(page.listings[4].base_model.empty());
+    }
+    // A repository's own page, with only its card to go by.
+    CHECK_EQ(parse_model(kModel, Format::Gguf).listing.base_model, std::string("Qwen/Qwen3.8-27B"));
+}
+
+TEST(a_logo_is_a_picture_by_its_first_bytes_and_nothing_else) {
+    CHECK_EQ(std::string(picture_type(picture("png", 40))), std::string("image/png"));
+    CHECK_EQ(std::string(picture_type(picture("jpeg", 40))), std::string("image/jpeg"));
+    CHECK_EQ(std::string(picture_type(picture("gif", 40))), std::string("image/gif"));
+    CHECK_EQ(std::string(picture_type(picture("webp", 40))), std::string("image/webp"));
+    // The pattern the hub draws for a user who never chose a picture is SVG,
+    // and an error is JSON: neither is a logo.
+    CHECK(picture_type("<svg viewBox=\"0 0 80 80\" xmlns=\"http://www.w3.org/2000/svg\"></svg>").empty());
+    CHECK(picture_type(R"({"error":"Sorry, we can't find the page you are looking for."})").empty());
+    CHECK(picture_type(std::string("RIFF\x10\0\0\0WAVEfmt ", 16)).empty());
+    CHECK(picture_type(picture("png", 40).substr(0, 5)).empty());
+    CHECK(picture_type("").empty());
+    // Where the hub sends the asker on to an organization's picture or a user's.
+    CHECK_EQ(avatar_url("Qwen", false), std::string("https://huggingface.co/api/organizations/Qwen/avatar?redirect=true"));
+    CHECK_EQ(avatar_url("bartowski", true), std::string("https://huggingface.co/api/users/bartowski/avatar?redirect=true"));
+}
+
+TEST(logos_are_kept_until_they_are_old_or_crowded_out) {
+    TempDir                     dir;
+    const std::filesystem::path folder = dir.path() / "logos";
+    Logo                        out;
+    bool                        fresh = true;
+    // Nothing kept is not "none".
+    CHECK(!kept_logo(folder, "Qwen", out, fresh));
+
+    keep_logo(folder, {"Qwen", "image/webp", picture("webp", 3000)});
+    // The hub's names are the same in any capitals.
+    CHECK(kept_logo(folder, "qwen", out, fresh));
+    CHECK(fresh);
+    CHECK_EQ(out.mime, std::string("image/webp"));
+    CHECK_EQ(out.bytes.size(), std::size_t{3000});
+    // An owner with no picture is kept as that, so the hub is not asked again.
+    keep_logo(folder, {"mradermacher", "", ""});
+    CHECK(kept_logo(folder, "mradermacher", out, fresh));
+    CHECK(fresh);
+    CHECK(out.mime.empty());
+
+    // A picture is asked for again after a month, and "none" after a week;
+    // until it is, and if the hub cannot be reached, the old one is there.
+    age(folder / "logo-qwen", 20);
+    CHECK(kept_logo(folder, "Qwen", out, fresh) && fresh);
+    age(folder / "logo-qwen", 31);
+    CHECK(kept_logo(folder, "Qwen", out, fresh) && !fresh);
+    CHECK_EQ(out.mime, std::string("image/webp"));
+    age(folder / "logo-mradermacher", 8);
+    CHECK(kept_logo(folder, "mradermacher", out, fresh) && !fresh);
+
+    // Only pictures are kept, and a file that is not one is not believed.
+    keep_logo(folder, {"drawn", "image/svg+xml", "<svg/>"});
+    CHECK(!kept_logo(folder, "drawn", out, fresh));
+    { std::ofstream half(folder / "logo-broken", std::ios::binary); half << "half a png"; }
+    CHECK(!kept_logo(folder, "broken", out, fresh));
+    // A name the hub could not have never becomes a file, here or anywhere.
+    const auto files = [&folder] {
+        return std::distance(std::filesystem::directory_iterator(folder), std::filesystem::directory_iterator());
+    };
+    const auto before = files();
+    keep_logo(folder, {"../escaped", "image/png", picture("png", 100)});
+    CHECK_EQ(files(), before);
+    CHECK(!std::filesystem::exists(dir.path() / "escaped"));
+
+    // Past a few megabytes the ones fetched longest ago go, and the folder
+    // stays under its limit with the newest in it.
+    for (int i = 0; i < 40; ++i) {
+        const std::string owner = "owner" + std::to_string(i);
+        keep_logo(folder, {owner, "image/png", picture("png", 250 * 1024)});
+        age(folder / ("logo-" + owner), 60 - i);
+    }
+    std::uintmax_t total = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        total += entry.file_size();
+        // Nothing half written is left behind.
+        CHECK(entry.path().extension() != ".part");
+    }
+    CHECK(total <= 8u * 1024 * 1024);
+    CHECK(!std::filesystem::exists(folder / "logo-owner0"));
+    CHECK(kept_logo(folder, "owner39", out, fresh));
+}
+
+TEST(a_logo_asked_for_by_a_repositorys_id_needs_nothing_from_the_hub_once_kept) {
+    TempDir              dir;
+    const ScopedDataHome home(dir.path());
+    // What a search said: whose logo each repository has.
+    Listing gguf;
+    gguf.id         = "unsloth/Qwen3.8-27B-GGUF";
+    gguf.base_model = "Qwen/Qwen3.8-27B";
+    Listing own;
+    own.id = "bartowski/Original-GGUF";
+    remember_logos({gguf, own});
+    CHECK_EQ(remembered_owner("UNSLOTH/qwen3.8-27b-gguf"), std::string("Qwen"));
+    CHECK_EQ(remembered_owner("bartowski/Original-GGUF"), std::string("bartowski"));
+    CHECK(remembered_owner("never/seen").empty());
+    // Kept on disk too, for the next time Crucible starts.
+    CHECK(std::filesystem::exists(logos_dir() / "owners.json"));
+
+    // Kept, the logo is the kept picture.
+    keep_logo(logos_dir(), {"Qwen", "image/png", picture("png", 500)});
+    Logo        out;
+    std::string error;
+    CHECK(logo("unsloth/Qwen3.8-27B-GGUF", out, error));
+    CHECK_EQ(out.owner, std::string("Qwen"));
+    CHECK_EQ(out.mime, std::string("image/png"));
+    CHECK_EQ(out.bytes.size(), std::size_t{500});
+    // Not a repository's id: refused before anything is asked.
+    CHECK(!logo("../../etc", out, error));
+    CHECK(!logo("", out, error));
+
+#if !defined(_WIN32)
+    // Windows finds curl beside itself whatever PATH says, so only here can
+    // a machine be made that cannot reach the hub.
+    const NoCurl offline;
+    // Too old to believe, and the hub not there: the old one, not nothing.
+    age(logos_dir() / "logo-qwen", 40);
+    CHECK(logo("unsloth/Qwen3.8-27B-GGUF", out, error));
+    CHECK_EQ(out.mime, std::string("image/png"));
+    // Never fetched, and the hub not there: no telling, so no answer.
+    CHECK(!logo("bartowski/Original-GGUF", out, error));
+    CHECK(!error.empty());
+#endif
+}
+
+TEST(logos_come_from_the_hub_when_asked_for_real) {
+    if (std::getenv("CRUCIBLE_LIVE_HUB") == nullptr) {
+        return;   // the network, only when asked for
+    }
+    TempDir              dir;
+    const ScopedDataHome home(dir.path());
+    Logo                 out;
+    std::string          error;
+    // Asked for by its id alone: its card is asked of the hub, and the logo
+    // is Qwen's, a picture, and kept.
+    CHECK(logo("unsloth/Qwen3-8B-GGUF", out, error));
+    CHECK_EQ(out.owner, std::string("Qwen"));
+    CHECK(!out.mime.empty());
+    CHECK_EQ(remembered_owner("unsloth/Qwen3-8B-GGUF"), std::string("Qwen"));
+    bool fresh = false;
+    CHECK(kept_logo(logos_dir(), "Qwen", out, fresh) && fresh && !out.mime.empty());
+    // A user's, found as one after not being an organization.
+    Listing user;
+    user.id = "bartowski/anything-GGUF";
+    remember_logos({user});
+    CHECK(logo(user.id, out, error));
+    CHECK(!out.mime.empty());
+    // A user who never chose a picture has none; nor has a name nobody has.
+    Listing plain;
+    plain.id = "mradermacher/anything-GGUF";
+    Listing nobody;
+    nobody.id = "nobody-xyz-123/nothing-456";
+    remember_logos({plain, nobody});
+    CHECK(logo(plain.id, out, error));
+    CHECK(out.mime.empty());
+    CHECK(logo(nobody.id, out, error));
+    CHECK(out.mime.empty());
     if (!error.empty()) {
         std::printf("      %s\n", error.c_str());
     }

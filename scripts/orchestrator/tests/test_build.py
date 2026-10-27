@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))   # for test_cook's roster and parser
 
-from crucible_orchestrator import build  # noqa: E402
+from crucible_orchestrator import build, routing  # noqa: E402
 from test_cook import parse  # noqa: E402
 
 ROSTER = [
@@ -46,7 +46,7 @@ class ScriptedCore:
 
     def __init__(self, replies, stop_after=None, auto_edits=True, answers=None, check_ok=True,
                  can_make=False, make_ok=True, confirm_plan=False, git=True, repo=False, agents=1,
-                 listing=".:\n  (empty)\n", approve=True):
+                 listing=".:\n  (empty)\n", approve=True, made_on=None):
         self.replies = list(replies)
         self.approve = approve
         self.asked_edit = []
@@ -63,6 +63,8 @@ class ScriptedCore:
         self.check_ok = check_ok
         self.can_make = can_make
         self.make_ok = make_ok
+        self.made_on = made_on    # what roster.make says the seat runs on instead, if anything
+        self.make_asked = []
         self.confirm_plan = confirm_plan
         self.git = git
         self.repo = repo
@@ -118,6 +120,8 @@ class ScriptedCore:
             self.rounds += 1
             self.prompts.append(params["messages"])
             reply = self.replies.pop(0) if self.replies else "DONE: nothing more"
+            if isinstance(reply, dict):   # the round's whole answer, notes and all
+                return dict({"answer": "", "reasoning": "", "ms": 3}, **reply)
             return {"answer": reply, "reasoning": "", "ms": 3}
         if method == "tools.parse":
             return parse(params["answer"])
@@ -149,12 +153,15 @@ class ScriptedCore:
             self.publish_bodies.append(len(body.get("steps") or []))
             return {"steps": len(steps)}
         if method == "roster.make":
+            self.make_asked.append(params)
             if not self.make_ok:
                 return {"ok": False, "error": "no model for new agents"}
             made = params["name"].lower().replace(" ", "-")
             self.made.append(params["name"])
-            return {"ok": True, "id": made, "name": params["name"], "tag": "NEW", "remote": True,
-                    "keywords": [w for w in params["name"].lower().split()]}
+            reply = {"ok": True, "id": made, "name": params["name"], "tag": "NEW", "remote": True,
+                     "keywords": [w for w in params["name"].lower().split()]}
+            reply.update(self.made_on or {})
+            return reply
         if method == "git.ready":
             return {"git": self.git, "repo": self.repo}
         if method == "git.init":
@@ -307,6 +314,23 @@ class TheLoop(unittest.TestCase):
         self.assertIn("task 1, Write todo.py (done): wrote todo.py", third)
         self.assertIn("Your task, 3 of 3", third)
 
+    def test_a_build_sent_to_one_seat_is_planned_and_worked_by_it(self):
+        # /writing, or Writing chosen over the box: every task is Writing's,
+        # Programming's tasks included, and nothing is routed.
+        # Each DONE twice: one with nothing written is refused once.
+        core = ScriptedCore([plan_text(), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c",
+                             "It is written."])
+        build.run(core, params(core, pinned="writing"))
+        journal = core.published[-1]
+        self.assertEqual([t["expert"] for t in journal["tasks"]], ["writing", "writing", "writing"])
+        self.assertEqual(core.seats[0], "writing")   # the architect
+        # A pin on a seat with no model is no pin.
+        unseated = ScriptedCore([plan_text(), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c",
+                                 "DONE: c", "Done."])
+        build.run(unseated, params(unseated, pinned="nobody"))
+        self.assertEqual([t["expert"] for t in unseated.published[-1]["tasks"]],
+                         ["programming", "programming", "writing"])
+
     def test_each_finished_task_is_committed_starting_the_repository_first(self):
         core = ScriptedCore([plan_text(), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "all done"], repo=False)
         build.run(core, params(core))
@@ -331,7 +355,7 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(work[0]["files"], ["todo.py"])
         routed = [r for r in core.records if r["expert"] == "delegator"]
         self.assertEqual([r["completion"] for r in routed], ["Programming", "Programming", "Writing"])
-        self.assertTrue(routed[0]["prompt"].startswith("Python back end: Write todo.py"))
+        self.assertEqual(routed[0]["prompt"], "Python back end: Write todo.py")
         # The plan a remote architect wrote, with the prompt it answered.
         planned = [r for r in core.records if r["expert"] == "architect"]
         self.assertEqual(len(planned), 1)
@@ -359,6 +383,34 @@ class TheLoop(unittest.TestCase):
         self.assertIn("rounds", journal["tasks"][0]["outcome"])
         self.assertEqual(journal["tasks"][1]["state"], "done")
         self.assertEqual(journal["state"], "done")
+
+    def test_a_refused_task_fails_with_the_refusal_and_is_not_asked_again(self):
+        declined = "programming-model declined this request (cyber: could enable cyber harm)"
+        core = ScriptedCore([plan_text(), "READ: todo.py", {"error": declined}, "r"])
+        build.run(core, params(core))
+        journal = core.published[-1]
+        first = journal["tasks"][0]
+        self.assertEqual(first["state"], "failed")
+        self.assertEqual(first["outcome"], declined)
+        refused = [s for s in journal["steps"] if s["summary"] == declined]
+        self.assertEqual(len(refused), 1)
+        self.assertFalse(refused[0]["ok"])
+        self.assertEqual(refused[0]["task"], 0)
+        # What came after it waited on it, and was not tried.
+        self.assertEqual([t["state"] for t in journal["tasks"][1:]], ["skipped", "skipped"])
+        self.assertEqual(core.rounds, 4)
+
+    def test_a_reply_another_model_wrote_is_said_to_be_its(self):
+        handed = "programming-model declined, claude-opus-4-8 answered"
+        core = ScriptedCore([plan_text(), {"answer": "DONE: wrote todo.py", "notes": [handed]},
+                             "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"])
+        build.run(core, params(core))
+        journal = core.published[-1]
+        said = [s for s in journal["steps"] if s["summary"] == handed]
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0]["ok"])
+        self.assertEqual(said[0]["expert"], "programming")
+        self.assertEqual(journal["tasks"][0]["state"], "done")
 
     def test_a_task_whose_dependency_failed_is_skipped(self):
         core = ScriptedCore([plan_text()] + ["I would rather not."] * build.IDLE_LIMIT + ["DONE: b", "DONE: b", "r"])
@@ -425,10 +477,50 @@ class TheLoop(unittest.TestCase):
         self.assertTrue(any(s["summary"].startswith("added SQL Schema to the experts")
                             for s in journal["steps"]))
 
+    def test_a_seat_whose_model_cannot_load_here_is_made_on_one_of_the_builds_and_says_so(self):
+        # The 27B set for new agents fits three cards and not the one left
+        # visible: the core puts the seat on a model the build is using, and
+        # the task is worked rather than failed.
+        plan = json.loads(json.dumps(PLAN))
+        plan["tasks"][1] = {"title": "Design the schema", "detail": "tables for items and tags",
+                            "files": ["schema.sql"], "needs": "SQL schema", "after": [0]}
+        core = ScriptedCore([plan_text(plan), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"],
+                            can_make=True,
+                            made_on={"model": "gpt-oss-20b-MXFP4.gguf", "instead_of": "Qwen3.8-27B-Q8_0.gguf",
+                                     "why": "does not fit the cards here"})
+        build.run(core, params(core))
+        # Offered as stand-ins: the seat the task was routed to, and the
+        # architect -- here the same seat, named once.
+        self.assertEqual(core.make_asked[0]["instead"], ["programming"])
+        journal = core.published[-1]
+        self.assertEqual(journal["tasks"][1]["expert"], "sql-schema")
+        self.assertEqual(journal["tasks"][1]["state"], "done")
+        self.assertIn("added SQL Schema to the experts, for SQL schema, on gpt-oss-20b-MXFP4.gguf: "
+                      "Qwen3.8-27B-Q8_0.gguf does not fit the cards here",
+                      [s["summary"] for s in journal["steps"]])
+
     def test_no_seat_is_made_when_the_delegator_found_one(self):
         core = ScriptedCore([plan_text(), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"], can_make=True)
         build.run(core, params(core))
         self.assertEqual(core.made, [])
+
+    def test_a_task_is_routed_on_what_it_needs_and_its_title(self):
+        # Not on its detail, whose words would make the first task Writing's.
+        plan = json.loads(json.dumps(PLAN))
+        plan["tasks"][0]["detail"] = "A CLI that adds and lists items, with a readme and its documentation."
+        plan["tasks"][2]["needs"] = ""
+        core = ScriptedCore([plan_text(plan), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"])
+        build.run(core, params(core))
+        self.assertEqual([t["expert"] for t in core.published[-1]["tasks"]], ["programming", "programming", "writing"])
+        # What a local delegator would be taught is what this one was shown,
+        # and a task that names no needs is shown its detail as well.
+        routed = [r["prompt"] for r in core.records if r["expert"] == "delegator"]
+        self.assertEqual(routed, ["Python back end: Write todo.py", "testing: Write the tests",
+                                  "Write the README\nHow to run it."])
+        # crucible-routebench's "task-lean" measures the lean on a task
+        # worded the same way.
+        self.assertEqual(build.routed_on({"needs": "N/A", "title": "N/A", "detail": "N/A"}),
+                         routing.CONTENT_FREE_TASK)
 
     def test_a_handoff_inside_a_task_changes_who_holds_it(self):
         core = ScriptedCore([plan_text(), "HANDOFF: write the documentation for this", "DONE: wrote it",
@@ -592,6 +684,17 @@ class SmallChanges(unittest.TestCase):
         # No question asked, and the three rounds were the plan, the edit and DONE.
         self.assertFalse(any(step["kind"] == "ask" for step in journal["steps"]))
         self.assertEqual(core.rounds, 3)
+
+    def test_a_change_typed_into_a_conversation_is_planned_knowing_what_was_said(self):
+        # "now add dark mode" is about the todo app the conversation built.
+        before = "Person: build a todo app\n\nCrucible: A todo app.\n\nFiles changed: index.html, app.js"
+        core = ScriptedCore([plan_text(self.ONE), "DONE: dark now", "(unused)"],
+                            listing=".:\n  index.html\n  app.js\n")
+        build.Build(core, params(core, directive="now add dark mode", conversation=before)).run()
+        asked = core.prompts[0][-1]["content"]
+        self.assertIn("now add dark mode\n\nIt was asked in a conversation, which had gone like this:\n\n"
+                      + before, asked)
+        self.assertNotIn("asked in a conversation", build.plan_prompt("d", "/p", "It is empty."))
 
     def test_the_architect_is_told_how_to_make_a_program_for_a_computer(self):
         prompt = build.plan_prompt("a budgeting app with charts", "/p", "It is empty.")

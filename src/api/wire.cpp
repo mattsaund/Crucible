@@ -87,6 +87,9 @@ json turn_json(const Turn& turn) {
     if (!turn.attachments.empty()) {
         out["attachments"] = attachments_json(turn.attachments);
     }
+    if (!turn.build.empty()) {
+        out["build"] = turn.build;   // drawn as the build's journal
+    }
     if (turn.route) {
         // How the decision was reached, not just what it was. "the delegator
         // chose this, 100%" and "nothing chose it, this is the fallback" are

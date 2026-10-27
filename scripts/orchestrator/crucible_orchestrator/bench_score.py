@@ -1361,6 +1361,11 @@ def ifeval_follows(response, instruction_ids, kwargs, prompt=None):
     counts as not followed.
     """
     text = (response or "").replace("\r\n", "\n")
+    # Nothing said follows nothing. "No commas" and "all lowercase" hold of an
+    # empty reply, which is what an answer cut off while the model was still
+    # thinking leaves: gpt-oss scored two of those as followed.
+    if not text.strip():
+        return [False for _ in instruction_ids or []]
     results = []
     for i, instruction in enumerate(instruction_ids or []):
         args = kwargs[i] if kwargs and i < len(kwargs) else None

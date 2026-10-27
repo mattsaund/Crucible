@@ -85,6 +85,8 @@ class ScriptedCore:
             if self.chat_error:
                 return {"error": self.chat_error, "ms": 5}
             reply = self.replies.pop(0) if self.replies else "DONE: nothing more to do"
+            if isinstance(reply, dict):   # the round's whole answer, notes and all
+                return dict({"answer": "", "reasoning": "", "ms": 5}, **reply)
             answer, reasoning = reply if isinstance(reply, tuple) else (reply, "")
             return {"answer": answer, "reasoning": reasoning, "ms": 5}
         if method == "tools.parse":
@@ -233,6 +235,27 @@ class Loop(CookTest):
         journal = core.published[-1]
         self.assertEqual(journal["state"], "failed")
         self.assertEqual(journal["outcome"], "stopped: the provider refused the key")
+
+    def test_a_refusal_ends_it_without_asking_again(self):
+        # The same request to the same model is refused again: no retry, and
+        # no finishing pass to be refused in.
+        declined = "claude-fable-5 declined this request (cyber: could enable cyber harm)"
+        core = ScriptedCore(["READ: a.py", {"error": declined}, "DONE: never asked"])
+        cook.run(cook.Core(core), params())
+        journal = core.published[-1]
+        self.assertEqual(journal["state"], "failed")
+        self.assertEqual(journal["outcome"], "stopped: " + declined)
+        self.assertEqual(core.rounds, 2)
+
+    def test_a_reply_another_model_wrote_is_said_to_be_its(self):
+        handed = "claude-fable-5 declined, claude-opus-4-8 answered"
+        core = ScriptedCore([{"answer": "READ: a.py", "notes": [handed]}, "DONE: ok"], stop_after=2)
+        cook.run(cook.Core(core), params())
+        summaries = [s["summary"] for s in core.published[-1]["steps"]]
+        self.assertIn(handed, summaries)
+        # Said before what came of it, which went ahead as any reply would.
+        self.assertLess(summaries.index(handed), summaries.index("read a.py"))
+        self.assertIn(("read", "a.py"), core.ran)
 
     def test_no_expert_with_a_model_fails_at_once(self):
         core = ScriptedCore([])

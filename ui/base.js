@@ -70,8 +70,8 @@ const state = {
   // window's own storage, like the side menu's width.
   route: '',
 
-  // What is typed in each box and not yet sent. See keepDraft in chat.js.
-  drafts: { chat: '', build: '' },
+  // What is typed in the box and not yet sent. See keepDraft in chat.js.
+  drafts: { chat: '' },
 };
 
 const SIDEBAR_MIN = 13;     // rem; the narrowest it will rest at

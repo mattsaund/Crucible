@@ -100,11 +100,22 @@ Listing listing_of(const json& node) {
     }
 
     std::vector<std::string> tags;
+    std::string              tagged_base;
     if (const auto found = node.find("tags"); found != node.end() && found->is_array()) {
         for (const json& tag : *found) {
-            if (tag.is_string()) {
-                tags.push_back(lower(tag.get<std::string>()));
+            if (!tag.is_string()) {
+                continue;
             }
+            const std::string& raw = tag.get_ref<const std::string&>();
+            // What it was made from: the card's base_model, which the hub
+            // repeats as a tag, "base_model:Qwen/Qwen3-8B", and again with how,
+            // "base_model:quantized:Qwen/Qwen3-8B". It does so only for a
+            // repository it knows, in its own capitals, so the first such tag
+            // is believed before the card.
+            if (tagged_base.empty() && raw.rfind("base_model:", 0) == 0 && raw.find(':', 11) == std::string::npos) {
+                tagged_base = raw.substr(11);
+            }
+            tags.push_back(lower(raw));
         }
     }
     const auto tagged = [&tags](std::initializer_list<std::string_view> wanted) {
@@ -117,9 +128,20 @@ Listing listing_of(const json& node) {
             listing.license = tag.substr(8);
         }
     }
+    listing.base_model = tagged_base;
     if (const auto card = node.find("cardData"); card != node.end() && card->is_object()) {
         if (listing.license.empty()) {
             listing.license = text(*card, "license");
+        }
+        // No such tag when the card names a repository the hub does not know,
+        // in other capitals say: then the card's own word, the first of a
+        // merge's several.
+        if (const auto base = card->find("base_model"); base != card->end() && listing.base_model.empty()) {
+            if (base->is_string()) {
+                listing.base_model = base->get<std::string>();
+            } else if (base->is_array() && !base->empty() && base->front().is_string()) {
+                listing.base_model = base->front().get<std::string>();
+            }
         }
     }
 
@@ -278,7 +300,7 @@ std::string search_url(std::string_view query, Format format, Sort sort, int lim
     // Asked for by name: expanding replaces the default fields rather than
     // adding to them, so everything read in listing_of is named here.
     for (const char* field : {"downloads", "likes", "trendingScore", "lastModified", "gguf", "safetensors",
-                              "pipeline_tag", "tags", "gated"}) {
+                              "pipeline_tag", "tags", "gated", "cardData"}) {
         url += std::string("&expand%5B%5D=") + field;
     }
     return url;
@@ -537,15 +559,6 @@ Detail parse_model(std::string_view json_text, Format format) {
         return detail;
     }
     detail.listing = listing_of(parsed);
-    if (const auto card = parsed.find("cardData"); card != parsed.end() && card->is_object()) {
-        if (const auto base = card->find("base_model"); base != card->end()) {
-            if (base->is_string()) {
-                detail.base_model = base->get<std::string>();
-            } else if (base->is_array() && !base->empty() && base->front().is_string()) {
-                detail.base_model = base->front().get<std::string>();
-            }
-        }
-    }
     const std::vector<File> files = files_of(parsed);
     if (format == Format::Gguf) {
         detail.options = gguf_options(detail.listing.id, files);

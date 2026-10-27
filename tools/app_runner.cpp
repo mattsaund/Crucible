@@ -15,7 +15,9 @@
 // window.crucible.save(data), the two calls Crucible's preview answers too,
 // kept here as a JSON file in the person's own data folder. Not beside the
 // program, which an update replaces: the budget somebody typed in last month
-// is theirs, and outlives the version of the program that holds it.
+// is theirs, and outlives the version of the program that holds it. And
+// localStorage, which a page handed over as a string has none of, stood in
+// for as the preview stands in for it, and kept in a file beside that one.
 //
 // Nothing else of Crucible is in it -- no models, no engine -- so it is small,
 // starts at once, and runs on a machine Crucible was never installed on.
@@ -28,6 +30,7 @@
 #include <string>
 #include <system_error>
 
+#include "crucible/tools/page_storage.hpp"
 #include "webkit_env.hpp"
 
 #include <nlohmann/json.hpp>
@@ -139,6 +142,25 @@ window.crucible = {
 };
 )JS";
 
+/// `value` written to `file` whole. Written beside and renamed over, so a
+/// program closed mid-save leaves the last whole copy rather than half of
+/// the new one.
+bool write_whole(const fs::path& file, const json& value) {
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    fs::path part = file;
+    part += ".part";
+    {
+        std::ofstream out(part, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return false;
+        }
+        out << value.dump(2, ' ', false, json::error_handler_t::replace);
+    }
+    fs::rename(part, file, ec);
+    return !ec;
+}
+
 }  // namespace
 
 #if defined(_WIN32)
@@ -166,25 +188,27 @@ int main() {
                                     : saved.dump(-1, ' ', false, json::error_handler_t::replace);
     });
     view.bind("__crucibleSave", [data](const std::string& arguments) -> std::string {
-        // Written beside and renamed over, so a program closed mid-save leaves
-        // the last whole copy rather than half of the new one.
         const json given = json::parse(arguments, nullptr, false);
-        const json value = given.is_array() && !given.empty() ? given[0] : json(nullptr);
-        std::error_code ec;
-        fs::create_directories(data.parent_path(), ec);
-        fs::path part = data;
-        part += ".part";
-        {
-            std::ofstream out(part, std::ios::binary | std::ios::trunc);
-            if (!out) {
-                return "false";
-            }
-            out << value.dump(2, ' ', false, json::error_handler_t::replace);
-        }
-        fs::rename(part, data, ec);
-        return ec ? "false" : "true";
+        return write_whole(data, given.is_array() && !given.empty() ? given[0] : json(nullptr)) ? "true"
+                                                                                               : "false";
     });
     view.init(kBridge);
+
+    // localStorage, stood in for (crucible/tools/page_storage.hpp) and kept in
+    // a file of its own beside the data, so neither can write over the other;
+    // sessionStorage for as long as the program is open, as a browser's.
+    const fs::path storage = data.parent_path() / "storage.json";
+    view.bind("__crucibleKeep", [storage](const std::string& arguments) -> std::string {
+        const json given = json::parse(arguments, nullptr, false);
+        const bool items = given.is_array() && !given.empty() && given[0].is_object();
+        return items && write_whole(storage, given[0]) ? "true" : "false";
+    });
+    const json held = json::parse(read_all(storage), nullptr, false);
+    const json kept{{"local", held.is_object() ? held : json::object()}, {"session", json::object()}};
+    view.init("(" + std::string(crucible::tools::kPageStorage) + ")("
+              + json(kept.dump(-1, ' ', false, json::error_handler_t::replace))
+                    .dump(-1, ' ', true, json::error_handler_t::replace)
+              + ", function (kind, items) { if (kind === 'local') window.__crucibleKeep(items); });");
 
     const std::string page = read_all(folder / "index.html");
     if (page.empty()) {

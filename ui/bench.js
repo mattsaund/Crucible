@@ -8,6 +8,11 @@
 // the public board, where everybody's results sit side by side: which local
 // models are worth the download, by numbers anyone can rerun.
 //
+// So the tab opens on the board: its best models, each a click from its
+// download in the Models tab, the chart, and every result to browse and
+// open, this machine's own among them. Running a model and posting what it
+// scored is the screen behind Add benchmark, in the corner.
+//
 // The board is a GitHub repository (mattsaund/crucible-bench). It takes names
 // of a fixed form and no free text, and a model only when its file is public
 // on Hugging Face. What it holds was posted by other people all the same, so
@@ -52,7 +57,13 @@ state.bench = {
   boardQuery: '',
   compare: [],                  // [{ key, color, entry }]: what the chart shows
   open: null,                   // a result opened in full
+  adding: false,                // on the screen a run is set up and posted from
+  seeded: false,                // the board's best put on the chart, once
+  versus: null,                 // { paths }: a model made in Create and its base, run against each other
 };
+
+/// How many of the board's best models the tab opens on.
+const BENCH_BEST = 5;
 
 // --- the arithmetic, the board's own ---------------------------------------------------
 
@@ -187,6 +198,78 @@ function rowOf(entry, extra) {
   }, extra || {});
 }
 
+// --- the board, and this machine beside it ----------------------------------------------
+
+/// The board's entries that are results at all: an object each. Anything
+/// else in the list is skipped rather than taking the page down.
+function benchEntries() {
+  const entries = (state.bench.board || {}).entries;
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && typeof e === 'object' && !Array.isArray(e));
+}
+
+/// An entry's repository on Hugging Face, when it is one the Models tab can
+/// open: "owner/name" and nothing more.
+function benchRepo(e) {
+  const repo = String((e.model || {}).repo || '');
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repo) ? repo : '';
+}
+
+/// Whether an entry's model file is on this machine already: a file of its
+/// name and size in the models folder.
+function benchHere(e) {
+  const model = e.model || {};
+  return !!model.file && (state.models ? state.models.models || [] : [])
+    .some((m) => fileName(m.name) === model.file && m.bytes === model.bytes);
+}
+
+/// The board's best models, each once, best first. A model's overall is that
+/// of its widest run of every skill, a full run before a quick one: an overall
+/// of fewer skills is another measure, and fifty items say less than all.
+function benchBest(entries) {
+  const asked = (e) => BENCH_SIZES.findIndex(([id]) => id === e.size);
+  const best = new Map();
+  for (const entry of entries) {
+    const row = rowOf(entry);
+    const repo = benchRepo(entry);
+    if (row.partial || row.overall === null || !repo || !(entry.model || {}).file) continue;
+    const key = String(entry.model.sha256 || `${repo}/${entry.model.file}`);
+    const had = best.get(key);
+    if (!had || asked(entry) > asked(had.entry)
+        || (asked(entry) === asked(had.entry) && row.overall > had.row.overall)) best.set(key, { entry, row });
+  }
+  return [...best.values()].sort((a, b) => b.row.overall - a.row.overall);
+}
+
+/// One run, whoever holds it: the file, the size and every count. A result
+/// kept here that is on the board already is the board's row and not a
+/// second one.
+const benchRun = (e) => JSON.stringify([String((e.model || {}).sha256 || ''), String(e.size || ''),
+  BENCH_SUITE.map(([id]) => { const c = (e.benchmarks || {})[id]; return c ? [c.n, c.correct] : 0; })]);
+
+/// Every result to browse: the board's and this machine's own, ordered as the
+/// board orders itself, every skill before fewer and then the best overall.
+function benchDirectory() {
+  const board = benchEntries();
+  const posted = new Set(board.map(benchRun));
+  const mine = ((state.bench.results || {}).results || [])
+    .filter((r) => Object.keys(r.benchmarks || {}).length && !posted.has(benchRun(r)));
+  return board.map((entry) => ({ entry, key: `board-${entry.id}`, mine: false }))
+    .concat(mine.map((entry) => ({ entry, key: entry.id, mine: true })))
+    .map((x) => Object.assign(x, { row: rowOf(x.entry) }))
+    .sort((a, b) => (a.row.partial - b.row.partial)
+      || ((b.row.overall === null ? -1 : b.row.overall) - (a.row.overall === null ? -1 : a.row.overall)));
+}
+
+/// What a search looks through: the model's names, who posted it, the
+/// machine and the size. "you" finds this machine's own.
+function benchSought(x) {
+  const e = x.entry;
+  const model = e.model || {};
+  return [x.row.label, model.repo, model.file, model.quant, model.arch, (e.posted || {}).user,
+          (e.hardware || {}).backend, e.size, x.mine ? 'you' : '']
+    .map((part) => String(part || '')).join(' ').toLowerCase();
+}
+
 // --- the view -----------------------------------------------------------------------------
 
 function benchRunView() {
@@ -282,7 +365,8 @@ function benchCompareView() {
   if (!b.compare.length) {
     return '<p class="lede">Pick up to three.</p>';
   }
-  const rows = b.compare.map((c) => rowOf(c.entry, { color: c.color, key: c.key, note: c.board ? 'board' : '' }));
+  const rows = b.compare.map((c) => rowOf(c.entry, { color: c.color, key: c.key,
+                                                     note: c.board ? 'board' : c.entry.made || '' }));
   return `<div class="bench-compare">
       <div class="radar-wrap">${radarSvg(rows.map((x) => ({ label: x.label, color: x.color, skills: x.skills })))}</div>
       <div class="radar-legend">${rows.map((x) => `<div class="legend-row">
@@ -300,8 +384,8 @@ function benchResultsView() {
       const shown = state.bench.compare.some((c) => c.key === r.id);
       return `<div class="card bench-result">
         <div class="title"><strong>${escape(row.label)}</strong>
-          <span class="tag">${escape(r.size)}</span>${r.stopped ? '<span class="tag">stopped</span>'
-                                                     : row.partial ? '<span class="tag">partial</span>' : ''}${
+          <span class="tag">${escape(r.size)}</span>${r.made ? `<span class="tag">${escape(r.made)}</span>` : ''}${
+            r.stopped ? '<span class="tag">stopped</span>' : row.partial ? '<span class="tag">partial</span>' : ''}${
             benchCut(r) ? `<span class="tag" title="Answers that ran out of room">${benchCut(r)} cut off</span>` : ''}${
             r.settings && r.settings.effort && r.settings.effort !== 'default'
               ? `<span class="tag">${escape(r.settings.effort)} effort</span>` : ''}
@@ -312,56 +396,114 @@ function benchResultsView() {
         <div class="row" style="margin-top:.5rem">
           <button class="action small" data-act="bench-compare" data-id="${escape(r.id)}" ${shown ? 'disabled' : ''}>Compare</button>
           <button class="action small" data-act="bench-detail" data-id="${escape(r.id)}">Details</button>
-          <button class="action small" data-act="bench-post" data-id="${escape(r.id)}"
-                  ${Object.keys(r.benchmarks || {}).length ? '' : 'disabled title="Nothing finished to post"'}>Post</button>
+          ${benchPostButton(r)}
           <button class="link small" data-act="bench-delete" data-id="${escape(r.id)}">Delete</button></div>
       </div>`;
     }).join('')}</div>`;
 }
 
+/// Post, for a result kept here. A model made in Create is on nobody's
+/// Hugging Face, which is the only place the board takes a model from, so
+/// the button says that instead of offering a post that would be refused.
+function benchPostButton(r) {
+  if (r.made) return '<button class="action small" disabled>Not public</button>';
+  return `<button class="action small" data-act="bench-post" data-id="${escape(r.id)}"
+      ${Object.keys(r.benchmarks || {}).length ? '' : 'disabled title="Nothing finished to post"'}>Post</button>`;
+}
+
+/// The board's best models, near the top, ranked: each with its overall and a
+/// way to its download in the Models tab, unless it is here already.
+function benchBestView() {
+  const b = state.bench;
+  const best = benchBest(benchEntries()).slice(0, BENCH_BEST);
+  if (!best.length) return '';
+  return `<h2 style="margin-top:1.4rem">TOP MODELS</h2>
+    <div class="order bench-best">${best.map(({ entry: e, row }, i) => {
+      const id = escape(String(e.id ?? ''));
+      const shown = b.compare.some((c) => c.key === `board-${e.id}`);
+      return `<div class="order-row">
+          <span class="order-n">${i + 1}</span>
+          ${benchRepo(e) ? repoLogo({ id: benchRepo(e) }) : '<span class="logo" aria-hidden="true"></span>'}
+          <span class="order-name"><button class="bench-name" data-act="bench-open-board" data-id="${id}"
+              title="${escape(row.title)}">${escape(row.label)}</button>
+            <span class="status">${apart(escape(benchRepo(e).split('/')[0]),
+              escape(paramsLabel(Number(e.model.params) / 1e9)), escape(e.size || ''))}</span></span>
+          <span class="bench-overall">${pct(row.overall)}</span>
+          ${benchHere(e) ? '<span class="status here">here</span>'
+            : `<button class="action" data-act="bench-get" data-id="${id}">Download</button>`}
+          <button class="action" data-act="bench-compare-board" data-id="${id}" ${shown ? 'disabled' : ''}>Compare</button>
+        </div>`;
+    }).join('')}</div>`;
+}
+
+/// Every result there is to look at, the board's and this machine's, as one
+/// directory: searched, opened, put on the chart. Without the board, offline
+/// and never posted to, the results kept here are still here.
 function benchBoardView() {
   const b = state.bench;
   const board = b.board;
-  if (!board) return '<div class="status">Reading...</div>';
+  if (!board && !b.results) return '<div class="status">Reading...</div>';
   const query = b.boardQuery.trim().toLowerCase();
-  const entries = (board.entries || []).filter((e) => e && typeof e === 'object' && !Array.isArray(e))
-    .filter((e) => !query
-    || `${(e.model || {}).repo || ''} ${(e.model || {}).file || ''} ${(e.model || {}).quant || ''}`.toLowerCase().includes(query));
-  const rows = entries.slice(0, 100).map((e) => {
-    const row = rowOf(e);
-    const key = `board-${e.id}`;
-    const shown = b.compare.some((c) => c.key === key);
+  const all = benchDirectory();
+  const rows = all.filter((x) => !query || benchSought(x).includes(query)).slice(0, 100).map((x) => {
+    const e = x.entry;
+    const id = escape(String(e.id ?? ''));
+    const shown = b.compare.some((c) => c.key === x.key);
     return `<tr>
-        <td class="model-cell"><span title="${escape(row.title)}">${escape(row.label)}</span>${
-          row.partial ? ' <span class="status">partial</span>' : ''}</td>
-        <td>${row.overall === null ? '' : pct(row.overall)}</td>
-        ${BENCH_SKILLS.map(([skill]) => `<td>${row.skills[skill] === undefined ? '' : pct(row.skills[skill])}</td>`).join('')}
-        <td>${escape(row.size)}</td><td>${escape(((e.posted || {}).user) || '')}</td>
-        <td><button class="action small" data-act="bench-compare-board" data-id="${escape(String(e.id))}" ${shown ? 'disabled' : ''}>Compare</button></td></tr>`;
+        <td class="model-cell"><button class="bench-name" data-act="${x.mine ? 'bench-detail' : 'bench-open-board'}"
+            data-id="${id}" title="${escape(x.row.title)}">${escape(x.row.label)}</button>${
+          x.mine && e.made ? ` <span class="status">${escape(e.made)}</span>` : ''}${
+          x.row.partial ? ' <span class="status">partial</span>' : ''}</td>
+        <td>${x.row.overall === null ? '' : pct(x.row.overall)}</td>
+        ${BENCH_SKILLS.map(([skill]) => `<td>${x.row.skills[skill] === undefined ? '' : pct(x.row.skills[skill])}</td>`).join('')}
+        <td>${escape(x.row.size)}</td><td>${x.mine ? 'you'
+          : `<span class="by" title="${escape((e.posted || {}).user || '')}">${escape((e.posted || {}).user || '')}</span>`}</td>
+        <td><button class="action small" data-act="${x.mine ? 'bench-compare' : 'bench-compare-board'}" data-id="${id}"
+                    ${shown ? 'disabled' : ''}>Compare</button></td></tr>`;
   }).join('');
+  const posted = benchEntries().length;
+  // Said in a word where the count goes: no board, or the copy from last time.
+  const status = !board ? 'Reading...' : board.offline ? (posted ? 'offline copy' : 'offline') : count(posted, 'result');
   return `<div class="row" style="margin-bottom:.6rem">
-      <input id="board-query" data-draft data-input="board-typed" value="${escape(b.boardQuery)}" placeholder="Filter models"
-             aria-label="Filter the board" autocomplete="off" spellcheck="false" style="max-width:18rem">
+      <input id="board-query" data-draft data-input="board-typed" value="${escape(b.boardQuery)}" placeholder="Search"
+             aria-label="Search the results" autocomplete="off" spellcheck="false" style="max-width:18rem">
       <span class="spacer"></span>
-      <span class="status">${board.offline ? 'offline copy' : count((board.entries || []).length, 'result')}</span>
+      <span class="status">${status}</span>
       <button class="action small" data-act="bench-board-refresh">Refresh</button></div>
     ${rows ? `<table class="bench-table board"><thead><tr><th>Model</th><th>Overall</th>${
         BENCH_SKILLS.map(([, name]) => `<th>${name}</th>`).join('')}<th>Size</th><th>By</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<p class="lede">${(board.entries || []).length ? 'Nothing matches.' : 'Nobody has posted yet.'}</p>`}`;
+      : `<p class="lede">${query && all.length ? 'Nothing matches.'
+          : board && board.offline ? 'Board offline.' : board ? 'Nobody has posted yet.' : ''}</p>`}`;
+}
+
+/// What the tab opens on: the board's best, the chart, and every result,
+/// with the way to add one in the corner.
+function benchHomeView() {
+  const live = state.snapshot.bench;
+  return `<div class="row bench-head"><h1 style="flex:1">Bench</h1>
+      ${live && live.running ? '<span class="working">Running</span>' : ''}
+      <button class="action primary" data-act="bench-add">Add benchmark</button></div>
+    ${benchBestView()}
+    <h2 style="margin-top:2rem">COMPARE</h2>${benchCompareView()}
+    <h2 style="margin-top:2rem">RESULTS</h2>${benchBoardView()}`;
+}
+
+/// Running models through the suite, how the run is going, and the results
+/// kept here, from where each can go to the board.
+function benchAddView() {
+  const live = state.snapshot.bench;
+  return `<button class="link" data-act="bench-home">&larr; Bench</button>
+    <h1 style="margin-top:.6rem">Add benchmark</h1>
+    ${benchRunView()}
+    ${live ? benchLiveView() : ''}
+    <h2 style="margin-top:2rem">COMPARE</h2>${benchCompareView()}
+    <h2 style="margin-top:2rem">YOURS</h2>${benchResultsView()}`;
 }
 
 views.bench = () => {
   const b = state.bench;
-  const live = state.snapshot.bench;
-  return sideView() + `<div class="pane"><div class="settings-page bench">
-      <h1>Bench</h1>
-      ${b.open ? benchDetailView(b.open) : `
-      ${benchRunView()}
-      ${live ? benchLiveView() : ''}
-      <h2 style="margin-top:2rem">COMPARE</h2>${benchCompareView()}
-      <h2 style="margin-top:2rem">RESULTS</h2>${benchResultsView()}
-      <h2 style="margin-top:2rem">PUBLIC BOARD</h2>${benchBoardView()}`}
-    </div></div>`;
+  return sideView() + `<div class="pane"><div class="settings-page bench">${
+    b.open ? benchDetailView(b.open) : b.adding ? benchAddView() : benchHomeView()}</div></div>`;
 };
 
 /// What the checker read from a wrong answer, said shortly: the letter or the
@@ -374,46 +516,118 @@ function benchRead(id, item) {
   return `read ${Array.isArray(read) ? read.join(', ') : read}`;
 }
 
-/// One result in full: every benchmark with its score, how sure that score
-/// is at this many items, and what the model said where it was wrong.
+/// One result in full, kept here or from the board: every benchmark with its
+/// score and how sure that score is at this many items, what the model is,
+/// what it ran on and with, and for one run here what the model said where it
+/// was wrong. Everything a board entry holds is somebody else's, as text.
 function benchDetailView(r) {
+  const b = state.bench;
   const rows = BENCH_SUITE.map(([id, name]) => {
     const counts = (r.benchmarks || {})[id];
-    const items = (r.items || {})[id] || [];
+    const kept = (r.items || {})[id];
+    const items = Array.isArray(kept) ? kept : [];
     const missed = (r.errors || {})[id];
     if (!counts && !items.length) {
       return missed ? `<tr><td>${escape(name)}</td><td colspan="3" class="bad wrap">${escape(missed)}</td></tr>` : '';
     }
-    const n = counts ? counts.n : items.length;
-    const right = counts ? counts.correct : items.filter((x) => x.ok).length;
+    const n = counts ? Number(counts.n) || 0 : items.length;
+    const right = counts ? Number(counts.correct) || 0 : items.filter((x) => x.ok).length;
     const p = n ? right / n : 0;
     // A 95% interval: what a score from fifty items can and cannot say.
     const margin = n ? 1.96 * Math.sqrt((p * (1 - p)) / n) : 0;
     const wrong = items.filter((x) => !x.ok).slice(0, 3);
     const cut = Number((r.cut_off || {})[id]) || 0;
+    // An answer that ran out of room by going round in circles says so: the
+    // runner stops a reply that loops, and that is not a long answer.
     return `<tr><td>${escape(name)}</td><td>${pct(p)}</td><td class="status">&plusmn;${pct(margin)}</td>
         <td>${right} of ${n}${counts ? '' : ' (stopped)'}${cut ? ` <span class="status">${cut} cut off</span>` : ''}</td></tr>${wrong.length ? `<tr class="wrong-row"><td colspan="4">${
-          wrong.map((x) => `<details><summary>${apart(`#${x.i}`, escape(benchRead(id, x)), x.limit ? 'hit the limit' : '')}</summary>
+          wrong.map((x) => `<details><summary>${apart(`#${escape(x.i)}`, escape(benchRead(id, x)),
+              x.looped ? 'looped' : x.limit ? 'hit the limit' : '')}</summary>
             ${/^(humaneval|mbpp)$/.test(id) && x.read ? codeBlock(String(x.read), 'text') : ''}
             ${codeBlock(String(x.answer || ''), 'text')}</details>`).join('')}</td></tr>` : ''}`;
   }).join('');
   const row = rowOf(r);
+  const model = r.model && typeof r.model === 'object' ? r.model : {};
+  const repo = r.board ? benchRepo(r) : '';
+  const facts = [['REPO', repo], ['FILE', model.file], ['QUANT', model.quant], ['ARCH', model.arch],
+                 ['PARAMS', paramsLabel(Number(model.params) / 1e9)]]
+    .filter(([, value]) => value)
+    .map(([key, value]) => `<span class="fact"><span class="caption">${key}</span> ${escape(value)}</span>`).join('');
+  const id = escape(String(r.id ?? ''));
+  const shown = b.compare.some((c) => c.key === (r.board ? `board-${r.id}` : r.id));
+  const doing = r.board
+    ? `<button class="action small" data-act="bench-compare-board" data-id="${id}" ${shown ? 'disabled' : ''}>Compare</button>
+       ${benchHere(r) ? '<span class="status">here</span>'
+         : repo ? `<button class="action small" data-act="bench-get" data-id="${id}">Download</button>` : ''}`
+    : `<button class="action small" data-act="bench-compare" data-id="${id}" ${shown ? 'disabled' : ''}>Compare</button>
+       ${benchPostButton(r)}`;
   return `<button class="link" data-act="bench-close">&larr; Bench</button>
     <div class="row" style="margin-top:.6rem"><h1 style="flex:1">${escape(row.label)}</h1>
       <span class="bench-overall">${row.overall === null ? '' : pct(row.overall)}</span></div>
-    <div class="hint">${apart(escape(r.size), escape(r.date || ''), r.speed && r.speed.gen_tps ? `${r.speed.gen_tps} tok/s` : '',
-      r.speed && r.speed.prompt_tps ? `${r.speed.prompt_tps} tok/s reading` : '', escape((r.model || {}).file || ''))}</div>
-    <div class="radar-wrap solo">${radarSvg([{ label: row.label, color: BENCH_COLORS[0], skills: row.skills }])}</div>
-    <table class="bench-table detail"><thead><tr><th>Benchmark</th><th>Score</th><th>95%</th><th>Right</th></tr></thead>
-      <tbody>${rows}</tbody></table>`;
+    <div class="hint">${apart(escape(r.size || ''), escape(r.date || ''),
+      r.board ? escape((r.posted || {}).user || '') : 'you', r.made ? escape(r.made) : '',
+      r.stopped ? 'stopped' : row.partial ? 'partial' : '')}</div>
+    ${facts ? `<div class="facts">${facts}</div>` : ''}
+    <div class="row">${doing}</div>
+    <div class="bench-compare bench-one">
+      <div class="radar-wrap solo">${radarSvg([{ label: row.label, color: BENCH_COLORS[0], skills: row.skills }])}</div>
+      <table class="bench-table detail"><thead><tr><th>Benchmark</th><th>Score</th><th>95%</th><th>Right</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+    <h2 style="margin-top:1.6rem">SETUP</h2>${benchSpecs(r)}`;
+}
+
+/// What a result ran on and with: the machine, the settings every item had,
+/// how fast it went, and which Crucible and llama.cpp. A board entry has the
+/// same, but for the cards' names, which stay on the machine that ran it.
+function benchSpecs(r) {
+  const part = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {});
+  const number = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  const hardware = part(r.hardware);
+  const settings = part(r.settings);
+  const speed = part(r.speed);
+  const cards = Array.isArray(hardware.gpus) ? hardware.gpus.map((g) => escape(g)).join(', ') : '';
+  const spec = (label, value) => (value ? `<div><span>${label}</span><span>${value}</span></div>` : '');
+  return `<div class="runtime-detail" style="border:0;padding:0;margin:0">
+      ${spec('Backend', escape(hardware.backend || ''))}
+      ${spec('GPUs', cards || (number(hardware.gpu_count) === null ? '' : String(hardware.gpu_count)))}
+      ${spec('GPU memory', number(hardware.memory_gb) === null ? '' : `${hardware.memory_gb.toFixed(1)} GB`)}
+      ${spec('Context', number(settings.context) ? `${settings.context} tokens` : '')}
+      ${spec('Reply limit', number(settings.max_tokens) ? `${settings.max_tokens} tokens` : '')}
+      ${spec('Temperature', number(settings.temperature) === null ? '' : String(settings.temperature))}
+      ${spec('Effort', escape(settings.effort || ''))}
+      ${spec('Writing', number(speed.gen_tps) === null ? '' : `${speed.gen_tps} tok/s`)}
+      ${spec('Reading', number(speed.prompt_tps) === null ? '' : `${speed.prompt_tps} tok/s`)}
+      ${spec('Took', number(r.seconds) ? span(r.seconds) : '')}
+      ${spec('Crucible', escape(r.crucible || ''))}
+      ${spec('llama.cpp', escape(r.llama || ''))}
+    </div>`;
 }
 
 // --- what is fetched, and when ------------------------------------------------------------
 
 const loadBenchResults = () => call('bench.results').then((got) => { state.bench.results = got; })
   .catch((error) => { state.error = error.message; }).finally(render);
-const loadBoard = (refresh) => call('bench.board', { refresh: !!refresh }).then((got) => { state.bench.board = got; })
+const loadBoard = (refresh) => call('bench.board', { refresh: !!refresh })
+  .then((got) => {
+    state.bench.board = got;
+    benchSeed();
+    // The makers' logos beside the best, as the Models tab shows them.
+    askLogos(benchBest(benchEntries()).slice(0, BENCH_BEST).map(({ entry }) => ({ id: benchRepo(entry) }))
+      .filter((l) => l.id));
+  })
   .catch(() => { state.bench.board = { entries: [], offline: true }; }).finally(render);
+
+/// A chart from the start: the board's best three, the first time the board
+/// has any, unless something is on the chart already. Once only, so a chart
+/// emptied by hand stays empty.
+function benchSeed() {
+  const b = state.bench;
+  const best = benchBest(benchEntries()).slice(0, BENCH_COLORS.length);
+  if (b.seeded || !best.length) return;
+  b.seeded = true;
+  if (b.compare.length) return;
+  for (const { entry } of best) benchCompare(`board-${entry.id}`, entry, true);
+}
 
 entering.bench = () => {
   // Read again: a model condensed or downloaded since is one to run.
@@ -422,13 +636,55 @@ entering.bench = () => {
   if (!state.bench.board) loadBoard(false);
 };
 
-/// A run that has just ended leaves a result: the list is read again.
+/// A run that has just ended leaves a result: the list is read again. A run
+/// of a model made in Create against its base puts the two on the chart.
 let benchWasRunning = false;
 onSnapshot.push(() => {
-  const running = !!(state.snapshot.bench && state.snapshot.bench.running);
-  if (benchWasRunning && !running) loadBenchResults();
+  const live = state.snapshot.bench;
+  const running = !!(live && live.running);
+  if (benchWasRunning && !running) {
+    const versus = state.bench.versus;
+    state.bench.versus = null;
+    loadBenchResults().then(() => { if (versus) benchVersusShown(versus, live); });
+  }
   benchWasRunning = running;
 });
+
+/// A model made in Create, run against the model it was made from: both at
+/// the size and effort set here, on the screen that shows the run, and the
+/// two on the chart when it ends. `made` and `base` are their files.
+function benchVersus(made, base) {
+  const b = state.bench;
+  b.picked = { [made]: true, [base]: true };
+  b.adding = true;
+  b.open = null;
+  b.versus = { paths: [made, base] };
+  enter('bench');
+  return guard(async () => {
+    try {
+      await call('bench.start', { models: [made, base].map((path) => ({ path, name: fileName(path) })),
+                                  size: b.size, effort: b.effort,
+                                  benchmarks: BENCH_SUITE.map(([id]) => id).filter((id) => !b.off[id]) });
+    } catch (error) {
+      b.versus = null;
+      throw error;
+    }
+  });
+}
+
+/// The results that run left, on the chart in place of what was there, the
+/// made model first: those with a benchmark finished. A run stopped before
+/// any was leaves the chart alone.
+function benchVersusShown(versus, live) {
+  const ids = ((live && live.models) || []).filter((m) => versus.paths.includes(m.path) && m.result)
+    .map((m) => m.result);
+  const kept = (state.bench.results || {}).results || [];
+  const results = ids.map((id) => kept.find((r) => r.id === id))
+    .filter((r) => r && Object.keys(r.benchmarks || {}).length);
+  if (!results.length) return;
+  state.bench.compare = [];
+  for (const r of results) benchCompare(r.id, r, false);
+}
 
 // --- the actions ------------------------------------------------------------------------
 
@@ -471,7 +727,7 @@ actions['bench-compare'] = (button) => {
   if (r) benchCompare(r.id, r, false);
 };
 actions['bench-compare-board'] = (button) => {
-  const e = ((state.bench.board || {}).entries || []).find((x) => String(x.id) === button.dataset.id);
+  const e = benchEntries().find((x) => String(x.id) === button.dataset.id);
   if (e) benchCompare(`board-${e.id}`, e, true);
 };
 actions['bench-uncompare'] = (button) => {
@@ -486,6 +742,24 @@ actions['bench-detail'] = (button) => guard(async () => {
   benchTop();
 });
 actions['bench-close'] = () => { state.bench.open = null; benchTop(); render(); };
+actions['bench-add'] = () => { state.bench.adding = true; state.bench.open = null; benchTop(); render(); };
+actions['bench-home'] = () => { state.bench.adding = false; state.bench.open = null; benchTop(); render(); };
+/// A board entry opened in full. A copy, marked as the board's, and without
+/// anything only a result kept here has: the board has no answers to show.
+actions['bench-open-board'] = (button) => {
+  const e = benchEntries().find((x) => String(x.id) === button.dataset.id);
+  if (!e) return;
+  state.bench.open = Object.assign({}, e, { board: true, items: null, errors: null, cut_off: null, made: null });
+  benchTop();
+  render();
+};
+/// The Models tab, on the repository a board entry's file is in, with that
+/// file chosen to download.
+actions['bench-get'] = (button) => {
+  const e = benchEntries().find((x) => String(x.id) === button.dataset.id);
+  const repo = e ? benchRepo(e) : '';
+  if (repo) marketShow(repo, repo, String(e.model.file || ''));
+};
 actions['bench-delete'] = async (button) => {
   const sure = await confirmIt({ title: 'Delete this result?', body: 'Posted copies stay.', yes: 'Delete', no: 'Keep' });
   if (!sure) return;
@@ -509,7 +783,7 @@ modals['bench-post'] = (m) => `<div class="modal wide">
     <div class="body-pad">
       ${m.posting ? codeBlock(JSON.stringify(m.posting, null, 2), 'json') : '<div class="status">Reading...</div>'}
       ${m.posting && !m.public ? `<div class="bad" style="margin-top:.6rem">${
-        m.offline ? 'Hugging Face unreachable' : 'Not on Hugging Face'}</div>` : ''}
+        m.made ? 'Not public' : m.offline ? 'Hugging Face unreachable' : 'Not on Hugging Face'}</div>` : ''}
       ${m.error ? `<div class="bad" style="margin-top:.6rem">${escape(m.error)}</div>` : ''}
       ${m.url ? `<div class="hint" style="margin-top:.6rem">${m.posted ? 'Posted: ' : 'Opened: '}${escape(m.url.length > 90 ? m.url.slice(0, 90) + '...' : m.url)}</div>` : ''}
     </div>

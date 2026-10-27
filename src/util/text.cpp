@@ -6,6 +6,8 @@
 // and a text cursor must not land inside one.
 #include "crucible/util/text.hpp"
 
+#include <algorithm>
+
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -183,6 +185,21 @@ std::string powershell_literal(std::string_view text) {
         out += c;
     }
     return out + "'";
+}
+
+bool ends_in_loop(std::string_view text, std::size_t span, int times, std::size_t window) {
+    if (span == 0 || times < 2 || text.size() < span * static_cast<std::size_t>(times)) {
+        return false;
+    }
+    const std::string_view recent = text.substr(text.size() - std::min(window, text.size()));
+    const std::string_view tail   = recent.substr(recent.size() - span);
+    int seen = 0;
+    for (std::size_t at = recent.find(tail); at != std::string_view::npos; at = recent.find(tail, at + 1)) {
+        if (++seen >= times) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace crucible::detail

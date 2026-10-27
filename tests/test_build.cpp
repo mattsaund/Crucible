@@ -7,7 +7,9 @@
 // in, with its plan and its tasks; the new verbs the workshop reads; the
 // settings that gate them; and the small pure functions under the screen
 // and version control tools, which are the parts of those that can be wrong
-// without a screen or a repository to try them on.
+// without a screen or a repository to try them on. And what a build's seats
+// load, with once a whole build through the engine, its agents a provider
+// that answers from a script, as test_chat.cpp's turns are.
 #include "test_helpers.hpp"
 
 #include <atomic>
@@ -24,11 +26,14 @@
 #endif
 
 #include "crucible/api/surface.hpp"
+#include "crucible/engine/engine.hpp"
 #include "crucible/engine/leases.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/tools/computer.hpp"
 #include "crucible/tools/fetch.hpp"
 #include "crucible/tools/git.hpp"
+#include "crucible/util/format.hpp"
+#include "crucible/util/subprocess.hpp"
 
 namespace {
 
@@ -184,6 +189,280 @@ TEST(agents_at_once_outside_one_to_eight_is_refused_for_the_default) {
 }
 
 // ---------------------------------------------------------------------------
+// What a build's seats load: a model the cards hold, with the context they hold
+// ---------------------------------------------------------------------------
+
+TEST(a_made_seat_runs_on_a_model_that_loads_here_and_says_what_it_passed_over) {
+    Config config;
+    config.models_dir = "/models";
+    std::string error;
+    for (const char* name : {"Programming", "Writing"}) {
+        Expert seat;
+        seat.name  = name;
+        seat.blurb = name;
+        CHECK(config.roster.add(seat, error));
+    }
+    config.experts["programming"].model = "gpt-oss-20b.gguf";
+    config.experts["writing"].model     = "small.gguf";
+    config.build.worker_model           = "coder-7b.gguf";
+    config.resolve_models();
+
+    // What loads on the cards here: all but the 27B, as on one card of the
+    // three it was chosen for.
+    std::vector<std::string> asked;
+    const auto here = [&asked](const ModelParams& model) {
+        asked.push_back(std::filesystem::path(model.path).filename().string());
+        return model.path.find("qwen-27b") == std::string::npos ? std::string()
+                                                                : std::string("does not fit the cards here");
+    };
+
+    // The model set for new agents, when it loads.
+    SeatModel chosen = made_seat_model(config, {"programming"}, here);
+    CHECK_EQ(chosen.model, std::string("coder-7b.gguf"));
+    CHECK(chosen.passed_over.empty());
+    CHECK_EQ(asked.size(), std::size_t{1});
+
+    // When it does not, the first of the build's own seats whose model does:
+    // the one the task was routed to, then the architect.
+    config.build.worker_model = "qwen-27b.gguf";
+    asked.clear();
+    chosen = made_seat_model(config, {"programming", "writing"}, here);
+    CHECK_EQ(chosen.model, std::string("gpt-oss-20b.gguf"));
+    CHECK(chosen.provider.empty());
+    CHECK_EQ(chosen.passed_over, std::string("qwen-27b.gguf"));
+    CHECK_EQ(chosen.why, std::string("does not fit the cards here"));
+    CHECK(asked == std::vector<std::string>({"qwen-27b.gguf", "gpt-oss-20b.gguf"}));
+
+    // A seat on the very model that does not load is not asked again, and
+    // one with no model is no stand-in.
+    config.experts["programming"].model = "qwen-27b.gguf";
+    config.resolve_models();
+    asked.clear();
+    chosen = made_seat_model(config, {"nobody", "programming", "writing"}, here);
+    CHECK_EQ(chosen.model, std::string("small.gguf"));
+    CHECK(asked == std::vector<std::string>({"qwen-27b.gguf", "small.gguf"}));
+
+    // None of them: no model, and why, for the build's notes.
+    chosen = made_seat_model(config, {"programming"}, here);
+    CHECK(chosen.model.empty());
+    CHECK_EQ(chosen.passed_over, std::string("qwen-27b.gguf"));
+    CHECK_EQ(chosen.why, std::string("does not fit the cards here"));
+}
+
+TEST(an_agent_gets_the_most_context_that_fits_and_never_less_than_its_own) {
+    std::vector<int> tried;
+    const auto up_to = [&tried](int most_that_fits) {
+        tried.clear();
+        return [&tried, most_that_fits](int n_ctx) {
+            tried.push_back(n_ctx);
+            return n_ctx <= most_that_fits;
+        };
+    };
+    // The most first, then three quarters of it, a half, three eighths:
+    // whichever fits first.
+    CHECK_EQ(roomiest_context(8192, 32768, 0, up_to(40000)), 32768);
+    CHECK_EQ(roomiest_context(8192, 32768, 0, up_to(20000)), 16384);
+    CHECK(tried == std::vector<int>({32768, 24576, 16384}));
+    // None fits: the seat's own context, which was never in question.
+    CHECK_EQ(roomiest_context(8192, 32768, 0, up_to(9000)), 8192);
+    CHECK(tried == std::vector<int>({32768, 24576, 16384, 12288}));
+    // Never past what the model was trained to.
+    CHECK_EQ(roomiest_context(8192, 32768, 16384, up_to(100000)), 16384);
+    CHECK(tried == std::vector<int>({16384}));
+    // A model trained to less than the seat's context keeps the seat's, and
+    // a seat already as large as the most asks nothing.
+    CHECK_EQ(roomiest_context(8192, 32768, 4096, up_to(100000)), 8192);
+    CHECK_EQ(roomiest_context(32768, 32768, 0, up_to(100000)), 32768);
+    CHECK(tried.empty());
+}
+
+namespace {
+
+/// A Python for the orchestrator and the scripted provider, or empty.
+std::string python_here() {
+    if (const char* chosen = std::getenv("CRUCIBLE_PYTHON"); chosen != nullptr && *chosen != '\0') {
+        return chosen;
+    }
+    for (const char* name : {"python3", "python"}) {
+        if (util::on_path(name)) {
+            return name;
+        }
+    }
+    return {};
+}
+
+/// An environment variable set for as long as this lives.
+class ScopedVariable {
+public:
+    ScopedVariable(const char* name, const std::string& value) : name_(name) {
+        if (const char* now = std::getenv(name); now != nullptr) {
+            previous_ = now;
+            had_      = true;
+        }
+        set_env(name, value);
+    }
+    ~ScopedVariable() {
+        if (had_) {
+            set_env(name_, previous_);
+        } else {
+            unset_env(name_);
+        }
+    }
+    ScopedVariable(const ScopedVariable&)            = delete;
+    ScopedVariable& operator=(const ScopedVariable&) = delete;
+
+private:
+    const char* name_;
+    std::string previous_;
+    bool        had_ = false;
+};
+
+/// tests/scripted_provider.py, answering from `replies` for as long as this
+/// lives. See tests/test_chat.cpp, whose turns it plays the same way.
+class ScriptedProvider {
+public:
+    ScriptedProvider(const std::filesystem::path& dir, const nlohmann::json& replies, const std::string& python) {
+        const std::filesystem::path file = dir / "script.json";
+        std::ofstream(file, std::ios::binary) << nlohmann::json{{"replies", replies}}.dump();
+        util::Subprocess::Streams streams;
+        streams.input  = true;
+        streams.errors = dir / "provider.log";
+        const std::filesystem::path source =
+            std::filesystem::path(CRUCIBLE_SOURCE_DIR) / "tests" / "scripted_provider.py";
+        std::string error;
+        if (child_.start({python, "-u", source.string(), file.string(), (dir / "requests.jsonl").string()}, {}, {},
+                         error, streams)) {
+            std::string line;
+            if (child_.read_line(line)) {
+                port_ = format::trim(line);
+            }
+        }
+    }
+    ~ScriptedProvider() {
+        child_.close_input();
+        child_.wait();
+    }
+    ScriptedProvider(const ScriptedProvider&)            = delete;
+    ScriptedProvider& operator=(const ScriptedProvider&) = delete;
+
+    bool        ok() const { return !port_.empty(); }
+    std::string url() const { return "http://127.0.0.1:" + port_ + "/v1"; }
+
+private:
+    util::Subprocess child_;
+    std::string      port_;
+};
+
+}  // namespace
+
+TEST(a_build_makes_its_seat_on_a_model_of_its_own_when_the_one_for_new_agents_cannot_load) {
+    const std::string python = python_here();
+    if (python.empty()) {
+        std::printf("      (no Python to run the orchestrator on; skipped)\n");
+        return;
+    }
+    TempDir        dir;
+    ScopedDataHome home(dir.path() / "data");
+    ScopedVariable chosen("CRUCIBLE_PYTHON", python);
+
+    // The architect's plan, one task needing what nobody on the roster has
+    // a model for; the task's one round; and the write-up.
+    const nlohmann::json plan{
+        {"summary", "A stylesheet."}, {"run", ""}, {"check", ""}, {"ship", ""},
+        {"tasks", nlohmann::json::array({nlohmann::json{{"title", "Style the page"},
+                                                        {"detail", "Calm colors and spacing in style.css."},
+                                                        {"files", nlohmann::json::array()},
+                                                        {"needs", "CSS styling"},
+                                                        {"after", nlohmann::json::array()}}})}};
+    ScriptedProvider provider(dir.path(),
+                              nlohmann::json::array({nlohmann::json{{"content", plan.dump()}},
+                                                     nlohmann::json{{"content", "DONE: styled it"}},
+                                                     nlohmann::json{{"content", "It is styled."}}}),
+                              python);
+    CHECK(provider.ok());
+    if (!provider.ok()) {
+        return;
+    }
+
+    Config config;
+    config.models_dir = (dir.path() / "models").string();
+    crucible::Provider scripted;
+    scripted.id       = "scripted";
+    scripted.name     = "Scripted";
+    scripted.kind     = "openai";
+    scripted.base_url = provider.url();
+    config.providers.push_back(scripted);
+    std::string error;
+    Expert programming;
+    programming.name     = "Programming";
+    programming.blurb    = "apps and pages";
+    programming.keywords = {"page"};
+    CHECK(config.roster.add(programming, error));
+    // On the roster with no model yet: the task the delegator sends here falls
+    // back to Programming, and the build makes a seat for it.
+    Expert design;
+    design.name     = "Design";
+    design.blurb    = "visual design";
+    design.keywords = {"css", "styling"};
+    CHECK(config.roster.add(design, error));
+    config.experts["programming"].model    = "programming-model";
+    config.experts["programming"].provider = "scripted";
+    config.routing.default_expert          = "programming";
+    // The model for new agents, which cannot be loaded here: it is not in
+    // the models folder at all, the plainest way a model fails to load.
+    config.build.worker_model = "worker-27b.gguf";
+    config.build.confirm_plan = false;
+    config.build.auto_commit  = false;
+    config.build.agents       = 1;
+    config.tools.auto_edits   = true;
+    config.resolve_models();
+
+    AppState state;
+    state.configure_seats(config);
+    Engine engine(config, state, [] {});
+    const std::filesystem::path project = dir.path() / "project";
+    std::filesystem::create_directories(project);
+    engine.set_project(project, dir.path() / "history");
+    engine.start();
+    CHECK(engine.start_cook("make the page calm", 0, project, {}, std::nullopt, "build").empty());
+    const auto started = std::chrono::steady_clock::now();
+    while (engine.cooking() && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(!engine.cooking());
+    const Snapshot after = state.snapshot();
+    CHECK(after.cook != nullptr);
+    if (after.cook == nullptr) {
+        engine.stop();
+        return;
+    }
+
+    // The task was worked, by the seat made for it, rather than failed on a
+    // model that could not be had.
+    CHECK_EQ(after.cook->tasks.size(), std::size_t{1});
+    if (!after.cook->tasks.empty()) {
+        CHECK_EQ(after.cook->tasks[0].state, std::string("done"));
+        CHECK_EQ(after.cook->tasks[0].expert, std::string("css-styling"));
+    }
+    // It runs on the model of the seat the task was routed to, and the notes
+    // say what it is on and why.
+    bool said = false;
+    for (const CookStep& step : after.cook->steps) {
+        said = said || step.summary == "added CSS Styling to the experts, for CSS styling, on programming-model: "
+                                       "worker-27b.gguf is not in the models folder";
+    }
+    CHECK(said);
+    const std::vector<Engine::MadeSeat> made = engine.take_made_seats();
+    CHECK_EQ(made.size(), std::size_t{1});
+    if (!made.empty()) {
+        CHECK_EQ(made[0].expert.name, std::string("CSS Styling"));
+        CHECK_EQ(made[0].params.model, std::string("programming-model"));
+        CHECK_EQ(made[0].params.provider, std::string("scripted"));
+    }
+    engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // Leases: a model in use is not freed under its user
 // ---------------------------------------------------------------------------
 
@@ -297,6 +576,39 @@ TEST(a_gguf_waits_for_an_mlx_model_in_use_that_leaves_it_no_room) {
         // tried, and fails for want of a runtime, which is not a crowd.
         CHECK(host.fits_beside(params));
         CHECK(host.acquire_expert("coder", params, {}, {}, error, {}, &crowded) == nullptr);
+        CHECK(!crowded);
+    }
+    llama_log_set(nullptr, nullptr);
+}
+
+TEST(the_delegator_waits_for_an_mlx_model_in_use_that_leaves_it_no_room) {
+    // The same for the delegator, which was loaded beside an MLX model in use
+    // without the question an expert's load asks. Told the MLX model is
+    // there, it asks it, and a delegator that does not fit is crowded out, as
+    // it is by experts in use: nothing is loaded, and routing goes on
+    // keywords until the MLX model is let go.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());   // no runtimes, so nothing loads
+    const std::filesystem::path file = temp.path() / "big.gguf";
+    write_test_gguf(file, /*layers=*/32, /*embd=*/4096, /*heads=*/32,
+                    /*kv_heads=*/{8}, /*key_len=*/128, /*vocab=*/32000);
+    ModelParams params;
+    params.model = file.string();
+    params.path  = file.string();
+    params.n_ctx = 1 << 30;   // 128 TiB of cache, as above
+
+    {
+        const StderrKept kept;
+        ModelHost host(temp.path() / "llama.log");
+        std::string error;
+        bool crowded = false;
+        CHECK(host.acquire_router(params, {}, {}, error, {}, &crowded, /*beside_mlx=*/true) == nullptr);
+        CHECK(crowded);
+        CHECK(host.router() == nullptr);
+
+        // With no MLX model in use there is nothing to fit beside: the load
+        // is tried, and fails for want of a runtime, which is not a crowd.
+        CHECK(host.acquire_router(params, {}, {}, error, {}, &crowded) == nullptr);
         CHECK(!crowded);
     }
     llama_log_set(nullptr, nullptr);

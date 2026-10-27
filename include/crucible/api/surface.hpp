@@ -21,6 +21,12 @@
 // that ever changes, this comment is the thing to come back and argue with --
 // a local-only program that quietly grew a listening socket would be a
 // different promise than the one the README makes.
+//
+// Crucible does have a listening socket now, and this is still not it. The
+// API server (serve/server.hpp) listens only once it is turned on in
+// Settings, and on the network only when asked; it answers a model's
+// completions in OpenAI's shape and nothing else, and no request it takes
+// reaches this surface, the files or the tools.
 #pragma once
 
 #include <filesystem>

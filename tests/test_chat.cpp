@@ -17,6 +17,7 @@
 // on a Python from CRUCIBLE_PYTHON or PATH; with neither, these are skipped.
 #include "test_helpers.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <thread>
 
 #include "crucible/engine/engine.hpp"
+#include "crucible/llm/spend.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -130,14 +132,21 @@ public:
         return out;
     }
 
+    /// Every request as it was logged, the key it carried included.
+    std::vector<json> log() const { return entries(nullptr); }
+
 private:
+    /// The entries that have `key`, as what is under it; every entry, whole,
+    /// for none.
     std::vector<json> entries(const char* key) const {
         std::vector<json> out;
         std::ifstream in(log_);
         std::string line;
         while (std::getline(in, line)) {
             const json entry = json::parse(line, nullptr, false);
-            if (entry.is_object() && entry.contains(key)) {
+            if (entry.is_object() && key == nullptr) {
+                out.push_back(entry);
+            } else if (entry.is_object() && entry.contains(key)) {
                 out.push_back(entry[key]);
             }
         }
@@ -248,6 +257,7 @@ public:
     const std::filesystem::path& project() const { return project_; }
     std::vector<json>            requests() const { return provider_->requests(); }
     std::vector<std::string>     searches() const { return provider_->searches(); }
+    std::vector<json>            log() const { return provider_->log(); }
 
     /// Every status line a wake found, without repeats in a row.
     std::vector<std::string> statuses() const {
@@ -278,6 +288,18 @@ private:
 void skipped() { std::printf("      (no Python to run the orchestrator on; skipped)\n"); }
 
 json reply(const std::string& content) { return json{{"content", content}}; }
+
+/// The scripted provider asked as Claude's Messages API is asked: the same
+/// server, at .../messages, with a key.
+void as_claude(Config& config) {
+    config.providers.front().kind    = "anthropic";
+    config.providers.front().api_key = "sk-ant-scripted";
+}
+
+/// A refusal's stop_details, as the Messages API writes them.
+json refusal_details(const json& category, const json& explanation) {
+    return json{{"type", "refusal"}, {"category", category}, {"explanation", explanation}};
+}
 
 json script(std::initializer_list<json> replies) {
     json out = json::array();
@@ -749,6 +771,238 @@ TEST(a_refusal_takes_back_what_had_streamed) {
     CHECK(turn.actions.empty());
 }
 
+TEST(a_refusal_in_the_chat_completions_words_is_a_refusal_and_is_not_remembered) {
+    Rig rig(script({json{{"refusal", "I'm sorry, I can't help with that."}, {"pieces", 3}},
+                    json{{"content", "Sure, here is"}, {"finish", "content_filter"}},
+                    json{{"refusal", "I can't help with that either."}, {"whole", true}},
+                    reply("Fine.")}));
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    // OpenAI's models decline in a field of their own, which is shown as
+    // their reason.
+    const Turn refused = rig.ask("Something it will not do.");
+    CHECK(refused.failed);
+    CHECK_EQ(refused.reply,
+             std::string("programming-model declined this request (I'm sorry, I can't help with that.)"));
+    CHECK(refused.actions.empty());
+    CHECK(rig.snapshot().mood == Mood::Error);
+
+    // A filter in front of the model, after it had started: what came is not
+    // left on screen as an answer.
+    const Turn filtered = rig.ask("Something else it will not do.");
+    CHECK(filtered.failed);
+    CHECK_EQ(filtered.reply, std::string("programming-model declined this request (content filter)"));
+
+    // And from a server that answers whole rather than streaming.
+    const Turn whole = rig.ask("Once more.");
+    CHECK(whole.failed);
+    CHECK_EQ(whole.reply, std::string("programming-model declined this request (I can't help with that either.)"));
+
+    // Asked again, the model is not shown the requests it declined: sent
+    // back, they would only be declined again.
+    rig.ask("Hello?");
+    const json messages = rig.requests().at(3)["messages"];
+    CHECK_EQ(messages.size(), std::size_t{2});
+    CHECK_EQ(text_of(messages.back()), std::string("Hello?"));
+}
+
+TEST(a_refusal_after_an_action_keeps_what_came_before_and_says_why) {
+    Rig rig(script({reply("Let me look.\nREAD: notes.txt"),
+                    json{{"content", "It says"}, {"finish", "content_filter"}}}));
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    write_file(rig.project() / "notes.txt", "one line\n");
+    const Turn turn = rig.ask("What is in notes.txt?");
+    CHECK(turn.failed);
+    // What the first round said stands; the second round's start does not,
+    // and why it stopped is said above the reply rather than lost.
+    CHECK_EQ(turn.reply, std::string("Let me look."));
+    CHECK_EQ(turn.actions.size(), std::size_t{2});
+    if (turn.actions.size() == 2) {
+        CHECK(turn.actions[0].summary.rfind("read notes.txt", 0) == 0);
+        CHECK_EQ(turn.actions[1].summary,
+                 std::string("programming-model declined this request (content filter)"));
+    }
+}
+
+TEST(a_server_that_does_not_stream_is_answered_all_the_same) {
+    Rig rig(script({json{{"content", "Paris."}, {"reasoning", "The capital."}, {"whole", true}}}));
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn turn = rig.ask("What is the capital of France?");
+    CHECK(!turn.failed);
+    CHECK_EQ(turn.reply, std::string("Paris."));
+    CHECK_EQ(turn.reasoning, std::string("The capital."));
+    CHECK(turn.output_tokens > 0);
+}
+
+TEST(a_claude_refusal_takes_back_what_had_streamed_and_says_why) {
+    Rig rig(script({json{{"content", "Sure, here is how"}, {"pieces", 3}, {"finish", "refusal"},
+                         {"details", refusal_details("cyber", "This request was declined because it could "
+                                                              "enable cyber harm.")}},
+                    // A refusal that maps to no named category says nothing more.
+                    json{{"finish", "refusal"}, {"details", refusal_details(nullptr, nullptr)}},
+                    reply("Fine.")}),
+            as_claude);
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn turn = rig.ask("Something it will not do.");
+    CHECK(turn.failed);
+    CHECK_EQ(turn.reply, std::string("programming-model declined this request (cyber: This request was "
+                                     "declined because it could enable cyber harm.)"));
+    CHECK(turn.actions.empty());
+
+    const Turn bare = rig.ask("Something else it will not do.");
+    CHECK(bare.failed);
+    CHECK_EQ(bare.reply, std::string("programming-model declined this request"));
+
+    // What the API asks: the turn that was declined is not sent again.
+    const Turn fine = rig.ask("Hello?");
+    CHECK_EQ(fine.reply, std::string("Fine."));
+    const json asked = rig.requests().at(2);
+    CHECK_EQ(asked["messages"].size(), std::size_t{1});
+    CHECK_EQ(text_of(asked["messages"][0]), std::string("Hello?"));
+    CHECK(asked["system"].get<std::string>().rfind(kSystem, 0) == 0);
+    // Asked as Claude is: at .../messages, with the key in its own header.
+    const std::vector<json> log = rig.log();
+    const auto posted = std::find_if(log.begin(), log.end(), [](const json& e) { return e.contains("body"); });
+    CHECK(posted != log.end());
+    if (posted != log.end()) {
+        CHECK(has((*posted)["path"].get<std::string>(), "/messages"));
+        CHECK_EQ((*posted)["headers"].value("x-api-key", ""), std::string("sk-ant-scripted"));
+    }
+}
+
+TEST(a_reply_another_claude_wrote_says_so_and_is_counted_as_its) {
+    const std::string asked  = "programming-model";
+    const std::string backup = "claude-opus-4-8";
+    Rig rig(script({// The one asked declined before writing anything.
+                    json{{"fallback", backup}, {"content", "Here it is."}},
+                    // It declined partway: what it wrote stands, and the other
+                    // carries on from there.
+                    json{{"declined", "First half, "}, {"fallback", backup}, {"content", "second half."}},
+                    // A conversation that fell back before goes straight to the
+                    // model that answered it then.
+                    json{{"sticky", backup}, {"content", "Again."}},
+                    // Both declined.
+                    json{{"fallback", backup}, {"finish", "refusal"},
+                         {"details", refusal_details("bio", nullptr)}},
+                    // A reply that came whole.
+                    json{{"fallback", backup}, {"content", "Whole."}, {"whole", true}}}),
+            as_claude);
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const std::string handed = asked + " declined, " + backup + " answered";
+    const auto first_summary = [](const Turn& turn) {
+        return turn.actions.empty() ? std::string() : turn.actions[0].summary;
+    };
+
+    const Turn before = rig.ask("Question one.");
+    CHECK(!before.failed);
+    CHECK_EQ(before.reply, std::string("Here it is."));
+    CHECK_EQ(before.actions.size(), std::size_t{1});
+    CHECK_EQ(first_summary(before), handed);
+
+    const Turn partway = rig.ask("Question two.");
+    CHECK(!partway.failed);
+    CHECK_EQ(partway.reply, std::string("First half, second half."));
+    CHECK_EQ(first_summary(partway), handed);
+
+    const Turn sticky = rig.ask("Question three.");
+    CHECK_EQ(sticky.reply, std::string("Again."));
+    CHECK_EQ(first_summary(sticky), backup + " answered in place of " + asked);
+
+    // No claim that anybody answered, and both are named.
+    const Turn both = rig.ask("Question four.");
+    CHECK(both.failed);
+    CHECK_EQ(both.reply, asked + " and " + backup + " declined this request (bio)");
+    CHECK(both.actions.empty());
+
+    const Turn whole = rig.ask("Question five.");
+    CHECK_EQ(whole.reply, std::string("Whole."));
+    CHECK_EQ(first_summary(whole), handed);
+
+    // The history holds what was answered, whoever answered it, and not the
+    // request both declined.
+    const json messages = rig.requests().at(4)["messages"];
+    CHECK_EQ(messages.size(), std::size_t{7});
+    CHECK_EQ(text_of(messages[3]), std::string("First half, second half."));
+    CHECK_EQ(text_of(messages[6]), std::string("Question five."));
+
+    // Each model that ran is counted under its own name: the one asked ran
+    // four times, the one in its place five.
+    std::uint64_t asked_requests  = 0;
+    std::uint64_t backup_requests = 0;
+    std::uint64_t backup_output   = 0;
+    for (const spend::Model& model : rig.engine().spending()) {
+        if (model.model == asked) {
+            asked_requests = model.session.requests;
+        } else if (model.model == backup) {
+            backup_requests = model.session.requests;
+            backup_output   = model.session.output;
+        }
+    }
+    CHECK_EQ(asked_requests, std::uint64_t{4});
+    CHECK_EQ(backup_requests, std::uint64_t{5});
+    CHECK(backup_output > 0);
+}
+
+TEST(gemini_is_asked_at_its_door_without_sampling_and_with_the_effort) {
+    Rig rig(json{{"replies", {reply("Hi.")}},
+                 {"models", {{"programming-model", {{"name", "models/programming-model"},
+                                                    {"inputTokenLimit", 1048576},
+                                                    {"outputTokenLimit", 65536}}}}}},
+            [](Config& config) {
+                // Google's address, below the scripted server's own.
+                config.providers.front().base_url += "/generativelanguage.googleapis.com/v1beta/openai";
+                config.providers.front().api_key = "gemini-scripted";
+                config.reasoning_effort          = "high";
+            });
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn turn = rig.ask("Hello.");
+    CHECK_EQ(turn.reply, std::string("Hi."));
+    const json body = rig.requests().at(0);
+    // Left at its own temperature, which Google asks of Gemini 3, and told
+    // how hard to think in the one word its door takes for it.
+    CHECK(!body.contains("temperature"));
+    CHECK(!body.contains("top_p"));
+    CHECK_EQ(body.value("reasoning_effort", ""), std::string("high"));
+    CHECK(!has(text_of(body["messages"][0]), "Reasoning:"));
+    CHECK(body["stream"].get<bool>());
+    CHECK(body["stream_options"]["include_usage"].get<bool>());
+
+    // The model's own entry is asked beside the door, with the key in Google's
+    // own header; the door with a bearer token.
+    bool asked_entry = false;
+    bool asked_door  = false;
+    for (const json& entry : rig.log()) {
+        if (entry.contains("get") && has(entry["get"].get<std::string>(), "/v1beta/models/programming-model")) {
+            asked_entry = entry["headers"].value("x-goog-api-key", "") == "gemini-scripted"
+                       && !entry["headers"].contains("authorization");
+        }
+        if (entry.contains("body")) {
+            asked_door = has(entry["path"].get<std::string>(), "/v1beta/openai/chat/completions")
+                      && entry["headers"].value("authorization", "") == "Bearer gemini-scripted";
+        }
+    }
+    CHECK(asked_entry);
+    CHECK(asked_door);
+    CHECK_EQ(rig.snapshot().context_size, 1048576);
+}
+
 TEST(stop_ends_a_turn_mid_answer_and_it_is_not_remembered) {
     Rig rig(script({json{{"content", "one two three four five six seven eight"}, {"pieces", 8},
                          {"pause", 0.3}},
@@ -868,5 +1122,147 @@ TEST(a_conversation_too_long_for_the_context_is_trimmed_or_refused_as_set) {
         CHECK(has(turn.reply, " of 128000 tokens. Raise \"Context\" in Settings, Generation, or start a new chat."));
         CHECK_EQ(rig.snapshot().status, std::string("context full"));
         CHECK(rig.requests().empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A message that becomes a build
+
+namespace {
+
+/// Wait for the build a message became to end, a minute at most.
+bool built(Rig& rig) {
+    const auto started = std::chrono::steady_clock::now();
+    while (rig.engine().cooking() && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return !rig.engine().cooking();
+}
+
+/// A plan of one task: a page.
+json page_plan() {
+    return json{{"summary", "A todo page."}, {"run", ""}, {"check", ""}, {"ship", ""},
+                {"tasks", json::array({json{{"title", "Write the page"},
+                                            {"detail", "index.html with a list and an add box."},
+                                            {"files", json::array({"index.html"})},
+                                            {"needs", "web page"},
+                                            {"after", json::array()}}})}};
+}
+
+void quick_builds(Config& config) {
+    config.build.confirm_plan = false;
+    config.build.auto_commit  = false;
+    config.build.agents       = 1;
+    config.tools.auto_edits   = true;
+}
+
+}  // namespace
+
+TEST(a_message_asking_for_software_becomes_a_build_and_the_conversation_remembers_what_it_left) {
+    // No delegator here, so the words decide (intent.py): "make me a todo
+    // app" is software to make. The rounds: the plan, the page, its DONE, the
+    // architect's write-up, and then the question after it.
+    Rig rig(script({reply(page_plan().dump()), reply("WRITE: index.html\n```html\n<h1>Todo</h1>\n```"),
+                    reply("DONE: wrote the page"), reply("A todo page, in index.html."),
+                    reply("It is a todo page.")}),
+            quick_builds);
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn asked = rig.ask("Make me a todo app.");
+    CHECK(!asked.build.empty());
+    CHECK(!asked.failed);
+    CHECK(!asked.route.has_value());   // a build is nobody's to answer
+    CHECK(built(rig));
+
+    // The turn is the build's, and holds what it left.
+    const Snapshot after = rig.snapshot();
+    CHECK(after.cook != nullptr && after.cook->id == asked.build);
+    CHECK_EQ(after.turns.size(), std::size_t{1});
+    if (after.turns.size() == 1) {
+        CHECK_EQ(after.turns[0].build, asked.build);
+        CHECK_EQ(after.turns[0].reply, std::string("A todo page, in index.html.\n\nFiles changed: index.html"));
+    }
+    CHECK(has(read_file(rig.project() / "index.html"), "<h1>Todo</h1>"));
+
+    // The message after it is a question, answered knowing what was built.
+    const Turn next = rig.ask("What did you make?");
+    CHECK(next.build.empty());
+    CHECK_EQ(next.reply, std::string("It is a todo page."));
+    const json messages = rig.requests().back()["messages"];
+    CHECK_EQ(messages.size(), std::size_t{4});
+    if (messages.size() == 4) {
+        CHECK_EQ(text_of(messages[1]), std::string("Make me a todo app."));
+        CHECK(has(text_of(messages[2]), "Files changed: index.html"));
+        CHECK_EQ(text_of(messages[3]), std::string("What did you make?"));
+    }
+}
+
+TEST(a_message_sent_to_be_answered_is_answered_whatever_it_asks_for) {
+    // Create's Test window: a model under test is asked questions, and
+    // "make me a todo app" there is one, not a build.
+    Rig rig(script({reply("Here is a todo app in one file.")}), quick_builds);
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const std::size_t before = rig.snapshot().turns.size();
+    rig.engine().submit("Make me a todo app.", ExpertId("programming"), {}, /*answer_only=*/true);
+    const auto started = std::chrono::steady_clock::now();
+    while ((rig.snapshot().turns.size() == before || rig.snapshot().turns.back().streaming
+            || rig.engine().is_busy())
+           && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const Snapshot after = rig.snapshot();
+    CHECK(!rig.engine().cooking());
+    CHECK_EQ(after.turns.size(), before + 1);
+    if (after.turns.size() == before + 1) {
+        CHECK(after.turns.back().build.empty());
+        CHECK_EQ(after.turns.back().reply, std::string("Here is a todo app in one file."));
+    }
+    CHECK(after.cook == nullptr);
+}
+
+TEST(a_message_beside_a_running_build_is_answered_and_not_built) {
+    // Two tasks, so the plan is put to the person and the build waits on the
+    // answer: still running when the next message comes.
+    json plan = page_plan();
+    plan["tasks"].push_back(json{{"title", "Style it"}, {"detail", "Calm colors in style.css."},
+                                 {"files", json::array({"style.css"})}, {"needs", "web page"},
+                                 {"after", json::array()}});
+    Rig rig(script({reply(plan.dump()), reply("Beside it.")}), [](Config& config) {
+        quick_builds(config);
+        config.build.confirm_plan = true;
+    });
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn asked = rig.ask("Build a todo app.");
+    CHECK(!asked.build.empty());
+    const auto waiting = std::chrono::steady_clock::now();
+    while ((rig.snapshot().cook == nullptr || rig.snapshot().cook->state != CookState::Asking)
+           && std::chrono::steady_clock::now() - waiting < std::chrono::seconds(30)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(rig.snapshot().cook != nullptr && rig.snapshot().cook->state == CookState::Asking);
+
+    // Software asked for again while one builds: one build at a time, so it
+    // is answered beside it.
+    const Turn beside = rig.ask("Make me another app.");
+    CHECK(beside.build.empty());
+    CHECK_EQ(beside.reply, std::string("Beside it."));
+
+    // Stopped, the build's turn says so, and nothing else is in its reply.
+    rig.engine().cancel_cook();
+    CHECK(built(rig));
+    const Snapshot after = rig.snapshot();
+    CHECK_EQ(after.turns.size(), std::size_t{2});
+    if (after.turns.size() == 2) {
+        CHECK_EQ(after.turns[0].build, asked.build);
+        CHECK(after.turns[0].reply.rfind("The build stopped. ", 0) == 0);
+        CHECK(!has(after.turns[0].reply, "Files changed"));
     }
 }

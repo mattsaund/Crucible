@@ -1,0 +1,25 @@
+{
+  "about": "Ten answers and ten builds written after intent.py's prompt was settled on answer-or-build.json, and never tuned on: what it does with messages it was not fitted to. The same shape as that file.",
+  "cases": [
+    ["answer", "How do I center a div?"],
+    ["answer", "What is a closure in JavaScript?"],
+    ["answer", "Write a SQL query that finds duplicate emails in a users table."],
+    ["answer", "Can you explain what this error means: TypeError: undefined is not a function?"],
+    ["answer", "Which database should I use for a small blog?"],
+    ["answer", "Write me a haiku about compilers."],
+    ["answer", "Show me an example of a React component with state."],
+    ["answer", "Add a comment above the main function explaining what it does.", {"files": true}],
+    ["answer", "What would it take to turn this into a mobile app?", {"files": true}],
+    ["answer", "Change the port in server.js from 3000 to 8080.", {"files": true}],
+    ["build", "Make a quiz game about world capitals."],
+    ["build", "Build me a habit tracker that shows streaks."],
+    ["build", "Create a small web app for splitting bills between friends."],
+    ["build", "Can you make a chess clock app?"],
+    ["build", "Write a static blog generator in Python that turns markdown into HTML pages."],
+    ["build", "I want a dashboard that shows my GitHub stars over time."],
+    ["build", "Build a REST client like Postman but simpler."],
+    ["build", "Add user profiles with avatars to the site.", {"files": true}],
+    ["build", "Add tests for every module and set up continuous integration.", {"files": true}],
+    ["build", "Make the app installable as a desktop program with a tray icon.", {"files": true}]
+  ]
+}

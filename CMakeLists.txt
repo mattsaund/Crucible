@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.9.5
+    VERSION     0.9.6
     DESCRIPTION "An all in one local AI workshop: build software with agents, chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
@@ -112,6 +112,7 @@ add_library(crucible_core STATIC
     src/util/fonts.cpp
     src/market/hub.cpp
     src/market/downloads.cpp
+    src/market/logos.cpp
     src/util/resources.cpp
     src/util/http.cpp
     src/util/workers.cpp
@@ -194,7 +195,11 @@ add_library(crucible_core STATIC
     src/engine/engine_cook.cpp
     src/engine/engine_chat.cpp
     src/engine/engine_bench.cpp
+    src/engine/engine_serve.cpp
     src/engine/leases.cpp
+
+    # serve: a model offered to other programs, in OpenAI's shape
+    src/serve/server.cpp
 
     # app: process-level actions that are not the window
     # api: the one JSON door every interface comes through
@@ -224,7 +229,7 @@ target_include_directories(crucible_core PUBLIC
 
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
-    PRIVATE Threads::Threads crucible_miniz)
+    PRIVATE Threads::Threads crucible_miniz crucible_httplib)
 # llama-ext.h, llama.cpp's staging header: the only place it says what a load
 # would put on each card. See measured_need in src/llm/model_host.cpp.
 target_include_directories(crucible_core SYSTEM PRIVATE "${llama_SOURCE_DIR}/src")
@@ -390,7 +395,8 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_source.cpp
         tests/test_kit.cpp
         tests/test_market.cpp
-        tests/test_mcp.cpp)
+        tests/test_mcp.cpp
+        tests/test_server.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
     # They are tested by running ui/render.js in JavaScriptCore -- the same
@@ -530,8 +536,10 @@ endif()
 if(CRUCIBLE_HAS_WEBVIEW)
     add_executable(crucible-app tools/app_runner.cpp)
     target_link_libraries(crucible-app PRIVATE webview::core_static nlohmann_json::nlohmann_json)
-    # webkit_env.hpp, which it shares with Crucible's own window.
-    target_include_directories(crucible-app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gui)
+    # webkit_env.hpp, which it shares with Crucible's own window, and
+    # crucible/tools/page_storage.hpp, which it shares with the preview.
+    target_include_directories(crucible-app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gui
+                                                    ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(WIN32)
         set_target_properties(crucible-app PROPERTIES WIN32_EXECUTABLE TRUE)
         # UTF-8 for its narrow strings, as Crucible's own: the data folder is
