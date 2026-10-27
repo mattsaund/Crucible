@@ -380,6 +380,34 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
     return vram_shortfall(gpu_devices(), path, params, held, holder);
 }
 
+/// The card a projector of `file` goes on: the one with the most memory free
+/// once the model is on the cards, when its weights and room to encode a
+/// picture fit there; none, so the processor, when no card has that. Left to
+/// itself, clip asks the first card for the weights whatever is on it, and on
+/// a full one llama.cpp b11846 aborts the whole program rather than say no
+/// (clip.cpp, load_tensors). A 27B vision model loaded after others did just
+/// that, at 100%. The room is a quarter on top of the weights and half a
+/// gigabyte, a margin for the compute buffer rather than a measurement.
+ggml_backend_dev_t projector_card(const std::filesystem::path& file) {
+    std::error_code ec;
+    const std::uint64_t weights = std::filesystem::file_size(file, ec);
+    if (ec || weights == 0) {
+        return nullptr;
+    }
+    const std::uint64_t wants = weights + weights / 4 + (512ULL << 20);
+    const std::vector<ggml_backend_dev_t> listed = RuntimeRegistry::devices();
+    ggml_backend_dev_t best = nullptr;
+    std::uint64_t most = 0;
+    for (const ComputeDevice& card : gpu_devices()) {
+        const auto at = static_cast<std::size_t>(card.index);
+        if (at < listed.size() && listed[at] != nullptr && card.memory_free > most) {
+            most = card.memory_free;
+            best = listed[at];
+        }
+    }
+    return most >= wants ? best : nullptr;
+}
+
 /// The projector beside a model file, when it has one: a GGUF in the same
 /// folder with "mmproj" in its name -- the way vision models are published,
 /// and the way LM Studio lays them out. With several, the one whose name
@@ -1203,6 +1231,14 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         if (const std::filesystem::path projector = find_projector(params.path); !projector.empty()) {
             mtmd_context_params vision = mtmd_context_params_default();
             vision.use_gpu       = params.n_gpu_layers != 0;
+            if (vision.use_gpu) {
+                vision.device  = projector_card(projector);
+                vision.use_gpu = vision.device != nullptr;
+                if (!vision.use_gpu) {
+                    note(std::filesystem::path(params.path).filename().string()
+                         + ": no card has room for its projector, so pictures are read on the processor");
+                }
+            }
             vision.n_threads     = resolve_threads(params.n_threads);
             vision.print_timings = false;
             loaded->vision_ = mtmd_init_from_file(projector.string().c_str(), model, vision);

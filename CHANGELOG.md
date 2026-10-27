@@ -6,6 +6,18 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.7 (2026-10-27)
+
+A hotfix.
+
+- **A vision model no longer crashes Crucible at 100%.** Its projector, the
+  file that lets it read pictures, went on the first card whatever was on
+  it, and on a full one llama.cpp ended the whole program. Qwen3.8-27B split
+  across three cards did it every time, and flint after other models had
+  been loaded. The projector now goes on the card with the most room, or,
+  when no card has room for it, on the processor, where pictures are read
+  more slowly.
+
 ## 0.9.6 (2026-10-26)
 
 One view for asking and building, a model served on your network, and a
