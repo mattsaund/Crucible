@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // The JIT model host: owns every llama.cpp resource and enforces the rule that
-// makes Crucible's memory budget work -- an expert is freed before the next one
-// is loaded, unless somebody is using it (see engine/leases.hpp, and `keep`
-// below). The router is held until the engine lets it go: kept loaded, or, on
-// demand, freed while an expert works and brought back after.
+// makes Crucible's memory budget work -- a model nobody is using stays only
+// while there is room for it, and the one asked for least recently goes first
+// when a load needs the room (see engine/leases.hpp, and `keep` below). The
+// router is held until the engine lets it go: kept loaded, or, on demand,
+// freed when an expert needs its room and brought back after.
 #pragma once
 
 #include <atomic>
@@ -17,6 +18,7 @@
 #include "crucible/config/config.hpp"
 #include "crucible/llm/loaded_model.hpp"
 #include "crucible/routing/expert.hpp"
+#include "crucible/runtime/devices.hpp"
 
 struct llama_model;
 struct llama_context;
@@ -49,10 +51,14 @@ public:
     /// `cancel` is polled while the weights upload and stops the load where it
     /// stands. It may be empty for a load nothing is allowed to interrupt.
     ///
-    /// Experts are freed to make room for it when it would not fit beside
-    /// them -- the ones `keep` does not hold. When the ones it does hold leave
-    /// no room, `crowded` is set and nothing is loaded: routing goes on
-    /// keywords until they are let go.
+    /// When it would not fit on the cards beside the experts there, it is
+    /// loaded on the processor instead, where the settings allow a model
+    /// there and the machine's memory holds it: a route there takes seconds,
+    /// and loading the expert again for the next prompt takes half a minute.
+    /// Otherwise experts are freed to make room for it -- the ones `keep`
+    /// does not hold, the least recently used first. When the ones it does
+    /// hold leave no room, `crowded` is set and nothing is loaded: routing
+    /// goes on keywords until they are let go.
     ///
     /// `beside_mlx` says an MLX model is in use, as acquire_expert's does:
     /// the delegator has to fit beside it as an expert would, and `crowded`
@@ -67,8 +73,9 @@ public:
 
     /// Make `id`'s expert a loaded one. This is the JIT swap, and the cost
     /// the design accepts in exchange for experts far larger than RAM would
-    /// otherwise allow: every resident expert `keep` does not hold is freed
-    /// first, so with nothing held this is exactly one expert in, one out.
+    /// otherwise allow: resident experts `keep` does not hold are freed, the
+    /// least recently used first, until the new one fits beside the rest.
+    /// One that fits beside it stays, so going back to it costs nothing.
     /// Returns the already-loaded model without doing any work if it is
     /// already resident, under this seat or another loaded the same way.
     ///
@@ -76,6 +83,9 @@ public:
     /// when it fits. When it does not, `crowded` is set and nothing is
     /// loaded -- the caller waits for a lease to end and asks again, rather
     /// than this freeing a model an agent is generating with.
+    ///
+    /// The delegator is not freed here: the engine does that, between
+    /// routes, when needs_router_room says the expert needs its room.
     ///
     /// `beside_mlx` says an MLX model is in use as well, which this host does
     /// not hold: the new one has to fit beside it too, with or without an
@@ -125,11 +135,27 @@ public:
     /// set to run partly on the processor, a machine whose cards say nothing.
     bool could_hold(const ModelParams& params, bool delegator_stays) const;
 
+    /// Whether loading `params`, an expert, needs the room the delegator has
+    /// on the cards: it is not resident, and it would not fit beside the
+    /// delegator and the experts `keep` holds once the others were let go.
+    /// False when the delegator holds nothing on the cards -- not loaded, or
+    /// on the processor. Planned and measured as could_hold does.
+    ///
+    /// True for what this host cannot judge -- an MLX folder, cards that say
+    /// nothing of their memory -- which is the delegator freed, as it was for
+    /// every expert before this was asked.
+    bool needs_router_room(const ModelParams& params, const Keep& keep = {}) const;
+
+    /// Whether the delegator is on the processor for want of room, and would
+    /// go on the cards if it were loaded now -- they have the room again, or
+    /// the experts in its way are quick to load back. See acquire_router.
+    bool router_could_move(const Keep& keep = {}) const;
+
     /// Free the delegator, if any. The experts are untouched.
     ///
-    /// Between routes with "keep delegator loaded" off, and for Eject, a
-    /// changed runtime and changed loading settings: the caller must have
-    /// dropped whatever was holding the LoadedModel first. See
+    /// When an expert needs its room with "keep delegator loaded" off, and
+    /// for Eject, a changed runtime and changed loading settings: the caller
+    /// must have dropped whatever was holding the LoadedModel first. See
     /// Engine::release_router.
     void release_router();
 
@@ -211,8 +237,41 @@ private:
     /// there is none to free.
     bool free_one(const Keep& keep);
 
+    /// Whether `params` would load beside what is resident this moment: on
+    /// the cards, planned and measured the way a load is, and in the
+    /// machine's memory where models live there (see in_system_memory).
+    bool fits_now(const ModelParams& params) const;
+
+    /// Whether models live in the machine's memory rather than on cards of
+    /// their own: on a Mac, whose GPU shares it, and on a machine whose cards
+    /// say nothing of their memory, which is one with no GPU at all.
+    static bool in_system_memory(const std::vector<ComputeDevice>& gpus);
+
+    /// Whether the machine's memory holds `params` beside the models resident
+    /// now, with a tenth of it -- never under 2 GB -- left over: in what it
+    /// has available, and in its whole less what the residents take. The
+    /// second because the available figure counts a mapped model's pages as
+    /// free: the kernel may drop them, and the model then reads them back
+    /// from the disk for every token. A resident counts for all it holds
+    /// where models live in this memory, and for what it has off its cards
+    /// otherwise. With `unused_go`, the experts `keep` does not hold count
+    /// as gone, as they are when a load needs their room.
+    bool memory_holds(const ModelParams& params, bool unused_go = false, const Keep& keep = {}) const;
+
+    /// Whether the delegator `params` may go on the processor when the cards
+    /// have no room for it: the settings allow a model off the cards, and
+    /// the machine's memory holds it beside the rest (see memory_holds).
+    bool processor_may_hold(const ModelParams& params) const;
+
+    /// Whether the delegator `params`, loaded now, goes on the processor:
+    /// the cards have no room for it beside the experts, the processor may
+    /// hold it, and the expert it would push out is slow to load back, or
+    /// every expert is in use. See acquire_router.
+    bool routes_off_cards(const ModelParams& params, const Keep& keep) const;
+
     GpuConfig                    gpu_;
     std::unique_ptr<LoadedModel> router_;
+    bool                         router_on_processor_ = false;   ///< see acquire_router
 
     /// The delegator as it was last asked for, loaded or not: what an
     /// expert's grown context leaves room for. See with_room.
@@ -221,15 +280,25 @@ private:
     std::vector<Resident>        experts_;
 
     /// What routing kept evaluated in the delegator's cache, held while the
-    /// delegator is freed between routes -- which it is after every prompt
-    /// unless "keep delegator loaded" is on. Without it, loading it again
-    /// would mean reading every order's prompt again too. Handed back only to
-    /// a delegator whose context_key matches `kept_key_`; see
+    /// delegator is freed -- for an expert that needs its room, or to move
+    /// between the processor and the cards. Without it, loading it again
+    /// would mean reading every order's prompt again too, which on the
+    /// processor is half a minute. Handed back only to a delegator whose
+    /// context_key matches `kept_key_`, wherever it runs; see
     /// LoadedModel::score_labels.
     std::vector<LoadedModel::KeptPrompt> kept_routing_;
     std::string                          kept_key_;
     std::string                          router_key_;   ///< the loaded delegator's
 };
+
+/// Whether `wanted` bytes fit in a machine's memory of `total` bytes, `used`
+/// of them in use, beside `resident` bytes of models that stay and once
+/// `going` bytes of models are let go, with a tenth of the memory -- never
+/// under 2 GB -- to spare: in what is available, and in the whole less what
+/// the models take, since the available figure counts a mapped model's pages
+/// as free. See ModelHost::memory_holds.
+bool memory_has_room(std::uint64_t wanted, std::uint64_t resident, std::uint64_t going,
+                     std::uint64_t used, std::uint64_t total);
 
 /// The context a load that asked for `n_ctx`, and may have up to `most`,
 /// gets: the first of `most`, three quarters of it, a half, three eighths

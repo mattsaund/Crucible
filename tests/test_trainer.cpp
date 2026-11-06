@@ -149,9 +149,42 @@ TEST(the_whole_environment_lives_under_one_removable_folder) {
     CHECK(pyenv::venv_dir().string().rfind(root, 0) == 0);
     CHECK(pyenv::python().string().rfind(root, 0) == 0);
     CHECK(pyenv::script().string().rfind(root, 0) == 0);
+    CHECK(pyenv::converter().string().rfind(root, 0) == 0);
     CHECK(pyenv::manifest_file().string().rfind(root, 0) == 0);
     CHECK(pyenv::log_file().string().rfind(root, 0) == 0);
     CHECK(pyenv::runs_dir().string().rfind(root, 0) == 0);
+}
+
+TEST(the_converter_this_build_carries_is_unpacked_once_beside_the_trainer) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    std::string error;
+    const std::filesystem::path script = pyenv::write_converter(error);
+#if defined(CRUCIBLE_HAS_CONVERTER)
+    CHECK(error.empty());
+    CHECK_EQ(script.string(), pyenv::converter().string());
+    CHECK(script.string().rfind(pyenv::root().string(), 0) == 0);
+    std::error_code ec;
+    CHECK(std::filesystem::is_regular_file(script, ec));
+    // The packages it imports beside it, from the same llama.cpp: the
+    // conversion of each architecture, and the GGUF writer.
+    const std::filesystem::path dir = script.parent_path();
+    CHECK(std::filesystem::is_regular_file(dir / "conversion" / "__init__.py", ec));
+    CHECK(std::filesystem::is_regular_file(dir / "gguf-py" / "gguf" / "__init__.py", ec));
+
+    // The one already there is left alone...
+    { std::ofstream(dir / "left-behind.py") << "# from before\n"; }
+    CHECK_EQ(pyenv::write_converter(error).string(), script.string());
+    CHECK(std::filesystem::exists(dir / "left-behind.py", ec));
+    // ...and another build's is replaced whole, nothing of it left to import.
+    { std::ofstream(dir / ".crucible-converter") << "another build\n"; }
+    CHECK_EQ(pyenv::write_converter(error).string(), script.string());
+    CHECK(!std::filesystem::exists(dir / "left-behind.py", ec));
+    CHECK(std::filesystem::is_regular_file(script, ec));
+#else
+    CHECK(script.empty());
+    CHECK(!error.empty());
+#endif
 }
 
 TEST(a_machine_with_no_environment_says_so_rather_than_guessing) {
@@ -382,6 +415,34 @@ TEST(a_run_is_read_to_the_end_and_redrawn_at_every_event) {
     std::string   first;
     std::getline(script, first);
     CHECK(first.find("put in place by the run") == std::string::npos);
+}
+
+TEST(a_run_exports_with_the_converter_this_build_carries) {
+    // A machine that downloaded its runtime never fetched the llama.cpp
+    // source, and with it the converter: every fine-tune there ended at a
+    // folder of safetensors. The run takes the one compiled in instead.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    fake_environment("echo \"given: $*\"\n"
+                     "echo '{\"event\": \"done\", \"path\": \"/runs/kitchen\", \"gguf\": false}'\n");
+
+    Trainer     trainer;
+    std::string error;
+    CHECK(trainer.start(named("Kitchen"), {}, {}, temp.path() / "models", {}, error));
+    CHECK(soon([&trainer] { return trainer.progress().finished(); }));
+    const RunProgress run = trainer.progress();
+    CHECK(run.phase == RunProgress::Phase::Done);
+    const auto given = std::find_if(run.log_tail.begin(), run.log_tail.end(), [](const std::string& line) {
+        return line.rfind("given: ", 0) == 0;
+    });
+    CHECK(given != run.log_tail.end());
+    if (given != run.log_tail.end()) {
+#if defined(CRUCIBLE_HAS_CONVERTER)
+        CHECK(given->find("--convert-script " + pyenv::converter().string()) != std::string::npos);
+#else
+        CHECK(given->find("--convert-script") == std::string::npos);
+#endif
+    }
 }
 
 TEST(a_stopped_run_takes_its_unfinished_file_with_it) {

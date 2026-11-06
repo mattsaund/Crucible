@@ -779,11 +779,12 @@ check     "and the delegator decides it, the same way it decides a prompt" \
           grep -q 'return routing.route(core, {' \
           "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
 # The memory argument for the design: an expert is resident while something
-# holds it and no longer. A cook's seat holds its model through the same door
-# a chat turn does, and that door is where the lease and the swap are.
+# holds it, and after that only until a load needs its room. A cook's seat
+# holds its model through the same door a chat turn does, and that door is
+# where the lease and the swap are.
 check     "a cook takes its seat the way a chat turn does" \
           grep -q 'hold_model(id, seat_params' "$HERE/../src/engine/engine_cook.cpp"
-check     "the previous expert is freed before the next is loaded" \
+check     "an expert is freed for the next when the next needs its room" \
           grep -q 'acquire_expert' "$HERE/../src/engine/engine.cpp"
 
 echo

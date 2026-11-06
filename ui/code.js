@@ -419,8 +419,13 @@ async function loadTree() {
 
 // --- keeping the screen in step with the textarea -------------------------------------------
 
-/// The textarea on screen, when it is the open tab's.
-const editorBox = () => document.querySelector('textarea.code-editor');
+/// The textarea on screen, when it is the open tab's. By its id: a search of
+/// the page for it went through every turn of the conversation when the
+/// code was not on screen, after every draw.
+const editorBox = () => {
+  const tab = activeTab();
+  return tab ? document.getElementById(`editor-${tab.serial || 0}`) : null;
+};
 
 /// Recolor and renumber what is under the textarea after it changed, without
 /// a render: one per keystroke would draw the whole window again for a letter.

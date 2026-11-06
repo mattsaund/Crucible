@@ -190,6 +190,28 @@ TEST(a_recipe_survives_the_round_trip_through_disk) {
     CHECK_EQ(back.context, 1024);
 }
 
+TEST(a_recipe_trains_at_a_loras_rate_unless_it_names_its_own) {
+    // Measured on 400 chat records over two passes, with LoRA and QLoRA:
+    // 1e-4 scored best on the held-out records, 1e-5 moved the model a
+    // fifth to a third less in the same time, and 2e-4 began to learn the
+    // records.
+    CHECK_EQ(Recipe{}.learning_rate, 1e-4F);
+
+    // A recipe written without one, by hand or by a Crucible from before
+    // the field, takes the default rather than nothing.
+    Recipe      read;
+    std::string error;
+    CHECK(parse(R"({"name": "Bread", "id": "bread"})", read, error));
+    CHECK_EQ(read.learning_rate, 1e-4F);
+
+    // One it names is its own, the old default included.
+    Recipe slow;
+    slow.name          = "Bread";
+    slow.learning_rate = 1e-5F;
+    CHECK(parse(serialize(slow), read, error));
+    CHECK_EQ(read.learning_rate, 1e-5F);
+}
+
 TEST(nonsense_on_disk_is_refused_rather_than_loaded_as_an_empty_recipe) {
     Recipe      recipe;
     std::string error;

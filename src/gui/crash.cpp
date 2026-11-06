@@ -12,6 +12,8 @@
 #include <fstream>
 #include <system_error>
 
+#include <ggml.h>
+
 #include "crucible/util/platform.hpp"
 
 #if defined(_WIN32)
@@ -167,6 +169,19 @@ void report(int signal) {
 
 #endif
 
+/// What llama.cpp says as it gives up, before the abort that follows records
+/// where: the file, the line and the condition that failed. Without it the
+/// report was a stack and nothing more, and the words went to crucible.log,
+/// which the next start empties: the 0.9.6 projector crash was reported as
+/// four stacks and no reason. Taking this over also stops ggml forking a
+/// debugger onto the dying process to print the stack its own way.
+void on_ggml_abort(const char* message) {
+    const std::string said = std::string("\nllama.cpp gave up: ") + (message != nullptr ? message : "") + "\n";
+    write_line(said);
+    std::fputs(said.c_str(), stderr);
+    std::fflush(stderr);
+}
+
 /// An exception nobody caught: what it said, then the abort that follows
 /// records where.
 [[noreturn]] void on_terminate() {
@@ -207,6 +222,7 @@ void install(const std::filesystem::path& log) {
     }
 #endif
     std::set_terminate(on_terminate);
+    ggml_set_abort_callback(on_ggml_abort);
 }
 
 std::string since_last_start(const std::filesystem::path& log) {

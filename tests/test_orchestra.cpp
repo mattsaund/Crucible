@@ -8,11 +8,19 @@
 // library, so any 3.10 or newer will do.
 #include "test_helpers.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <set>
 #include <thread>
+
+#if defined(__linux__)
+#include <signal.h>
+#include <sys/types.h>
+#endif
 
 #include "crucible/config/paths.hpp"
 #include "crucible/lab/python.hpp"
@@ -361,6 +369,109 @@ TEST(the_orchestrator_answers_over_the_pipe) {
         set_env("CRUCIBLE_PYTHON", previous);
     }
 }
+
+#if defined(__linux__)
+namespace {
+
+/// The orchestrator this process started, by its pid, or 0: the child whose
+/// command line runs crucible_orchestrator, as /proc lists this process's
+/// children.
+pid_t orchestrator_pid() {
+    std::error_code ec;
+    for (const auto& task : std::filesystem::directory_iterator("/proc/self/task", ec)) {
+        std::ifstream children(task.path() / "children");
+        pid_t pid = 0;
+        while (children >> pid) {
+            std::ifstream in("/proc/" + std::to_string(pid) + "/cmdline", std::ios::binary);
+            const std::string command{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+            if (command.find("crucible_orchestrator") != std::string::npos) {
+                return pid;
+            }
+        }
+    }
+    return 0;
+}
+
+}  // namespace
+
+TEST(an_orchestrator_that_dies_fails_the_calls_waiting_on_it_and_its_answers_go_nowhere) {
+    const std::string python = test_python();
+    if (python.empty()) {
+        std::printf("      (no Python on PATH; skipped)\n");
+        return;
+    }
+    TempDir dir;
+    ScopedDataHome home(dir.path());
+    const char* had = std::getenv("CRUCIBLE_PYTHON");
+    const std::string previous = had != nullptr ? had : "";
+    set_env("CRUCIBLE_PYTHON", python);
+
+    // The core keeps the orchestrator's first question waiting until told.
+    // It says which process asked, as a handler's Stop reads it.
+    orchestra::Link            link;
+    std::atomic<bool>          asked{false};
+    std::atomic<bool>          release{false};
+    std::atomic<std::uint64_t> first_asker{0};
+    std::atomic<std::uint64_t> last_asker{0};
+    link.set_handler([&](const std::string& method, const json&) {
+        last_asker = orchestra::Link::asker();
+        if (method == "delegator.ready" && !asked.exchange(true)) {
+            first_asker = orchestra::Link::asker();
+            while (!release.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        return json{{"available", false}};
+    });
+    std::atomic<bool> threw{false};
+    std::thread caller([&] {
+        try {
+            link.call("route", roster_request("what holds a satellite in orbit"));
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+    });
+    for (int waited = 0; waited < 3000 && !asked.load(); ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(asked.load());
+
+    // Killed while it waits on the core: the call waiting on it fails.
+    const pid_t pid = orchestrator_pid();
+    CHECK(pid > 0);
+    if (pid > 0) {
+        ::kill(pid, SIGKILL);
+    }
+    caller.join();
+    CHECK(threw.load());
+    // And the request still being answered for it is known to be nobody's:
+    // what a reply's Stop asks, so the reply ends rather than runs on.
+    CHECK(first_asker.load() != 0);
+    CHECK(link.ended(first_asker.load()));
+    CHECK_EQ(orchestra::Link::asker(), std::uint64_t{0});   // this thread answers nothing
+
+    // The next call starts another. The answer the first was still giving
+    // goes nowhere: that one would take it for an answer to a request of
+    // its own, which it numbers from 1 again.
+    CHECK_EQ(link.call("ping", {{"say", "again"}}).value("pong", ""), "again");
+    link.call("route", roster_request("what holds a satellite in orbit"));
+    CHECK(last_asker.load() != first_asker.load());
+    CHECK(!link.ended(last_asker.load()));
+    release = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK_EQ(link.call("ping", {{"say", "still"}}).value("pong", ""), "still");
+    link.stop();
+    std::ifstream in(orchestra::Link::log_file());
+    const std::string log{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    CHECK(log.find("nobody was waiting for") == std::string::npos);
+
+    if (previous.empty()) {
+        unset_env("CRUCIBLE_PYTHON");
+    } else {
+        set_env("CRUCIBLE_PYTHON", previous);
+    }
+}
+#endif
 
 TEST(an_old_conversation_is_named_only_by_a_delegator_already_loaded) {
     const std::string python = test_python();

@@ -4,6 +4,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import unittest
 
@@ -122,6 +123,21 @@ class Calls(unittest.TestCase):
         channel = rpc.Channel(io.BytesIO(), writer)
         channel.notify("hello", {"text": "naïve — 日本語\n\"quoted\""})
         self.assertEqual(sent(writer)[0]["params"]["text"], "naïve — 日本語\n\"quoted\"")
+
+
+class Starting(unittest.TestCase):
+    def test_it_starts_with_what_a_chat_turn_needs_and_reads_in_the_rest_when_asked(self):
+        # In a process of its own, so what the other tests imported is not
+        # counted: builds, cooks and benchmarks are most of the package.
+        package = os.path.join(os.path.dirname(__file__), "..")
+        probe = ("import sys; import crucible_orchestrator.main as main;"
+                 "channel = main.Channel(None, None); handlers = main.handlers(channel);"
+                 "print(sorted(m for m in sys.modules if m.startswith('crucible_orchestrator.')))")
+        loaded = subprocess.run([sys.executable, "-c", probe], cwd=package, capture_output=True, text=True,
+                                check=True).stdout
+        for heavy in ("bench", "bench_score", "build", "cook"):
+            self.assertNotIn("'crucible_orchestrator.%s'" % heavy, loaded)
+        self.assertIn("'crucible_orchestrator.chat'", loaded)
 
 
 if __name__ == "__main__":

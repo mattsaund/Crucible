@@ -48,6 +48,11 @@ struct ModelParams {
     std::string split_mode = "layer";  ///< none | layer | row | tensor
     std::vector<float> tensor_split;   ///< per-GPU share; empty = let llama.cpp decide
 
+    /// `tensor_split` is a plan of Crucible's own (see gpu_policy.hpp), not
+    /// one written in the config file. Never written to the config: it is
+    /// what tells the two apart in "auto" mode, which keeps a written one.
+    bool split_planned = false;
+
     /// Keep the weights out of host memory entirely.
     ///
     /// Derived from GpuConfig, not written to the config file: these are the
@@ -74,9 +79,17 @@ struct ModelParams {
 
     /// How many sequences the context keeps apart: one, the conversation,
     /// except for the delegator, which ModelHost gives more to score labels
-    /// side by side. Never written to the config. See
-    /// LoadedModel::score_labels.
+    /// side by side, and a model the Bench asks many questions at once.
+    /// Never written to the config. See LoadedModel::score_labels and
+    /// BatchChat.
     int sequences = 1;
+
+    /// Each sequence a cache of its own, `n_ctx` divided between them,
+    /// rather than the one cache the delegator's labels share with the
+    /// prompt they branch from. The Bench's questions share nothing, and a
+    /// shared cache is read whole for every sequence in it. Never written to
+    /// the config.
+    bool own_caches = false;
 
     /// The most context a load may take beyond `n_ctx` when the cards hold
     /// it, or 0 for `n_ctx` exactly. A build's agent asks for more: it reads
@@ -84,6 +97,12 @@ struct ModelParams {
     /// stops where the context ends. Never written to the config. See
     /// ModelHost::with_room.
     int n_ctx_most = 0;
+
+    /// On the processor alone, whatever cards there are: no layer, cache or
+    /// compute buffer on any of them. Never written to the config: ModelHost
+    /// sets it for a delegator the cards have no room for beside the experts
+    /// in use. See ModelHost::acquire_router.
+    bool on_processor = false;
 
     // Sampling
     float temperature   = 0.7F;
@@ -214,25 +233,28 @@ struct RoutingConfig {
     /// an uncertain route is taken at face value rather than being sent nowhere.
     ExpertId default_expert;
 
-    /// Keep the delegator in memory between prompts.
+    /// Keep the delegator in memory whatever an expert needs.
     ///
     /// Off by default, which is the setting that makes the whole design work on
-    /// one machine. Exactly one model is resident at any moment: the delegator
-    /// is freed the instant it has routed, the expert is loaded, and when the
-    /// expert has answered it is freed too and the delegator comes back ready
-    /// for the next prompt. The peak is the larger of the two rather than their
-    /// sum, which is what makes room for a delegator big enough to route well
-    /// *and* an expert as large as the cards will hold.
+    /// one machine. The delegator and the experts stay loaded while the cards
+    /// hold them side by side; an expert that needs the delegator's room gets
+    /// it, and the delegator comes back after the answer, beside the expert
+    /// when they fit and on the processor when they do not and the GPU
+    /// settings allow it (see ModelHost::acquire_router). The peak is the
+    /// larger of the two rather than their sum, which is what makes room for a
+    /// delegator big enough to route well *and* an expert as large as the
+    /// cards will hold, and a follow-up question to the same expert loads
+    /// nothing.
     ///
-    /// On, it is loaded once and stays -- and its whole footprint is gone from
-    /// every expert that follows for the rest of the session. That is a good
-    /// trade only when the delegator is small next to the card, which is why it
-    /// is a choice and not the default: the honest default is the one that does
-    /// not quietly cost an expert the memory it needed.
+    /// On, it is loaded once and stays on the cards -- and its whole footprint
+    /// is gone from every expert that follows for the rest of the session.
+    /// That is a good trade only when the delegator is small next to the card,
+    /// which is why it is a choice and not the default: the honest default is
+    /// the one that does not quietly cost an expert the memory it needed.
     ///
-    /// The cost of off is a load per model per prompt, so a follow-up question
-    /// reloads the expert. A prompt pinned with a slash command skips the
-    /// delegator entirely and pays only for the expert.
+    /// Off once meant a load of each model for every prompt: the delegator
+    /// freed before every expert and every expert freed after its answer. On
+    /// cards wired for one lane that was half a minute and more per prompt.
     bool keep_delegator_loaded = false;
 };
 

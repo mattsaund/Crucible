@@ -189,4 +189,23 @@ std::vector<ModelFile> scan_models(const std::filesystem::path& dir) {
     return found;
 }
 
+std::string models_dir_problem(const std::filesystem::path& dir) {
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec)) {
+        return ec ? ec.message() : "Not found";
+    }
+    const std::filesystem::directory_iterator it(dir, ec);
+    if (!ec) {
+        return {};
+    }
+#if defined(__APPLE__)
+    // Desktop, Documents, Downloads and other drives are opened only once
+    // the person allows it, and a refusal is remembered.
+    if (ec == std::errc::operation_not_permitted || ec == std::errc::permission_denied) {
+        return "Blocked by macOS: allow Crucible in Privacy & Security, Files and Folders";
+    }
+#endif
+    return ec.message();
+}
+
 }  // namespace crucible

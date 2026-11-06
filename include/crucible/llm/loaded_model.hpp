@@ -149,8 +149,12 @@ public:
     std::uint64_t      params() const;       ///< parameter count, for the UI
     std::uint64_t      bytes() const;        ///< in-memory size
 
+    /// What it holds on each card, by ggml device index. See on_cards_.
+    const std::vector<std::uint64_t>& on_cards() const { return on_cards_; }
+
 private:
     friend class ModelHost;
+    friend class BatchChat;   // decodes many sequences of this context at once
     LoadedModel(llama_model* model, llama_context* ctx, std::string path);
 
     /// A turn with pictures in it, for a model with a projector: the
@@ -207,6 +211,11 @@ private:
 
     /// Loaded with the window cache. See ModelParams::window_cache.
     bool window_cache_ = false;
+
+    /// Some of its layers are on the processor, so reading a prompt is the
+    /// processor's work: a conversation read again after a reload takes it
+    /// as long as a load over a slow link. See ModelHost::routes_off_cards.
+    bool part_on_processor_ = false;
 
     /// What it holds on each card, by ggml device index, as llama.cpp said
     /// when it was loaded: weights, cache and compute buffers. What the

@@ -256,10 +256,9 @@ bool Trainer::start(const Recipe& recipe,
             return false;
         }
     }
-    // Only whether it is there: whether it can train is asked on the run's
-    // thread (run), since asking starts Python and imports torch -- a second
-    // and more that the window would otherwise be frozen for. Condensing is
-    // Crucible itself and needs none of it.
+    // Only whether it is there. Whether it can train is the script's to say,
+    // as the first thing it does (see run). Condensing is Crucible itself and
+    // needs none of it.
     if (recipe.method != Method::Condense && !pyenv::looks_installed()) {
         error = "the training environment is not installed";
         return false;
@@ -353,16 +352,11 @@ void Trainer::run(Recipe recipe, std::filesystem::path export_dir,
     const std::filesystem::path run_dir = run_dir_for(recipe);
     const bool condensing = recipe.method == Method::Condense;
 
-    if (const pyenv::Status env = condensing ? pyenv::Status{} : pyenv::status(); !condensing && !env.ready) {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        progress_.phase = RunProgress::Phase::Failed;
-        progress_.error = env.note.empty() ? "the training environment is not installed"
-                                           : "the training environment is not usable: " + env.note;
-        if (on_change_) {
-            on_change_();
-        }
-        return;
-    }
+    // Whether the environment can train is not asked first. Asking was a
+    // Python of its own importing all of torch, three to fifteen seconds
+    // measured, before the script imported all of it again; the script says
+    // in its first seconds what is missing and which card it has no kernels
+    // for, as plainly as the question did.
 
     // The recipe as the script will read it, beside the run rather than in
     // the lab folder: what a run was given must not change under it because
@@ -382,6 +376,19 @@ void Trainer::run(Recipe recipe, std::filesystem::path export_dir,
     if (std::string why; !condensing && !pyenv::write_script(why)) {
         const std::lock_guard<std::mutex> lock(mutex_);
         log_.push_back("the trainer script was not refreshed: " + why);
+    }
+
+    // And the GGUF converter it carries, before any one passed in: the one
+    // from the llama.cpp source a runtime is compiled from is there only on
+    // a machine that compiled one, and may be of an older llama.cpp than this
+    // build's. Without either, the run ends at a model folder and says so.
+    if (std::string why; !condensing) {
+        if (std::filesystem::path carried = pyenv::write_converter(why); !carried.empty()) {
+            convert_script = std::move(carried);
+        } else {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            log_.push_back("the GGUF converter was not put in place: " + why);
+        }
     }
 
     // This program, for condensing and for a fine-tune's own quantize step:

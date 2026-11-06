@@ -25,7 +25,9 @@ namespace crucible {
 ///     are.
 ///   * `tensor_split` and `main_gpu` are filled in from the split mode. That
 ///     part is a no-op in "auto" mode, which leaves any hand-written
-///     `tensor_split` in the config file exactly as it was.
+///     `tensor_split` in the config file exactly as it was -- except on cards
+///     whose links differ, where a model without one is planned fastest
+///     link first. See split_policy.
 ///
 /// Returns a one-line description of the split that was applied, for the log
 /// and the settings screen, or an empty string when the split was left alone.
@@ -53,6 +55,24 @@ std::string refresh_gpu_split(ModelParams& params, const GpuConfig& gpu, const M
 /// figures refresh_gpu_split plans from, sliding window and all.
 ModelFit model_fit(const ModelParams& params);
 
+/// How a model is divided over `gpus`: the mode it is planned in and the
+/// order of cards a priority plan fills.
+struct SplitPolicy {
+    GpuSplitMode     mode = GpuSplitMode::Auto;
+    std::vector<int> order;
+};
+
+/// The mode and order `params` is planned in on `gpus`: the configured ones,
+/// except that "auto" over cards whose links differ (see links_differ) plans
+/// as "priority" with no order written -- the fastest link first, then the
+/// larger card -- for a model with no split of its own in the config.
+///
+/// Because llama.cpp's own split divides by what each card has free and
+/// knows nothing of links: on cards on sixteen lanes and on one, it put most
+/// of gpt-oss-20b on the one-lane cards, and the load took 13.5 s from
+/// memory and 36 s from the disk, against 5.9 and 22.8 filled fastest first.
+SplitPolicy split_policy(const GpuConfig& gpu, const ModelParams& params, const std::vector<ComputeDevice>& gpus);
+
 /// Put the delegator on the one card it belongs on.
 ///
 /// Not a split: the delegator is a small model that lives for the whole session
@@ -68,15 +88,16 @@ ModelFit model_fit(const ModelParams& params);
 /// llama.cpp, and this is a decision.
 void place_delegator(ModelParams& params, const GpuConfig& gpu);
 
-/// Every card the delegator could have to itself, in the order to try them:
-/// the one place_delegator names, then the others by free memory, most first.
-/// "One card only" offers only that card, and "auto" none -- both are the user
-/// saying where models go. Empty with fewer than two cards.
+/// Every card the delegator `params` could have to itself, in the order to
+/// try them: the one place_delegator names, then the others by free memory,
+/// most first. "One card only" offers only that card, and "auto" none where
+/// split_policy leaves it auto -- both are the user saying where models go.
+/// Empty with fewer than two cards.
 ///
 /// Because "a small model" is an assumption, not a rule: a delegator can be
 /// a 20B, and pinned to a 12 GB card it does not fit while a 16 GB one beside
 /// it sits there with room.
-std::vector<int> delegator_cards(const GpuConfig& gpu);
+std::vector<int> delegator_cards(const GpuConfig& gpu, const ModelParams& params);
 
 /// Put a model wholly on one card, by device index.
 void pin_to_card(ModelParams& params, int device);

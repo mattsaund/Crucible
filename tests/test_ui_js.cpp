@@ -599,6 +599,17 @@ TEST(a_readme_is_tidied_into_what_the_page_draws) {
     CHECK(out.find("\nIndented by its HTML") != std::string::npos || out.rfind("Indented by its HTML", 0) == 0);
     CHECK(out.find("  - a nested item") != std::string::npos);
     CHECK(out.find("> **Note**") != std::string::npos);
+
+    // A tag over several lines, as LiquidAI's picture is, goes whole; the
+    // same in a code block stays, and so does a less-than in a sentence.
+    const std::string spread = page().eval(
+        "tidyReadme('<img\\nsrc=\"https://x/a.png\"\\nalt=\"Liquid AI\"\\n/>\\n\\nTry LFM\\n"
+        "```html\\n<img\\nsrc=\"b.png\">\\n```\\nWhen x<y it is smaller')");
+    CHECK(spread.find("src=\"https://x/a.png\"") == std::string::npos);
+    CHECK(spread.find("Liquid AI") == std::string::npos);
+    CHECK(spread.rfind("Try LFM", 0) == 0);
+    CHECK(spread.find("<img\nsrc=\"b.png\">") != std::string::npos);
+    CHECK(spread.find("When x<y it is smaller") != std::string::npos);
 }
 
 TEST(every_view_draws_a_session_with_everything_in_it) {
@@ -1415,8 +1426,12 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     const std::string expert = with("", "modelSelect('', '', {})");
     CHECK(expert.find("mlx-community/Qwen3-4B-4bit (MLX, ") != std::string::npos);
     CHECK(expert.find("cannot run here") == std::string::npos);
+    // The delegator scores with llama.cpp: an MLX model is listed, so a
+    // folder of them does not look empty, and not offered.
     const std::string delegator = with("", "modelSelect('', '', {}, true)");
-    CHECK(delegator.find("Qwen3-4B-4bit") == std::string::npos);
+    CHECK(delegator.find("value=\"mlx-community/Qwen3-4B-4bit\" disabled") != std::string::npos);
+    CHECK(delegator.find("Qwen3-4B-4bit (MLX, 2.0 KB), cannot route") != std::string::npos);
+    CHECK(delegator.find("value=\"small.gguf\" disabled") == std::string::npos);
     CHECK(delegator.find("small.gguf") != std::string::npos);
     // Where MLX cannot run, it is listed -- so it is plain it was found --
     // and not offered, with the reason on it.
@@ -1424,6 +1439,67 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     CHECK(here.find("cannot run here") != std::string::npos);
     CHECK(here.find(" disabled") != std::string::npos);
     CHECK(here.find("MLX does not run on Windows") != std::string::npos);
+}
+
+TEST(a_folder_with_no_gguf_gets_the_delegator_one_and_seats_it) {
+    // A Mac's folder may hold MLX models only, and none of them can route.
+    // Beside the delegator's menu, Get one opens Models on a small GGUF, and
+    // once it is in the folder it is the delegator.
+    const std::string set = page().eval(R"JS(
+      (function () {
+        window.__calls = [];
+        window.__kept = { call: call, render: render, models: state.models, config: state.config,
+                          view: state.view, page: state.settingsPage, lastView: state.lastView };
+        render = function () {};
+        call = function (method, params) {
+          window.__calls.push([method, params]);
+          if (method === 'market.search') return Promise.resolve({ listings: [], next: '' });
+          if (method === 'market.model') return Promise.resolve({ id: params.id, format: 'gguf', options: [] });
+          if (method === 'market.readme') return Promise.resolve({ text: '' });
+          if (method === 'config') return Promise.resolve(state.config);
+          return Promise.resolve({});
+        };
+        state.config = Object.assign({}, state.config || {}, { router: { model: '' } });
+        state.models = { directory: '/m', display: '/m', models: [
+          { name: 'mlx-community/Qwen3-4B-4bit', path: '/m/mlx-community/Qwen3-4B-4bit', bytes: 2000, format: 'mlx' }] };
+        state.settingsPage = 'general';
+        return 'set';
+      })())JS");
+    CHECK_EQ(set, "set");
+    const std::string drawn = page().eval("views.settings()");
+    CHECK(drawn.find("Qwen3-4B-4bit (MLX, ") != std::string::npos);
+    CHECK(drawn.find("data-act=\"delegator-get\"") != std::string::npos);
+
+    page().eval("actions['delegator-get']()");
+    CHECK_EQ(page().eval("state.view"), "models");
+    CHECK_EQ(page().eval("market().selected"), "LiquidAI/LFM2.5-1.2B-Instruct-GGUF");
+
+    // Nothing is seated before the file is there.
+    page().eval("seatWantedDelegator()");
+    CHECK_EQ(page().eval("String(window.__calls.filter(function (c) { return c[0] === 'config.set'; }).length)"), "0");
+
+    page().eval("state.models.models.push({ name: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q8_0.gguf',"
+                " path: '/m/x.gguf', bytes: 1e9, format: 'gguf' }); seatWantedDelegator()");
+    CHECK_EQ(page().eval("JSON.stringify(window.__calls.filter(function (c) { return c[0] === 'config.set'; })"
+                         ".map(function (c) { return c[1]; }))"),
+             R"([{"router":{"model":"LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q8_0.gguf"}}])");
+    // Once: a later draw seats nothing again.
+    page().eval("seatWantedDelegator()");
+    CHECK_EQ(page().eval("String(window.__calls.filter(function (c) { return c[0] === 'config.set'; }).length)"), "1");
+
+    // With a GGUF in the folder there is nothing to get.
+    CHECK(page().eval("views.settings()").find("data-act=\"delegator-get\"") == std::string::npos);
+
+    // A folder Crucible may not read says so, rather than counting none.
+    page().eval("state.models = { directory: '/m', display: '/m', models: [], problem: 'Permission denied' }");
+    const std::string blocked = page().eval("views.settings()");
+    CHECK(blocked.find("<span class=\"bad\">Permission denied</span>") != std::string::npos);
+    CHECK(blocked.find("0 models") == std::string::npos);
+
+    page().eval("(function (k) { call = k.call; render = k.render; state.models = k.models; state.config = k.config;"
+                " state.view = k.view; state.settingsPage = k.page; state.lastView = k.lastView;"
+                " market().selected = ''; market().detail = null; market().query = ''; market().results = null; })"
+                "(window.__kept)");
 }
 
 TEST(a_model_is_condensed_from_the_create_tab) {
@@ -1527,6 +1603,18 @@ TEST(a_fine_tune_shows_its_score_against_its_base) {
         " state.open.recipe = 'kitchen-training'; var out = views.create();"
         " state.run = run; state.open.recipe = null; return out; })()");
     CHECK(running.find("<span>Held out</span>2.31<") != std::string::npos);
+}
+
+TEST(a_new_recipe_on_the_page_starts_at_the_programs_learning_rate) {
+    // The wizard's blank recipe and the program's are two writings of one
+    // default (include/crucible/lab/recipe.hpp), and the wizard is where it
+    // is shown: they must not drift apart.
+    CHECK_EQ(page().eval("String(blankRecipe().learning_rate)"), std::string("0.0001"));
+    const std::string hub = "{ query: '', items: [], searching: false, asked: false, error: '' }";
+    const std::string shown = page().eval(
+        "modalView({ kind: 'wizard', step: 4, recipe: blankRecipe(), hub: " + hub + ", dataHub: " + hub
+        + ", toolHub: " + hub + ", fit: null })");
+    CHECK(shown.find("Learning rate: 1.0e-4") != std::string::npos);
 }
 
 TEST(a_model_moved_into_a_subfolder_is_shown_as_itself_not_as_missing) {
@@ -2341,13 +2429,16 @@ TEST(a_scratch_folder_shows_its_panes_once_it_has_files) {
 TEST(the_box_answers_a_build_that_asks_and_is_a_message_otherwise) {
     // What the box sends, by what is going on: an answer to the build's
     // question while it asks, a message (decided by the orchestrator) else.
+    // Sizing the box needs a document, which this has none of; it is not
+    // what is being asked about here.
     const char* const send =
         "(function (cookState, text) { var sent = [], c = state.snapshot.cook, busy = state.snapshot.busy;"
         " var was = call; call = function (m, p) { sent.push(m + ' ' + JSON.stringify(p)); return Promise.resolve({}); };"
+        " var grow = growComposer; growComposer = function () {};"
         " c.state = cookState; state.snapshot.busy = false;"
-        " var box = { value: text, style: {}, offsetHeight: 0, scrollHeight: 0, clientHeight: 0 };"
+        " var box = { value: text, style: {} };"
         " actions.send({ querySelector: function () { return box; }, dataset: { mode: 'chat' } });"
-        " call = was; c.state = 'working'; state.snapshot.busy = busy; return sent.join('|'); })";
+        " call = was; growComposer = grow; c.state = 'working'; state.snapshot.busy = busy; return sent.join('|'); })";
     CHECK_EQ(page().eval(std::string(send) + "('asking', 'pytest')"),
              std::string("cook.answer {\"answer\":\"pytest\"}"));
     const std::string message = page().eval(std::string(send) + "('working', 'now add dark mode')");
@@ -3595,4 +3686,85 @@ TEST(the_page_puts_back_the_turns_it_was_sent_as_stubs) {
       turnsShown.transcript.clear();
       return (whole.indexOf('data-stub') < 0) + ',' + (stub.indexOf('data-stub') >= 0) + ',' + (stub.indexOf('>r<') < 0);
     })())JS"), std::string("true,true,true"));
+}
+
+TEST(the_page_keeps_a_part_the_window_left_out_as_the_same) {
+    // A build's journal named in "same" is the one the page has; one the
+    // window neither sends nor names is gone.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var was = state.snapshot, keepRender = render, journal = { id: 'j1', steps: [] };
+      render = function () {};
+      window.crucibleSnapshot(Object.assign({}, was, { cook: journal, turns: [] }));
+      var same = Object.assign({}, was, { turns: [], same: ['cook'] });
+      delete same.cook;
+      window.crucibleSnapshot(same);
+      var kept = state.snapshot.cook === journal && !('same' in state.snapshot);
+      var gone = Object.assign({}, was, { turns: [] });
+      delete gone.cook;
+      window.crucibleSnapshot(gone);
+      var out = kept + ',' + (state.snapshot.cook === undefined);
+      state.snapshot = was; render = keepRender;
+      return out; })())JS"),
+             std::string("true,true"));
+}
+
+TEST(a_long_conversation_is_drawn_from_its_end_and_further_back_as_it_is_scrolled) {
+    // Three hundred turns of two thousand characters: the newest twenty are
+    // drawn, and twenty more once the reader scrolls up to the first of them.
+    // A conversation of a few turns is drawn whole.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var was = state.snapshot, keepRender = render, turns = [];
+      render = function () {};
+      for (var i = 0; i < 300; i++) {
+        turns.push({ prompt: 'q' + i, reply: 'r' + i + ' ' + new Array(2001).join('x'), streaming: false,
+                     rev: 7000 + i, actions: [] });
+      }
+      state.snapshot = Object.assign({}, was, { turns: turns, session: 'long', busy: false });
+      transcriptWindow.session = null;
+      var count = function (html) { return (html.match(/<div class="turn"/g) || []).length; };
+      var opened = turnsView(turns, 0);
+      var first = /data-key="t(\d+)"/.exec(opened)[1];
+      actions['transcript-scroll']({ scrollTop: 0, clientHeight: 600, firstElementChild: null });
+      var further = turnsView(turns, 0);
+      state.snapshot = Object.assign({}, was, { turns: turns.slice(0, 3), session: 'short', busy: false });
+      var short = count(turnsView(state.snapshot.turns, 0));
+      state.snapshot = was; render = keepRender; transcriptWindow.session = null; transcriptWindow.growing = null;
+      return [count(opened), first, count(further), short].join(','); })())JS"),
+             std::string("20,280,40,3"));
+}
+
+TEST(a_reply_arriving_is_drawn_a_block_at_a_time) {
+    // Its blocks, signed, are what markdown() makes of the same text.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var text = '# Title\n\nSome **bold** text and $x^2$.\n\n```python\nprint(1)\n```\n\n- one\n- two\n\n'
+               + '| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\nThe end';
+      var streamed = streamedMarkdown(text, 'test-blocks').replace(/ data-key="b\d+" data-sig="b\d+"/g, '');
+      return String(streamed === markdown(text)); })())JS"),
+             std::string("true"));
+
+    // The blocks on screen go as stubs, and the last, still arriving, whole.
+    CHECK_EQ(page().eval(R"JS((function () {
+      var first = streamedMarkdown('One paragraph.\n\n```js\nlet a = 1;\n```\n\nStill', 'test-blocks');
+      var shown = blocksShown['test-blocks'];
+      var re = /data-key="(b\d+)" data-sig="(b\d+)"/g, m;
+      while ((m = re.exec(first))) shown.add(m[1] + '|' + m[2]);
+      var next = streamedMarkdown('One paragraph.\n\n```js\nlet a = 1;\n```\n\nStill going', 'test-blocks');
+      shown.clear();
+      return [(next.match(/data-stub/g) || []).length, next.indexOf('One paragraph') < 0,
+              next.indexOf('Still going') >= 0].join(','); })())JS"),
+             std::string("2,true,true"));
+}
+
+TEST(a_region_on_screen_as_it_was_made_is_sent_as_its_element_alone) {
+    CHECK_EQ(page().eval(R"JS((function () {
+      var html = '<div id="r-test" class="list">a long list</div>';
+      var whole = region('r-test', html);
+      regions.get('r-test').shown = true;
+      var again = region('r-test', html);
+      var changed = region('r-test', '<div id="r-test" class="list">another list</div>');
+      regions.delete('r-test');
+      return [/^<div id="r-test" class="list" data-sig="r\d+">a long list<\/div>$/.test(whole),
+              /^<div id="r-test" class="list" data-sig="r\d+" data-stub><\/div>$/.test(again),
+              changed.indexOf('another list') >= 0 && changed.indexOf('data-stub') < 0].join(','); })())JS"),
+             std::string("true,true,true"));
 }

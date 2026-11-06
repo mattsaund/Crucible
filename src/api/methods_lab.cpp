@@ -3,6 +3,7 @@
 // Making an expert: the recipes, the run, and where the pieces come from.
 #include "methods.hpp"
 
+#include <algorithm>
 #include <atomic>
 
 #include <chrono>
@@ -81,9 +82,12 @@ lab::HeldOut held_out_from_json(const json& node) {
     return held;
 }
 
-/// The memory a fine-tune has to fit in: every card this machine can drive,
-/// together. Zero when no GPU runtime is installed, which the page says in
-/// words rather than as "needs 6 GB of 0".
+/// The memory a fine-tune has to fit in: the largest card this machine can
+/// drive. One card, because a fine-tune trains on one (finetune.py picks
+/// it): the cards together said a base fit in sixteen bits that no one of
+/// them could hold, and the page then offered a run that could not start.
+/// Zero when no GPU runtime is installed, which the page says in words
+/// rather than as "needs 6 GB of 0".
 std::uint64_t training_memory() {
     // Asked once it has an answer: the cards do not change size, and asking
     // CUDA the first time starts it on every card, which takes long enough
@@ -93,12 +97,12 @@ std::uint64_t training_memory() {
     if (const std::uint64_t had = known.load(); had > 0) {
         return had;
     }
-    std::uint64_t total = 0;
+    std::uint64_t largest = 0;
     for (const ComputeDevice& gpu : gpu_devices()) {
-        total += gpu.memory_total;
+        largest = std::max(largest, gpu.memory_total);
     }
-    known.store(total);
-    return total;
+    known.store(largest);
+    return largest;
 }
 
 json fit_json(double parameters_b, lab::Method method, std::uint64_t memory) {
@@ -180,7 +184,7 @@ lab::Recipe recipe_from_json(const json& node) {
     recipe.parameters_b  = node.value("parameters_b", 0.0);
     recipe.epochs        = node.value("epochs", 2);
     recipe.context       = node.value("context", 512);
-    recipe.learning_rate = node.value("learning_rate", 1e-5F);
+    recipe.learning_rate = node.value("learning_rate", recipe.learning_rate);
     recipe.trained_path  = node.value("trained_path", "");
     recipe.held_out      = held_out_from_json(node.value("held_out", json::object()));
     recipe.stage         = lab::stage_from_id(node.value("stage", "draft"));

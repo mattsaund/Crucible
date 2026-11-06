@@ -32,7 +32,6 @@ context when started through spawn().
 import json
 import sys
 import threading
-import traceback
 
 
 class CoreError(Exception):
@@ -221,6 +220,9 @@ class Channel:
         except Disconnected:
             return
         except Exception as error:  # every failure goes back as an answer
+            # Read in when it is wanted: it was a tenth of the time this
+            # process took to start.
+            import traceback
             traceback.print_exc(file=sys.stderr)
             if has_id:
                 self.send({"id": message["id"], "error": "%s failed: %s" % (method, error)})

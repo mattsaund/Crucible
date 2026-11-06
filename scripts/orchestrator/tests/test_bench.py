@@ -2,6 +2,7 @@
 """The benchmark runner: which items a size asks, how each is asked and
 checked, the scores the board works out, and a run against a stand-in core."""
 
+import concurrent.futures
 import hashlib
 import os
 import sys
@@ -140,12 +141,32 @@ class Asking(unittest.TestCase):
             bench.ask({"id": "nope"}, {}, 0)
 
 
+class _Checked:
+    """A stand-in for the pool answers are checked in that checks each one
+    when it is handed over, so which are kept when is the same every run."""
+
+    def __init__(self, max_workers=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args):
+        future = concurrent.futures.Future()
+        future.set_result(fn(*args))
+        return future
+
+
 class FakeCore:
     """The core as bench.run sees it: a model that answers A, and dataset rows
-    where the even items' answer is A and the odd ones' is B."""
+    where the even items' answer is A and the odd ones' is B. It answers
+    `at_once` of the items queued at a time, in the order queued."""
 
     def __init__(self, stop_after=None, load_error=None, rows_error=None, rows_fail=0, fits=None, cut=False,
-                 looped=False):
+                 looped=False, at_once=1, fail_after=None, answer_error=None):
         self.published = []
         self.saved = []
         self.chats = 0
@@ -158,7 +179,13 @@ class FakeCore:
         self.fits = fits             # the largest context the model loads with, or any
         self.cut = cut               # every reply runs into the budget
         self.looped = looped         # every reply is stopped going in circles
+        self.at_once = at_once
+        self.fail_after = fail_after       # bench.answers fails once this many are answered
+        self.answer_error = answer_error   # (key, error): that item's answer fails
         self.budgets = set()
+        self.queued = []
+        self.most_queued = 0
+        self.order = []              # the keys in the order they were answered
 
     def call(self, method, params=None):
         params = params or {}
@@ -178,7 +205,7 @@ class FakeCore:
                 return {"ok": False, "error": self.load_error}
             if self.fits is not None and params["n_ctx"] > self.fits:
                 return {"ok": False, "error": "not enough memory"}
-            return {"ok": True, "load_ms": 5}
+            return {"ok": True, "load_ms": 5, "at_once": self.at_once}
         if method == "bench.model":
             return {"file": "tiny-Q4_K_M.gguf", "bytes": 1000, "name": "Tiny", "arch": "llama",
                     "params": 1000000, "quant": "Q4_K_M"}
@@ -191,15 +218,34 @@ class FakeCore:
             if self.rows_asked <= self.rows_fail:
                 return {"error": "HTTP 503: busy"}
             offset = params["offset"]
+            # ARC's fields, and GSM8K's, whose every answer the model gets wrong.
             return {"rows": [{"row_idx": i, "row": {
                 "question": "Q%d?" % i,
                 "choices": {"label": ["A", "B", "C", "D"], "text": ["w", "x", "y", "z"]},
-                "answerKey": "A" if i % 2 == 0 else "B"}} for i in range(offset, offset + params["length"])]}
-        if method == "bench.chat":
-            self.chats += 1
+                "answerKey": "A" if i % 2 == 0 else "B",
+                "answer": "Seven.\n#### 7"}} for i in range(offset, offset + params["length"])]}
+        if method == "bench.ask":
             self.budgets.add(params["max_tokens"])
-            return {"answer": "Answer: A", "ms": 10, "prompt_tokens": 40, "prompt_ms": 20.0,
-                    "output_tokens": 10, "output_ms": 100.0, "hit_limit": self.cut, "looped": self.looped}
+            self.queued.extend(item["key"] for item in params["items"])
+            self.most_queued = max(self.most_queued, len(self.queued))
+            return {"queued": len(params["items"])}
+        if method == "bench.answers":
+            if self.fail_after is not None and self.chats >= self.fail_after:
+                raise RuntimeError("the model could not read the batch it was given")
+            answers = []
+            for key in self.queued[:self.at_once]:
+                stopped = self.stop_after is not None and self.chats >= self.stop_after
+                if not stopped:
+                    self.chats += 1
+                    self.order.append(key)
+                failed = self.answer_error is not None and key == self.answer_error[0]
+                answers.append({"key": key, "answer": "" if failed else "Answer: A",
+                                "error": self.answer_error[1] if failed else "", "stopped": stopped,
+                                "ms": 10, "prompt_tokens": 40, "prompt_ms": 20.0, "output_tokens": 10,
+                                "output_ms": 100.0, "hit_limit": self.cut, "looped": self.looped})
+            del self.queued[:self.at_once]
+            return {"answers": answers,
+                    "stopped": self.stop_after is not None and self.chats >= self.stop_after}
         if method == "bench.save":
             self.saved.append(params["result"])
             return {"path": "/results/%s.json" % params["result"]["id"]}
@@ -218,8 +264,11 @@ class Running(unittest.TestCase):
         core = FakeCore()
         self.assertEqual(self.run_arc(core), {"ok": True, "id": "run1"})
         self.assertEqual(core.chats, 50)
-        self.assertEqual(len(core.saved), 1)
-        result = core.saved[0]
+        # Kept as soon as its one benchmark was done, and again at the end,
+        # under the one id.
+        self.assertEqual([r["id"] for r in core.saved], ["run1-0", "run1-0"])
+        self.assertTrue(core.saved[0]["stopped"])
+        result = core.saved[-1]
         even = sum(1 for i in bench.pick(bench.BY_ID["arc"], "quick") if i % 2 == 0)
         self.assertEqual(result["benchmarks"], {"arc": {"n": 50, "correct": even}})
         self.assertAlmostEqual(result["skills"]["reasoning"], even / 50)
@@ -241,7 +290,7 @@ class Running(unittest.TestCase):
     def test_what_is_posted_has_no_empty_values(self):
         core = FakeCore()
         self.run_arc(core)
-        result = core.saved[0]
+        result = core.saved[-1]
 
         def walk(value):
             if isinstance(value, dict):
@@ -256,7 +305,7 @@ class Running(unittest.TestCase):
     def test_the_machine_is_kept_by_kind_and_count_and_its_names_beside(self):
         core = FakeCore()
         self.run_arc(core)
-        result = core.saved[0]
+        result = core.saved[-1]
         # The board takes the backend, the count and the memory. The names, of
         # the cards and of the model, are for this machine's screen.
         self.assertEqual(result["hardware"], {"backend": "Vulkan", "gpu_count": 1, "gpus": ["Test GPU"],
@@ -274,12 +323,12 @@ class Running(unittest.TestCase):
             return machine(method, params)
         core.call = no_gpu
         self.run_arc(core)
-        self.assertEqual(core.saved[0]["hardware"], {"backend": "CPU", "gpu_count": 0})
+        self.assertEqual(core.saved[-1]["hardware"], {"backend": "CPU", "gpu_count": 0})
 
     def test_a_stopped_run_counts_no_partial_benchmark(self):
         core = FakeCore(stop_after=10)
         self.run_arc(core)
-        result = core.saved[0]
+        result = core.saved[-1]
         self.assertEqual(result["benchmarks"], {})
         self.assertTrue(result["stopped"])
         self.assertEqual(len(result["items"]["arc"]), 10)
@@ -300,8 +349,8 @@ class Running(unittest.TestCase):
         with mock.patch.object(bench, "FETCH_WAITS", (0, 0)):
             self.run_arc(core)
         self.assertEqual(core.chats, 0)
-        self.assertEqual(core.saved[0]["benchmarks"], {})
-        self.assertEqual(core.saved[0]["errors"], {"arc": "no network"})
+        self.assertEqual(core.saved[-1]["benchmarks"], {})
+        self.assertEqual(core.saved[-1]["errors"], {"arc": "no network"})
         self.assertEqual(core.published[-1]["models"][0]["benchmarks"]["arc"]["error"], "no network")
         # Tried three times, then given up on.
         self.assertEqual(core.rows_asked, 3)
@@ -310,8 +359,8 @@ class Running(unittest.TestCase):
         core = FakeCore(rows_fail=2)
         with mock.patch.object(bench, "FETCH_WAITS", (0, 0)):
             self.run_arc(core)
-        self.assertEqual(core.saved[0]["benchmarks"]["arc"]["n"], 50)
-        self.assertNotIn("errors", core.saved[0])
+        self.assertEqual(core.saved[-1]["benchmarks"]["arc"]["n"], 50)
+        self.assertNotIn("errors", core.saved[-1])
 
     def test_every_page_is_fetched_before_a_model_loads(self):
         core = FakeCore()
@@ -326,14 +375,14 @@ class Running(unittest.TestCase):
         core = FakeCore()
         self.run_arc(core)
         self.assertEqual(core.budgets, {bench.MAX_TOKENS})
-        self.assertEqual(core.saved[0]["settings"]["max_tokens"], bench.MAX_TOKENS)
-        self.assertEqual(core.saved[0]["settings"]["context"], bench.CONTEXT)
-        self.assertNotIn("cut_off", core.saved[0])
+        self.assertEqual(core.saved[-1]["settings"]["max_tokens"], bench.MAX_TOKENS)
+        self.assertEqual(core.saved[-1]["settings"]["context"], bench.CONTEXT)
+        self.assertNotIn("cut_off", core.saved[-1])
 
     def test_a_model_too_large_for_the_context_runs_with_the_smaller_one_and_says_so(self):
         core = FakeCore(fits=bench.SMALL_CONTEXT)
         self.run_arc(core)
-        settings = core.saved[0]["settings"]
+        settings = core.saved[-1]["settings"]
         self.assertEqual(settings["context"], bench.SMALL_CONTEXT)
         self.assertEqual(settings["max_tokens"], bench.SMALL_MAX_TOKENS)
         self.assertEqual(core.budgets, {bench.SMALL_MAX_TOKENS})
@@ -341,17 +390,110 @@ class Running(unittest.TestCase):
     def test_replies_cut_off_by_the_budget_are_counted(self):
         core = FakeCore(cut=True)
         self.run_arc(core)
-        self.assertEqual(core.saved[0]["cut_off"], {"arc": 50})
+        self.assertEqual(core.saved[-1]["cut_off"], {"arc": 50})
+
+    def run_two(self, core):
+        return bench.run(core, {"models": [{"path": "/models/tiny-Q4_K_M.gguf", "name": "tiny"}],
+                                "benchmarks": ["arc", "gsm8k"], "size": "quick", "id": "run2"})
+
+    def test_many_at_once_gets_the_same_result_as_one_at_a_time(self):
+        alone, many = FakeCore(), FakeCore(at_once=8)
+        self.run_arc(alone)
+        self.run_arc(many)
+        self.assertEqual(many.chats, 50)
+        one, eight = alone.saved[-1], many.saved[-1]
+        self.assertEqual(eight["benchmarks"], one["benchmarks"])
+        # Answered out of order, kept in the suite's.
+        self.assertEqual([x["i"] for x in eight["items"]["arc"]], bench.pick(bench.BY_ID["arc"], "quick"))
+        self.assertEqual([x["i"] for x in eight["items"]["arc"]], [x["i"] for x in one["items"]["arc"]])
+
+    def test_items_are_queued_in_order_and_a_few_ahead(self):
+        core = FakeCore(at_once=4)
+        self.run_two(core)
+        arc = ["arc/%d" % i for i in bench.pick(bench.BY_ID["arc"], "quick")]
+        gsm8k = ["gsm8k/%d" % i for i in bench.pick(bench.BY_ID["gsm8k"], "quick")]
+        self.assertEqual(core.order, arc + gsm8k)
+        self.assertLessEqual(core.most_queued, 4 * (1 + bench.AHEAD))
+        self.assertGreater(core.most_queued, 4)
+
+    def test_the_speed_is_one_item_at_a_time(self):
+        # The first items are asked alone and timed; the rest are not.
+        core = FakeCore(at_once=8)
+        with mock.patch.object(bench, "SOLO_TOKENS", 30):
+            self.run_arc(core)
+        self.assertEqual(core.order[:3], ["arc/%d" % i for i in bench.pick(bench.BY_ID["arc"], "quick")[:3]])
+        self.assertEqual(core.saved[-1]["speed"], {"prompt_tps": 2000.0, "gen_tps": 100.0})
+
+    def test_a_stop_keeps_what_was_answered_many_at_once(self):
+        core = FakeCore(stop_after=20, at_once=8)
+        self.run_two(core)
+        result = core.saved[-1]
+        self.assertTrue(result["stopped"])
+        self.assertEqual(result["benchmarks"], {})
+        self.assertEqual(len(result["items"]["arc"]), 20)
+        self.assertNotIn("gsm8k", result["items"])
+        self.assertEqual(core.published[-1]["models"][0]["state"], "stopped")
+
+    def test_a_core_that_fails_partway_keeps_the_benchmarks_that_finished(self):
+        core = FakeCore(at_once=4, fail_after=60)
+        self.run_two(core)
+        result = core.saved[-1]
+        self.assertIn("arc", result["benchmarks"])
+        self.assertNotIn("gsm8k", result["benchmarks"])
+        self.assertIn("could not read", result["error"])
+        self.assertEqual(core.released, 1)
+        model = core.published[-1]["models"][0]
+        self.assertEqual(model["state"], "failed")
+        self.assertIn("could not read", model["error"])
+
+    def test_an_answer_that_failed_leaves_its_benchmark_out(self):
+        first = bench.pick(bench.BY_ID["arc"], "quick")[5]
+        core = FakeCore(at_once=4, answer_error=("arc/%d" % first, "the model could not read the batch"))
+        self.run_two(core)
+        result = core.saved[-1]
+        self.assertNotIn("arc", result["benchmarks"])
+        self.assertEqual(result["benchmarks"]["gsm8k"]["n"], 50)
+        self.assertEqual(result["errors"], {"arc": "the model could not read the batch"})
+        # The rest of it is not asked.
+        self.assertLess(sum(1 for key in core.order if key.startswith("arc/")), 50)
+
+    def test_a_benchmark_done_is_kept_before_the_run_ends(self):
+        # The program going partway through the second benchmark still has
+        # the first on disk.
+        core = FakeCore(at_once=4)
+        calls = core.call
+
+        def gone_after_arc(method, params=None):
+            if method == "bench.ask" and any(item["key"].startswith("gsm8k/") for item in params["items"]) \
+                    and core.saved:
+                raise bench.Disconnected("the core went away")
+            return calls(method, params)
+        core.call = gone_after_arc
+        with mock.patch.object(bench.concurrent.futures, "ThreadPoolExecutor", _Checked), \
+                self.assertRaises(bench.Disconnected):
+            self.run_two(core)
+        self.assertEqual(len(core.saved), 1)
+        self.assertEqual(core.saved[0]["benchmarks"]["arc"]["n"], 50)
+        self.assertNotIn("gsm8k", core.saved[0]["benchmarks"])
+        self.assertTrue(core.saved[0]["stopped"])
+
+    def test_progress_is_published_now_and_then_not_for_every_item(self):
+        core = FakeCore(at_once=8)
+        self.run_two(core)
+        self.assertLess(len(core.published), 40)
+        # And every benchmark finished is said at once.
+        done = [run["models"][0]["benchmarks"].get("arc", {}).get("done") for run in core.published]
+        self.assertIn(50, done)
 
     def test_replies_stopped_in_a_loop_count_as_cut_off(self):
         core = FakeCore(looped=True)
         self.run_arc(core)
-        self.assertEqual(core.saved[0]["cut_off"], {"arc": 50})
-        self.assertTrue(all(item.get("looped") for item in core.saved[0]["items"]["arc"]))
+        self.assertEqual(core.saved[-1]["cut_off"], {"arc": 50})
+        self.assertTrue(all(item.get("looped") for item in core.saved[-1]["items"]["arc"]))
         # Only the replies that went in circles say so.
         core = FakeCore()
         self.run_arc(core)
-        self.assertFalse(any("looped" in item for item in core.saved[0]["items"]["arc"]))
+        self.assertFalse(any("looped" in item for item in core.saved[-1]["items"]["arc"]))
 
 
 if __name__ == "__main__":

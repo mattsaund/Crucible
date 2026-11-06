@@ -35,7 +35,6 @@ about each, is decided here.
 
 import re
 import sys
-import traceback
 
 from . import intent, routing
 from .rpc import Disconnected
@@ -615,7 +614,8 @@ def turn(core, params):
         raise
     except Exception as error:   # a call to the core that failed, or a bug here
         # The turn ends with the reason rather than being left open with
-        # nobody answering it.
+        # nobody answering it. (traceback is read in here, as in rpc.py.)
+        import traceback
         traceback.print_exc(file=sys.stderr)
         try:
             chat.end("failed", reason=str(error), mood="error", status=str(error))

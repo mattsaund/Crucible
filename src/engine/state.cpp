@@ -9,6 +9,7 @@
 #include "crucible/engine/state.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 
 namespace crucible {
@@ -213,6 +214,12 @@ Turn& AppState::writable(std::size_t index) {
     // A count read as more than one while a frame lets go only costs a copy.
     if (slot.use_count() > 1) {
         slot = std::make_shared<Turn>(*slot);
+    } else {
+        // The count is read without ordering. A frame let go of its copy
+        // with a release, and this fence is what puts its last reads of the
+        // turn before the write that follows; without it the two race, as
+        // ThreadSanitizer found with a reply read beside a token appended.
+        std::atomic_thread_fence(std::memory_order_acquire);
     }
     slot->revision = ++turn_clock_;
     return *slot;

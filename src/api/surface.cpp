@@ -196,8 +196,13 @@ std::string Surface::page_snapshot() {
         return "{}";
     }
     // Read once, so the turns and everything else are the same moment.
-    const Snapshot frame = state->snapshot();
-    std::string text = text_of(state_json_of(frame, false));
+    Snapshot frame = state->snapshot();
+    const json same = page_parts_->keep(frame);
+    json out = state_json_of(frame, false);
+    if (!same.empty()) {
+        out["same"] = same;
+    }
+    std::string text = text_of(out);
     if (text.size() < 2 || text.back() != '}') {
         return text;
     }

@@ -24,6 +24,16 @@ extern const unsigned int  kFinetunePy_size;
 }  // namespace crucible::lab::embedded
 #endif
 
+#if defined(CRUCIBLE_HAS_CONVERTER)
+#include <miniz.h>
+
+namespace crucible::lab::embedded {
+// llama.cpp's GGUF converter as a zip; see cmake/CrucibleDependencies.cmake.
+extern const unsigned char kConverterZip[];
+extern const unsigned int  kConverterZip_size;
+}  // namespace crucible::lab::embedded
+#endif
+
 namespace crucible::lab::pyenv {
 namespace {
 
@@ -287,6 +297,7 @@ std::vector<std::string> imports(Flavor flavor) {
 std::filesystem::path root()          { return paths::data_dir() / "trainer"; }
 std::filesystem::path venv_dir()      { return root() / "venv"; }
 std::filesystem::path script()        { return root() / "finetune.py"; }
+std::filesystem::path converter()     { return root() / "convert" / "convert_hf_to_gguf.py"; }
 std::filesystem::path manifest_file() { return root() / "trainer.json"; }
 std::filesystem::path log_file()      { return root() / "install.log"; }
 std::filesystem::path runs_dir()      { return root() / "runs"; }
@@ -472,6 +483,75 @@ bool write_script(std::string& error) {
 #else
     error = "this build has no trainer script compiled into it";
     return false;
+#endif
+}
+
+std::filesystem::path write_converter(std::string& error) {
+#if defined(CRUCIBLE_HAS_CONVERTER)
+    const std::filesystem::path dir   = converter().parent_path();
+    const std::filesystem::path stamp = dir / ".crucible-converter";
+    // Which one is compiled in, by its checksum: a build with another
+    // llama.cpp carries another converter, and an update replaces it.
+    const std::string carried = std::to_string(
+        mz_crc32(MZ_CRC32_INIT, embedded::kConverterZip, embedded::kConverterZip_size));
+    std::error_code ec;
+    if (std::ifstream in(stamp); in) {
+        std::string held;
+        std::getline(in, held);
+        if (held == carried && std::filesystem::exists(converter(), ec)) {
+            return converter();
+        }
+    }
+
+    // Whatever was there goes first: a file the new one no longer has would
+    // otherwise be imported beside it.
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        error = "could not make " + dir.string() + ": " + ec.message();
+        return {};
+    }
+    mz_zip_archive zip{};
+    if (mz_zip_reader_init_mem(&zip, embedded::kConverterZip, embedded::kConverterZip_size, 0) == 0) {
+        error = "the converter compiled into this build could not be read";
+        return {};
+    }
+    const mz_uint count = mz_zip_reader_get_num_files(&zip);
+    for (mz_uint i = 0; i < count && error.empty(); ++i) {
+        mz_zip_archive_file_stat entry{};
+        if (mz_zip_reader_file_stat(&zip, i, &entry) == 0 || entry.m_is_directory != 0) {
+            continue;
+        }
+        // Names the build wrote, kept inside the folder all the same.
+        const std::filesystem::path name = std::filesystem::path(entry.m_filename).lexically_normal();
+        if (name.empty() || name.is_absolute() || *name.begin() == "..") {
+            continue;
+        }
+        std::size_t size = 0;
+        void*       data = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+        if (data == nullptr) {
+            error = "could not unpack " + name.generic_string() + " from the converter";
+            break;
+        }
+        const std::filesystem::path target = dir / name;
+        std::filesystem::create_directories(target.parent_path(), ec);
+        std::ofstream out(target, std::ios::binary | std::ios::trunc);
+        out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        mz_free(data);
+        if (!out) {
+            error = "could not write " + target.string();
+        }
+    }
+    mz_zip_reader_end(&zip);
+    if (!error.empty()) {
+        std::filesystem::remove_all(dir, ec);
+        return {};
+    }
+    std::ofstream(stamp, std::ios::trunc) << carried << '\n';
+    return converter();
+#else
+    error = "this build has no GGUF converter compiled into it";
+    return {};
 #endif
 }
 

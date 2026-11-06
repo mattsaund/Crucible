@@ -316,6 +316,25 @@ TEST(scanning_a_missing_directory_is_not_an_error) {
     CHECK(scan_models("/definitely/not/a/real/directory").empty());
 }
 
+TEST(a_models_folder_that_cannot_be_read_says_why) {
+    // The list reads such a folder as empty; this says so instead, which is
+    // what tells a Mac's privacy refusal from a folder with nothing in it.
+    CHECK_EQ(models_dir_problem("/definitely/not/a/real/directory"), std::string("Not found"));
+    TempDir dir;
+    CHECK(models_dir_problem(dir.path()).empty());
+#if !defined(_WIN32)
+    std::filesystem::permissions(dir.path(), std::filesystem::perms::none);
+    std::error_code ec;
+    const std::filesystem::directory_iterator probe(dir.path(), ec);
+    // Root reads it all the same, and then there is nothing to say.
+    if (ec) {
+        CHECK(!models_dir_problem(dir.path()).empty());
+        CHECK(scan_models(dir.path()).empty());
+    }
+    std::filesystem::permissions(dir.path(), std::filesystem::perms::owner_all);
+#endif
+}
+
 TEST(models_dir_falls_back_to_the_default_when_blank) {
     Config config;
     CHECK(config.models_dir.empty());

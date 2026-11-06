@@ -10,6 +10,7 @@
 // words, and a mistake comes back as a sentence rather than a crash.
 #include "test_helpers.hpp"
 
+#include <ctime>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
@@ -506,4 +507,44 @@ TEST(the_page_is_sent_a_turn_it_already_has_as_a_stub) {
     hand.turns.push_back(plain);
     page.turns_json(hand.turns);
     CHECK(json::parse(page.turns_json(hand.turns))[0]["prompt"] == "hi");
+}
+
+TEST(the_page_is_sent_a_journal_once_while_it_stays_the_same) {
+    auto cook = std::make_shared<Cook>();
+    cook->id           = "b1";
+    cook->started_unix = 100;
+    cook->ended_unix   = 160;   // over, so how long it ran does not move
+    auto edit = std::make_shared<const PendingEdit>(PendingEdit{"a.py", "a = 1\n", "a = 2\n"});
+
+    api::PageParts parts;
+    Snapshot first;
+    first.cook         = cook;
+    first.pending_edit = edit;
+    CHECK(parts.keep(first).empty());
+    CHECK(first.cook == cook);
+
+    // The same again: left out, and named.
+    Snapshot again;
+    again.cook         = cook;
+    again.pending_edit = edit;
+    CHECK(parts.keep(again) == json::array({"cook", "pending_edit"}));
+    CHECK(again.cook == nullptr);
+    CHECK(again.pending_edit == nullptr);
+
+    // A journal published again is sent again; an edit answered is gone.
+    Snapshot later;
+    later.cook = std::make_shared<Cook>(*cook);
+    CHECK(parts.keep(later).empty());
+    CHECK(later.cook != nullptr);
+
+    // A running one, whose time moves, is the same only within the second.
+    auto running = std::make_shared<Cook>();
+    running->started_unix = static_cast<std::int64_t>(std::time(nullptr)) - 30;
+    Snapshot one;
+    one.cook = running;
+    parts.keep(one);
+    Snapshot two;
+    two.cook = running;
+    const json same = parts.keep(two);
+    CHECK(same.empty() || same == json::array({"cook"}));
 }

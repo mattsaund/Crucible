@@ -59,6 +59,13 @@ public:
     /// Stop the worker, canceling any generation in flight.
     void stop();
 
+    /// Start the orchestrator now rather than with the first prompt, which
+    /// otherwise waits for Python to start before anything else. Does
+    /// nothing while Crucible's Python is not installed, or once it is up;
+    /// a start that fails is said by the first call that needs it. Blocks
+    /// while Python starts, so it is for a thread that can wait.
+    void prepare_orchestrator();
+
     /// Queue a prompt. `pinned` skips routing and sends it straight to that
     /// expert, which is how `/physics ...` works.
     ///
@@ -328,25 +335,30 @@ private:
 
     /// Have the delegator loaded and waiting, whichever mode it is in.
     ///
-    /// "Load on demand" decides when the delegator is *freed* -- the moment it
-    /// has routed, so the expert gets every byte -- not when it comes back.
-    /// It comes back as soon as the work is over, so that the next prompt is
-    /// routed the instant it is sent rather than after a load nobody asked to
-    /// wait for.
+    /// "Load on demand" decides when the delegator is *freed* -- when an
+    /// expert needs its room -- not when it comes back. It comes back as soon
+    /// as the work is over, so that the next prompt is routed the instant it
+    /// is sent rather than after a load nobody asked to wait for: beside the
+    /// expert when they both fit, on the processor when they do not and that
+    /// is allowed, and in the expert's place otherwise. One on the processor
+    /// goes back to the cards once they have room for it again.
     void ready_delegator();
 
     /// Put the table back after a prompt, however it ended: the chat's own
     /// Stop is cleared, and then tidy_models.
     void settle();
 
-    /// With the delegator on demand: free the experts nobody is using and
-    /// bring the delegator back. Called once a prompt or a build is over, so
-    /// the window is free to take the next prompt while it happens -- the
-    /// prompt simply waits its turn behind the load. Any thread.
+    /// With the delegator on demand: bring it back, and stop an MLX model
+    /// nobody is using. Experts stay while there is room for them: the next
+    /// prompt is as likely as not for the same one. Called once a prompt or
+    /// a build is over, so the window is free to take the next prompt while
+    /// it happens -- the prompt simply waits its turn behind the load. Any
+    /// thread.
     void tidy_models();
 
-    /// Make sure the delegator is loaded, freeing an expert nobody is using
-    /// first if there is no room for both. A no-op when it is already there,
+    /// Make sure the delegator is loaded: beside the experts, on the
+    /// processor, or in the place of one nobody is using, as
+    /// ModelHost::acquire_router decides. A no-op when it is already there,
     /// or none is set. Call with host_mutex_ held. `cancel` as load_router's.
     void ensure_router(const CancelCallback& cancel = {});
 
@@ -360,6 +372,14 @@ private:
     /// do it in the middle of somebody else's route. Takes host_mutex_; call
     /// without it.
     void release_router_between_routes();
+
+    /// With the delegator on demand, release_router_between_routes() when
+    /// `expert` is about to be loaded and needs the room the delegator holds
+    /// (ModelHost::needs_router_room); nothing when the two fit side by side,
+    /// or the expert is a provider's. `waiting` is called first when a route
+    /// is using the delegator and is to be waited for. Takes host_mutex_;
+    /// call without it.
+    void make_room_for(const ModelParams& expert, const std::function<void()>& waiting = {});
     void do_apply_config(Config config);
     void do_write_examples(const ExpertId& id);
 
@@ -549,6 +569,10 @@ private:
     nlohmann::json serve_bench(const std::string& method, const nlohmann::json& params);
     void do_bench(nlohmann::json request);
 
+    /// How many questions the Bench asks `model` at once: as many as the
+    /// cards hold a cache of `context` tokens for beside its weights.
+    int bench_at_once(const ModelParams& model, int context);
+
     /// Block until the user answers the question a cook is waiting on, or the
     /// cook is stopped. Returns the answer, or nothing if it was stopped.
     std::optional<std::string> await_cook_answer();
@@ -695,12 +719,14 @@ private:
     std::atomic<bool>            cook_cancel_{false};
 
     /// The benchmark run, on its own thread like a cook, and the one seat it
-    /// holds: the model being tested.
+    /// holds: the model being tested, and the answers it is giving. See
+    /// engine_bench.cpp.
+    struct BenchModel;
     std::thread                  bench_thread_;
     std::atomic<bool>            benching_{false};
     std::atomic<bool>            bench_stop_{false};
     std::mutex                   bench_mutex_;
-    std::shared_ptr<AgentSeat>   bench_seat_;
+    std::shared_ptr<BenchModel>  bench_model_;
 
     /// Ask the user about one edit and block until they answer: what a chat
     /// turn and a build's agent both ask. True means write it.

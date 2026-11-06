@@ -108,23 +108,32 @@ function turnControls(turn, index, busy) {
 const thoughtsOpen = new Set();
 const thoughtKey = (index) => `${state.snapshot.session || ''}|${index}`;
 
-/// One exchange, as markup.
-function turnView(turn, index, busy) {
+/// One exchange, as markup. `where` is the transcript a turn still arriving
+/// is drawn in, which its blocks are kept by (see streamedMarkdown).
+function turnView(turn, index, busy, where) {
+  const live = turn.streaming && where;
   let reply;
   if (turn.failed) {
     reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
   } else if (!turn.reply && turn.streaming) {
     reply = '<div class="body thinking">...</div>';
+  } else if (live) {
+    reply = `<div class="body md" id="${where}-reply">${streamedMarkdown(turn.reply, `${where}-reply`)}</div>`;
   } else {
     reply = `<div class="body md">${markdown(turn.reply)}</div>`;
   }
   // Reasoning is kept apart from the answer rather than above it as prose:
   // it is not the answer, and running the two together makes a reasoning
-  // model look like it has started rambling.
+  // model look like it has started rambling. What it says is drawn only
+  // while it is open: a reasoning model thinks at length, and all of it was
+  // drawn again on every push behind a closed fold.
+  const open = thoughtsOpen.has(thoughtKey(index));
+  const thinking = !open ? ''
+    : live ? streamedMarkdown(turn.reasoning, `${where}-thought`) : markdown(turn.reasoning);
   const thought = turn.reasoning
-    ? `<details class="work thought" data-toggle="thinking" data-index="${index}"${
-        thoughtsOpen.has(thoughtKey(index)) ? ' open' : ''}>
-         <summary>thinking</summary><div class="md">${markdown(turn.reasoning)}</div></details>`
+    ? `<details class="work thought" data-toggle="thinking" data-index="${index}"${open ? ' open' : ''}>
+         <summary>thinking</summary><div class="md"${live && open ? ` id="${where}-thought"` : ''}>${
+           thinking}</div></details>`
     : '';
   return `${turnControls(turn, index, busy)}
       ${attachedChips(turn.attachments)}${turn.prompt ? `<div class="said">${escape(turn.prompt)}</div>` : ''}
@@ -148,23 +157,62 @@ const turnCache = new Map();
 /// otherwise parsed again in full on every token of the reply at its end.
 const turnsShown = { transcript: new Set(), 'test-talk': new Set() };
 
+/// How much of a conversation is drawn at once: its newest turns, back until
+/// they hold about this many characters -- several screens -- or are this
+/// many turns. Those before them are drawn as the reader scrolls up to them,
+/// so opening a long conversation, or coming back to Chat, costs what is
+/// near its end rather than all of it: three hundred turns took seconds.
+const DRAWN_AT_ONCE = { chars: 40000, turns: 40 };
+
+/// Where a stretch of `turns` drawn at once starts, when it ends before `end`.
+function drawnFrom(turns, end) {
+  let from = end;
+  let chars = 0;
+  while (from > 0 && end - from < DRAWN_AT_ONCE.turns && chars < DRAWN_AT_ONCE.chars) {
+    from -= 1;
+    chars += (turns[from].prompt || '').length + (turns[from].reply || '').length;
+  }
+  return from;
+}
+
+/// The first turn the transcript draws, and the conversation that is of.
+const transcriptWindow = { session: null, from: 0, growing: null };
+
+function transcriptStart(turns) {
+  const w = transcriptWindow;
+  const session = state.snapshot.session || '';
+  if (w.session !== session || w.from > turns.length) {
+    w.session = session;
+    w.from = drawnFrom(turns, turns.length);
+  }
+  // A build an agent was opened for is brought into sight, so it is drawn.
+  if (state.revealBuild) {
+    const asked = turns.findIndex((t) => t.build === state.revealBuild);
+    if (asked >= 0 && asked < w.from) w.from = asked;
+  }
+  return w.from;
+}
+
 function turnsView(turns, from, where) {
   const busy = !!state.snapshot.busy;
-  const shown = turnsShown[where || 'transcript'] || new Set();
+  const at = where || 'transcript';
+  const shown = turnsShown[at] || new Set();
+  const first = at === 'transcript' ? Math.max(from, transcriptStart(turns)) : from;
   const out = [];
-  for (let index = from; index < turns.length; index += 1) {
+  for (let index = first; index < turns.length; index += 1) {
     const turn = turns[index];
     if (turn.build) {
       // A message that became a build: its journal changes while the build
-      // runs and is read later for one that ran, so it is never kept.
-      out.push(`<div class="turn build-turn" data-key="t${index}" id="build-${escape(turn.build)}">${
-        buildTurnView(turn, index, busy)}</div>`);
+      // runs and is read later for one that ran, so it is kept by what it
+      // came to rather than by what went into it (see region).
+      out.push(region(`build-${turn.build}`, `<div class="turn build-turn" data-key="t${index}" id="build-${
+        escape(turn.build)}">${buildTurnView(turn, index, busy)}</div>`));
       continue;
     }
     if (turn.streaming) {
-      // Changing with every push, so not worth remembering.
+      // Changing with every push, so drawn a block at a time instead.
       out.push(`<div class="turn" data-key="t${index}">${
-        turnView(turn, index, busy)}</div>`);
+        turnView(turn, index, busy, at)}</div>`);
       continue;
     }
     // A revision names the turn word for word; one made by hand has none,
@@ -188,16 +236,20 @@ function turnsView(turns, from, where) {
   return out.join('');
 }
 
-/// After a draw: which turns each transcript now shows. A stub that ended up
-/// on the page, because what it stood for was not there after all, is drawn
-/// again whole rather than left empty.
-afterDraw.push(() => {
-  for (const where of Object.keys(turnsShown)) {
-    const box = document.getElementById(where);
-    const shown = turnsShown[where];
-    shown.clear();
+/// After a draw: what each element named in `shown` -- a transcript, a
+/// reply arriving -- now shows of its own children, as "key|signature" in
+/// `shown[id]`. A stub that ended up on the page, because what it stood for
+/// was not there after all, is drawn again whole rather than left empty.
+/// Only the children are read: searching every element of every reply in a
+/// long conversation was the slowest thing a draw did.
+function readShown(shown) {
+  for (const id of Object.keys(shown)) {
+    const box = document.getElementById(id);
+    const seen = shown[id];
+    seen.clear();
     if (!box) continue;
-    const stubs = box.querySelectorAll('.turn[data-stub]');
+    const children = Array.from(box.children);
+    const stubs = children.filter((child) => child.hasAttribute('data-stub'));
     if (stubs.length) {
       // Taken out first: the patcher keeps an element whose signature
       // matches, and would keep the empty one.
@@ -205,11 +257,55 @@ afterDraw.push(() => {
       render();
       continue;
     }
-    for (const turn of box.querySelectorAll('.turn[data-sig]')) {
-      shown.add(`${turn.getAttribute('data-key')}|${turn.getAttribute('data-sig')}`);
+    for (const child of children) {
+      const sig = child.getAttribute('data-sig');
+      if (sig !== null) seen.add(`${child.getAttribute('data-key')}|${sig}`);
     }
   }
-});
+}
+afterDraw.push(() => readShown(turnsShown));
+
+// --- a reply still arriving ---------------------------------------------------------
+
+/// The finished blocks of the replies arriving, each one's markup and its
+/// signature by its source; and the block still arriving, by where it is
+/// drawn. Kept until there are a few hundred, which is one very long reply.
+const streamMade = new Map();
+const streamSigs = new Map();
+const streamTails = {};
+let streamSerial = 0;
+
+/// The blocks on screen of each reply arriving, by the id of what they are
+/// drawn in: see readShown.
+const blocksShown = {};
+
+/// `text`, still arriving, as markup drawn in the element `id`: its blocks,
+/// each signed, and those on screen already as their empty elements, which
+/// the patcher keeps as they are (see morph). What arrives next can only
+/// change the last block, so every other one is made once and parsed once:
+/// a long reply was made and parsed again in full for every few words.
+function streamedMarkdown(text, id) {
+  if (streamMade.size > 400) { streamMade.clear(); streamSigs.clear(); }
+  const blocks = markdownBlocks(text, streamMade);
+  const shown = blocksShown[id] || (blocksShown[id] = new Set());
+  return blocks.map((block, n) => {
+    let sig;
+    if (n < blocks.length - 1) {
+      sig = streamSigs.get(block.source);
+      if (sig === undefined) streamSigs.set(block.source, sig = `b${++streamSerial}`);
+    } else {
+      const tail = streamTails[id];
+      if (!tail || tail.source !== block.source) streamTails[id] = { source: block.source, sig: `b${++streamSerial}` };
+      sig = streamTails[id].sig;
+    }
+    // Every block is one element, and opens with it.
+    const tag = /^<([a-z][a-z0-9]*)/.exec(block.html)[1];
+    const signed = `<${tag} data-key="b${n}" data-sig="${sig}"`;
+    if (shown.has(`b${n}|${sig}`)) return `${signed} data-stub>${tag === 'hr' ? '' : `</${tag}>`}`;
+    return signed + block.html.slice(tag.length + 1);
+  }).join('');
+}
+afterDraw.push(() => readShown(blocksShown));
 
 // --- nothing to show yet -----------------------------------------------------------
 
@@ -507,7 +603,8 @@ views.chat = () => {
   const body = pane === 'code' ? codePane() : pane === 'source' ? sourcePane()
              : pane === 'preview' ? previewView() : conversationView();
   return sideView() + `<div class="pane${nav ? ' with-nav' : ''}">${nav}
-      <div class="scroller"><div id="${pane === 'chat' ? 'transcript' : 'pane-body'}">${body}</div>
+      <div class="scroller"><div ${pane === 'chat' ? 'id="transcript" data-scroll="transcript-scroll"' : 'id="pane-body"'}>${
+        body}</div>
         <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
       ${composerView()}
     </div>` + recentsView();
@@ -597,13 +694,45 @@ actions['composer-key'] = (box, event) => {
   }
 };
 
+/// Where the box's height is found: a copy of it out of the page's flow, as
+/// wide as it and in its font, holding what it holds. Found on the box
+/// itself, every key typed laid the whole window out twice to learn that the
+/// box was the height it already was -- in a long conversation, a tenth of a
+/// second a key, and the Enter that sends a prompt waited for it too.
+let mirror = null;
+let mirrored = null;
+let mirrorEdges = 0;
+const MIRRORED =['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
+                  'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth',
+                  'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle', 'minHeight',
+                  'whiteSpace', 'overflowWrap', 'wordBreak', 'tabSize', 'boxSizing'];
+
 /// Grow the box to fit what is in it, up to a third of the window, and never
 /// below the rows the splitter asked for.
 function growComposer(box) {
-  box.style.height = 'auto';
-  const asked = box.offsetHeight;
-  const fits = box.scrollHeight + box.offsetHeight - box.clientHeight;
-  box.style.height = `${Math.max(asked, Math.min(fits, window.innerHeight / 3))}px`;
+  if (!mirror || !mirror.isConnected) {
+    mirror = document.createElement('textarea');
+    mirror.setAttribute('aria-hidden', 'true');
+    mirror.tabIndex = -1;
+    document.body.appendChild(mirror);
+    mirrored = null;
+  }
+  if (mirrored !== box) {
+    const style = getComputedStyle(box);
+    mirror.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;height:auto;overflow:hidden';
+    for (const name of MIRRORED) mirror.style[name] = style[name];
+    mirrorEdges = parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+    mirrored = box;
+  }
+  // As wide as the box less any scroll bar it has, so its lines wrap where
+  // the box's do.
+  mirror.style.width = `${box.clientWidth + mirrorEdges}px`;
+  mirror.rows = box.rows;
+  mirror.value = box.value;
+  const asked = mirror.offsetHeight;
+  const fits = mirror.scrollHeight + mirror.offsetHeight - mirror.clientHeight;
+  const height = `${Math.max(asked, Math.min(fits, window.innerHeight / 3))}px`;
+  if (box.style.height !== height) box.style.height = height;
 }
 actions['composer-grow'] = (box) => {
   keepDraft(box.value);
@@ -657,6 +786,26 @@ actions.copy = (button) => {
 
 actions.jump = () => { keepAtBottom('transcript', true); showJump(); };
 
+/// Scrolled up to within a screen of the first turn drawn, the turns before
+/// it are drawn too, and the one that was first stays where it was on
+/// screen (see DRAWN_AT_ONCE).
+actions['transcript-scroll'] = (box) => {
+  const w = transcriptWindow;
+  if (w.from === 0 || w.growing || box.scrollTop > box.clientHeight) return;
+  const first = box.firstElementChild;
+  w.growing = first ? { key: first.getAttribute('data-key'), top: first.getBoundingClientRect().top } : {};
+  w.from = drawnFrom(state.snapshot.turns || [], w.from);
+  render();
+};
+afterDraw.push(() => {
+  const grew = transcriptWindow.growing;
+  if (!grew) return;
+  transcriptWindow.growing = null;
+  const box = document.getElementById('transcript');
+  const kept = box && grew.key ? Array.from(box.children).find((t) => t.getAttribute('data-key') === grew.key) : null;
+  if (kept) box.scrollTop += kept.getBoundingClientRect().top - grew.top;
+});
+
 /// The way back down, offered to somebody who has scrolled up away from it.
 function showJump() {
   const transcript = document.getElementById('transcript');
@@ -700,10 +849,13 @@ afterDraw.push(() => {
 /// the first field of a dialog, the box under the transcript.
 let focused = null;
 afterDraw.push(() => {
-  const wanted = document.querySelector('#layer [data-focus]')
-      || (state.modal ? null : document.querySelector('textarea.code-editor')
-                               || document.querySelector('#prompt:not([disabled])'));
-  if (wanted && wanted !== focused && !document.querySelector('#layer :focus')) {
+  // Each looked up where it is rather than searched for in the whole page,
+  // which in a long conversation was every element of every reply.
+  const layer = document.getElementById('layer');
+  const prompt = document.getElementById('prompt');
+  const wanted = (layer && layer.querySelector('[data-focus]'))
+      || (state.modal ? null : editorBox() || (prompt && !prompt.disabled ? prompt : null));
+  if (wanted && wanted !== focused && !(layer && layer.contains(document.activeElement))) {
     // Not out from under somebody typing elsewhere on the page.
     const active = document.activeElement;
     const typing = active && active !== document.body && active !== wanted

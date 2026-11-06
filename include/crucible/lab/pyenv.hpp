@@ -91,6 +91,7 @@ std::filesystem::path root();           ///< data_dir()/trainer
 std::filesystem::path venv_dir();       ///< root()/venv
 std::filesystem::path python();         ///< the interpreter inside the venv
 std::filesystem::path script();         ///< root()/finetune.py
+std::filesystem::path converter();      ///< root()/convert/convert_hf_to_gguf.py
 std::filesystem::path manifest_file();  ///< root()/trainer.json
 std::filesystem::path log_file();       ///< root()/install.log
 std::filesystem::path runs_dir();       ///< root()/runs
@@ -233,5 +234,15 @@ private:
 /// worth more than a file somebody could edit. Rewritten on every install, so
 /// upgrading Crucible upgrades the trainer.
 bool write_script(std::string& error);
+
+/// Unpack llama.cpp's GGUF converter beside the trainer, and say where its
+/// script is: empty, with `error` saying why, when this build has none
+/// compiled in or it could not be written.
+///
+/// The one from the llama.cpp this binary was built with, so it knows every
+/// architecture the runtime loads, and there whether or not a runtime was
+/// ever compiled here. Unpacked again only when it is not the one already
+/// there, which a stamp beside it says.
+std::filesystem::path write_converter(std::string& error);
 
 }  // namespace crucible::lab::pyenv

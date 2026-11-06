@@ -341,7 +341,7 @@ onSnapshot.push(async () => {
 
 const blankRecipe = () => ({ id: '', name: '', purpose: '', base: { source: 'hub', id: '' },
   data: [], tools: [], method: 'qlora', format: 'gguf', quantization: 'Q4_K_M',
-  parameters_b: 0, epochs: 2, context: 512, learning_rate: 1e-5, stage: 'draft' });
+  parameters_b: 0, epochs: 2, context: 512, learning_rate: 1e-4, stage: 'draft' });
 
 const slugOf = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 

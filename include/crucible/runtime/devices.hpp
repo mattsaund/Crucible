@@ -26,6 +26,20 @@ struct ComputeDevice {
     std::uint64_t memory_total = 0;
     std::uint64_t memory_free  = 0;
 
+    /// How fast weights reach it from the processor, in GB a second: its PCIe
+    /// link, as the slot it sits in allows. Zero when unknown -- a platform
+    /// that does not say, or a GPU that shares the processor's memory.
+    ///
+    /// The number that decides how long a load takes. A card in a slot wired
+    /// for one lane takes a gigabyte a second, a sixteenth of what the slot
+    /// beside it does, so which card a model's layers go to is the difference
+    /// between a load of five seconds and one of twenty.
+    double link_gbps = 0.0;
+
+    /// It draws the desktop. A model leaves it room (see kDisplayRoom): what
+    /// the desktop holds there moves while a model is loaded and used.
+    bool display = false;
+
     /// False for the CPU device, which is always present and is never part of
     /// a GPU split.
     bool is_gpu = false;
@@ -106,13 +120,29 @@ GpuSplitMode     gpu_split_mode_from_id(std::string_view id);
 /// Lay a configured priority order over the devices that actually exist.
 ///
 /// Returns `gpus` rearranged: the ones `order` names first, in that order, then
-/// everything `order` did not mention, in ggml index order. An index naming a
-/// card that is not in the machine is dropped rather than leaving a hole, and a
-/// card that appeared since the order was written lands at the end instead of
-/// vanishing -- so a config written with two GPUs plugged in still means
-/// something on the day only one is.
+/// everything `order` did not mention: the fastest link first, then the most
+/// memory, then ggml index order. An index naming a card that is not in the
+/// machine is dropped rather than leaving a hole, and a card that appeared
+/// since the order was written lands at the end instead of vanishing -- so a
+/// config written with two GPUs plugged in still means something on the day
+/// only one is.
+///
+/// The fastest link first because that is where a model loads fastest, and
+/// with no order written, nothing else says which card is best. On a machine
+/// with a card on sixteen lanes and two on one, llama.cpp's own split put a
+/// 14 GB model across all three, 9 of its gigabytes on the one-lane cards,
+/// and its load took twice what filling the fast card first does. That beat
+/// the one-lane 16 GB card holding it whole on both counts, measured: 5.9 s
+/// against 14.8 to load, 89 tokens a second against 80. Between links alike,
+/// the larger card first, since it is the one likeliest to hold a model
+/// without splitting it.
 std::vector<ComputeDevice> apply_priority_order(const std::vector<ComputeDevice>& gpus,
                                                 const std::vector<int>& order);
+
+/// Whether the cards' links are all known and one is at least half again as
+/// fast as another: a machine where which card a model goes to decides how
+/// long it takes to load. See GpuSplitMode::Auto in gpu_policy.hpp.
+bool links_differ(const std::vector<ComputeDevice>& gpus);
 
 /// What a model will want from the cards.
 ///
@@ -192,6 +222,12 @@ struct GpuPlan {
 /// worth having is that a load which misses fails at the very last allocation,
 /// with the whole model already on the cards.
 inline constexpr std::uint64_t kCardHeadroom = 256ULL * 1024 * 1024;
+
+/// What a plan leaves free on the card drawing the desktop, beyond
+/// kCardHeadroom, when the model fits without it. A compositor and a browser
+/// there took 2.4 GB and move by most of a gigabyte as windows and videos
+/// open; a card filled to its last 900 MB left them nothing to move into.
+inline constexpr std::uint64_t kDisplayRoom = 768ULL * 1024 * 1024;
 
 /// The bytes of `gpu` a model's weights may be given, after `reserve` is set
 /// aside for that card's compute buffers.

@@ -5,6 +5,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
 #include <numeric>
 #include <utility>
 
@@ -16,6 +20,79 @@
 #include "crucible/util/format.hpp"
 
 namespace crucible {
+namespace {
+
+/// What the operating system says about the PCIe slot a card is in.
+struct PciLink {
+    double gbps    = 0.0;    ///< see ComputeDevice::link_gbps
+    bool   display = false;  ///< see ComputeDevice::display
+};
+
+#if defined(__linux__)
+/// The first number in a sysfs file: "8.0 GT/s PCIe" is 8, "16" is 16. Zero
+/// when the file is not there or says "Unknown".
+double sysfs_number(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    double value = 0.0;
+    return in >> value ? value : 0.0;
+}
+
+/// Linux says, under /sys/bus/pci/devices/<bus id>: the card's own fastest
+/// rate, the lanes it agreed with the slot, and, one folder up, what the port
+/// it is plugged into allows. The rate a link runs at this moment is no use:
+/// an idle card drops to the slowest one and only speeds up under load.
+PciLink read_link(const std::string& bus_id) {
+    PciLink link;
+    std::error_code ec;
+    const std::filesystem::path card =
+        std::filesystem::canonical(std::filesystem::path("/sys/bus/pci/devices") / bus_id, ec);
+    if (ec) {
+        return link;
+    }
+    link.display = sysfs_number(card / "boot_vga") == 1.0;
+
+    double rate = sysfs_number(card / "max_link_speed");    // GT/s
+    if (const double port = sysfs_number(card.parent_path() / "max_link_speed"); port > 0.0) {
+        rate = rate > 0.0 ? std::min(rate, port) : port;
+    }
+    double lanes = sysfs_number(card / "current_link_width");
+    if (lanes <= 0.0) {
+        lanes = sysfs_number(card / "max_link_width");
+    }
+    if (const double port = sysfs_number(card.parent_path() / "max_link_width"); port > 0.0 && lanes > port) {
+        lanes = port;
+    }
+    // A lane carries four fifths of its rate up to 5 GT/s (8b/10b) and
+    // 128/130 of it from 8 GT/s on (128b/130b), in bits: a byte is eight.
+    const double lane = rate < 8.0 ? rate * 0.8 / 8.0 : rate * 128.0 / 130.0 / 8.0;
+    link.gbps = lane * lanes;
+    return link;
+}
+#endif
+
+/// read_link, once per card: a slot does not change while Crucible runs,
+/// and devices are listed many times a load.
+PciLink link_of(const char* bus_id) {
+    if (bus_id == nullptr || *bus_id == '\0') {
+        return {};
+    }
+#if defined(__linux__)
+    static std::mutex                     mutex;
+    static std::map<std::string, PciLink> known;
+    const std::lock_guard<std::mutex>     lock(mutex);
+    const auto found = known.find(bus_id);
+    if (found != known.end()) {
+        return found->second;
+    }
+    return known.emplace(bus_id, read_link(bus_id)).first->second;
+#else
+    // Windows keeps the figure behind its device manager's API, and a Mac's
+    // GPU shares the processor's memory: unknown, so ggml's order stands.
+    return {};
+#endif
+}
+
+}  // namespace
 
 std::vector<int> llama_layer_assignment(const std::vector<float>& split, std::size_t units) {
     std::vector<int> counts(split.size(), 0);
@@ -76,27 +153,32 @@ std::vector<ComputeDevice> compute_devices() {
             continue;
         }
 
+        // One question for everything, its memory included: asking for the
+        // memory on its own as well would ask the driver twice.
+        ggml_backend_dev_props props{};
+        ggml_backend_dev_get_props(handle, &props);
+
         ComputeDevice device;
         device.index = static_cast<int>(i);
-        if (const char* name = ggml_backend_dev_name(handle); name != nullptr) {
-            device.name = name;
+        if (props.name != nullptr) {
+            device.name = props.name;
         }
-        if (const char* description = ggml_backend_dev_description(handle); description != nullptr) {
-            device.description = description;
+        if (props.description != nullptr) {
+            device.description = props.description;
         }
         if (ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(handle); reg != nullptr) {
             if (const char* reg_name = ggml_backend_reg_name(reg); reg_name != nullptr) {
                 device.backend = reg_name;
             }
         }
-
-        std::size_t free_bytes = 0;
-        std::size_t total_bytes = 0;
-        ggml_backend_dev_memory(handle, &free_bytes, &total_bytes);
-        device.memory_free  = free_bytes;
-        device.memory_total = total_bytes;
-
-        device.is_gpu = ggml_backend_dev_type(handle) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        device.memory_free  = props.memory_free;
+        device.memory_total = props.memory_total;
+        device.is_gpu       = props.type == GGML_BACKEND_DEVICE_TYPE_GPU;
+        if (device.is_gpu) {
+            const PciLink link = link_of(props.device_id);
+            device.link_gbps   = link.gbps;
+            device.display     = link.display;
+        }
         devices.push_back(std::move(device));
     }
     return devices;
@@ -192,12 +274,39 @@ std::vector<ComputeDevice> apply_priority_order(const std::vector<ComputeDevice>
         }
     }
 
+    const std::size_t named = arranged.size();
     for (const ComputeDevice& gpu : gpus) {
         if (!already_taken(gpu.index)) {
             arranged.push_back(gpu);
         }
     }
+    // Between cards whose links are alike -- or unknown, which is zero -- the
+    // larger first: the one likeliest to hold a model whole, which then is
+    // not split at all. Stable, so cards alike in both keep ggml's order.
+    std::stable_sort(arranged.begin() + static_cast<std::ptrdiff_t>(named), arranged.end(),
+                     [](const ComputeDevice& a, const ComputeDevice& b) {
+                         if (a.link_gbps != b.link_gbps) {
+                             return a.link_gbps > b.link_gbps;
+                         }
+                         return a.memory_total > b.memory_total;
+                     });
     return arranged;
+}
+
+bool links_differ(const std::vector<ComputeDevice>& gpus) {
+    if (gpus.size() < 2) {
+        return false;
+    }
+    double fastest = 0.0;
+    double slowest = 0.0;
+    for (const ComputeDevice& gpu : gpus) {
+        if (gpu.link_gbps <= 0.0) {
+            return false;   // one unknown, and nothing can be said of the rest
+        }
+        fastest = std::max(fastest, gpu.link_gbps);
+        slowest = slowest == 0.0 ? gpu.link_gbps : std::min(slowest, gpu.link_gbps);
+    }
+    return fastest >= slowest * 1.5;
 }
 
 namespace {
@@ -453,13 +562,21 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
     std::vector<std::uint64_t> targets;
     std::vector<std::uint64_t> capacity;
 
+    // The desktop's card keeps its room when the model fits without it, and
+    // gives it up when it does not: a model loaded beside a desktop that is
+    // a little short of room is better than one that spills or is refused.
+    // Priority only: even mode divides by what each card holds, room and all.
+    bool display_room = mode == GpuSplitMode::Priority
+                     && std::any_of(gpus.begin(), gpus.end(), [](const ComputeDevice& gpu) { return gpu.display; });
+
     for (int pass = 0; pass < 2; ++pass) {
         targets.assign(width, 0);
         capacity.assign(width, 0);
         const auto reserve_for = [&](const ComputeDevice& gpu) {
             const auto index = static_cast<std::size_t>(gpu.index);
             return fit.per_card + kCardHeadroom +
-                   (index == output_device ? fit.output_extra : 0);
+                   (index == output_device ? fit.output_extra : 0) +
+                   (display_room && gpu.display ? kDisplayRoom : 0);
         };
 
         if (mode == GpuSplitMode::Even) {
@@ -484,6 +601,14 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
                 const std::uint64_t take = std::min(usable_memory(gpu, reserve_for(gpu)), remaining);
                 targets[static_cast<std::size_t>(gpu.index)] = take;
                 remaining -= take;
+            }
+            if (display_room && fit.resident > 0 && remaining > 0) {
+                // Planned again from the start without the desktop's room,
+                // which may be all the model was short of.
+                display_room  = false;
+                output_device = width;
+                pass          = -1;
+                continue;
             }
             if (fit.resident == 0 || remaining > 0) {
                 // Either the size is unknown, or the model does not fit in the

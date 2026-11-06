@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Benchmarks: models through the suite, one item at a time.
+"""Benchmarks: models through the suite, many items at a time.
 
 The suite is crucible-bench-1: nine benchmarks, each item asked as a chat
 with greedy decoding and its answer checked here. Every Crucible asks the
@@ -8,18 +8,23 @@ result from another; that is what the public board is for
 (github.com/mattsaund/crucible-bench).
 
 What the core does for this, and only the core can: load the model under
-test (bench.load), answer (bench.chat), fetch dataset pages from Hugging
-Face (bench.rows, cached), fingerprint the model file (bench.hash), say what
-the machine is (bench.machine), show progress (bench.publish) and keep the
-result (bench.save). Everything else, from which items to ask to whether an
-answer was right, is here and in bench_score.
+test (bench.load), answer (bench.ask queues items, bench.answers hands back
+the answers as they finish, as many decoded at once as the cards hold), fetch
+dataset pages from Hugging Face (bench.rows, cached), fingerprint the model
+file (bench.hash), say what the machine is (bench.machine), show progress
+(bench.publish) and keep the result (bench.save). Everything else, from which
+items to ask to whether an answer was right, is here and in bench_score.
 """
 
+import collections
+import concurrent.futures
 import hashlib
 import sys
+import threading
 import time
 
 from . import bench_score as score
+from .rpc import Disconnected
 
 SUITE = "crucible-bench-1"
 SCHEMA = 1
@@ -64,6 +69,26 @@ CONTEXT = 20480
 SMALL_MAX_TOKENS = 4096
 SMALL_CONTEXT = 8192
 CODE_SECONDS = 15.0
+
+# Items queued beyond the ones being answered, for each the core answers at
+# once: a slot that comes free takes the next at once, rather than waiting
+# on a test being run here, and the core takes them in the order queued.
+AHEAD = 2
+
+# The speed a result reports is one item's at a time, as it always was, and
+# what a person asking the model in the chat sees: items many at a time each
+# go slower and all together go much faster. So the first items are asked
+# alone and timed, until this many tokens or items.
+SOLO_TOKENS = 256
+SOLO_ITEMS = 8
+
+# Answers checked at once: running the code a model wrote is a program of its
+# own, up to CODE_SECONDS, and the next answers arrive meanwhile.
+CHECKERS = 8
+
+# Progress is published at most this often, in seconds, and when a benchmark
+# or a model is done: a small model answers dozens of items a second.
+PUBLISH_EVERY = 0.5
 
 LETTERS = "ABCDEFGHIJKLMNOP"   # MMLU-Pro has ten options, TruthfulQA up to thirteen
 
@@ -261,6 +286,118 @@ def _clean(mapping):
     return {k: v for k, v in mapping.items() if v is not None and v != ""}
 
 
+def _checked(check, answer):
+    try:
+        return check(answer)
+    except Exception as error:   # a checker meeting something new
+        return False, "checker: %s" % error
+
+
+class _Asking:
+    """One model's items: queued with the core in order, a few ahead of what
+    it answers at once, and each answer checked as it comes back."""
+
+    def __init__(self, core, at_once, budget, effort, tick):
+        self.core = core
+        self.at_once = max(1, at_once)
+        self.budget = budget
+        self.effort = effort
+        self.tick = tick          # called with each item: checked, or None when it was not answered
+        self.stopped = False
+        # Timed: what the result's speed is worked out from. Every item when
+        # the core answers one at a time; when it answers many, the first
+        # ones, asked alone. See SOLO_TOKENS.
+        self.timing = {"prompt_tokens": 0, "prompt_ms": 0.0, "output_tokens": 0, "output_ms": 0.0}
+        self.solo = self.at_once > 1
+        self._timed = 0
+        self._waiting = collections.deque()
+        self._asked = {}       # key -> (bench, index, check)
+        self._checking = []    # (future, bench, index, reply)
+        self._failed = set()   # benchmarks an answer failed in: the rest of them are not asked
+
+    def run(self, tasks):
+        """Ask every (bench, index, row) of `tasks` and check what comes back.
+        Whatever way it ends, every answer given by then is checked and kept:
+        a Stop, or a core that failed partway."""
+        self._waiting.extend(tasks)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CHECKERS) as checkers:
+            try:
+                while (self._waiting or self._asked or self._checking) and not self.stopped:
+                    self._queue()
+                    if self._asked:
+                        self._take(checkers)
+                    elif self._checking:
+                        concurrent.futures.wait([c[0] for c in self._checking], timeout=0.5,
+                                                return_when=concurrent.futures.FIRST_COMPLETED)
+                    self._kept(wait=False)
+            finally:
+                self._kept(wait=True)
+        return self.stopped
+
+    def _queue(self):
+        """Items queued with the core up to what it answers at once and
+        AHEAD more, one at a time while the speed is timed."""
+        room = 1 if self.solo else self.at_once * (1 + AHEAD)
+        batch = []
+        while self._waiting and len(self._asked) < room:
+            bench, index, row = self._waiting.popleft()
+            if bench["id"] in self._failed:
+                continue
+            messages, check = ask(bench, row, index)
+            key = "%s/%d" % (bench["id"], index)
+            self._asked[key] = (bench, index, check)
+            batch.append({"key": key, "messages": messages})
+        if batch:
+            self.core.call("bench.ask", {"items": batch, "max_tokens": self.budget, "effort": self.effort})
+
+    def _take(self, checkers):
+        """The answers finished since the last look, each sent to be checked."""
+        got = self.core.call("bench.answers", {"wait": 0.5}) or {}
+        if got.get("error"):
+            raise RuntimeError(got["error"])
+        self.stopped = self.stopped or bool(got.get("stopped"))
+        for reply in got.get("answers") or []:
+            task = self._asked.pop(reply.get("key"), None)
+            if task is None:
+                continue
+            bench, index, check = task
+            if reply.get("stopped"):
+                self.stopped = True
+            elif reply.get("error"):
+                self._failed.add(bench["id"])
+                self.tick(bench, index, None, reply)
+            else:
+                self._time(reply)
+                future = checkers.submit(_checked, check, reply.get("answer") or "")
+                self._checking.append((future, bench, index, reply))
+
+    def _kept(self, wait):
+        """The checks that are done, or with `wait` every one, kept."""
+        for done in [c for c in self._checking if wait or c[0].done()]:
+            self._checking.remove(done)
+            future, bench, index, reply = done
+            self.tick(bench, index, future.result(), reply)
+
+    def _time(self, reply):
+        if not self.solo and self.at_once > 1:
+            return
+        for key in ("prompt_tokens", "output_tokens"):
+            self.timing[key] += int(reply.get(key) or 0)
+        for key in ("prompt_ms", "output_ms"):
+            self.timing[key] += float(reply.get(key) or 0.0)
+        self._timed += 1
+        if self.timing["output_tokens"] >= SOLO_TOKENS or self._timed >= SOLO_ITEMS:
+            self.solo = False
+
+    def speed(self):
+        out = {}
+        if self.timing["prompt_ms"] > 0:
+            out["prompt_tps"] = round(self.timing["prompt_tokens"] / (self.timing["prompt_ms"] / 1000.0), 1)
+        if self.timing["output_ms"] > 0:
+            out["gen_tps"] = round(self.timing["output_tokens"] / (self.timing["output_ms"] / 1000.0), 1)
+        return out
+
+
 def run(core, params):
     """A run: every model asked, a result kept for each, progress published."""
     size = params.get("size") if params.get("size") in SIZES else "quick"
@@ -278,7 +415,14 @@ def run(core, params):
                     "benchmarks": {}} for m in models],
     }
 
-    def publish():
+    last = [0.0]
+
+    def publish(soon=False):
+        """Say how the run is going: at once, or with `soon`, unless it was
+        said within PUBLISH_EVERY."""
+        if soon and time.time() - last[0] < PUBLISH_EVERY:
+            return
+        last[0] = time.time()
         core.call("bench.publish", {"run": state})
 
     publish()
@@ -325,118 +469,137 @@ def run(core, params):
 
         facts = core.call("bench.model", {"path": model["path"]}) or {}
         # Which file exactly: a minute for a large model the first time, kept
-        # after that. Taken now rather than after the last answer, so the wait
-        # is where the loading is.
-        entry["state"] = "checking"
-        publish()
-        sha256 = (core.call("bench.hash", {"path": model["path"]}) or {}).get("sha256")
-        entry["state"] = "running"
-        publish()
+        # after that. Taken while the model answers, which is the cards'
+        # work and not the disk's, rather than before the first question.
+        fingerprint = {}
+
+        def take_fingerprint(path=model["path"]):
+            fingerprint.update(core.call("bench.hash", {"path": path}) or {})
+        hashing = threading.Thread(target=take_fingerprint, daemon=True)
+        hashing.start()
         began = time.time()
         # Its own clock: the time left goes at this model's pace, not at
         # the pace of a faster one before it.
         entry["started"] = int(began)
-        counts = {}
         items = {}
-        timing = {"prompt_tokens": 0, "prompt_ms": 0.0, "output_tokens": 0, "output_ms": 0.0}
-        stopped = False
+        tasks = []
         for bench in benches:
             indices = pick(bench, size)
             progress = {"done": 0, "n": len(indices), "correct": 0}
             entry["benchmarks"][bench["id"]] = progress
-            entry["current"] = bench["id"]
             rows = rows_of.get(bench["id"])
             if rows is None:
                 progress["error"] = errors.get(bench["id"], "not fetched")
-                publish()
                 continue
-            publish()
-            kept = []
-            for index in indices:
-                if _stopped(core):
-                    stopped = True
-                    break
-                row = rows.get(index)
-                if row is None:
-                    progress["error"] = "row %d was not in its page" % index
-                    break
-                messages, check = ask(bench, row, index)
-                reply = core.call("bench.chat", {"messages": messages, "max_tokens": budget,
-                                                 "effort": effort}) or {}
-                if reply.get("stopped"):
-                    stopped = True
-                    break
-                answer = reply.get("answer") or ""
-                try:
-                    right, seen = check(answer)
-                except Exception as error:   # a checker meeting something new
-                    right, seen = False, "checker: %s" % error
-                for key in ("prompt_tokens", "output_tokens"):
-                    timing[key] += int(reply.get(key) or 0)
-                for key in ("prompt_ms", "output_ms"):
-                    timing[key] += float(reply.get(key) or 0.0)
-                progress["done"] += 1
-                progress["correct"] += 1 if right else 0
-                # A reply stopped in a loop is one that would have run to the
-                # budget: counted as cut off, and marked so it can be told apart.
-                looped = bool(reply.get("looped"))
-                item = {"i": index, "ok": bool(right), "read": seen if isinstance(seen, (str, list)) else str(seen),
-                        "answer": answer[-800:], "ms": reply.get("ms", 0),
-                        "tokens": reply.get("output_tokens", 0), "limit": bool(reply.get("hit_limit")) or looped}
-                if looped:
-                    item["looped"] = True
-                kept.append(item)
-                publish()
-            items[bench["id"]] = kept
-            if progress["done"] == progress["n"]:
-                counts[bench["id"]] = {"n": progress["n"], "correct": progress["correct"]}
-            if stopped:
-                break
+            missing = next((i for i in indices if rows.get(i) is None), None)
+            if missing is not None:
+                progress["error"] = "row %d was not in its page" % missing
+                continue
+            items[bench["id"]] = []
+            tasks.extend((bench, index, rows[index]) for index in indices)
 
-        speed = {}
-        if timing["prompt_ms"] > 0:
-            speed["prompt_tps"] = round(timing["prompt_tokens"] / (timing["prompt_ms"] / 1000.0), 1)
-        if timing["output_ms"] > 0:
-            speed["gen_tps"] = round(timing["output_tokens"] / (timing["output_ms"] / 1000.0), 1)
-        skills = skills_of(counts)
-        # The board's fields, with the model's own name and the GPUs' names
-        # beside them for this machine's screen. Those are free text, which the
-        # board does not take, so posting_of (methods_bench.cpp) leaves them
-        # out. The model's repository is looked for only when it is posted.
-        result = {
-            "schema": SCHEMA, "suite": SUITE, "size": size,
-            "crucible": machine.get("crucible", ""), "llama": machine.get("llama", ""),
-            "date": time.strftime("%Y-%m-%d"),
-            "model": _clean({"file": facts.get("file") or model["path"].replace("\\", "/").split("/")[-1],
-                             "sha256": sha256,
-                             "bytes": facts.get("bytes"), "name": facts.get("name"), "arch": facts.get("arch"),
-                             "params": facts.get("params"), "quant": facts.get("quant")}),
-            "settings": {"context": context, "max_tokens": budget, "temperature": 0,
-                         "effort": effort or "default"},
-            "hardware": _clean({"backend": machine.get("backend"), "gpu_count": machine.get("gpu_count"),
-                                "gpus": machine.get("gpus") or None,
-                                "memory_gb": round(machine.get("memory_gb") or 0, 1) or None}),
-            "benchmarks": counts,
-            "speed": speed,
-            "seconds": int(time.time() - began),
-            # Kept here and not posted: what each item was and what was said.
-            "id": "%s-%d" % (run_id, at),
-            "path": model["path"],
-            "stopped": stopped,
-            "skills": skills,
-            "overall": overall_of(skills),
-            "items": items,
-        }
-        missed = {bid: p["error"] for bid, p in entry["benchmarks"].items() if p.get("error")}
-        if missed:
-            result["errors"] = missed
-        cut = {bid: sum(1 for item in kept if item.get("limit")) for bid, kept in items.items()}
-        cut = {bid: n for bid, n in cut.items() if n}
-        if cut:
-            result["cut_off"] = cut
+        def current():
+            """The first benchmark still being answered: where the run is."""
+            for bench in benches:
+                p = entry["benchmarks"][bench["id"]]
+                if not p.get("error") and p["done"] < p["n"]:
+                    return bench["id"]
+            return None
+
+        def result_of(stopped, failure=None):
+            """The result as it stands: the board's fields, with the model's
+            own name and the GPUs' names beside them for this machine's
+            screen. Those are free text, which the board does not take, so
+            posting_of (methods_bench.cpp) leaves them out. The model's
+            repository is looked for only when it is posted."""
+            # In the order of the suite, as they were asked one at a time.
+            kept = {bid: sorted(got, key=lambda item: item["i"]) for bid, got in items.items() if got}
+            counts = {bid: {"n": p["n"], "correct": p["correct"]} for bid, p in entry["benchmarks"].items()
+                      if p["done"] == p["n"] and not p.get("error")}
+            skills = skills_of(counts)
+            result = {
+                "schema": SCHEMA, "suite": SUITE, "size": size,
+                "crucible": machine.get("crucible", ""), "llama": machine.get("llama", ""),
+                "date": time.strftime("%Y-%m-%d"),
+                "model": _clean({"file": facts.get("file") or model["path"].replace("\\", "/").split("/")[-1],
+                                 "sha256": fingerprint.get("sha256"),
+                                 "bytes": facts.get("bytes"), "name": facts.get("name"), "arch": facts.get("arch"),
+                                 "params": facts.get("params"), "quant": facts.get("quant")}),
+                "settings": {"context": context, "max_tokens": budget, "temperature": 0,
+                             "effort": effort or "default"},
+                "hardware": _clean({"backend": machine.get("backend"), "gpu_count": machine.get("gpu_count"),
+                                    "gpus": machine.get("gpus") or None,
+                                    "memory_gb": round(machine.get("memory_gb") or 0, 1) or None}),
+                "benchmarks": counts,
+                "speed": asking.speed(),
+                "seconds": int(time.time() - began),
+                # Kept here and not posted: what each item was and what was said.
+                "id": "%s-%d" % (run_id, at),
+                "path": model["path"],
+                "stopped": stopped,
+                "skills": skills,
+                "overall": overall_of(skills),
+                "items": kept,
+                "at_once": asking.at_once,
+            }
+            missed = {bid: p["error"] for bid, p in entry["benchmarks"].items() if p.get("error")}
+            if missed:
+                result["errors"] = missed
+            if failure:
+                result["error"] = failure
+            cut = {bid: sum(1 for item in got if item.get("limit")) for bid, got in kept.items()}
+            cut = {bid: n for bid, n in cut.items() if n}
+            if cut:
+                result["cut_off"] = cut
+            return result
+
+        def tick(bench, index, checked, reply):
+            progress = entry["benchmarks"][bench["id"]]
+            if checked is None:
+                # Not answered: the benchmark cannot be whole, and says why.
+                progress["error"] = reply.get("error") or "not answered"
+                entry["current"] = current()
+                publish()
+                return
+            right, seen = checked
+            answer = reply.get("answer") or ""
+            progress["done"] += 1
+            progress["correct"] += 1 if right else 0
+            # A reply stopped in a loop is one that would have run to the
+            # budget: counted as cut off, and marked so it can be told apart.
+            looped = bool(reply.get("looped"))
+            item = {"i": index, "ok": bool(right), "read": seen if isinstance(seen, (str, list)) else str(seen),
+                    "answer": answer[-800:], "ms": reply.get("ms", 0),
+                    "tokens": reply.get("output_tokens", 0), "limit": bool(reply.get("hit_limit")) or looped}
+            if looped:
+                item["looped"] = True
+            items[bench["id"]].append(item)
+            entry["current"] = current()
+            if progress["done"] < progress["n"]:
+                publish(soon=True)
+                return
+            # A benchmark done is kept at once, as a run that has not ended:
+            # should the program go before the last answer, it is not lost.
+            core.call("bench.save", {"result": result_of(stopped=True)})
+            publish()
+
+        entry["current"] = current()
+        publish()
+        asking = _Asking(core, int(loaded.get("at_once") or 1), budget, effort, tick)
+        failure = None
+        try:
+            stopped = asking.run(tasks)
+        except Disconnected:
+            raise
+        except Exception as error:   # the core failed partway: what was answered is kept
+            stopped, failure = False, str(error)
+            entry["error"] = failure
+        hashing.join()   # given up on at a Stop, so never long
+        result = result_of(stopped, failure)
+        skills = result["skills"]
         saved = core.call("bench.save", {"result": result}) or {}
         core.call("bench.release")
-        entry["state"] = "stopped" if stopped else "done"
+        entry["state"] = "stopped" if stopped else "failed" if failure else "done"
         entry["result"] = result["id"]
         entry["skills"] = skills
         entry["overall"] = result["overall"]

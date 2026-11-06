@@ -29,6 +29,7 @@
 
 #include <condition_variable>
 #include <atomic>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <optional>
@@ -82,6 +83,15 @@ public:
     /// From any thread, as many at once as there are threads to make them.
     nlohmann::json call(const std::string& method, const nlohmann::json& params);
 
+    /// Which process sent the request this thread is answering, for asking
+    /// ended() later from anywhere: 0 on a thread that is not answering one.
+    static std::uint64_t asker();
+
+    /// Whether the process `asker` named has gone. What a handler's Stop
+    /// adds, so a reply nobody is left to read stops at its next token
+    /// rather than running on to its last. False for 0.
+    bool ended(std::uint64_t asker) const;
+
     /// Where the process's standard error goes: data_dir()/orchestrator.log.
     static std::filesystem::path log_file();
 
@@ -92,12 +102,19 @@ private:
     /// One call waiting for its answer.
     struct Waiter {
         bool           done = false;
+        /// The process it was asked of ended without answering. Set by that
+        /// process's reader as it goes rather than read off `ended_`: by the
+        /// time the waiter wakes, another call may have started the next
+        /// process, and a waiter looking at that one would wait for good.
+        bool           lost = false;
         nlohmann::json message;
     };
 
-    bool send(const nlohmann::json& message);
-    void read_all(util::Subprocess* child);
-    void answer(nlohmann::json request);
+    /// Write `message` to the process counted `generation`, or to whichever
+    /// is running for 0. False when that one has gone.
+    bool send(const nlohmann::json& message, std::uint64_t generation = 0);
+    void read_all(util::Subprocess* child, std::uint64_t generation);
+    void answer(nlohmann::json request, std::uint64_t generation);
     void reap();
     std::string gone(const std::string& what) const;
 
@@ -107,7 +124,10 @@ private:
     std::unique_ptr<util::Subprocess> child_;
     std::thread                       reader_;
 
-    std::mutex                        send_mutex_;        ///< one line on the pipe at a time
+    /// One line on the pipe at a time. Also held to close the pipe and to
+    /// let a process go: a line being written keeps both where they are, so
+    /// the write never lands on a descriptor that has become another file's.
+    std::timed_mutex                  send_mutex_;
 
     mutable std::mutex                mutex_;   ///< guards everything below
     std::condition_variable           arrived_;
@@ -115,6 +135,17 @@ private:
     std::optional<nlohmann::json>     hello_;
     bool                              ended_ = true;
     long                              next_id_ = 0;
+
+    /// Which process this is, counted up at every start. An answer to a
+    /// request of one that has gone is never written to the next: each
+    /// numbers its own requests from 1, and the next would take it for the
+    /// answer to one of its own.
+    std::uint64_t                     generation_ = 0;
+
+    /// The last process that has ended, by generation: each ends before the
+    /// next starts, so every one up to it has. Atomic, for ended(), which a
+    /// decode asks between tokens.
+    std::atomic<std::uint64_t>        ended_through_{0};
 
     /// The threads answering the orchestrator's requests, and whether each
     /// has finished, so a finished one is joined when the next starts.

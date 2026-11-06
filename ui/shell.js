@@ -93,17 +93,19 @@ function modelSelect(selected, provider, extra, localOnly) {
 
   let html = option('', '(none)');
   // The delegator scores every seat with llama.cpp, so it has to be a GGUF;
-  // an MLX model can answer, not route. One this machine cannot run is
-  // listed, so it is plain that it was found, and not offered.
-  const offered = localOnly ? files.filter((m) => m.format !== 'mlx') : files;
+  // an MLX model can answer, not route. An MLX model is listed all the same,
+  // and so is one this machine cannot run: it is plain that it was found,
+  // and a Mac's folder of MLX models does not read as an empty one.
   const mlxWhy = state.models ? state.models.mlx_unavailable || '' : '';
-  if (offered.length) {
-    html += `<optgroup label="Models folder">${offered.map((m) => {
+  if (files.length) {
+    html += `<optgroup label="Models folder">${files.map((m) => {
       if (m.format !== 'mlx') return option(m.name, `${m.name} (${bytes(m.bytes)})`);
-      const usable = !mlxWhy || m.name === chosen;
+      const why = localOnly ? 'cannot route' : mlxWhy ? 'cannot run here' : '';
+      const usable = !why || m.name === chosen;
       return `<option value="${escape(m.name)}"${m.name === chosen ? ' selected' : ''}${usable ? '' : ' disabled'}
-          title="${escape(mlxWhy || 'An MLX model, answered by MLX on this machine')}">${
-          escape(`${m.name} (MLX, ${bytes(m.bytes)})${usable ? '' : ', cannot run here'}`)}</option>`;
+          title="${escape(localOnly ? 'The delegator needs a GGUF'
+                                    : mlxWhy || 'An MLX model, answered by MLX on this machine')}">${
+          escape(`${m.name} (MLX, ${bytes(m.bytes)})${why ? `, ${why}` : ''}`)}</option>`;
     }).join('')}</optgroup>`;
   }
   // `localOnly` is for the delegator, which has to be a file here.
@@ -234,8 +236,9 @@ function recentsView() {
         <span class="r-title">${escape(p.name)}</span><span class="r-meta">${escape(p.display)}</span></button>${
         bin('project-forget', `data-path="${escape(p.root)}" data-name="${escape(p.name)}"`, 'Remove')}</div>`).join('')
     : '<div class="status r-empty">No projects.</div>';
+  // A region (see region): it seldom changes while a reply streams beside it.
   return `<div class="splitter" id="splitter-r" title="Drag to resize"></div>
-    <aside class="recents" style="width:${recentsWidth()}rem">
+    ${region('recents', `<aside class="recents" id="recents" style="width:${recentsWidth()}rem">
       <div class="roster-scroll">
         <div class="r-head"><h2>RECENT CHATS</h2>
           <button class="action small" data-act="new-chat"
@@ -249,7 +252,7 @@ function recentsView() {
         ${projects}
       </div>
       ${usageView()}
-    </aside>`;
+    </aside>`)}`;
 }
 
 // --- the models at work ---------------------------------------------------------
@@ -473,12 +476,12 @@ function sideView() {
     const agentDots = busy.map((t) =>
       `<button class="seat working-dot" data-act="agent-open" data-index="${t.index}" data-phase="active"
                title="${escape(`${t.index + 1}. ${t.title}`)}"><span class="dot"></span></button>`).join('');
-    return `<aside class="rail">
+    return region('side', `<aside class="rail" id="side">
         <button class="seat" data-act="settings-page" data-page="general"
                 data-phase="${delegatorPhase}"
                 title="${escape(delegator.model || 'no delegator')}"><span class="dot"></span></button>
         <div class="rail-gap"></div>${dots}${agentDots ? `<div class="rail-gap"></div>${agentDots}` : ''}
-      </aside>`;
+      </aside>`);
   }
 
   // The line from the delegator runs down the list to the seat with the
@@ -517,7 +520,8 @@ function sideView() {
   // Eject is sized to its own word rather than to the panel: it is an
   // occasional action, and a button stretched across a side menu that can be
   // dragged to four hundred pixels reads as the most important thing here.
-  return `<aside style="width:${sidebarWidth()}rem">
+  // A region (see region): drawn in every view, and seldom changed by a push.
+  return region('side', `<aside id="side" style="width:${sidebarWidth()}rem">
       <div class="side-status${state.error ? ' bad' : s.busy || atWork(s.cook) ? ' busy' : ''}" title="${escape(said || status)}">${
         escape(status) || '&nbsp;'}</div>
       <div class="roster-scroll">
@@ -539,8 +543,7 @@ function sideView() {
         <button class="action" data-act="eject" ${loaded ? '' : 'disabled'}
                 title="${loaded ? 'Unload every model' : 'Nothing is loaded'}">Eject</button>
       </div>
-    </aside>
-    <div class="splitter" id="splitter" title="Drag to resize"></div>`;
+    </aside>`) + '<div class="splitter" id="splitter" title="Drag to resize"></div>';
 }
 
 actions.fold = () => setSidebar(sidebarOpen() ? 0 : Math.max(remember.get('sidebar-open', 15), SIDEBAR_MIN));
@@ -762,6 +765,12 @@ function keepTurns(turns) {
 }
 
 window.crucibleSnapshot = (snapshot) => {
+  // The large parts the window left out as the same as last time: a build's
+  // journal, an edit waiting (api::PageParts). The page keeps the ones it has.
+  for (const key of snapshot.same || []) {
+    if (state.snapshot && state.snapshot[key] !== undefined) snapshot[key] = state.snapshot[key];
+  }
+  delete snapshot.same;
   const turns = resolveTurns(snapshot.turns);
   if (turns) {
     snapshot.turns = turns;
@@ -784,6 +793,7 @@ window.crucibleSnapshot = (snapshot) => {
   state.snapshot = snapshot;
   trustWatch();
   for (const job of onSnapshot) job();
+  pushOwed = true;
   render();
 };
 

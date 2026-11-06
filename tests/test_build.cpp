@@ -581,6 +581,30 @@ TEST(a_gguf_waits_for_an_mlx_model_in_use_that_leaves_it_no_room) {
     llama_log_set(nullptr, nullptr);
 }
 
+TEST(the_log_keeps_what_stderr_wrote_into_it_beside_what_llama_cpp_reported) {
+    // The log is written two ways: what llama.cpp reports, through a stream,
+    // and stderr, reopened onto the same file for what ggml and mtmd print
+    // there. The stream wrote from an offset of its own and wrote over
+    // whatever stderr had added; both go at the end now.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());   // no runtimes, so nothing loads
+    const std::filesystem::path log = temp.path() / "llama.log";
+    {
+        const StderrKept kept;
+        const ModelHost  host(log);
+        std::fputs("a line written to stderr\n", stderr);
+        std::fflush(stderr);
+        // A load with no runtime, which llama.cpp refuses through the log.
+        CHECK(llama_model_load_from_file((temp.path() / "missing.gguf").string().c_str(),
+                                         llama_model_default_params()) == nullptr);
+    }
+    llama_log_set(nullptr, nullptr);
+    std::ifstream in(log);
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    CHECK(text.find("a line written to stderr") != std::string::npos);
+    CHECK(text.find("error |") != std::string::npos);
+}
+
 TEST(the_delegator_waits_for_an_mlx_model_in_use_that_leaves_it_no_room) {
     // The same for the delegator, which was loaded beside an MLX model in use
     // without the question an expert's load asks. Told the MLX model is

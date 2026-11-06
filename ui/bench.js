@@ -445,11 +445,13 @@ function benchBoardView() {
   if (!board && !b.results) return '<div class="status">Reading...</div>';
   const query = b.boardQuery.trim().toLowerCase();
   const all = benchDirectory();
+  // Each row a region (see region), keyed: a key typed in the search takes
+  // rows out and puts them back rather than drawing them all again.
   const rows = all.filter((x) => !query || benchSought(x).includes(query)).slice(0, 100).map((x) => {
     const e = x.entry;
     const id = escape(String(e.id ?? ''));
     const shown = b.compare.some((c) => c.key === x.key);
-    return `<tr>
+    return region(`board-row-${x.key}`, `<tr data-key="${escape(x.key)}" id="board-row-${escape(x.key)}">
         <td class="model-cell"><button class="bench-name" data-act="${x.mine ? 'bench-detail' : 'bench-open-board'}"
             data-id="${id}" title="${escape(x.row.title)}">${escape(x.row.label)}</button>${
           x.mine && e.made ? ` <span class="status">${escape(e.made)}</span>` : ''}${
@@ -459,7 +461,7 @@ function benchBoardView() {
         <td>${escape(x.row.size)}</td><td>${x.mine ? 'you'
           : `<span class="by" title="${escape((e.posted || {}).user || '')}">${escape((e.posted || {}).user || '')}</span>`}</td>
         <td><button class="action small" data-act="${x.mine ? 'bench-compare' : 'bench-compare-board'}" data-id="${id}"
-                    ${shown ? 'disabled' : ''}>Compare</button></td></tr>`;
+                    ${shown ? 'disabled' : ''}>Compare</button></td></tr>`);
   }).join('');
   const posted = benchEntries().length;
   // Said in a word where the count goes: no board, or the copy from last time.

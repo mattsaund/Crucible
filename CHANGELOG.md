@@ -6,6 +6,61 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 0.9.9 (2026-11-06)
+
+Faster across the board and steadier, measured on a machine with three cards
+(an RTX 4070 on sixteen lanes, an RTX 5060 Ti and an RTX 3060 on one lane
+each).
+
+- **Models stay loaded while they fit.** A follow-up question to the same
+  expert loads nothing, where it loaded the expert again (1.3 s to the first
+  token instead of 9.6). Going back and forth between experts that fit side
+  by side loads neither again, and when one has to go, it is the one asked
+  for longest ago. The delegator stays beside the expert, or routes from the
+  processor in a few seconds when a large expert fills the cards. Five routed
+  prompts from a cold start took 160 s instead of 428.
+- **Cold loads are about twice as fast.** A large model is read straight
+  from the disk to the cards, its reading and its upload at once, and a
+  smaller one is read by several readers into the cache (Qwen3.8-27B 35 s
+  instead of 73, flint 40 instead of 78, the delegator 8 instead of 13).
+  Planning a load is remembered, so loading a model again plans in
+  milliseconds. On Linux, cards are filled fastest link first, in Priority
+  and in Auto where the links differ, and the card drawing the desktop keeps
+  room for it.
+- **The Bench asks many questions at once.** LFM2.5-1.2B's Quick run took under
+  3 minutes on a 5060 Ti instead of 13, each question still decoded greedily on
+  its own, and two runs give the same answers. The wording of an answer can
+  differ from a run made one at a time, as it does between machines. Checking
+  and code tests run alongside, each benchmark is kept the moment it
+  finishes, and the effort chosen now reaches gpt-oss.
+- **Fine-tuning is three to four times faster**, and a whole run from Start
+  to a tested GGUF about twice as fast: each batch is padded only to its
+  longest record, the card is measured for how many records fit at once,
+  layers are recomputed only when memory needs it, and no second Python is
+  started to check the environment. A new recipe learns at 1e-4 rather than
+  1e-5, which scored better on the held-out tenth at every size tried.
+- **A fine-tune ends at a GGUF on every machine.** Where the runtime was
+  downloaded rather than built, the converter was missing and a fine-tune
+  ended at a folder of safetensors Crucible could not load. The converter now
+  comes with Crucible.
+- **A long conversation opens at once.** Its newest turns are drawn first
+  and older ones as you scroll up (300 turns in 0.2 s instead of 2.2), a
+  reply streams a block at a time, typing keeps up beside a long chat, and
+  builds and the Models and Bench lists redraw only what changed. The first
+  prompt no longer waits for Python to start.
+- **The delegator on a Mac.** Its menu lists MLX models, which cannot route,
+  and with no GGUF in the folder, Get one fetches a small delegator and sets
+  it. A models folder macOS keeps Crucible out of now says so instead of
+  looking empty.
+- **Steadier.** An orchestrator that quits mid-reply no longer leaves the
+  reply running or confuses the next one. A Gemma picture with a large
+  Batch, a model with no vocabulary, a video sent as a picture and a
+  conversation whose pictures outgrow the context no longer crash or stall:
+  the oldest pictures are left out instead. crash.log says why llama.cpp
+  stopped, and the log no longer loses lines.
+- **Always keep loaded** is the delegator's setting, which now keeps it even
+  when an expert needs the room.
+
 ## 0.9.8 (2026-10-27)
 
 A hotfix. (0.9.7 was tagged and withdrawn before it was released; this is it,

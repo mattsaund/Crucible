@@ -53,8 +53,9 @@ ModelFit fit_of(const ModelShape& shape, const ModelParams& params) {
 }
 
 void stamp(ModelParams& params, const std::vector<float>& split, int main_gpu) {
-    params.tensor_split = split;
-    params.main_gpu     = main_gpu;
+    params.tensor_split  = split;
+    params.main_gpu      = main_gpu;
+    params.split_planned = true;
 }
 
 /// refresh_gpu_split, from `fit` when there is one and from the header when
@@ -65,12 +66,12 @@ std::string replan(ModelParams& params, const GpuConfig& gpu, const ModelFit* fi
         return {};
     }
 
-    const GpuSplitMode mode = gpu_split_mode_from_id(gpu.mode);
-    if (mode == GpuSplitMode::Auto) {
+    const SplitPolicy policy = split_policy(gpu, params, gpus);
+    if (policy.mode == GpuSplitMode::Auto) {
         return {};  // an explicit tensor_split in the config file is left alone
     }
 
-    const GpuPlan plan = plan_gpu_split(mode, gpus, gpu.priority, gpu.main_gpu,
+    const GpuPlan plan = plan_gpu_split(policy.mode, gpus, policy.order, gpu.main_gpu,
                                         fit != nullptr ? *fit : fit_of(read_model_shape(params.path), params));
     if (plan.split.empty()) {
         return {};
@@ -103,42 +104,58 @@ void stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu) {
 }
 
 /// Which card the delegator belongs on. See place_delegator.
-int delegator_device(const std::vector<ComputeDevice>& gpus, const GpuConfig& gpu) {
-    if (gpus.empty() || gpu_split_mode_from_id(gpu.mode) != GpuSplitMode::Priority) {
+int delegator_device(const std::vector<ComputeDevice>& gpus, const SplitPolicy& policy, const GpuConfig& gpu) {
+    if (gpus.empty() || policy.mode != GpuSplitMode::Priority) {
         return gpu.main_gpu;
     }
-    return apply_priority_order(gpus, gpu.priority).back().index;
+    return apply_priority_order(gpus, policy.order).back().index;
 }
 
 }  // namespace
 
+SplitPolicy split_policy(const GpuConfig& gpu, const ModelParams& params, const std::vector<ComputeDevice>& gpus) {
+    SplitPolicy policy{gpu_split_mode_from_id(gpu.mode), gpu.priority};
+    if (policy.mode != GpuSplitMode::Auto) {
+        return policy;
+    }
+    // A split written in the config is the person's, and stays theirs.
+    const bool written = !params.tensor_split.empty() && !params.split_planned;
+    if (!written && links_differ(gpus)) {
+        policy.mode = GpuSplitMode::Priority;
+        policy.order.clear();   // a priority list kept from another mode is not this one's
+    }
+    return policy;
+}
+
 void place_delegator(ModelParams& params, const GpuConfig& gpu) {
-    if (gpu_split_mode_from_id(gpu.mode) == GpuSplitMode::Auto) {
+    const std::vector<ComputeDevice> gpus = gpu_devices();
+    const SplitPolicy policy = split_policy(gpu, params, gpus);
+    if (policy.mode == GpuSplitMode::Auto) {
         // "Auto" is the user saying llama.cpp decides how models are divided.
         // Pinning the delegator would be Crucible overriding that for one model
         // and not the other, which is exactly the kind of hidden policy the
-        // mode exists to switch off.
+        // mode exists to switch off -- where the cards' links are alike. See
+        // split_policy for where they are not.
         return;
     }
-    const std::vector<ComputeDevice> gpus = gpu_devices();
     if (gpus.size() < 2) {
         return;  // nothing to choose between
     }
-    const int device = delegator_device(gpus, gpu);
+    const int device = delegator_device(gpus, policy, gpu);
     std::vector<float> split(static_cast<std::size_t>(gpus.back().index) + 1, 0.0F);
     split[static_cast<std::size_t>(device)] = 1.0F;
     stamp(params, split, device);
 }
 
-std::vector<int> delegator_cards(const GpuConfig& gpu) {
-    const GpuSplitMode mode = gpu_split_mode_from_id(gpu.mode);
+std::vector<int> delegator_cards(const GpuConfig& gpu, const ModelParams& params) {
     const std::vector<ComputeDevice> gpus = gpu_devices();
-    if (mode == GpuSplitMode::Auto || gpus.size() < 2) {
+    const SplitPolicy policy = split_policy(gpu, params, gpus);
+    if (policy.mode == GpuSplitMode::Auto || gpus.size() < 2) {
         return {};
     }
-    const int first = delegator_device(gpus, gpu);
+    const int first = delegator_device(gpus, policy, gpu);
     std::vector<int> cards{first};
-    if (mode == GpuSplitMode::Single) {
+    if (policy.mode == GpuSplitMode::Single) {
         return cards;
     }
     std::vector<ComputeDevice> rest;
@@ -218,12 +235,14 @@ std::string apply_gpu_policy(Config& config) {
         stamp_memory(expert, config.gpu, have_gpu);
     }
 
+    // "Auto" plans nothing, except over cards whose links differ, where each
+    // model without a split of its own is planned fastest link first. See
+    // split_policy.
     const GpuSplitMode mode = gpu_split_mode_from_id(config.gpu.mode);
-    if (mode == GpuSplitMode::Auto) {
+    const std::vector<ComputeDevice>& gpus = all_gpus;
+    if (mode == GpuSplitMode::Auto && !links_differ(gpus)) {
         return {};
     }
-
-    const std::vector<ComputeDevice>& gpus = all_gpus;
     if (gpus.size() < 2 && mode != GpuSplitMode::Single) {
         // Nothing to divide. Saying so is better than silently writing a
         // one-element split that looks like it did something.
@@ -246,9 +265,12 @@ std::string apply_gpu_policy(Config& config) {
     // memory immediately before it commits. See refresh_gpu_split.
     ShapeCache shapes;
     const auto plan_for = [&](const ModelParams& params) {
+        const SplitPolicy policy = split_policy(config.gpu, params, gpus);
+        if (policy.mode == GpuSplitMode::Auto) {
+            return GpuPlan{};   // its own split, written in the config
+        }
         const ModelShape& shape = shape_of(shapes, params.path);
-        return plan_gpu_split(mode, gpus, config.gpu.priority, config.gpu.main_gpu,
-                              fit_of(shape, params));
+        return plan_gpu_split(policy.mode, gpus, policy.order, config.gpu.main_gpu, fit_of(shape, params));
     };
 
     GpuPlan       described;
@@ -276,8 +298,10 @@ std::string apply_gpu_policy(Config& config) {
     // -- a hand-written tensor_split left in the config file would otherwise
     // survive a mode that is supposed to override it -- so it takes the
     // largest expert's, or a capacity-proportional one when no seat is filled.
-    const GpuPlan defaults_plan =
-        described.split.empty() ? plan_for(config.defaults) : described;
+    // Not in "auto", which is the mode that keeps a hand-written one.
+    const GpuPlan defaults_plan = mode == GpuSplitMode::Auto ? GpuPlan{}
+                                : described.split.empty()    ? plan_for(config.defaults)
+                                                             : described;
     if (!defaults_plan.split.empty()) {
         stamp(config.defaults, defaults_plan.split, config.gpu.main_gpu);
     }

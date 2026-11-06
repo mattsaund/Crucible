@@ -215,15 +215,47 @@ const aligned = (align, i) =>
 /// An opening fence: the mark, and the language when one is named.
 const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+#.-]*)/;
 
+/// Text already drawn, by itself: what draws a build's plan, a task's
+/// outcome or a README runs on every push, and the text is the same for as
+/// long as it is on screen.
+const markdownDrawn = new Map();
+
 function markdown(src) {
+  const text = String(src ?? '');
+  let html = markdownDrawn.get(text);
+  if (html === undefined) {
+    html = markdownBlocks(text).map((block) => block.html).join('');
+    if (markdownDrawn.size >= 64) markdownDrawn.delete(markdownDrawn.keys().next().value);
+    markdownDrawn.set(text, html);
+  }
+  return html;
+}
+
+/// The blocks `src` is made of, in order, each { html, source }: its markup
+/// and the lines it was made from. A reply still arriving is drawn from these
+/// a block at a time (chat.js, streamedMarkdown): what arrives next can only
+/// change the last block, so the others are finished.
+///
+/// `made`, when given, maps a block's source to its markup: a block found
+/// there is not made again, and every block but the last -- the one still
+/// arriving -- is put there.
+function markdownBlocks(src, made) {
   // Line endings as one kind: a "\r" left on a heading made it fail one test
   // here and pass another, and no branch took the line.
   const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   let i = 0;
+  // The block from line `from` to the line before `i`, made by `make`
+  // unless it was made before.
+  const block = (from, make) => {
+    const source = lines.slice(from, i).join('\n');
+    const known = made ? made.get(source) : undefined;
+    out.push({ html: known === undefined ? make() : known, source });
+  };
 
   while (i < lines.length) {
     const line = lines[i];
+    const from = i;
 
     // A script's first line written above its fence rather than inside it --
     // gpt-oss does this with "#!/usr/bin/env python3" -- belongs to the code.
@@ -253,23 +285,23 @@ function markdown(src) {
       i += 1;
       while (i < lines.length && !closes(lines[i])) { body.push(lines[i]); i += 1; }
       i += 1;
-      out.push(codeBlock(body.join('\n'), fence[2] || guessLanguage(body)));
+      block(from, () => codeBlock(body.join('\n'), fence[2] || guessLanguage(body)));
       continue;
     }
 
     if (!line.trim()) { i += 1; continue; }
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { i += 1; block(from, () => '<hr>'); continue; }
 
     if (mathOpens(line)) {
       const math = mathBlock(lines, i);
-      if (math) { out.push(math.html); i = math.next; continue; }
+      if (math) { i = math.next; block(from, () => math.html); continue; }
     }
 
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       const level = heading[1].length;
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
       i += 1;
+      block(from, () => `<h${level}>${inline(heading[2])}</h${level}>`);
       continue;
     }
 
@@ -285,10 +317,12 @@ function markdown(src) {
       while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
         rows.push(cells(lines[i])); i += 1;
       }
-      const headRow = head.map((c, n) => `<th${aligned(align, n)}>${inline(c)}</th>`).join('');
-      const body = rows.map((r) =>
-        `<tr>${r.map((c, n) => `<td${aligned(align, n)}>${inline(c)}</td>`).join('')}</tr>`).join('');
-      out.push(`<table><thead><tr>${headRow}</tr></thead><tbody>${body}</tbody></table>`);
+      block(from, () => {
+        const headRow = head.map((c, n) => `<th${aligned(align, n)}>${inline(c)}</th>`).join('');
+        const body = rows.map((r) =>
+          `<tr>${r.map((c, n) => `<td${aligned(align, n)}>${inline(c)}</td>`).join('')}</tr>`).join('');
+        return `<table><thead><tr>${headRow}</tr></thead><tbody>${body}</tbody></table>`;
+      });
       continue;
     }
 
@@ -297,7 +331,7 @@ function markdown(src) {
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
         body.push(lines[i].replace(/^\s*>\s?/, '')); i += 1;
       }
-      out.push(`<blockquote>${markdown(body.join('\n'))}</blockquote>`);
+      block(from, () => `<blockquote>${markdown(body.join('\n'))}</blockquote>`);
       continue;
     }
 
@@ -313,7 +347,7 @@ function markdown(src) {
         items.push(lines[i].match(pattern)[1]); i += 1;
       }
       const tag = ordered ? 'ol' : 'ul';
-      out.push(`<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
+      block(from, () => `<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
       continue;
     }
 
@@ -328,9 +362,12 @@ function markdown(src) {
     const body = [line];
     i += 1;
     while (i < lines.length && lines[i].trim() && !starts(lines[i])) { body.push(lines[i]); i += 1; }
-    out.push(`<p>${inline(body.join('\n'))}</p>`);
+    block(from, () => `<p>${inline(body.join('\n'))}</p>`);
   }
-  return out.join('');
+  if (made) {
+    for (let n = 0; n < out.length - 1; n += 1) made.set(out[n].source, out[n].html);
+  }
+  return out;
 }
 
 /// What to call a language on a block's header.

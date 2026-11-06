@@ -17,12 +17,26 @@
 // path a person takes who chats while a build runs. It prints the tasks and
 // the reply, and exits non-zero when the build failed outright or the chat
 // turn did.
+//
+//   crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]
+//
+// With --bench it runs the model through the Bench the way the Bench tab
+// does, and prints how far it has got every ten seconds and the result at
+// the end: how fast a run goes on this machine, timed without a window.
+// Given seconds, it presses Stop after that long, and what was answered by
+// then is kept as a stopped run's is: a sample of a model too slow to run
+// through whole.
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
+
+#include <nlohmann/json.hpp>
 
 #include "crucible/config/config.hpp"
 #include "crucible/config/paths.hpp"
@@ -119,15 +133,123 @@ int smoke_build(const std::string& expert, const std::string& directive, const s
     return failed;
 }
 
+/// `model` through the Bench at `size`, on the benchmarks named in `only`
+/// (comma separated) or every one, stopped after `stop_after` seconds when
+/// that is more than none. See the file comment.
+int smoke_bench(const std::string& model, const std::string& size, const std::string& only, double stop_after) {
+    using nlohmann::json;
+    Config config;
+    config.routing.keep_delegator_loaded = false;
+    AppState state;
+    state.configure_seats(config);
+    Engine engine(config, state, [] {});
+    engine.start();
+
+    json benchmarks = json::array();
+    std::stringstream names(only);
+    for (std::string name; std::getline(names, name, ',');) {
+        if (!name.empty()) {
+            benchmarks.push_back(name);
+        }
+    }
+    const std::string path = std::filesystem::absolute(model).string();
+    if (const std::string refused = engine.start_bench(json{
+            {"models", json::array({json{{"path", path}, {"name", std::filesystem::path(path).filename().string()}}})},
+            {"benchmarks", benchmarks}, {"size", size}, {"effort", ""}});
+        !refused.empty()) {
+        std::printf("refused: %s\n", refused.c_str());
+        return 1;
+    }
+
+    // Done is what the run says, once the engine has let it go.
+    const auto            started = std::chrono::steady_clock::now();
+    auto                  said    = started;
+    json                  last;
+    std::set<std::string> finished;
+    bool                  pressed = false;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const Snapshot now = state.snapshot();
+        if (now.bench) {
+            last = *now.bench;
+        }
+        if (!engine.benching() && last.is_object() && !last.value("running", true)) {
+            break;
+        }
+        const auto at = std::chrono::steady_clock::now();
+        if (stop_after > 0 && !pressed && std::chrono::duration<double>(at - started).count() >= stop_after) {
+            pressed = true;
+            std::printf("%6.1f s  stop\n", std::chrono::duration<double>(at - started).count());
+            engine.stop_bench();
+        }
+        // When each benchmark was done, to the quarter second.
+        for (const json& entry : last.is_object() ? last.value("models", json::array()) : json::array()) {
+            const json benches = entry.value("benchmarks", json::object());
+            for (const auto& [id, progress] : benches.items()) {
+                if (progress.value("n", 0) > 0 && progress.value("done", 0) == progress.value("n", 0)
+                    && finished.insert(id).second) {
+                    std::printf("%6.1f s  %s done\n", std::chrono::duration<double>(at - started).count(), id.c_str());
+                    std::fflush(stdout);
+                }
+            }
+        }
+        if (at - said >= std::chrono::seconds(10) && last.is_object()) {
+            said = at;
+            int done = 0;
+            int correct = 0;
+            std::string where;
+            for (const json& entry : last.value("models", json::array())) {
+                // Held here: items() of the temporary value() returns would outlive it.
+                const json benches = entry.value("benchmarks", json::object());
+                for (const auto& [id, progress] : benches.items()) {
+                    done += progress.value("done", 0);
+                    correct += progress.value("correct", 0);
+                }
+                where = entry.value("state", std::string()) + " " + entry.value("current", std::string());
+            }
+            const double seconds = std::chrono::duration<double>(at - started).count();
+            std::printf("%6.0f s  %s  %d done, %d right\n", seconds, where.c_str(), done, correct);
+            std::fflush(stdout);
+        }
+    }
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    int failed = last.contains("error") ? 1 : 0;
+    if (failed != 0) {
+        std::printf("error: %s\n", last["error"].dump().c_str());
+    }
+    for (const json& entry : last.value("models", json::array())) {
+        std::printf("%s: %s, loaded in %ld ms, %s\n", entry.value("name", std::string()).c_str(),
+                    entry.value("state", std::string()).c_str(), entry.value("load_ms", 0L),
+                    entry.value("saved", std::string()).c_str());
+        const json benches = entry.value("benchmarks", json::object());
+        for (const auto& [id, progress] : benches.items()) {
+            std::printf("  %-11s %3d of %3d, %3d right%s\n", id.c_str(), progress.value("done", 0),
+                        progress.value("n", 0), progress.value("correct", 0),
+                        progress.contains("error") ? (", " + progress["error"].dump()).c_str() : "");
+        }
+        if (entry.value("state", std::string()) != "done") {
+            failed = 1;
+        }
+    }
+    std::printf("%.0f s in all\n", seconds);
+    engine.stop();
+    return failed;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "--build") {
         return smoke_build(argv[2], argv[3], argc >= 5 ? argv[4] : "");
     }
+    if (argc >= 3 && std::string(argv[1]) == "--bench") {
+        return smoke_bench(argv[2], argc >= 4 ? argv[3] : "quick", argc >= 5 ? argv[4] : "",
+                           argc >= 6 ? std::atof(argv[5]) : 0.0);
+    }
     if (argc < 4) {
         std::printf("usage: crucible-smoke <delegator.gguf or -> <expert.gguf> \"a question\"\n"
-                    "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n");
+                    "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n"
+                    "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n");
         return 2;
     }
     const std::string delegator = argv[1];

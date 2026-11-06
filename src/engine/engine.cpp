@@ -469,9 +469,7 @@ void Engine::do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choic
     if (params.model.empty() || params.remote()) {
         return;   // a provider's model is a request away, not a load
     }
-    if (!config.routing.keep_delegator_loaded) {
-        release_router_between_routes();
-    }
+    make_room_for(params);
     const CancelCallback cancel = [this, choice] {
         return choices_.load(std::memory_order_relaxed) != choice || !running_.load(std::memory_order_relaxed);
     };
@@ -949,7 +947,14 @@ void Engine::ready_delegator() {
         return;
     }
     if (host_->router() != nullptr) {
-        return;  // already there
+        if (!host_->router_could_move(in_use())) {
+            return;  // already there
+        }
+        // On the processor for want of room, and the cards have it again,
+        // or the expert in its way is quick to load back: to the cards,
+        // where a route takes a fraction of the time. Now, while nobody is
+        // waiting, rather than in front of the next route.
+        release_router();
     }
     // A delegator that would not load the last time is not retried after
     // every prompt -- that is the same failure, on a loop. A prompt still
@@ -988,30 +993,28 @@ void Engine::tidy_models() {
                                                                                      : std::string();
     {
         const std::lock_guard<std::mutex> host(host_mutex_);
-        // On demand: the experts nobody is using go, so the delegator has
-        // the room. One a build's agent holds stays -- it is mid-task -- and
-        // so does the one chosen in the box, which the next prompt is for.
-        if (demand) {
-            const std::optional<ExpertId> was = host_->loaded_expert();
-            host_->release_experts([this, &chosen, &served](const std::string& path) {
-                return leases_.held(path) || (!chosen.empty() && path == chosen)
-                    || (!served.empty() && path == served);
-            });
-            if (was && host_->loaded_expert() != was) {
-                state_.set_seat(*was, SeatPhase::Dormant);
-            }
-            state_.set_resident(host_->loaded_expert());
-            show_loaded();
-            if (!leases_.held(mlx_.served().string()) && mlx_.served().string() != chosen
-                && mlx_.served().string() != served) {
-                stop_mlx();
-            }
+        // On demand, the experts stay: the delegator comes back beside them
+        // when there is room, and the host frees the ones nobody is using,
+        // the least recently used first, only when there is not and it
+        // cannot route from the processor instead (see acquire_router). They
+        // all went here once, and a follow-up question to the same expert
+        // loaded it again from the disk. An MLX model is in a process of its
+        // own, which the host cannot see into: one nobody is using still goes.
+        if (demand && !leases_.held(mlx_.served().string()) && mlx_.served().string() != chosen
+            && mlx_.served().string() != served) {
+            stop_mlx();
         }
         // With an expert chosen nothing is routed, and on demand the
         // delegator would only take the chosen one's room, or with a
         // provider's chosen, be gigabytes loaded for nothing.
         if (!demand || !seat_chosen()) {
+            const std::optional<ExpertId> was = host_->loaded_expert();
             ready_delegator();
+            if (was && host_->loaded_expert() != was) {
+                state_.set_seat(*was, SeatPhase::Dormant);
+            }
+            state_.set_resident(host_->loaded_expert());
+            show_loaded();
         }
     }
     // Whatever the last request ended by saying -- "canceled", an error -- is
@@ -1044,6 +1047,26 @@ void Engine::release_router_between_routes() {
     }
     // Otherwise a route is still using it: it stays, and the next prompt or
     // seat that wants the room frees it.
+}
+
+void Engine::make_room_for(const ModelParams& expert, const std::function<void()>& waiting) {
+    if (config().routing.keep_delegator_loaded || expert.remote()) {
+        return;
+    }
+    {
+        // Freed only for an expert that needs its room. It went before every
+        // expert once, and came back after every answer: a load of each for
+        // every prompt, seven seconds of delegator on a card wired for one
+        // lane on top of the expert's own, where the two fit side by side.
+        const std::lock_guard<std::mutex> host(host_mutex_);
+        if (!host_->needs_router_room(expert, in_use())) {
+            return;
+        }
+    }
+    if (waiting && routes_open_.load() > 0) {
+        waiting();
+    }
+    release_router_between_routes();
 }
 
 void Engine::release_router() {
@@ -1080,7 +1103,6 @@ void Engine::do_apply_config(Config config) {
 
     const std::lock_guard<std::mutex> host(host_mutex_);
     Config before;
-    const std::optional<ExpertId> resident = host_->loaded_expert();
     {
         const std::lock_guard<std::mutex> lock(config_mutex_);
         before  = config_;
@@ -1099,28 +1121,45 @@ void Engine::do_apply_config(Config config) {
     const bool hardware = hardware_differs(before.gpu, current.gpu);
     bool       freed    = false;
 
-    // The resident expert, if its seat now loads differently -- or was ejected
-    // outright, which reads as an empty path and is the same answer: drop it,
-    // rather than leave its weights resident and unreachable. Only what
-    // nobody is using: a build's agent keeps the model it has until it lets
-    // go, and the next seat to want it loads it the new way.
-    if (resident) {
-        // The API server's model is not a seat's: it is what the server
-        // would load now, and nothing once the server is off.
-        const auto loaded_as = [](const Config& in, const ExpertId& id) {
-            return id != kServerSeat ? in.expert(id)
-                 : in.server.enabled ? served_params(in) : ModelParams{};
-        };
-        const ModelParams now = loaded_as(current, *resident);
-        if (now.path.empty() || hardware || loads_differently(loaded_as(before, *resident), now)) {
-            host_->release_experts(in_use());
-            if (host_->loaded_expert() != resident) {
-                state_.set_seat(*resident, SeatPhase::Dormant);
-            }
-            state_.set_resident(host_->loaded_expert());
-            show_loaded();
-            freed = true;
+    // Each resident expert whose seat now loads differently -- or was ejected
+    // outright, which reads as an empty path and is the same answer: dropped,
+    // rather than left resident and unreachable, or handed to the next prompt
+    // loaded the old way. Every one, since several stay loaded while they
+    // fit. Only what nobody is using: a build's agent keeps the model it has
+    // until it lets go, and the next seat to want it loads it the new way.
+    //
+    // The API server's model is not a seat's: it is what the server would
+    // load now, and nothing once the server is off.
+    const auto loaded_as = [](const Config& in, const ExpertId& id) {
+        return id != kServerSeat ? in.expert(id)
+             : in.server.enabled ? served_params(in) : ModelParams{};
+    };
+    std::vector<std::string> stale;
+    std::vector<ExpertId>    seats;
+    for (const ModelHost::Held& held : host_->held()) {
+        const ModelParams now = loaded_as(current, held.id);
+        if (now.path.empty() || hardware || loads_differently(loaded_as(before, held.id), now)) {
+            stale.push_back(held.model->path());
+            seats.push_back(held.id);
         }
+    }
+    if (!stale.empty()) {
+        const ModelHost::Keep busy = in_use();
+        host_->release_experts([&busy, &stale](const std::string& path) {
+            return (busy && busy(path)) || std::find(stale.begin(), stale.end(), path) == stale.end();
+        });
+        std::vector<ExpertId> still;
+        for (const ModelHost::Held& held : host_->held()) {
+            still.push_back(held.id);
+        }
+        for (const ExpertId& seat : seats) {
+            if (std::find(still.begin(), still.end(), seat) == still.end()) {
+                state_.set_seat(seat, SeatPhase::Dormant);
+            }
+        }
+        state_.set_resident(host_->loaded_expert());
+        show_loaded();
+        freed = true;
     }
 
     // The delegator, likewise; a different one is loaded by the next prompt
@@ -1219,6 +1258,14 @@ void Engine::do_write_examples(const ExpertId& id) {
     }
 }
 
+void Engine::prepare_orchestrator() {
+    if (!lab::python::installed()) {
+        return;
+    }
+    std::string error;
+    orchestra_.start(error);
+}
+
 bool Engine::wait_for_python(std::string& error, const CancelCallback& cancel) {
     if (lab::python::installed()) {
         return true;
@@ -1276,18 +1323,24 @@ nlohmann::json Engine::routing_request(const Config& config, const std::string& 
 }
 
 CancelCallback Engine::cancel_for(const nlohmann::json& params) const {
+    // Whichever Stop it heeds, it also stops when the orchestrator that asked
+    // has gone: nobody is left to read the answer. See Link::ended.
+    const std::uint64_t asker = orchestra::Link::asker();
     if (params.value("context", std::string()) == "bench") {
-        return [this] {
-            return bench_stop_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
+        return [this, asker] {
+            return bench_stop_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)
+                || orchestra_.ended(asker);
         };
     }
     if (params.value("context", std::string()) == "build") {
-        return [this] {
-            return cook_cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
+        return [this, asker] {
+            return cook_cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)
+                || orchestra_.ended(asker);
         };
     }
-    return [this] {
-        return cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
+    return [this, asker] {
+        return cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)
+            || orchestra_.ended(asker);
     };
 }
 

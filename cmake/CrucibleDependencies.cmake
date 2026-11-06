@@ -539,6 +539,42 @@ FetchContent_MakeAvailable(llama)
 # archives and there is nothing to strip.
 crucible_unversion_directory("${llama_SOURCE_DIR}")
 
+# --- the GGUF converter --------------------------------------------------------
+#
+# A fine-tune becomes a GGUF through llama.cpp's own converter: a script, the
+# Python packages beside it, and the chat templates a few models take from
+# there. It was looked for in the llama.cpp source a runtime is compiled
+# from, which a machine that downloaded its runtime never fetches, and there
+# every fine-tune ended at a folder of safetensors nothing in Crucible loads.
+# So it is compiled in from this tree, as a zip the trainer unpacks beside
+# itself: the same llama.cpp as the runtime, knowing every architecture the
+# runtime can load. Listed file by file rather than by folder, so that a
+# __pycache__ left in the tree by running the converter from it stays out.
+set(CRUCIBLE_CONVERTER_CPP "")
+file(GLOB_RECURSE _converter_files RELATIVE "${llama_SOURCE_DIR}"
+     "${llama_SOURCE_DIR}/conversion/*.py"
+     "${llama_SOURCE_DIR}/gguf-py/gguf/*.py"
+     "${llama_SOURCE_DIR}/models/templates/*.jinja")
+if(EXISTS "${llama_SOURCE_DIR}/convert_hf_to_gguf.py" AND _converter_files)
+    list(SORT _converter_files)
+    list(PREPEND _converter_files convert_hf_to_gguf.py)
+    set(_converter_list ${CRUCIBLE_GENERATED_DIR}/converter-files.txt)
+    string(REPLACE ";" "\n" _converter_lines "${_converter_files}")
+    file(WRITE ${_converter_list} "${_converter_lines}\n")
+    list(TRANSFORM _converter_files PREPEND "${llama_SOURCE_DIR}/" OUTPUT_VARIABLE _converter_paths)
+    set(_converter_zip ${CRUCIBLE_GENERATED_DIR}/converter.zip)
+    add_custom_command(
+        OUTPUT  ${_converter_zip}
+        COMMAND ${CMAKE_COMMAND} -E tar cf ${_converter_zip} --format=zip --mtime=2000-01-01
+                --files-from=${_converter_list}
+        WORKING_DIRECTORY "${llama_SOURCE_DIR}"
+        DEPENDS ${_converter_paths} ${_converter_list}
+        COMMENT "Packing llama.cpp's GGUF converter"
+        VERBATIM)
+    crucible_embed(CRUCIBLE_CONVERTER_CPP ${_converter_zip}
+                   kConverterZip crucible::lab::embedded converter_zip)
+endif()
+
 # --- cpp-httplib: the API server ---------------------------------------------
 #
 # The OpenAI-compatible server (src/serve/server.cpp) speaks HTTP through

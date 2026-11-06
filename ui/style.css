@@ -319,7 +319,7 @@ button.action:disabled { color: var(--faint); cursor: default; }
 .slider-row { display: flex; gap: .8rem; align-items: center; }
 .slider-row input[type="range"] { flex: 1; min-width: 0; padding: 0; accent-color: var(--flame); }
 .slider-row input:not([type="range"]) { flex: 0 0 6.5rem; text-align: right; }
-.field .row input { flex: 1; min-width: 0; }
+.field .row input, .field .row select { flex: 1; min-width: 0; }
 .card.pick { max-width: 46rem; }
 .field label { display: block; color: var(--dim); margin-bottom: .35rem; }
 .field .hint { color: var(--faint); margin-top: .35rem; }

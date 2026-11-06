@@ -231,8 +231,11 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         throw std::runtime_error("the chat turn is over");
     }
     const std::size_t    turn   = chat->index;
-    const CancelCallback cancel = [this] {
-        return cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed);
+    // An orchestrator that went away mid-turn has nobody left to read the
+    // reply: what it asked for stops as Stop would. See Link::ended.
+    const CancelCallback cancel = [this, asker = orchestra::Link::asker()] {
+        return cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)
+            || orchestra_.ended(asker);
     };
 
     // --- or a build ------------------------------------------------------------
@@ -262,14 +265,12 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         decision.confidence = decided.value("confidence", 0.0F);
         decision.source     = route_source_from_name(decided.value("source", "fallback"));
         decision.detail     = decided.value("detail", "");
-        if (!chat->config.routing.keep_delegator_loaded && !chat->config.expert(decision.expert).remote()) {
-            // Its work for this prompt is done -- or there was none, for a
-            // prompt sent to one expert -- and the expert is about to want
-            // every byte it was holding. Unless the expert is somewhere else:
-            // then nothing is about to be loaded, and freeing the delegator
-            // would only mean loading it again for the next prompt.
-            release_router_between_routes();
-        }
+        // Its work for this prompt is done -- or there was none, for a prompt
+        // sent to one expert -- and it goes if the expert is about to want
+        // the room it holds. Not when the two fit side by side, or the expert
+        // is somewhere else: freeing it would only mean loading it again for
+        // the next prompt.
+        make_room_for(chat->config.expert(decision.expert));
         chat->expert = decision.expert;
         chat->routed = true;
         state_.set_route(turn, decision);

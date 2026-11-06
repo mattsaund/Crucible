@@ -66,9 +66,23 @@ function tidyReadme(text) {
   src = src.replace(/<!--[\s\S]*?-->/g, '');
   const out = [];
   let fenced = false;
+  // Lines left of a tag that began above and has not closed: LiquidAI's
+  // README gives an <img> its attributes on lines of their own.
+  let inTag = 0;
   for (let line of src.split('\n')) {
+    if (inTag && !fenced) {
+      const end = line.indexOf('>');
+      if (end < 0 && --inTag) continue;
+      line = end < 0 ? line : line.slice(end + 1);
+      inTag = 0;
+    }
     if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; out.push(line); continue; }
     if (fenced) { out.push(line); continue; }
+    const open = line.search(/<(?:img|picture|source|video|a|p|div|span|center|h[1-6])\b[^>]*$/i);
+    if (open >= 0) {
+      line = line.slice(0, open);
+      inTag = 20;
+    }
     // Indented by the HTML it sat in, not to say anything; a nested list
     // item keeps its place.
     if (!/^\s*([-*+]|\d+[.)])\s/.test(line)) line = line.trimStart();
@@ -221,15 +235,18 @@ function nextLogo() {
   }
 }
 
+/// A row of the list, a region of its own (see region): a logo landing
+/// changes one row, and the other ninety-nine are not drawn again.
 function resultRow(l) {
   const m = market();
-  return `<button class="market-row${m.selected === l.id ? ' here' : ''}" data-act="market-pick" data-id="${escape(l.id)}">
+  return region(`market-row-${l.id}`, `<button class="market-row${m.selected === l.id ? ' here' : ''}" id="market-row-${
+      escape(l.id)}" data-key="${escape(l.id)}" data-act="market-pick" data-id="${escape(l.id)}">
       ${repoLogo(l)}
       <div class="market-row-head"><strong>${escape(l.name)}</strong><span class="caps">${capabilityIcons(l)}</span></div>
       <div class="market-row-meta"><span class="who">${apart(escape(l.author), paramsLabel(l.params_b),
         `${MARKET_ICONS.down} ${shortCount(l.downloads)}`, `${MARKET_ICONS.like} ${shortCount(l.likes)}`)}</span>
         <span class="when">${escape(updatedAgo(l.updated))}</span></div>
-    </button>`;
+    </button>`);
 }
 
 function downloadBar(d) {
@@ -306,8 +323,11 @@ function detailView() {
     action = `<button class="action primary" data-act="market-download">Download ${bytes(option.bytes)}</button>`;
   }
   const [fitWords, fitClass] = option ? (FITS[option.fit] || FITS.large) : ['', ''];
+  // The README and the list are regions (see region): a download's bar moves
+  // beside them on every push, and they do not.
   const readme = m.readme === null ? '<div class="status">Reading...</div>'
-    : m.readme ? `<div class="md readme">${markdown(m.readme)}</div>` : '<div class="status">No README.</div>';
+    : m.readme ? region('market-readme', `<div class="md readme" id="market-readme">${markdown(m.readme)}</div>`)
+    : '<div class="status">No README.</div>';
   return `<div class="market-head">
       ${repoLogo(d)}
       <h1>${escape(d.id)}</h1>
@@ -363,7 +383,7 @@ views.models = () => {
         </div>
         ${downloads.length ? `<div class="downloads">${downloads.map(downloadBar).join('')}</div>` : ''}
         ${m.error && !m.selected ? `<div class="bad">${escape(m.error)}</div>` : ''}
-        <div class="market-results">${results}</div>
+        ${region('market-results', `<div class="market-results" id="market-results">${results}</div>`)}
       </div>
       <div class="market-detail">${detailView()}</div>
     </div></div>`;

@@ -31,10 +31,12 @@ this program to use.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -75,18 +77,20 @@ def pick_gpu() -> str:
     """Which card to train on, as a CUDA_VISIBLE_DEVICES value.
 
     One card, chosen before torch is imported, and this is not a preference.
-    Left to itself the HuggingFace Trainer sees several GPUs and wraps the
-    model in torch.nn.DataParallel, which replicates it onto each of them --
-    and a 4-bit quantized model cannot be replicated, so the first forward
-    pass dies inside a worker thread with a traceback that mentions neither
-    quantization nor DataParallel.
+    The training runs on the first card torch can see, and any other it can
+    see is one it may take memory on. (The HuggingFace Trainer this used to
+    run under went further: it wrapped the model in DataParallel across
+    every card it saw, which a 4-bit model cannot survive.)
 
     Training an adapter does not want more than one card anyway: the whole
     premise is that the frozen base fits on one. So the one with the most
     free memory is picked, and the rest are left for whatever else is using
     the machine -- including Crucible's own inference.
+
+    A choice already made is kept, an empty one too: that is CUDA's way of
+    saying no card at all, and it was taken for no choice, and a card picked.
     """
-    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
         return os.environ["CUDA_VISIBLE_DEVICES"]
     try:
         reply = subprocess.run(
@@ -215,8 +219,6 @@ def read_records(recipe: dict, tokenizer) -> list[tuple[str, list[list[int]]]]:
     Huggingface dataset, a folder of text, and JSONL of either {"text": ...}
     or {"messages": [...]}.
     """
-    from datasets import load_dataset
-
     records: list[tuple[str, list[list[int]]]] = []
     for asset in recipe.get("data") or []:
         reference = asset.get("path") or asset.get("id") or ""
@@ -226,6 +228,10 @@ def read_records(recipe: dict, tokenizer) -> list[tuple[str, list[list[int]]]]:
         phase("data", f"reading {reference}")
 
         if source == "hub":
+            # Imported only for a dataset from the hub: it is a quarter of a
+            # second of pyarrow and pandas that a file on disk does not need.
+            from datasets import load_dataset
+
             loaded = load_dataset(reference, split="train")
             records.extend(r for r in (to_record(dict(one), tokenizer) for one in loaded) if r and r[0])
             continue
@@ -266,6 +272,10 @@ def read_records(recipe: dict, tokenizer) -> list[tuple[str, list[list[int]]]]:
         fail("this recipe has no training data")
     return records
 
+
+# The rate a recipe that names none trains at: Crucible's own default (see
+# recipe.hpp), for a recipe written by hand.
+LEARNING_RATE = 1e-4
 
 # How much of the data is held out of training to score the result on: one
 # record in ten, and at least a few and at most a couple of hundred. Fewer
@@ -322,9 +332,14 @@ def answer_labels(ids: list, offsets: list, mask: list, spans: list) -> list[int
     return [token if m == 1 else -100 for token, m in zip(ids, mask)]
 
 
-def encode(tokenizer, texts: list, spans: list, context: int, pad: bool) -> dict:
+def encode(tokenizer, texts: list, spans: list, context: int) -> dict:
     """Tokens and labels for some records: the same for training as for the
     score, which is what makes the score a measure of what was trained.
+
+    Each record as long as it is. Padding is added a batch at a time, to the
+    longest record in the batch (see padded): padded to the whole context,
+    a record of three hundred tokens was five hundred and twelve, and nearly
+    half of every step went on positions that were thrown away.
 
     Answers are found by the characters each token came from, which only a
     fast tokenizer reports. Without one every record is learned whole.
@@ -334,12 +349,11 @@ def encode(tokenizer, texts: list, spans: list, context: int, pad: bool) -> dict
         texts,
         truncation=True,
         max_length=context,
-        padding="max_length" if pad else False,
         return_offsets_mapping=fast,
     )
     offsets = out.pop("offset_mapping") if fast else [[] for _ in texts]
     # Causal language modeling: the labels are the inputs, and the loss over
-    # a padded position, or one that is not an answer, is thrown away.
+    # a position that is not an answer is thrown away.
     out["labels"] = [
         answer_labels(ids, offsets[i], mask, spans[i])
         for i, (ids, mask) in enumerate(zip(out["input_ids"], out["attention_mask"]))
@@ -347,19 +361,80 @@ def encode(tokenizer, texts: list, spans: list, context: int, pad: bool) -> dict
     return out
 
 
-def to_dataset(records: list, tokenizer, context: int):
-    """The training records, tokenized into one dataset."""
-    from datasets import Dataset
+# ---------------------------------------------------------------------------
+# Batches
+# ---------------------------------------------------------------------------
 
-    data = Dataset.from_dict({
-        "text": [text for text, _ in records],
-        "spans": [spans for _, spans in records],
-    })
-    return data.map(
-        lambda batch: encode(tokenizer, batch["text"], batch["spans"], context, pad=True),
-        batched=True,
-        remove_columns=["text", "spans"],
-    )
+# Records per optimizer step. The trainer took them as eight passes of one
+# record each, and now takes them in as few passes as the card holds; the
+# number stays, so a recipe trains as many steps, at the same learning rate,
+# as it always has.
+PER_STEP = 8
+
+
+def round_up(length: int) -> int:
+    """A batch's padded length: a multiple of eight, the shape the card's
+    matrix units work in."""
+    return (length + 7) // 8 * 8
+
+
+def plan_steps(lengths: list[int], epoch: int, seed: int = 42) -> list[list[int]]:
+    """Which records each optimizer step trains on, for one pass over the data.
+
+    Shuffled, then sorted by length within runs of a few steps, so that the
+    records of one step are about one length and a batch of them pads to
+    little; then the steps are shuffled again, so the long ones are not all
+    at the start of a run. Another order each pass, the same ones each run.
+    """
+    shuffle = random.Random(seed * 1000 + epoch)
+    order = list(range(len(lengths)))
+    shuffle.shuffle(order)
+    run = PER_STEP * 8
+    steps: list[list[int]] = []
+    for start in range(0, len(order), run):
+        ordered = sorted(order[start:start + run], key=lambda i: -lengths[i])
+        steps.extend(ordered[i:i + PER_STEP] for i in range(0, len(ordered), PER_STEP))
+    shuffle.shuffle(steps)
+    return steps
+
+
+def passes(indices: list[int], lengths: list[int], budget: int) -> list[list[int]]:
+    """`indices` in as few forward passes as `budget` tokens a pass allows.
+
+    A pass is padded to its longest record, so the longest go first and each
+    pass is as long as the record it starts with; one record is a pass
+    whatever its length, since there is no smaller one.
+    """
+    out: list[list[int]] = []
+    for i in sorted(indices, key=lambda i: -lengths[i]):
+        if out and (len(out[-1]) + 1) * round_up(lengths[out[-1][0]]) <= budget:
+            out[-1].append(i)
+        else:
+            out.append([i])
+    return out
+
+
+def padded(examples: dict, indices: list[int], pad: int) -> dict:
+    """One pass's records, padded on the right to the longest of them.
+
+    Padding is never attended to and never learned: its mask is 0 and its
+    label -100. On the right, a causal model's answer at a real position is
+    the same with it as without it.
+    """
+    width = round_up(max(len(examples["input_ids"][i]) for i in indices))
+    out: dict = {"input_ids": [], "attention_mask": [], "labels": []}
+    for i in indices:
+        missing = width - len(examples["input_ids"][i])
+        out["input_ids"].append(list(examples["input_ids"][i]) + [pad] * missing)
+        out["attention_mask"].append(list(examples["attention_mask"][i]) + [0] * missing)
+        out["labels"].append(list(examples["labels"][i]) + [-100] * missing)
+    return out
+
+
+def answer_tokens(labels: list) -> int:
+    """How many of a record's tokens are scored: each position predicts the
+    next token, so the first is never one."""
+    return sum(1 for label in labels[1:] if label != -100)
 
 
 def summary(total: float, tokens: int) -> dict | None:
@@ -374,56 +449,81 @@ def summary(total: float, tokens: int) -> dict | None:
     return {"loss": round(loss, 4), "perplexity": round(math.exp(min(loss, 700.0)), 4)}
 
 
-def score(model, examples: dict, compute) -> dict | None:
-    """The model's loss over the answers in `examples`, one record at a time.
-
-    Taken the way the trainer takes it, under the same mixed precision, so
-    that the number before training and the one after differ by the
-    training and nothing else. Under QLoRA both are of the four-bit base,
-    without the adapter and with it.
-    """
+def autocast_for(device, compute):
+    """The mixed precision a pass runs under: the compute type on a card, and
+    none on the processor, where it is float32 throughout."""
     import contextlib
 
     import torch
+
+    if device.type == "cuda" and compute is not torch.float32:
+        return torch.autocast(device_type="cuda", dtype=compute)
+    return contextlib.nullcontext()
+
+
+def to_device(batch: dict, device) -> tuple:
+    import torch
+
+    return tuple(torch.tensor(batch[key], device=device)
+                 for key in ("input_ids", "attention_mask", "labels"))
+
+
+def answer_loss(logits, labels):
+    """The loss summed over a batch's answer tokens.
+
+    Each position predicts the next token, so the labels move one along. Only
+    the positions whose next token is an answer's go into the loss at all,
+    and in float32: the logits are the largest tensor in a pass, a hundred
+    and fifty thousand numbers a token for some vocabularies, and a copy of
+    every one of them in float32 is what ran a card out of memory first.
+    """
     import torch.nn.functional as functional
 
-    device = next(model.parameters()).device
-    autocast = (
-        torch.autocast(device_type="cuda", dtype=compute)
-        if device.type == "cuda" and compute is not torch.float32
-        else contextlib.nullcontext()
+    target = labels[:, 1:]
+    keep = target != -100
+    return functional.cross_entropy(
+        logits[:, :-1][keep].float(), target[keep], reduction="sum"
     )
+
+
+def score(model, examples: dict, compute, budget: int, pad: int) -> dict | None:
+    """The model's loss over the answers in `examples`.
+
+    Taken the way the trainer takes it, under the same mixed precision and
+    over the same tokens, so that the number before training and the one
+    after differ by the training and nothing else. Under QLoRA both are of
+    the four-bit base, without the adapter and with it. In batches of a
+    similar length, as many to a pass as the training takes.
+    """
+    import torch
+
+    device = next(model.parameters()).device
+    lengths = [len(ids) for ids in examples["input_ids"]]
     training = model.training
     model.eval()
-    total, tokens = 0.0, 0
+    total = torch.zeros((), dtype=torch.float64, device=device)
+    tokens = sum(answer_tokens(labels) for labels in examples["labels"])
     try:
-        with torch.no_grad(), autocast:
-            for ids, mask, labels in zip(
-                examples["input_ids"], examples["attention_mask"], examples["labels"]
-            ):
-                logits = model(
-                    input_ids=torch.tensor([ids], device=device),
-                    attention_mask=torch.tensor([mask], device=device),
-                ).logits[0, :-1].float()
-                # Each position predicts the next token, so the labels move
-                # one along.
-                target = torch.tensor(labels[1:], device=device)
-                total += functional.cross_entropy(
-                    logits, target, ignore_index=-100, reduction="sum"
-                ).item()
-                tokens += int((target != -100).sum().item())
+        with torch.no_grad():
+            for indices in passes(list(range(len(lengths))), lengths, budget):
+                ids, mask, labels = to_device(padded(examples, indices, pad), device)
+                with autocast_for(device, compute):
+                    logits = model(input_ids=ids, attention_mask=mask).logits
+                total += answer_loss(logits, labels).double()
+                del logits
     finally:
         model.train(training)
-    return summary(total, tokens)
+    return summary(total.item(), tokens)
 
 
-def report_score(of: str, model, examples: dict, records: int, compute) -> None:
+def report_score(of: str, model, examples: dict, records: int, compute, budget: int,
+                 pad: int) -> None:
     """Score `model` on the held-out records and say so, as `of` ("base" or
     "tuned"). A score that cannot be had is said too, and the run goes on:
     it is a measure of the training, not a part of it."""
     phase("scoring", "the base" if of == "base" else "the fine-tune")
     try:
-        result = score(model, examples, compute)
+        result = score(model, examples, compute, budget, pad)
     except Exception as error:  # noqa: BLE001 -- a run is worth more than its score
         emit("note", text=f"the held-out records could not be scored: {type(error).__name__}")
         result = None
@@ -438,31 +538,226 @@ def report_score(of: str, model, examples: dict, records: int, compute) -> None:
 # ---------------------------------------------------------------------------
 
 
+def has_kernels(torch) -> bool:
+    """Whether this torch can run on the card it is about to train on.
+
+    A wheel carries kernels for a fixed list of architectures, and a card
+    outside it is not slow but unusable, though the import works and CUDA
+    says it is there. Same major family and not newer than the card: what is
+    built for sm_80 runs on every 8.x after it (see pyenv.cpp, status).
+    """
+    major, minor = torch.cuda.get_device_capability(0)
+    built = []
+    for arch in torch.cuda.get_arch_list():
+        digits = "".join(c for c in arch[3:] if c.isdigit())
+        if arch.startswith("sm_") and digits:
+            built.append(int(digits))
+    mine = major * 10 + minor
+    return not built or any(c // 10 == major and c <= mine for c in built)
+
+
+class Tuning:
+    """The adapter's optimizer steps over the data, in passes as large as the
+    card holds.
+
+    In place of transformers' Trainer, which was given one record a pass and
+    eight passes a step, every record padded to the whole context, and every
+    layer's forward pass done twice to save memory whether it was short or
+    not. The arithmetic is the Trainer's: AdamW without weight decay, the
+    gradient clipped to a norm of one, the learning rate falling in a
+    straight line to nothing at the last step, and a step's loss the mean
+    over every answer token in it, however its records were split into
+    passes.
+    """
+
+    # Of the memory free on the card, the share the passes may plan on. The
+    # rest is for the optimizer's state, which appears at the first step, the
+    # allocator's slack, and whatever else draws on the card: a display, a
+    # model Crucible is answering with. Passes larger than this buy little.
+    SHARE = 0.7
+
+    def __init__(self, model, data: dict, lengths: list[int], pad: int, device, compute):
+        self.model = model
+        self.data = data
+        self.lengths = lengths
+        self.pad = pad
+        self.device = device
+        self.compute = compute
+        self.answers = [answer_tokens(labels) for labels in data["labels"]]
+        self.widest = round_up(max(lengths))
+        # Tokens a pass may hold. A whole step at the longest, until the card
+        # is measured: more than that would never be used.
+        self.budget = PER_STEP * self.widest
+        self.checkpointing = False
+        # What to say when even that is too much: set by the run, which knows
+        # whether QLoRA is still to try.
+        self.smaller = "A shorter context or a smaller base takes less."
+
+    def backward(self, indices: list[int], scale: float, scaler=None):
+        """One forward and backward pass over the records at `indices`, the
+        loss summed over their answer tokens and multiplied by `scale`."""
+        ids, mask, labels = to_device(padded(self.data, indices, self.pad), self.device)
+        with autocast_for(self.device, self.compute):
+            logits = self.model(input_ids=ids, attention_mask=mask).logits
+        loss = answer_loss(logits, labels) * scale
+        del logits
+        (scaler.scale(loss) if scaler is not None else loss).backward()
+        return loss.detach()
+
+    def measure(self) -> int:
+        """How many tokens a pass can hold: the longest record once and then
+        twice over, the difference being what a token costs and the rest what
+        a pass costs at all, against the memory the card has free. Zero when
+        not even one fits."""
+        import torch
+
+        longest = max(range(len(self.lengths)), key=self.lengths.__getitem__)
+        torch.cuda.empty_cache()
+        free, _ = torch.cuda.mem_get_info(self.device)
+        before = torch.cuda.memory_allocated(self.device)
+        peaks: list[int] = []
+        for count in (1, 2):
+            torch.cuda.reset_peak_memory_stats(self.device)
+            try:
+                self.backward([longest] * count, 0.0)
+                peaks.append(torch.cuda.max_memory_allocated(self.device) - before)
+            except torch.cuda.OutOfMemoryError:
+                break
+            finally:
+                self.model.zero_grad(set_to_none=True)
+        torch.cuda.empty_cache()
+        if not peaks:
+            return 0
+        if len(peaks) == 2 and peaks[1] > peaks[0]:
+            per_token = (peaks[1] - peaks[0]) / self.widest
+        else:
+            per_token = peaks[0] / self.widest
+        fixed = max(peaks[0] - per_token * self.widest, 0.0)
+        return max(int((free * self.SHARE - fixed) / per_token), 0)
+
+    def checkpoint(self) -> None:
+        """Recompute each layer's forward pass in the backward rather than
+        keep its activations: a third more work, for most of the memory."""
+        self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        self.checkpointing = True
+
+    def fit_memory(self) -> None:
+        """Size the passes to the card. Checkpointing only when not even the
+        longest record fits without it, and a run that cannot fit one either
+        way says so before it starts rather than at its first step."""
+        if self.device.type != "cuda":
+            return
+        measured = self.measure()
+        if measured < self.widest:
+            self.checkpoint()
+            measured = self.measure()
+        if measured < self.widest:
+            fail("the base does not fit on this card at this context", self.smaller)
+        self.budget = min(measured, self.budget)
+        print(f"passes of up to {self.budget} tokens, "
+              f"checkpointing {'on' if self.checkpointing else 'off'}", flush=True)
+
+    def shrink(self) -> None:
+        """Smaller passes, after the card ran out of memory anyway: something
+        else took some of it, or the allocator's pieces stopped fitting. Then
+        checkpointing, and then there is nothing left to give."""
+        if self.budget > self.widest:
+            self.budget = max(self.budget // 2, self.widest)
+        elif not self.checkpointing:
+            self.checkpoint()
+        else:
+            fail("the card ran out of memory", self.smaller)
+        print(f"out of memory: passes of up to {self.budget} tokens, "
+              f"checkpointing {'on' if self.checkpointing else 'off'}", flush=True)
+
+    def step(self, indices: list[int], optimizer, scaler, trainable) -> float:
+        """One optimizer step over the records at `indices`, and its loss.
+        A step the card runs out of memory in is taken again from the start
+        in smaller passes: nothing has been changed until it ends."""
+        import torch
+
+        answers = max(sum(self.answers[i] for i in indices), 1)
+        while True:
+            try:
+                total = torch.zeros((), device=self.device)
+                for batch in passes(indices, self.lengths, self.budget):
+                    total += self.backward(batch, 1.0 / answers, scaler)
+                break
+            except torch.cuda.OutOfMemoryError:
+                optimizer.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                self.shrink()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+        return float(total.item())
+
+    def train(self, epochs: int, learning_rate: float, max_steps: int) -> None:
+        import torch
+
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(trainable, lr=learning_rate, weight_decay=0.0,
+                                      fused=self.device.type == "cuda")
+        per_epoch = math.ceil(len(self.lengths) / PER_STEP)
+        total = max_steps or epochs * per_epoch
+        schedule = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lambda done: max(0.0, (total - done) / max(total, 1)))
+        # Only half precision has its loss scaled: bfloat16 has float32's range.
+        scaler = torch.amp.GradScaler(self.device.type, enabled=self.compute is torch.float16)
+        step, epoch = 0, 0
+        while step < total:
+            for indices in plan_steps(self.lengths, epoch):
+                loss = self.step(indices, optimizer, scaler, trainable)
+                schedule.step()
+                step += 1
+                emit("step", step=step, total=total, loss=loss, epoch=round(step / per_epoch, 4),
+                     tokens=sum(self.lengths[i] for i in indices))
+                if step >= total:
+                    break
+            epoch += 1
+
+
 def train_torch(recipe: dict, out: Path, args) -> Path:
     """LoRA or QLoRA with peft, and a merged model at the end."""
-    import torch
-    from peft import LoraConfig, get_peft_model
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        Trainer,
-        TrainerCallback,
-        TrainingArguments,
-    )
+    qlora = recipe.get("method", "qlora") == "qlora"
+    if not qlora:
+        # peft and transformers import bitsandbytes whenever it is installed,
+        # a second of every start, and only QLoRA uses it. Marked as absent
+        # before either looks, which is how both then see it.
+        sys.modules.setdefault("bitsandbytes", None)
+
+    # Crucible does not ask before a run whether these import: asking was a
+    # Python of its own importing all of them, seconds on every run, and the
+    # answer is had here for nothing.
+    try:
+        import torch
+        from peft import LoraConfig, get_peft_model
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as error:
+        fail(f"the training environment is missing {error.name or 'a package'}",
+             "Repair it in Settings.")
 
     reference = base_reference(recipe)
-    qlora = recipe.get("method", "qlora") == "qlora"
     context = int(recipe.get("context", 512))
     epochs = int(recipe.get("epochs", 2))
-    learning_rate = float(recipe.get("learning_rate", 1e-5))
+    learning_rate = float(recipe.get("learning_rate", LEARNING_RATE))
 
     if torch.cuda.is_available():
+        if not has_kernels(torch):
+            fail(f"this PyTorch has no kernels for {torch.cuda.get_device_name(0)}",
+                 "Repair the training environment in Settings to get a build that has.")
         compute = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        device = torch.device("cuda", torch.cuda.current_device())
         emit("device", name=torch.cuda.get_device_name(0), kind="cuda")
+        # What is left in float32 on the tensor cores, as the Trainer had it.
+        torch.set_float32_matmul_precision("high")
     else:
         # bfloat16 on a processor is slower than float32, not faster: there is
         # no hardware for it, so every operation is emulated.
         compute = torch.float32
+        device = torch.device("cpu")
         qlora = False  # bitsandbytes has no processor path worth the name
         emit("device", name="cpu", kind="cpu")
 
@@ -470,6 +765,14 @@ def train_torch(recipe: dict, out: Path, args) -> Path:
     tokenizer = AutoTokenizer.from_pretrained(reference, trust_remote_code=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # The data before the base: a recipe whose data cannot be read is told so
+    # in a second, not after a model has been loaded for it.
+    records, held, skipped = hold_out(read_records(recipe, tokenizer))
+    emit("data_ready", records=len(records))
+    data = encode(tokenizer, [text for text, _ in records], [spans for _, spans in records], context)
+    examples = None if skipped else encode(
+        tokenizer, [text for text, _ in held], [spans for _, spans in held], context)
 
     phase("base", f"loading {reference}")
     load_args = {"dtype": compute}
@@ -485,24 +788,33 @@ def train_torch(recipe: dict, out: Path, args) -> Path:
     if torch.cuda.is_available():
         # One card, named explicitly. `device_map="auto"` spreads the layers
         # over every GPU in the machine, which is what you want for inference
-        # on a model too big for one -- and which Trainer refuses outright for
-        # a quantized model, because an optimizer step cannot straddle
-        # devices. An adapter fits on one card by construction; that is the
-        # whole point of training one.
+        # on a model too big for one -- and not for training a quantized one,
+        # because an optimizer step cannot straddle devices. An adapter fits
+        # on one card by construction; that is the whole point of training
+        # one.
         load_args["device_map"] = {"": torch.cuda.current_device()}
 
     model = AutoModelForCausalLM.from_pretrained(reference, **load_args)
     model.config.use_cache = False
 
-    if qlora:
+    if qlora and compute is torch.float16:
         from peft import prepare_model_for_kbit_training
 
-        model = prepare_model_for_kbit_training(model)
+        # In half precision the norms and the embedding go to float32, as
+        # QLoRA was written: half precision's range is too small for them. Not
+        # in bfloat16, which has float32's range: there the copies made every
+        # token's activations twice the size, and checkpointing came on for a
+        # 3B base that fits without it. Checkpointing is decided below either
+        # way, by what the card holds, so it is not switched on here.
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
 
     # Rank 16 over every linear layer. Rank is the one LoRA knob that trades
     # capacity for memory, and 16 is the value the literature settles on for
     # subject specialization -- 8 underfits a new domain, 64 costs four times
     # the adapter for a difference that does not show up on a small corpus.
+    # Seeded, as the Trainer seeded it: the same recipe starts from the same
+    # adapter.
+    torch.manual_seed(42)
     model = get_peft_model(
         model,
         LoraConfig(
@@ -518,61 +830,26 @@ def train_torch(recipe: dict, out: Path, args) -> Path:
     total = sum(p.numel() for p in model.parameters())
     emit("adapter", trainable=trainable, total=total)
 
-    records, held, skipped = hold_out(read_records(recipe, tokenizer))
-    emit("data_ready", records=len(records))
-    data = to_dataset(records, tokenizer, context)
+    pad = tokenizer.pad_token_id
+    lengths = [len(ids) for ids in data["input_ids"]]
+    tuning = Tuning(model, data, lengths, pad, device, compute)
+    if not qlora:
+        tuning.smaller = "QLoRA, a shorter context or a smaller base takes less."
+    model.train()
+    tuning.fit_memory()
 
     # The base's score, before a step: the adapter starts at nothing, so the
     # model as it stands answers as the base does.
     if skipped:
         emit("heldout", records=0, skipped=skipped)
     else:
-        examples = encode(
-            tokenizer, [text for text, _ in held], [spans for _, spans in held], context, pad=False
-        )
-        report_score("base", model, examples, len(held), compute)
+        report_score("base", model, examples, len(held), compute, tuning.budget, pad)
 
-    class Report(TrainerCallback):
-        """Crucible's progress bar, and the loss curve behind it."""
-
-        def on_log(self, args, state, control, logs=None, **kwargs):
-            logs = logs or {}
-            if "loss" in logs:
-                emit(
-                    "step",
-                    step=int(state.global_step),
-                    total=int(state.max_steps),
-                    loss=float(logs["loss"]),
-                    epoch=float(logs.get("epoch", 0.0)),
-                )
-
-    workdir = out / "run"
-    settings = TrainingArguments(
-        output_dir=str(workdir),
-        num_train_epochs=epochs,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,
-        learning_rate=learning_rate,
-        logging_steps=1,
-        save_strategy="no",
-        report_to=[],
-        bf16=compute is torch.bfloat16,
-        fp16=compute is torch.float16,
-        gradient_checkpointing=True,
-        max_steps=int(args.max_steps) if args.max_steps else -1,
-    )
-
-    phase("training", f"{epochs} passes over {len(data)} records")
-    trainer = Trainer(
-        model=model,
-        args=settings,
-        train_dataset=data,
-        callbacks=[Report()],
-    )
-    trainer.train()
+    phase("training", f"{epochs} passes over {len(records)} records")
+    tuning.train(epochs, learning_rate, int(args.max_steps or 0))
 
     if not skipped:
-        report_score("tuned", model, examples, len(held), compute)
+        report_score("tuned", model, examples, len(held), compute, tuning.budget, pad)
 
     # --- merge, so what comes out is an ordinary model ---------------------
     #
@@ -580,11 +857,16 @@ def train_torch(recipe: dict, out: Path, args) -> Path:
     # merged model is one directory that any program can load, which is what
     # somebody asked for when they asked for an expert.
     phase("merging", "folding the adapter into the base")
+    converter(args).warm()
     adapter = out / "adapter"
     model.save_pretrained(adapter)
     tokenizer.save_pretrained(adapter)
 
-    del model
+    # The training's hold on the card goes with it, the loop's included, and
+    # whatever cycle among the model's modules would keep it until the next
+    # collection: what is left of the run is the processor's.
+    del model, tuning
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -616,11 +898,12 @@ def train_mlx(recipe: dict, out: Path, args) -> Path:
         "--iters", str(args.max_steps or 600),
         "--batch-size", "1",
         "--max-seq-length", str(int(recipe.get("context", 512))),
-        "--learning-rate", str(float(recipe.get("learning_rate", 1e-5))),
+        "--learning-rate", str(float(recipe.get("learning_rate", LEARNING_RATE))),
     ]
     run_logged(command)
 
     phase("merging", "fusing the adapter")
+    converter(args).warm()
     merged = out / "merged"
     run_logged([
         sys.executable, "-m", "mlx_lm", "fuse",
@@ -647,11 +930,16 @@ def as_log(line: str, child: str) -> str:
 
 def run_logged(command: list[str]) -> None:
     """Run a child and pass its output through as log lines."""
-    child = Path(command[0]).name
-    with subprocess.Popen(
+    pass_through(subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
-    ) as process:
+    ), Path(command[0]).name)
+
+
+def pass_through(process, child: str) -> None:
+    """A child's output passed on as log lines until it ends, and its failure
+    the run's."""
+    with process:
         assert process.stdout is not None
         for line in process.stdout:
             sys.stdout.write(as_log(line.rstrip("\r\n"), child) + "\n")
@@ -661,9 +949,69 @@ def run_logged(command: list[str]) -> None:
         fail(f"{child} exited {status}")
 
 
+class Converter:
+    """llama.cpp's converter, started before the model it converts is there.
+
+    Its Python, with torch and the converter's own packages, takes three
+    seconds and more to start, and the merge before it about as long. So it
+    is started when the merge is, imports what it will need, and waits on
+    its standard input for its arguments; a run that ends before then ends
+    its input, and it leaves. Started cold if nothing warmed it.
+    """
+
+    WAITING = (
+        "import json, runpy, sys\n"
+        "from pathlib import Path\n"
+        "script = sys.argv[1]\n"
+        "sys.path.insert(0, str(Path(script).parent))\n"
+        "try:\n"
+        "    import torch, transformers, conversion\n"
+        "except Exception:\n"
+        "    pass  # the script says what is wrong when it runs\n"
+        "line = sys.stdin.readline()\n"
+        "if not line.strip():\n"
+        "    sys.exit(0)\n"
+        "sys.argv = [script] + json.loads(line)\n"
+        "runpy.run_path(script, run_name='__main__')\n"
+    )
+
+    def __init__(self, script: str):
+        self.script = script
+        self.process = None
+
+    def warm(self) -> None:
+        if self.process is None and self.script and Path(self.script).exists():
+            self.process = subprocess.Popen(
+                [sys.executable, "-c", self.WAITING, self.script],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+            )
+
+    def run(self, arguments: list[str]) -> None:
+        """Convert with `arguments`, the converter's own, as run_logged runs
+        a child."""
+        self.warm()
+        process, self.process = self.process, None
+        if process is None:
+            fail(f"the converter is not at {self.script}")
+        try:
+            process.stdin.write(json.dumps(arguments) + "\n")
+            process.stdin.close()
+        except OSError:
+            pass  # it has already ended, and says why below
+        pass_through(process, Path(sys.executable).name)
+
+
 # ---------------------------------------------------------------------------
 # Getting it into a file somebody can load
 # ---------------------------------------------------------------------------
+
+
+def converter(args) -> Converter:
+    """The run's converter, the one warmed during the merge when it was."""
+    if getattr(args, "converter", None) is None:
+        args.converter = Converter(args.convert_script)
+    return args.converter
 
 
 def to_gguf(merged: Path, out: Path, recipe: dict, args) -> Path | None:
@@ -689,9 +1037,10 @@ def to_gguf(merged: Path, out: Path, recipe: dict, args) -> Path | None:
     # The converter can write two of the formats on its own. The k-quants --
     # Q4_K_M and friends, which is where the interesting size/quality trades
     # are -- need a quantizer: Crucible's own, which it passes as
-    # --quantize-cmd, or a llama-quantize. So the ones that can be done in one
-    # step are done in one step, and the rest are converted to F16 and then
-    # quantized, or left at F16 with a line saying why when nothing can.
+    # --quantize-cmd, or a llama-quantize. So F16 is written in one step, and
+    # the rest are converted to F16 and then quantized, or left at F16 with a
+    # line saying why when nothing can. Q8_0 too, though the converter writes
+    # it: in Python, at half the speed of F16 and the quantizer together.
     direct = {"F16": "f16", "Q8_0": "q8_0"}
     quantizer = args.quantize_bin if args.quantize_bin else shutil.which("llama-quantize")
     if quantizer and not Path(quantizer).exists() and not shutil.which(quantizer):
@@ -706,21 +1055,16 @@ def to_gguf(merged: Path, out: Path, recipe: dict, args) -> Path | None:
         except ValueError:
             pass
 
-    if quantization in direct:
+    if quantization == "F16" or (quantization in direct and not command):
         phase("converting", f"to GGUF at {quantization}")
         produced = out / f"{name}.{quantization}.gguf"
-        run_logged([
-            sys.executable, str(args.convert_script), str(merged),
-            "--outfile", str(produced), "--outtype", direct[quantization],
-        ])
+        converter(args).run([str(merged), "--outfile", str(produced),
+                             "--outtype", direct[quantization]])
         return produced
 
     phase("converting", "to GGUF")
     unquantized = out / f"{name}.F16.gguf"
-    run_logged([
-        sys.executable, str(args.convert_script), str(merged),
-        "--outfile", str(unquantized), "--outtype", "f16",
-    ])
+    converter(args).run([str(merged), "--outfile", str(unquantized), "--outtype", "f16"])
     if not command:
         emit(
             "note",
@@ -789,6 +1133,11 @@ def main() -> int:
     chosen = pick_gpu()
     if chosen:
         os.environ["CUDA_VISIBLE_DEVICES"] = chosen
+    # Memory the allocator can grow in place rather than in fixed pieces: the
+    # passes are of every length, and pieces cut for one stop fitting the
+    # next, which is a card that runs out with a gigabyte free.
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     on_mac_gpu = sys.platform == "darwin" and os.uname().machine == "arm64"
     try:
@@ -800,6 +1149,12 @@ def main() -> int:
     merged = (train_mlx if (on_mac_gpu and have_mlx) else train_torch)(recipe, out, args)
 
     produced = to_gguf(merged, out, recipe, args)
+    if produced is not None:
+        # The merged model was the converter's input, and a second copy of
+        # the base in a folder nobody opens: gigabytes, kept for every recipe
+        # ever trained. The GGUF is the result, and the adapter beside it is
+        # what the training made.
+        shutil.rmtree(merged, ignore_errors=True)
     if produced is not None and args.export_dir:
         produced = deliver(produced, Path(args.export_dir))
     emit(

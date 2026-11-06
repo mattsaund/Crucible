@@ -69,6 +69,87 @@ TEST(no_configured_order_leaves_the_cards_in_ggml_order) {
     CHECK_EQ(indices_of(apply_priority_order(gpus, {})), std::string{"0,1,2"});
 }
 
+TEST(with_no_order_the_card_with_the_fastest_link_comes_first) {
+    // The machine this was measured on: a card on one lane first in ggml's
+    // order, the one on sixteen after it. Cards whose links are alike keep
+    // ggml's order between them.
+    std::vector<ComputeDevice> gpus{gpu_at(0, "x1"), gpu_at(1, "x16"), gpu_at(2, "also x1")};
+    gpus[0].link_gbps = 0.98;
+    gpus[1].link_gbps = 31.5;
+    gpus[2].link_gbps = 0.98;
+    CHECK_EQ(indices_of(apply_priority_order(gpus, {})), std::string{"1,0,2"});
+    // A written order is the person's, links or not; only what it leaves out
+    // is ordered by them.
+    CHECK_EQ(indices_of(apply_priority_order(gpus, {2})), std::string{"2,1,0"});
+}
+
+TEST(between_links_alike_the_larger_card_comes_first) {
+    // So a model the larger card holds whole is not split: a 14 GB model on
+    // an 8 GB card and a 16 GB one, with no order written and nothing known
+    // of their links, goes on the 16 GB card alone.
+    std::vector<ComputeDevice> gpus{gpu_at(0, "small"), gpu_at(1, "large")};
+    gpus[0].memory_total = gpus[0].memory_free = 8ULL << 30;
+    gpus[1].memory_total = gpus[1].memory_free = 16ULL << 30;
+    CHECK_EQ(indices_of(apply_priority_order(gpus, {})), std::string{"1,0"});
+    const std::vector<float> split =
+        compute_tensor_split(GpuSplitMode::Priority, gpus, {}, 0, ModelFit{14ULL << 30, 0, 0, {}});
+    CHECK(std::abs(split[1] - 1.0F) < 0.001F);
+    // And a faster link outranks size: the fast card is filled first.
+    gpus[0].link_gbps = 31.5;
+    gpus[1].link_gbps = 0.98;
+    CHECK_EQ(indices_of(apply_priority_order(gpus, {})), std::string{"0,1"});
+}
+
+TEST(links_differ_only_where_every_one_is_known_and_one_is_far_faster) {
+    std::vector<ComputeDevice> gpus{gpu_at(0, "A"), gpu_at(1, "B"), gpu_at(2, "C")};
+    CHECK(!links_differ(gpus));                       // none known: Windows, a Mac
+    gpus[0].link_gbps = 31.5;
+    gpus[1].link_gbps = 0.98;
+    CHECK(!links_differ(gpus));                       // one still unknown
+    gpus[2].link_gbps = 0.98;
+    CHECK(links_differ(gpus));                        // sixteen lanes beside one
+    for (ComputeDevice& gpu : gpus) {
+        gpu.link_gbps = 15.75;
+    }
+    gpus[1].link_gbps = 13.0;
+    CHECK(!links_differ(gpus));                       // alike, give or take
+    CHECK(!links_differ({gpus[0]}));                  // one card has nothing to differ from
+}
+
+TEST(auto_mode_plans_fastest_link_first_where_the_links_differ) {
+    std::vector<ComputeDevice> gpus{gpu_at(0, "x16"), gpu_at(1, "x1"), gpu_at(2, "also x1")};
+    gpus[0].link_gbps = 31.5;
+    gpus[1].link_gbps = gpus[2].link_gbps = 0.98;
+    GpuConfig gpu;
+    gpu.mode     = "auto";
+    gpu.priority = {2, 1, 0};   // kept from another mode: not auto's
+    ModelParams model;
+
+    SplitPolicy policy = split_policy(gpu, model, gpus);
+    CHECK(policy.mode == GpuSplitMode::Priority);
+    CHECK(policy.order.empty());
+
+    // A split of Crucible's own planning is planned again the same way.
+    model.tensor_split  = {0.5F, 0.5F, 0.0F};
+    model.split_planned = true;
+    CHECK(split_policy(gpu, model, gpus).mode == GpuSplitMode::Priority);
+
+    // One written in the config is the person's, and auto keeps it.
+    model.split_planned = false;
+    CHECK(split_policy(gpu, model, gpus).mode == GpuSplitMode::Auto);
+
+    // Links alike, or unknown: auto is llama.cpp's to decide, as it was.
+    model.tensor_split.clear();
+    gpus[0].link_gbps = 0.98;
+    CHECK(split_policy(gpu, model, gpus).mode == GpuSplitMode::Auto);
+
+    // The other modes are what they say, with their own order.
+    gpu.mode = "priority";
+    policy   = split_policy(gpu, model, gpus);
+    CHECK(policy.mode == GpuSplitMode::Priority);
+    CHECK_EQ(policy.order.size(), std::size_t{3});
+}
+
 TEST(the_vulkan_backend_asks_for_the_spirv_headers) {
     // The package that was missing from the installer, and whose absence made
     // the Vulkan build fail at configure time with an error naming a CMake
@@ -401,6 +482,34 @@ TEST(a_bigger_model_reaches_further_down_the_priority_order) {
     CHECK(large[0] > 0.0F);
     CHECK(large[1] > 0.0F);
     CHECK(large[2] > 0.0F);
+}
+
+TEST(the_desktop_card_keeps_its_room_when_the_model_fits_without_it) {
+    // 10 GB cards, the first drawing the desktop. A 14 GB model fits with
+    // the desktop's room left, so the first card stops short by that much.
+    std::vector<ComputeDevice> gpus{fake_gpu(0, "desktop", 10 * kGb), fake_gpu(1, "B", 10 * kGb)};
+    gpus[0].display = true;
+    const std::vector<float> split =
+        compute_tensor_split(GpuSplitMode::Priority, gpus, {0, 1}, 0, ModelFit{14 * kGb, 0, 0, {}});
+    const std::uint64_t usable = usable_memory(gpus[0], kCardHeadroom + kDisplayRoom);
+    CHECK(split[0] * static_cast<float>(14 * kGb) <= static_cast<float>(usable) + 1.0F);
+    CHECK(split[0] * static_cast<float>(14 * kGb) >= static_cast<float>(usable) - static_cast<float>(kGb) / 100);
+}
+
+TEST(the_desktop_card_gives_its_room_up_when_the_model_needs_it) {
+    // The same cards and a model that fits only with the desktop's room in
+    // it: planned without the room rather than divided by capacity, which
+    // is what a model that does not fit gets.
+    std::vector<ComputeDevice> gpus{fake_gpu(0, "desktop", 10 * kGb), fake_gpu(1, "B", 10 * kGb)};
+    gpus[0].display = true;
+    const std::uint64_t whole = usable_memory(gpus[0], kCardHeadroom) + usable_memory(gpus[1], kCardHeadroom);
+    const std::uint64_t model = whole - kDisplayRoom / 2;
+    const std::vector<float> split =
+        compute_tensor_split(GpuSplitMode::Priority, gpus, {0, 1}, 0, ModelFit{model, 0, 0, {}});
+    const auto first = static_cast<double>(split[0]) * static_cast<double>(model);
+    const auto slack = static_cast<double>(kGb) / 1024;   // a float's rounding, and then some
+    CHECK(first > static_cast<double>(usable_memory(gpus[0], kCardHeadroom + kDisplayRoom)) + slack);
+    CHECK(first <= static_cast<double>(usable_memory(gpus[0], kCardHeadroom)) + slack);
 }
 
 TEST(a_model_too_large_for_the_machine_is_divided_by_capacity) {

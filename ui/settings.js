@@ -108,17 +108,18 @@ function pageGeneral(c) {
                value="${escape(models ? models.directory : (c.models_dir || ''))}">
         <button class="action" data-act="models-browse">Browse</button>
       </div>
-      <div class="hint">${here === null ? 'Looking...' : `${count(here, 'model')}, GGUF or MLX`}</div>
+      <div class="hint">${here === null ? 'Looking...'
+        : models.problem ? `<span class="bad">${escape(models.problem)}</span>`
+        : `${count(here, 'model')}, GGUF or MLX`}</div>
       <div class="row" style="margin-top:.6rem">
         <button class="action" data-act="models-rescan">Rescan</button>
         <button class="action" data-act="models-reset">Reset to default</button></div></div>
 
     <h2 style="margin-top:1.8rem">DELEGATOR</h2>
     <div class="field"><label for="router-model">Delegator model</label>
-      ${modelSelect(c.router ? c.router.model : '', '',
-          { id: 'router-model', 'data-change': 'router-model' }, true)}
-      <div class="hint">Picks the expert. Local only.</div></div>
-    ${setting('routing.keep_delegator_loaded', 'Keep loaded between prompts', 'bool', 'Uses more memory.')}
+      ${delegatorPicker(c)}
+      <div class="hint">Picks the expert. GGUF only.</div></div>
+    ${setting('routing.keep_delegator_loaded', 'Always keep loaded', 'bool', 'Uses more memory.')}
     ${setting('routing.min_confidence', 'Confidence floor', 'slider',
       'Below this, the default expert answers.', { min: 0, max: 1, step: 0.01 })}
 
@@ -134,6 +135,39 @@ function pageGeneral(c) {
 actions['ui-font'] = (e) => configure({ ui: { font: e.value.trim() } });
 
 actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value).model } });
+
+/// A delegator for a folder with no GGUF in it (a Mac's MLX models cannot
+/// route): the model Crucible's routing is measured with, opened in Models
+/// to download, and seated once it is in the folder unless another was
+/// chosen meanwhile.
+const DELEGATOR = { query: 'LFM2.5-1.2B-Instruct', repo: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF',
+                    file: 'LFM2.5-1.2B-Instruct-Q8_0.gguf' };
+let delegatorWanted = false;
+
+function delegatorPicker(c) {
+  const select = modelSelect(c.router ? c.router.model : '', '',
+                             { id: 'router-model', 'data-change': 'router-model' }, true);
+  const none = state.models && !state.models.problem
+    && !state.models.models.some((m) => m.format !== 'mlx');
+  return none ? `<div class="row">${select}<button class="action" data-act="delegator-get">Get one</button></div>`
+              : select;
+}
+actions['delegator-get'] = () => {
+  delegatorWanted = true;
+  marketShow(DELEGATOR.query, DELEGATOR.repo, DELEGATOR.file);
+};
+function seatWantedDelegator() {
+  if (!delegatorWanted || !state.models || !state.config) return;
+  if (state.config.router && state.config.router.model) {
+    delegatorWanted = false;
+    return;
+  }
+  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === DELEGATOR.file);
+  if (!got) return;
+  delegatorWanted = false;
+  configure({ router: { model: got.name } });
+}
+afterDraw.push(seatWantedDelegator);
 async function setModelsDir(path) {
   await configure({ models_dir: path });
   need('models', 'models', true);

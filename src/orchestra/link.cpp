@@ -16,6 +16,14 @@ namespace crucible::orchestra {
 
 using json = nlohmann::json;
 
+namespace {
+
+/// The process whose request this thread is answering, by generation; 0 on
+/// any other thread. See Link::asker.
+thread_local std::uint64_t t_asker = 0;
+
+}  // namespace
+
 std::filesystem::path Link::log_file() { return paths::data_dir() / "orchestrator.log"; }
 
 std::filesystem::path Link::package_dir() { return paths::data_dir() / "orchestrator"; }
@@ -36,13 +44,19 @@ bool Link::start(std::string& error) {
     }
 
     // Whatever is left of one that went away: its reader has ended, and the
-    // threads that were answering it are joined before another starts.
+    // threads that were answering it are joined before another starts. One
+    // still answering may be writing its answer to the pipe this frees, and
+    // is waited for. A process that closed its output and stayed is asked
+    // to go, and killed if it does not, rather than waited on for good.
     if (reader_.joinable()) {
         reader_.join();
     }
     reap();
     if (child_) {
+        child_->interrupt();
         child_->wait();
+        const std::lock_guard<std::timed_mutex> pipe(send_mutex_);
+        const std::lock_guard<std::mutex>       lock(mutex_);
         child_.reset();
     }
 
@@ -70,13 +84,15 @@ bool Link::start(std::string& error) {
         error = "the orchestrator could not be started: " + error;
         return false;
     }
+    std::uint64_t generation = 0;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         child_ = std::move(child);
         hello_.reset();
-        ended_ = false;
+        ended_     = false;
+        generation = ++generation_;
     }
-    reader_ = std::thread([this, raw = child_.get()] { read_all(raw); });
+    reader_ = std::thread([this, raw = child_.get(), generation] { read_all(raw, generation); });
 
     // It says hello before anything else, with the protocol it speaks.
     json hello;
@@ -89,13 +105,17 @@ bool Link::start(std::string& error) {
     }
     const auto refuse = [this](std::string why, std::string& said) {
         said = std::move(why);
-        child_->close_input();
+        {
+            const std::lock_guard<std::timed_mutex> pipe(send_mutex_);
+            child_->close_input();
+        }
         child_->interrupt();
         if (reader_.joinable()) {
             reader_.join();
         }
         child_->wait();
-        const std::lock_guard<std::mutex> lock(mutex_);
+        const std::lock_guard<std::timed_mutex> pipe(send_mutex_);
+        const std::lock_guard<std::mutex>       lock(mutex_);
         child_.reset();
         ended_ = true;
         return false;
@@ -111,7 +131,7 @@ bool Link::start(std::string& error) {
     return true;
 }
 
-void Link::read_all(util::Subprocess* child) {
+void Link::read_all(util::Subprocess* child, std::uint64_t generation) {
     std::string line;
     while (child->read_line(line)) {
         json message;
@@ -141,8 +161,8 @@ void Link::read_all(util::Subprocess* child) {
             reap();
             auto task = std::make_unique<Answering>();
             Answering* raw = task.get();
-            raw->thread = std::thread([this, raw, request = std::move(message)]() mutable {
-                answer(std::move(request));
+            raw->thread = std::thread([this, raw, generation, request = std::move(message)]() mutable {
+                answer(std::move(request), generation);
                 raw->finished.store(true, std::memory_order_release);
             });
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -166,11 +186,31 @@ void Link::read_all(util::Subprocess* child) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         ended_ = true;
+        ended_through_.store(generation, std::memory_order_release);
+        // Every call waiting now was asked of this process, and none of them
+        // will be answered: see Waiter::lost.
+        for (const auto& [id, waiter] : waiting_) {
+            waiter->lost = true;
+        }
     }
     arrived_.notify_all();
 }
 
-void Link::answer(json request) {
+std::uint64_t Link::asker() { return t_asker; }
+
+bool Link::ended(std::uint64_t asker) const {
+    return asker != 0 && asker <= ended_through_.load(std::memory_order_acquire);
+}
+
+void Link::answer(json request, std::uint64_t generation) {
+    // Whose request this thread is answering, for the handler's Stop: see
+    // ended(). Cleared again however the handler leaves.
+    struct Asking {
+        explicit Asking(std::uint64_t by) { t_asker = by; }
+        ~Asking() { t_asker = 0; }
+        Asking(const Asking&)            = delete;
+        Asking& operator=(const Asking&) = delete;
+    } asking{generation};
     json reply{{"id", request["id"]}};
     try {
         const json asked = request.contains("params") ? request["params"] : json::object();
@@ -180,7 +220,9 @@ void Link::answer(json request) {
     } catch (...) {
         reply["error"] = "the core could not answer";
     }
-    send(reply);   // a pipe that has gone is the caller's to find out about
+    // To the process that asked, and only while it is there: one started
+    // since would read it as the answer to a request of its own.
+    send(reply, generation);
 }
 
 void Link::reap() {
@@ -206,7 +248,20 @@ void Link::stop() {
     if (child_) {
         // Goodbye is the end of its input. A process that does not take the
         // hint within a few seconds is stopped.
-        child_->close_input();
+        //
+        // Closed with no line being written to it: a write that lands after
+        // the close goes to whatever file was given the descriptor next. A
+        // line that will not finish is one the process is not reading, and
+        // it is stopped, which ends the write.
+        {
+            std::unique_lock<std::timed_mutex> pipe(send_mutex_, std::defer_lock);
+            if (!pipe.try_lock_for(std::chrono::seconds(1))) {
+                child_->interrupt();
+                child_->wait();
+                pipe.lock();
+            }
+            child_->close_input();
+        }
         {
             std::unique_lock<std::mutex> lock(mutex_);
             if (!arrived_.wait_for(lock, std::chrono::seconds(3), [this] { return ended_; })) {
@@ -232,17 +287,20 @@ void Link::stop() {
     if (child_) {
         child_->wait();
     }
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::timed_mutex> pipe(send_mutex_);
+    const std::lock_guard<std::mutex>       lock(mutex_);
     child_.reset();
     ended_ = true;
 }
 
-bool Link::send(const json& message) {
-    const std::lock_guard<std::mutex> one_line(send_mutex_);
+bool Link::send(const json& message, std::uint64_t generation) {
+    // Held through the write: the process is let go, and its pipe closed,
+    // only under it. See send_mutex_.
+    const std::lock_guard<std::timed_mutex> one_line(send_mutex_);
     util::Subprocess* child = nullptr;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (ended_ || !child_) {
+        if (ended_ || !child_ || (generation != 0 && generation != generation_)) {
             return false;
         }
         child = child_.get();
@@ -277,24 +335,26 @@ json Link::call(const std::string& method, const json& params) {
     if (!start(error)) {
         throw std::runtime_error(error);
     }
-    Waiter waiter;
-    long   wanted = 0;
+    Waiter        waiter;
+    long          wanted     = 0;
+    std::uint64_t generation = 0;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         wanted = ++next_id_;
         waiting_[wanted] = &waiter;
+        generation       = generation_;
     }
     const auto forget = [this, wanted] {
         const std::lock_guard<std::mutex> lock(mutex_);
         waiting_.erase(wanted);
     };
-    if (!send(json{{"id", wanted}, {"method", method}, {"params", params}})) {
+    if (!send(json{{"id", wanted}, {"method", method}, {"params", params}}, generation)) {
         forget();
         throw std::runtime_error(gone(method));
     }
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        arrived_.wait(lock, [this, &waiter] { return waiter.done || ended_; });
+        arrived_.wait(lock, [&waiter] { return waiter.done || waiter.lost; });
         waiting_.erase(wanted);
         if (!waiter.done) {
             lock.unlock();

@@ -88,24 +88,33 @@ std::string unavailable() {
 #if defined(_WIN32)
     return "MLX does not run on Windows";
 #else
-    static std::mutex                 mutex;
-    static std::string                answer;
-    static Clock::time_point          asked{};
-    static bool                       known = false;
+    // Python is asked once for each install of the environment rather than
+    // every minute: starting it to import mlx_lm takes a second or two on a
+    // Mac, and the models list waits for the answer. Installing, repairing
+    // or removing the environment rewrites its manifest, which asks again.
+    static std::mutex                      mutex;
+    static std::string                     answer;
+    static std::filesystem::file_time_type stamp{};
+    static bool                            known = false;
     const std::lock_guard<std::mutex> lock(mutex);
-    if (known && Clock::now() - asked < std::chrono::minutes(1)) {
-        return answer;
-    }
-    asked = Clock::now();
-    known = true;
 
     std::error_code ec;
     const std::filesystem::path python = lab::pyenv::python();
     if (!std::filesystem::exists(python, ec)) {
-        answer = "MLX runs in Crucible's Python environment, which is not installed "
-                 "-- install it in Settings, Training";
+        known = false;
+        return "MLX runs in Crucible's Python environment, which is not installed "
+               "-- install it in Settings, Training";
+    }
+    std::filesystem::file_time_type manifest =
+        std::filesystem::last_write_time(lab::pyenv::manifest_file(), ec);
+    if (ec) {
+        manifest = {};
+    }
+    if (known && manifest == stamp) {
         return answer;
     }
+    stamp = manifest;
+    known = true;
     util::Subprocess probe;
     std::string error;
     if (!probe.start({python.string(), "-c", "import mlx_lm"}, {}, {}, error)) {

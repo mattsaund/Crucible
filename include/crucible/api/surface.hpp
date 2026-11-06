@@ -271,6 +271,27 @@ private:
     std::unordered_set<std::uint64_t> sent_;
 };
 
+/// The large parts of the snapshot as the page was last sent them: a build's
+/// journal, an edit waiting on an answer, a benchmark run.
+///
+/// Each is published whole and never changed after, so the same pointer is
+/// the same part. One the page was sent last time is left out of the next
+/// push and named in its "same", and the page keeps the one it has
+/// (ui/shell.js): a journal of two hundred steps was sent whole up to thirty
+/// times a second, for a status line that moved beside it.
+class PageParts {
+public:
+    /// Take out of `frame` the parts the page has already, and name them.
+    nlohmann::json keep(Snapshot& frame);
+
+private:
+    std::mutex                            mutex_;
+    std::shared_ptr<const Cook>           cook_;
+    long long                             cook_seconds_ = -1;   ///< it says how long it has run
+    std::shared_ptr<const PendingEdit>    edit_;
+    std::shared_ptr<const nlohmann::json> bench_;
+};
+
 class Surface {
 public:
     explicit Surface(Host& host) : host_(host) {}
@@ -302,7 +323,8 @@ public:
     std::string snapshot();
 
     /// The same for the window's own page, with the turns it already has
-    /// sent as stubs. See PageTurns.
+    /// sent as stubs and the large parts it already has left out. See
+    /// PageTurns and PageParts.
     std::string page_snapshot();
 
     /// Every method this build understands, for `methods` and for the tests
@@ -317,6 +339,7 @@ private:
 
     Host&                      host_;
     std::shared_ptr<PageTurns> page_turns_ = std::make_shared<PageTurns>();
+    std::shared_ptr<PageParts> page_parts_ = std::make_shared<PageParts>();
 };
 
 /// The engine's half of the snapshot, as JSON text.

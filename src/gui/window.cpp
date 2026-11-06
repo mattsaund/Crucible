@@ -192,7 +192,12 @@ struct Gate {
 /// transcript. Pushing one per token makes the cost of a reply grow with the
 /// square of its length and buys nothing: a screen shows sixty frames a
 /// second and a person reads rather fewer. So a wake only raises a flag, and
-/// a thread of its own turns the flag into at most one push per interval.
+/// a thread of its own turns the flag into at most one push per interval --
+/// and not the next one until the page says it has drawn the last. Handing
+/// the page snapshots faster than it could draw them queued them up in front
+/// of everything else it had to do, the keys being typed among them; a page
+/// that says nothing (still loading, or hidden) is pushed to anyway, a few
+/// times a second.
 class Pusher {
 public:
     explicit Pusher(std::function<void()> push) : push_(std::move(push)) {
@@ -224,7 +229,8 @@ public:
     }
 
     /// The push that was asked for has been drawn, so another may be sent.
-    /// Called on the window's thread, from inside the push itself.
+    /// Called on the window's thread: by the page once it has drawn it, or
+    /// by the push itself when it sent the page nothing.
     void landed() {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -238,13 +244,17 @@ private:
     /// slow enough that a long transcript is not being re-sent for nothing.
     static constexpr std::chrono::milliseconds kInterval{33};
 
+    /// How long a push waits for the page to say it drew the one before.
+    static constexpr std::chrono::milliseconds kPatience{250};
+
     void run() {
         std::unique_lock<std::mutex> lock(mutex_);
         for (;;) {
-            // Not while one is still on its way. If the window's thread is
-            // busy, queueing a second snapshot behind the first only makes it
+            // Not while one is still on its way. If the page is busy,
+            // queueing a second snapshot behind the first only makes it
             // busier; the flag stays up and the next push carries both.
-            changed_.wait(lock, [this] { return closing_ || (dirty_ && !in_flight_); });
+            changed_.wait(lock, [this] { return closing_ || dirty_; });
+            changed_.wait_for(lock, kPatience, [this] { return closing_ || !in_flight_; });
             if (closing_) {
                 return;
             }
@@ -337,14 +347,16 @@ int App::run() {
             if (!gate->open) {
                 return;
             }
-            // Landed however this ends. The pusher sends nothing while one
-            // is on its way, so a push that returned early without saying so
-            // left the window drawing the same frame for good -- a load at
-            // 100% that never finished, as far as anyone could see.
+            // Landed however this ends short of the page, which then has
+            // nothing to say it drew. A push that returned early without
+            // saying so once left the window drawing the same frame for good
+            // -- a load at 100% that never finished, as far as anyone could
+            // see -- and would still hold the next one up for a while.
             struct Landed {
                 Pusher*& pushing;
+                bool     sent = false;
                 ~Landed() {
-                    if (pushing != nullptr) {
+                    if (pushing != nullptr && !sent) {
                         pushing->landed();
                     }
                 }
@@ -391,6 +403,7 @@ int App::run() {
                 return;
             }
             view.eval("window.crucibleSnapshot && window.crucibleSnapshot(" + snapshot + ")");
+            landed.sent = true;
         });
     });
     pushing = &pusher;
@@ -441,6 +454,18 @@ int App::run() {
                           view.resolve(id, 0, reply);
                       }
                   });
+              },
+              nullptr);
+
+    // The page has drawn what it was last pushed (ui/base.js, draw), so the
+    // pusher may send the next. A frame's word for it is not taken, and none
+    // is once the window has closed: the pusher goes before the webview does.
+    view.bind("crucibleDrawn",
+              [&view, &pusher, gate, token](const std::string& id, const std::string& arguments, void*) {
+                  view.resolve(id, 0, "null");
+                  if (gate->open && argument(arguments, 0) == token) {
+                      pusher.landed();
+                  }
               },
               nullptr);
 
@@ -625,6 +650,9 @@ int App::run() {
     }
 
     engine_->start();
+    // The orchestrator, on a worker while the page loads: the first prompt
+    // used to wait for Python to start before anything else.
+    workers_.post([this] { engine_->prepare_orchestrator(); });
 
     // From the cache first, which costs a file read, and then on a worker if
     // it is time to ask again. The answer arrives as a notice, through the

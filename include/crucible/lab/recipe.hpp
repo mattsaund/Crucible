@@ -156,7 +156,12 @@ struct Recipe {
 
     int   epochs        = 2;
     int   context       = 512;
-    float learning_rate = 1e-5F;
+    /// A LoRA's usual rate, and the best of 1e-5, 1e-4 and 2e-4 measured on
+    /// 400 chat records over two passes, with LoRA and QLoRA alike: 1e-5
+    /// moved the model a fifth to a third less for the same time, and 2e-4
+    /// began to learn the records rather than the task. Reading a recipe
+    /// without one takes this.
+    float learning_rate = 1e-4F;
 
     /// Set once training has produced something, so the tab can offer to test
     /// and export it rather than train it again.

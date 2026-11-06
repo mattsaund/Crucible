@@ -190,9 +190,9 @@ serve::Answer Engine::serve_request(const serve::Ask& ask, const serve::Sink& si
         return out;
     }
     // With the delegator on demand it steps aside for a model that is not in
-    // memory yet, as it does for any expert; for one that is, both are
-    // already in, and freeing it would be a load for the next prompt and a
-    // saving for nobody.
+    // memory yet and needs its room, as it does for any expert; for one that
+    // is, both are already in, and freeing it would be a load for the next
+    // prompt and a saving for nobody.
     bool resident = false;
     {
         std::unique_lock<std::mutex> host(host_mutex_, std::try_to_lock);
@@ -209,12 +209,9 @@ serve::Answer Engine::serve_request(const serve::Ask& ask, const serve::Sink& si
         return stopped();
     }
     if (!resident) {
-        if (!config.routing.keep_delegator_loaded) {
-            if (routes_open_.load() > 0) {
-                sink.waiting("the chat");   // a route is using it, and is waited for
-            }
-            release_router_between_routes();
-        }
+        // Said only when the delegator is to go and a route is using it: then
+        // the route is waited for.
+        make_room_for(params, [&sink] { sink.waiting("the chat"); });
         sink.waiting("loading");
     }
     long        load_ms = 0;

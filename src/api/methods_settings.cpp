@@ -174,6 +174,11 @@ Reply models(const json&, const Scene& scene) {
     json out{{"directory", dir.string()},
              {"display", format::short_path(dir)},
              {"models", std::move(files)}};
+    if (out["models"].empty()) {
+        if (std::string problem = models_dir_problem(dir); !problem.empty()) {
+            out["problem"] = std::move(problem);
+        }
+    }
     // Asked only when there is one to ask about: it starts Python.
     if (any_mlx) {
         out["mlx_unavailable"] = mlx::unavailable();

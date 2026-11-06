@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -257,7 +259,9 @@ std::uint64_t ModelShape::total_bytes(int n_ctx, int n_batch, std::uint64_t slid
     return resident_bytes(n_ctx, sliding) + compute_bytes(n_batch);
 }
 
-ModelShape read_model_shape(const std::filesystem::path& file) {
+namespace {
+
+ModelShape parse_model_shape(const std::filesystem::path& file) {
     ModelShape shape;
 
     std::error_code ec;
@@ -442,6 +446,45 @@ ModelShape read_model_shape(const std::filesystem::path& file) {
 
     shape.known = layers > 0;
     gguf_free(gguf);
+    return shape;
+}
+
+/// A header already read, and the file as it was when it was.
+struct ReadShape {
+    std::uintmax_t                  size = 0;
+    std::filesystem::file_time_type written;
+    ModelShape                      shape;
+};
+
+}  // namespace
+
+ModelShape read_model_shape(const std::filesystem::path& file) {
+    // Read once per file rather than once per question: a load asks a dozen
+    // times -- the split, each check, each context tried -- and a header with
+    // a large vocabulary in it is tens of milliseconds to read. The file's
+    // size and time say when the one kept is stale.
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(file, ec);
+    const auto written = ec ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(file, ec);
+    if (ec) {
+        return parse_model_shape(file);   // not there: nothing worth keeping
+    }
+    static std::mutex                       mutex;
+    static std::map<std::string, ReadShape> known;
+    const std::string key = file.string();
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const auto found = known.find(key);
+        if (found != known.end() && found->second.size == size && found->second.written == written) {
+            return found->second.shape;
+        }
+    }
+    ModelShape shape = parse_model_shape(file);
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (known.size() >= 64) {
+        known.clear();   // a config names a handful; this many is a scan of a folder
+    }
+    known[key] = ReadShape{size, written, shape};
     return shape;
 }
 

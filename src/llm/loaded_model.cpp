@@ -697,55 +697,102 @@ void LoadedModel::sample(const ModelParams& params, const TokenCallback& on_toke
 ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const ChatSink& sink) {
     ChatResult result;
 #if defined(CRUCIBLE_HAS_MTMD)
-    // A marker where each picture goes, ahead of the words it came with --
-    // the order every vision model reads best -- and the pictures' bytes, in
-    // the same order, for the projector.
-    const std::string marker = mtmd_default_marker();
-    std::vector<ChatMessage> marked = request.messages;
+    // The pictures' bytes, in the order the conversation has them, and the
+    // message each came with.
     std::vector<std::string> blobs;
-    for (ChatMessage& message : marked) {
-        std::string markers;
-        for (const ChatImage& image : message.images) {
+    std::vector<std::size_t> owners;
+    for (std::size_t m = 0; m < request.messages.size(); ++m) {
+        for (const ChatImage& image : request.messages[m].images) {
             std::string bytes;
             if (format::from_base64(image.data, bytes) && !bytes.empty()) {
                 blobs.push_back(std::move(bytes));
-                markers += marker + "\n";
+                owners.push_back(m);
             }
         }
-        message.content = markers + message.content;
-        message.images.clear();
     }
-    const std::string prompt = format_chat(marked, /*add_assistant_prefix=*/true);
-
-    std::vector<mtmd_bitmap*> bitmaps;
-    struct Bitmaps {
-        std::vector<mtmd_bitmap*>& all;
-        ~Bitmaps() {
-            for (mtmd_bitmap* one : all) {
-                mtmd_bitmap_free(one);
-            }
-        }
-    } free_bitmaps{bitmaps};
+    std::vector<mtmd::bitmap_ptr> bitmaps;
     const mtmd_helper_init_opt options = mtmd_helper_init_opt_default();
     for (const std::string& blob : blobs) {
-        const mtmd_helper_bitmap_wrapper made = mtmd_helper_bitmap_init_from_buf(
+        mtmd_helper_bitmap_wrapper made = mtmd_helper_bitmap_init_from_buf(
             vision_, reinterpret_cast<const unsigned char*>(blob.data()), blob.size(), false, options);
+        if (made.video_ctx != nullptr) {
+            // A video sent as a picture. mtmd would read it frame by frame
+            // through an ffmpeg of its own, kept running by a reader that is
+            // the caller's to free -- and it was never freed.
+            if (made.bitmap != nullptr) {
+                mtmd_bitmap_free(made.bitmap);
+                made.bitmap = nullptr;
+            }
+            mtmd_helper_video_free(made.video_ctx);
+        }
         if (made.bitmap == nullptr) {
             result.error = "a picture could not be read: it is not a PNG, a JPEG or a GIF";
             return result;
         }
-        bitmaps.push_back(made.bitmap);
+        bitmaps.emplace_back(made.bitmap);
     }
 
-    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
-    struct Chunks {
-        mtmd_input_chunks* chunks;
-        ~Chunks() { mtmd_input_chunks_free(chunks); }
-    } free_chunks{chunks};
-    const mtmd_input_text text{prompt.c_str(), prompt.size(), /*add_special=*/true, /*parse_special=*/true};
-    std::vector<const mtmd_bitmap*> given(bitmaps.begin(), bitmaps.end());
-    if (mtmd_tokenize(vision_, chunks, &text, given.data(), given.size()) != 0) {
+    // The conversation with a marker where each picture from `first` on
+    // goes, ahead of the words it came with -- the order every vision model
+    // reads best -- and the ones before it named and left out.
+    const std::string marker = mtmd_default_marker();
+    const auto tokenize_from = [&](std::size_t first, mtmd_input_chunks* into) {
+        std::vector<ChatMessage> marked = request.messages;
+        std::vector<std::string> markers(marked.size());
+        for (std::size_t i = 0; i < owners.size(); ++i) {
+            markers[owners[i]] += i >= first ? marker + "\n" : std::string("[a picture from earlier, left out]\n");
+        }
+        for (std::size_t m = 0; m < marked.size(); ++m) {
+            marked[m].content = markers[m] + marked[m].content;
+            marked[m].images.clear();
+        }
+        const std::string prompt = format_chat(marked, /*add_assistant_prefix=*/true);
+        const mtmd_input_text text{prompt.c_str(), prompt.size(), /*add_special=*/true, /*parse_special=*/true};
+        std::vector<const mtmd_bitmap*> given;
+        for (std::size_t i = first; i < bitmaps.size(); ++i) {
+            given.push_back(bitmaps[i].get());
+        }
+        return mtmd_tokenize(vision_, into, &text, given.data(), given.size()) == 0;
+    };
+    mtmd::input_chunks_ptr chunks(mtmd_input_chunks_init());
+    if (!tokenize_from(0, chunks.get())) {
         result.error = "the pictures could not be read into the prompt";
+        return result;
+    }
+
+    // Room for the reply as a text prompt leaves it (see generate). Each
+    // picture is hundreds of tokens, sometimes thousands; every turn sends
+    // all of the conversation's pictures again, and trimming the history to
+    // fit counts none of them. A few pictures in, the prompt outgrew the
+    // context and every turn after failed. So the oldest pictures are left
+    // out until it fits: never those of the newest message that has any.
+    const int         context = static_cast<int>(llama_n_ctx(ctx_));
+    const std::size_t budget  = static_cast<std::size_t>(context - std::min(256, context / 4));
+    if (mtmd_helper_get_n_tokens(chunks.get()) > budget && !owners.empty()) {
+        const std::size_t newest =
+            static_cast<std::size_t>(std::find(owners.begin(), owners.end(), owners.back()) - owners.begin());
+        std::size_t first = 0;
+        std::size_t total = mtmd_helper_get_n_tokens(chunks.get());
+        while (first < newest && total > budget) {
+            // What leaving it out saves: the picture's tokens, measured alone.
+            mtmd::input_chunks_ptr alone(mtmd_input_chunks_init());
+            const mtmd_input_text one{marker.c_str(), marker.size(), /*add_special=*/false, /*parse_special=*/true};
+            const mtmd_bitmap*    picture = bitmaps[first].get();
+            if (mtmd_tokenize(vision_, alone.get(), &one, &picture, 1) == 0) {
+                total -= std::min(total, mtmd_helper_get_n_tokens(alone.get()));
+            }
+            ++first;
+        }
+        if (first > 0) {
+            chunks.reset(mtmd_input_chunks_init());
+            if (!tokenize_from(first, chunks.get())) {
+                result.error = "the pictures could not be read into the prompt";
+                return result;
+            }
+        }
+    }
+    if (mtmd_helper_get_n_tokens(chunks.get()) >= static_cast<std::size_t>(context)) {
+        result.error = "the pictures do not fit in this model's context of " + std::to_string(context) + " tokens";
         return result;
     }
 
@@ -764,11 +811,23 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
     } abort_guard{ctx_};
 
     const auto prompt_start = Clock::now();
-    result.stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
+    result.stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks.get()));
     llama_pos past = 0;
-    const int batch_size =
-        std::max(1, std::min(request.params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
-    if (mtmd_helper_eval_chunks(vision_, ctx_, chunks, 0, 0, batch_size,
+    int batch_size = std::max(1, std::min(request.params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
+    // A picture some models read with attention both ways -- Gemma 3 and 4
+    // among them -- is decoded with the causal mask off, and llama.cpp
+    // asserts that no batch read that way is larger than its micro-batch,
+    // ending the program when one is (llama-context.cpp, decode). The
+    // micro-batch stays at llama.cpp's 512 whatever Batch is set to, so with
+    // Batch above that, those pictures go in batches of the micro-batch.
+    for (std::size_t i = 0; i < mtmd_input_chunks_size(chunks.get()); ++i) {
+        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks.get(), i);
+        if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_TEXT
+            && mtmd_decode_use_non_causal(vision_, chunk)) {
+            batch_size = std::max(1, std::min(batch_size, static_cast<int>(llama_n_ubatch(ctx_))));
+        }
+    }
+    if (mtmd_helper_eval_chunks(vision_, ctx_, chunks.get(), 0, 0, batch_size,
                                 /*logits_last=*/true, &past) != 0) {
         result.stats.canceled = sink.cancel && sink.cancel();
         if (!result.stats.canceled) {
@@ -788,6 +847,5 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
 #endif
     return result;
 }
-
 
 }  // namespace crucible

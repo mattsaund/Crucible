@@ -181,9 +181,13 @@ function sameNode(a, b) {
 
 /// Make `from` look like `to`, changing as little as possible.
 ///
-/// Children are matched in order. That is all the cleverness there is, and
-/// it is enough: the lists here grow at the end and are otherwise replaced,
-/// and a mismatch costs one replaced node rather than a wrong screen.
+/// Children are matched in order. The lists here grow at the end and are
+/// otherwise replaced, and a mismatch costs one replaced node rather than a
+/// wrong screen. Keyed elements are the exception: one that is new goes in
+/// before the node it now precedes, and one that is gone is taken out,
+/// rather than either replacing whatever is in its place. A transcript drawn
+/// further back as its reader scrolls up keeps every turn it already showed,
+/// and a list searched keeps the rows it still has.
 ///
 /// Two things are left alone on purpose. A subtree whose data-sig matches is
 /// not descended into -- a finished turn of the transcript is the same
@@ -228,6 +232,18 @@ function morph(from, to) {
 
   let a = from.firstChild;
   let b = to.firstChild;
+  // The keys left to match on each side, each read the first time it is
+  // wanted.
+  let here = null;
+  let wanted = null;
+  const keyOf = (node) => (node.nodeType === 1 ? node.getAttribute('data-key') : null);
+  const keysFrom = (node) => {
+    const found = new Set();
+    for (let c = node; c; c = c.nextSibling) {
+      if (keyOf(c) !== null) found.add(keyOf(c));
+    }
+    return found;
+  };
   while (b) {
     const next = b.nextSibling;
     if (!a) {
@@ -235,6 +251,14 @@ function morph(from, to) {
     } else if (sameNode(a, b)) {
       morph(a, b);
       a = a.nextSibling;
+    } else if (keyOf(b) !== null && !(here || (here = keysFrom(a))).has(keyOf(b))) {
+      from.insertBefore(b, a);
+    } else if (keyOf(a) !== null && !(wanted || (wanted = keysFrom(b))).has(keyOf(a))) {
+      // Gone: taken out, and what is wanted here is matched against the next.
+      const after = a.nextSibling;
+      from.removeChild(a);
+      a = after;
+      continue;
     } else {
       from.replaceChild(b, a);
       a = b.nextSibling;
@@ -277,7 +301,61 @@ const views = {};
 /// in it. Each file adds its own.
 const afterDraw = [];
 
+// --- what is on screen already --------------------------------------------------
+//
+// A region -- one element with an id, and everything in it -- whose markup is
+// what is on screen already goes to the patcher as that element alone, empty
+// and signed, and the patcher keeps it as it is (see morph). Parsing a
+// build's journal, or a page of search results and a README, again for every
+// push that changed something beside it was most of what those pushes cost.
+
+/// By id: the markup last made for it, the signature that stands for it, and
+/// whether that is what is on screen.
+const regions = new Map();
+let regionSerial = 0;
+
+/// `html`, which is one element with id="`id`" on it, signed; or the element
+/// on its own when the same markup is on screen.
+function region(id, html) {
+  let kept = regions.get(id);
+  if (!kept || kept.html !== html) {
+    kept = { html, sig: `r${++regionSerial}`, shown: false };
+    regions.set(id, kept);
+  }
+  const open = /^<([a-z][a-z0-9]*)\b[^>]*>/.exec(html);
+  if (!open) return html;
+  const signed = `${open[0].slice(0, -1)} data-sig="${kept.sig}"`;
+  return kept.shown ? `${signed} data-stub></${open[1]}>` : `${signed}>${html.slice(open[0].length)}`;
+}
+
+/// After a draw: which regions are on screen as they were made. One that
+/// went in empty, because what it stood for was not there after all, is
+/// taken out and drawn again whole; one not on screen is forgotten, and is
+/// drawn whole when it is next.
+afterDraw.push(() => {
+  let again = false;
+  for (const [id, kept] of regions) {
+    const element = document.getElementById(id);
+    if (!element) {
+      regions.delete(id);
+    } else if (element.hasAttribute('data-stub')) {
+      element.remove();
+      kept.shown = false;
+      again = true;
+    } else {
+      kept.shown = element.getAttribute('data-sig') === kept.sig;
+    }
+  }
+  if (again) render();
+});
+
 let drawQueued = false;
+
+/// A push from the window that has not been drawn yet. The window sends the
+/// next one once it is told this one was (window.cpp, Pusher): a page slower
+/// than the pushes otherwise fell behind them, a queue of whole snapshots
+/// building up in front of every key pressed.
+let pushOwed = false;
 
 /// Ask for a redraw. Any number of calls before the next frame make one.
 function render() {
@@ -293,6 +371,10 @@ function draw() {
   paint('layer', state.modal ? modalView(state.modal) : '');
 
   for (const job of afterDraw) job();
+  if (pushOwed) {
+    pushOwed = false;
+    if (window.crucibleDrawn) window.crucibleDrawn(window.crucibleToken || '').catch(() => {});
+  }
 }
 
 // --- the Font setting ------------------------------------------------------------

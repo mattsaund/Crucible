@@ -38,7 +38,10 @@ void ModelParams::inherit_from(const ModelParams& base) {
     if (n_gpu_layers   == pristine.n_gpu_layers)   { n_gpu_layers   = base.n_gpu_layers; }
     if (main_gpu       == pristine.main_gpu)       { main_gpu       = base.main_gpu; }
     if (split_mode     == pristine.split_mode)     { split_mode     = base.split_mode; }
-    if (tensor_split.empty())                      { tensor_split   = base.tensor_split; }
+    if (tensor_split.empty()) {
+        tensor_split  = base.tensor_split;
+        split_planned = base.split_planned;
+    }
     if (n_ctx          == pristine.n_ctx)          { n_ctx          = base.n_ctx; }
     if (n_batch        == pristine.n_batch)        { n_batch        = base.n_batch; }
     if (n_threads      == pristine.n_threads)      { n_threads      = base.n_threads; }

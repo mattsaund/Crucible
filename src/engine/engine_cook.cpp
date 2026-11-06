@@ -341,9 +341,9 @@ Engine::CookRound Engine::cook_round(ChatModel& model, const ModelParams& params
     // The same filter the ordinary turn path uses, so a reasoning model's
     // channel markers do not end up being parsed as tool calls.
     ResponseFilter filter;
-    const CancelCallback cancel = [this] {
+    const CancelCallback cancel = [this, asker = orchestra::Link::asker()] {
         return cook_cancel_.load(std::memory_order_relaxed)
-            || !running_.load(std::memory_order_relaxed);
+            || !running_.load(std::memory_order_relaxed) || orchestra_.ended(asker);
     };
 
     ChatSink sink;
@@ -408,11 +408,9 @@ nlohmann::json Engine::serve_cook(const std::string& method, const nlohmann::jso
             // see there. The host decides how much when it loads the model.
             seat_params.n_ctx_most = std::max(seat_params.n_ctx, kAgentContext);
         }
-        // The delegator has done its routing, and an expert on this machine is
-        // about to want every byte it was holding. See resolve().
-        if (!config.routing.keep_delegator_loaded && !seat_params.remote()) {
-            release_router_between_routes();
-        }
+        // The delegator has done its routing, and goes if the expert about to
+        // be loaded wants the room it holds. See resolve().
+        make_room_for(seat_params);
         state_.set_linked(id);
         if (wake_) {
             wake_();

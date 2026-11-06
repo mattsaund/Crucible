@@ -117,32 +117,41 @@ class Labels(unittest.TestCase):
     def test_the_loss_is_taken_over_the_answers_and_nothing_else(self):
         tokenizer = ChatML()
         text, spans = finetune.chat_answers(tokenizer, CHAT)
-        out = finetune.encode(tokenizer, [text], [spans], context=400, pad=True)
+        out = finetune.encode(tokenizer, [text], [spans], context=400)
         self.assertNotIn("offset_mapping", out)
         ids, labels = out["input_ids"][0], out["labels"][0]
-        self.assertEqual(len(labels), 400)
+        # As long as the record, not the context: padding is the batch's.
+        self.assertEqual(len(labels), len(text))
         self.assertEqual(labelled(text, labels, ids), "4<|im_end|>\n6<|im_end|>\n")
 
-    def test_the_score_is_taken_the_same_way_as_the_training(self):
+    def test_a_record_scores_the_same_in_a_batch_as_alone(self):
+        # The score and the training both take records in batches padded to
+        # their longest; at a real position, nothing changes but the padding.
         tokenizer = ChatML()
-        text, spans = finetune.chat_answers(tokenizer, CHAT)
-        padded = finetune.encode(tokenizer, [text], [spans], context=400, pad=True)
-        bare = finetune.encode(tokenizer, [text], [spans], context=400, pad=False)
-        self.assertEqual(len(bare["labels"][0]), len(text))
-        self.assertEqual(bare["labels"][0], padded["labels"][0][:len(text)])
+        short, short_spans = finetune.chat_answers(tokenizer, CHAT[:3])
+        long, long_spans = finetune.chat_answers(tokenizer, CHAT)
+        out = finetune.encode(tokenizer, [short, long], [short_spans, long_spans], context=400)
+        batch = finetune.padded(out, [1, 0], pad=0)
+        width = len(batch["input_ids"][0])
+        self.assertEqual(width % 8, 0)
+        self.assertGreaterEqual(width, len(long))
+        self.assertTrue(all(len(row) == width for key in batch for row in batch[key]))
+        alone = out["labels"][0]
+        self.assertEqual(batch["labels"][1][:len(alone)], alone)
+        self.assertEqual(batch["input_ids"][1][:len(short)], out["input_ids"][0])
 
     def test_answers_cut_off_by_the_context_leave_the_whole_record(self):
         # A record with nothing to learn would make a step of nothing.
         tokenizer = ChatML()
         text, spans = finetune.chat_answers(tokenizer, CHAT)
-        out = finetune.encode(tokenizer, [text], [spans], context=20, pad=False)
+        out = finetune.encode(tokenizer, [text], [spans], context=20)
         self.assertEqual(out["labels"][0], out["input_ids"][0])
 
     def test_without_offsets_every_record_is_learned_whole(self):
         tokenizer = ChatML()
         tokenizer.is_fast = False
         text, spans = finetune.chat_answers(tokenizer, CHAT)
-        out = finetune.encode(tokenizer, [text], [spans], context=400, pad=True)
+        out = finetune.encode(tokenizer, [text], [spans], context=400)
         self.assertEqual(labelled(text, out["labels"][0], out["input_ids"][0]), text)
 
     def test_padding_is_never_learned(self):
@@ -151,6 +160,60 @@ class Labels(unittest.TestCase):
         # A token reaching into an answer from before it is the answer's.
         labels = finetune.answer_labels([5, 6, 7], [(0, 2), (2, 4), (4, 6)], [1, 1, 1], [[3, 6]])
         self.assertEqual(labels, [-100, 6, 7])
+        # Nor is a batch's: never attended to, never a label.
+        examples = {"input_ids": [[5, 6, 7], [8]], "attention_mask": [[1, 1, 1], [1]],
+                    "labels": [[5, 6, 7], [8]]}
+        batch = finetune.padded(examples, [0, 1], pad=0)
+        self.assertEqual(batch["attention_mask"][1], [1] + [0] * 7)
+        self.assertEqual(batch["labels"][1], [8] + [-100] * 7)
+        self.assertEqual(batch["input_ids"][1], [8] + [0] * 7)
+
+    def test_the_first_token_is_never_scored(self):
+        # Each position predicts the next, so there is nothing before it.
+        self.assertEqual(finetune.answer_tokens([5, 6, 7]), 2)
+        self.assertEqual(finetune.answer_tokens([-100, 6, -100, 8]), 2)
+        self.assertEqual(finetune.answer_tokens([5]), 0)
+
+
+class Batches(unittest.TestCase):
+    def test_every_record_is_trained_on_once_a_pass_in_steps_of_eight(self):
+        lengths = [random.Random(n).randint(5, 500) for n in range(203)]
+        for epoch in range(3):
+            steps = finetune.plan_steps(lengths, epoch)
+            seen = sorted(i for step in steps for i in step)
+            self.assertEqual(seen, list(range(203)))
+            self.assertTrue(all(1 <= len(step) <= finetune.PER_STEP for step in steps))
+            # As many steps as a pass has always had.
+            self.assertEqual(len(steps), math.ceil(203 / finetune.PER_STEP))
+
+    def test_the_same_order_every_run_and_another_every_pass(self):
+        lengths = list(range(1, 100))
+        self.assertEqual(finetune.plan_steps(lengths, 0), finetune.plan_steps(lengths, 0))
+        self.assertNotEqual(finetune.plan_steps(lengths, 0), finetune.plan_steps(lengths, 1))
+
+    def test_a_step_is_records_of_about_one_length(self):
+        # Sorted within runs of a few steps: a step pads to little.
+        lengths = [random.Random(n).randint(5, 500) for n in range(640)]
+        steps = finetune.plan_steps(lengths, 0)
+        spread = [max(lengths[i] for i in step) - min(lengths[i] for i in step) for step in steps]
+        self.assertLess(sum(spread) / len(spread), 100)
+
+    def test_a_pass_holds_what_the_budget_allows_and_one_record_at_least(self):
+        lengths = [100, 30, 500, 60, 61, 8]
+        everything = list(range(len(lengths)))
+        for budget in (1, 128, 300, 1000, 10000):
+            out = finetune.passes(everything, lengths, budget)
+            self.assertEqual(sorted(i for one in out for i in one), everything)
+            for one in out:
+                # Longest first, so the pass is as wide as its first record.
+                self.assertEqual(one[0], max(one, key=lambda i: lengths[i]))
+                if len(one) > 1:
+                    self.assertLessEqual(len(one) * finetune.round_up(lengths[one[0]]), budget)
+        self.assertEqual(len(finetune.passes(everything, lengths, 10000)), 1)
+        self.assertEqual(len(finetune.passes(everything, lengths, 1)), len(lengths))
+
+    def test_a_padded_length_is_a_multiple_of_eight(self):
+        self.assertEqual([finetune.round_up(n) for n in (1, 8, 9, 511, 512)], [8, 8, 16, 512, 512])
 
 
 def records(n, prefix="record"):
@@ -225,6 +288,75 @@ class Events(unittest.TestCase):
         self.assertIn("  4%|#", lines[0])
         self.assertTrue(read_as_event(lines[1]))
         self.assertEqual(json.loads(lines[1])["step"], 1)
+
+
+class WarmConverter(unittest.TestCase):
+    """The converter started during the merge, told its arguments after."""
+
+    def script(self, directory, body):
+        path = os.path.join(directory, "convert_hf_to_gguf.py")
+        with open(path, "w", encoding="utf-8") as out:
+            out.write(body)
+        return path
+
+    def run_converter(self, converter, arguments):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            converter.run(arguments)
+        return out.getvalue().splitlines()
+
+    def test_its_arguments_arrive_whether_it_was_warmed_or_not(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.script(directory, "import sys\nprint('given', sys.argv[1:])\n"
+                                          "print('{\"event\": \"done\", \"path\": \"x\"}')\n")
+            for warm in (True, False):
+                converter = finetune.Converter(path)
+                if warm:
+                    converter.warm()
+                lines = self.run_converter(converter, ["merged", "--outfile", "out.gguf"])
+                self.assertEqual(lines[0], "given ['merged', '--outfile', 'out.gguf']")
+                # What it prints is log, never one of the run's events.
+                self.assertFalse(any(read_as_event(line) for line in lines))
+
+    def test_one_that_fails_fails_the_run(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            converter = finetune.Converter(self.script(directory, "import sys\nsys.exit(4)\n"))
+            converter.warm()
+            out = io.StringIO()
+            with redirect_stdout(out), self.assertRaises(SystemExit):
+                converter.run([])
+            failed = json.loads(out.getvalue().splitlines()[-1])
+            self.assertEqual(failed["event"], "failed")
+            self.assertIn("exited 4", failed["message"])
+
+    def test_one_never_told_to_start_leaves_when_the_run_does(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.script(directory, "open(__file__ + '.ran', 'w').close()\n")
+            converter = finetune.Converter(path)
+            converter.warm()
+            converter.process.stdin.close()
+            self.assertEqual(converter.process.wait(timeout=60), 0)
+            converter.process.stdout.close()
+            self.assertFalse(os.path.exists(path + ".ran"))
+
+
+class Card(unittest.TestCase):
+    def test_a_card_already_chosen_is_kept_and_so_is_none(self):
+        # An empty CUDA_VISIBLE_DEVICES is CUDA's way of saying no card; it
+        # was read as no choice, and the card with the most memory taken.
+        from unittest import mock
+
+        for chosen in ("", "1", "-1"):
+            with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": chosen}), \
+                    mock.patch.object(finetune.subprocess, "run") as asked:
+                self.assertEqual(finetune.pick_gpu(), chosen)
+                asked.assert_not_called()
 
 
 class ChildOutput(unittest.TestCase):

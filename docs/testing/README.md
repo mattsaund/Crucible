@@ -22,6 +22,29 @@ Optional, with a vision model and its `mmproj` file in the same folder:
 CRUCIBLE_VISION_MODEL=/path/to/SmolVLM-256M-Instruct-Q8_0.gguf build/bin/crucible_tests
 ```
 
+## Measuring speed
+
+Four tools build beside the app, for timing it without a window:
+
+```sh
+build/bin/crucible-loadbench load delegator --cold         # one model in: where it went, how long
+build/bin/crucible-loadbench chat "a question" "@seat more" # prompts through the whole engine
+build/bin/crucible-smoke --bench model.gguf quick          # a Bench run, timed
+build/bin/crucible-soak --model a.gguf --minutes 30        # many turns, and what each leaves held
+```
+
+crucible-loadbench reads the config Crucible would (or `--config FILE`, a
+copy of somebody else's) and leaves Crucible's own timings in crucible.log:
+each load's planning, weights, context and projector. `--cold` drops the file
+from the page cache first, on Linux. crucible-soak is Linux only and prints a
+line per turn with the memory, threads and files the process holds after it,
+so a leak is a column that climbs and a hang a turn that never ends.
+
+Time a model on the cards it would really use, and the before and after in
+the same conditions: the same card, the same temperature, nothing else on
+the processor. A card held at its limit slows itself down, and two cards
+under one fan heat each other.
+
 ## Before a release: the budgeting app
 
 The acceptance test. Use the best model the machine runs: a 30B coder

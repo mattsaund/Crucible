@@ -34,6 +34,12 @@ struct ModelFile {
 /// first-run state, not a failure.
 std::vector<ModelFile> scan_models(const std::filesystem::path& dir);
 
+/// Why `dir` cannot be listed, or empty when it can. scan_models reads a
+/// folder it may not open as an empty one, which is right for the list; this
+/// is for saying so: a folder macOS has kept Crucible out of looks exactly
+/// like a folder with nothing in it.
+std::string models_dir_problem(const std::filesystem::path& dir);
+
 /// Turn a config reference into an absolute path.
 ///
 /// A bare file name ("physics-q4.gguf") is looked up inside the models

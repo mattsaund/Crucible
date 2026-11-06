@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.9.8
+    VERSION     0.9.9
     DESCRIPTION "An all in one local AI workshop: build software with agents, chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
@@ -182,6 +182,7 @@ add_library(crucible_core STATIC
     src/app/relocate.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
+    src/llm/batch_chat.cpp
     src/llm/remote_model.cpp
     src/llm/spend.cpp
     src/llm/prices.cpp
@@ -259,6 +260,13 @@ if(CRUCIBLE_TRAINER_CPP)
     target_compile_definitions(crucible_core PUBLIC CRUCIBLE_HAS_TRAINER_SCRIPT)
 else()
     message(WARNING "scripts/trainer/finetune.py not found; training will be unavailable")
+endif()
+
+# llama.cpp's GGUF converter, compiled in for the trainer to export with. See
+# cmake/CrucibleDependencies.cmake.
+if(CRUCIBLE_CONVERTER_CPP)
+    target_sources(crucible_core PRIVATE ${CRUCIBLE_CONVERTER_CPP})
+    target_compile_definitions(crucible_core PUBLIC CRUCIBLE_HAS_CONVERTER)
 endif()
 
 # The notices, compiled in so `crucible --licenses` can print them on a
@@ -358,6 +366,23 @@ if(CRUCIBLE_BUILD_TOOLS)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         target_compile_options(crucible-smoke PRIVATE ${_crucible_warnings})
     endif()
+    # crucible-loadbench: how long models take to load, swap and answer, on
+    # the config Crucible would read.
+    add_executable(crucible-loadbench tools/loadbench.cpp)
+    target_link_libraries(crucible-loadbench PRIVATE crucible::core)
+    if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_compile_options(crucible-loadbench PRIVATE ${_crucible_warnings})
+    endif()
+    # crucible-soak: the engine for as long as it is let run, turn after turn,
+    # with what the process holds written after each. Linux only: it reads
+    # /proc for what it measures and for the orchestrator it kills.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(crucible-soak tools/soak.cpp)
+        target_link_libraries(crucible-soak PRIVATE crucible::core)
+        if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+            target_compile_options(crucible-soak PRIVATE ${_crucible_warnings})
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -396,7 +421,8 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_kit.cpp
         tests/test_market.cpp
         tests/test_mcp.cpp
-        tests/test_server.cpp)
+        tests/test_server.cpp
+        tests/test_bench.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
     # They are tested by running ui/render.js in JavaScriptCore -- the same

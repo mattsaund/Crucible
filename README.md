@@ -169,8 +169,9 @@ Every model, local or not, gets the same tools in a trusted folder:
 - GGUF everywhere, MLX on Apple Silicon. LM Studio and Hugging Face folders
   work as they are.
 - Models that see pictures work when their `mmproj` projector sits beside them.
-- A model is in memory only while something uses it. Several stay loaded when
-  memory allows, and one in use is never freed.
+- Models stay loaded while they fit, so a follow-up question loads nothing.
+  When one has to make room, the one used longest ago goes, and one in use is
+  never freed.
 
 ![The Models tab: a repository's quantizations, each marked by how it fits](docs/images/models.png)
 

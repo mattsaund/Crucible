@@ -148,11 +148,12 @@ json cook_task_json(const CookTask& task) {
 
 /// The whole drawable state.
 ///
-/// Sent entire rather than as a diff. A snapshot carries the whole transcript,
-/// which is why the window sends at most about thirty a second however often
-/// the engine wakes it (see Pusher in gui/window.cpp), and a diff protocol
-/// would buy some bandwidth between the program and its own page in exchange
-/// for two sides that can disagree about what they are looking at.
+/// Entire rather than a diff: what any caller asks for is the state as it is,
+/// with nothing to agree about first. The window's own page is pushed this
+/// thirty times a second while a reply streams (see Pusher in
+/// gui/window.cpp), and is spared what it already holds: the turns it was
+/// sent (PageTurns) and the large parts that have not changed (PageParts),
+/// each of which it can put back from what it has.
 json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
     // Which platform this is, for the words the page uses about it: where a
     // program it makes is found, what a shortcut is called.
@@ -319,6 +320,34 @@ std::string PageTurns::turns_json(const TurnList& turns) {
     // no others, so the set is as long as the conversation, not its history.
     sent_ = std::move(now);
     return out;
+}
+
+json PageParts::keep(Snapshot& frame) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    json same = json::array();
+    // A running build's journal says how long it has run, so it is the same
+    // only for as long as that is too: it goes once a second, not thirty times.
+    const long long seconds = frame.cook ? static_cast<long long>(frame.cook->duration().count()) : -1;
+    if (frame.cook && frame.cook == cook_ && seconds == cook_seconds_) {
+        frame.cook.reset();
+        same.push_back("cook");
+    } else {
+        cook_         = frame.cook;
+        cook_seconds_ = seconds;
+    }
+    if (frame.pending_edit && frame.pending_edit == edit_) {
+        frame.pending_edit.reset();
+        same.push_back("pending_edit");
+    } else {
+        edit_ = frame.pending_edit;
+    }
+    if (frame.bench && frame.bench == bench_) {
+        frame.bench.reset();
+        same.push_back("bench");
+    } else {
+        bench_ = frame.bench;
+    }
+    return same;
 }
 
 std::string snapshot_json(const Snapshot& snapshot) {

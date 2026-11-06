@@ -372,7 +372,7 @@ bool parse(std::string_view json_text, Recipe& out, std::string& error) {
     recipe.parameters_b  = parsed.value("parameters_b", 0.0);
     recipe.epochs        = parsed.value("epochs", 2);
     recipe.context       = parsed.value("context", 512);
-    recipe.learning_rate = parsed.value("learning_rate", 1e-5F);
+    recipe.learning_rate = parsed.value("learning_rate", recipe.learning_rate);
     recipe.trained_path  = parsed.value("trained_path", "");
     recipe.held_out      = held_out_from_json(parsed.value("held_out", json::object()));
 

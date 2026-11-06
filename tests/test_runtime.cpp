@@ -329,6 +329,50 @@ TEST(a_runtime_arriving_during_a_load_waits_and_the_load_reads_on) {
     llama_log_set(nullptr, nullptr);
 }
 
+TEST(a_model_in_system_memory_needs_room_beside_the_ones_there) {
+    constexpr std::uint64_t kGb = 1ULL << 30;
+    // 46 GB, 6 in use, nothing resident: a 13 GB model fits.
+    CHECK(memory_has_room(13 * kGb, 0, 0, 6 * kGb, 46 * kGb));
+    // The headroom is a tenth of the memory, never under 2 GB: 16 GB with 4
+    // in use holds a 9 GB model and not an 11 GB one.
+    CHECK(memory_has_room(9 * kGb, 0, 0, 4 * kGb, 16 * kGb));
+    CHECK(!memory_has_room(11 * kGb, 0, 0, 4 * kGb, 16 * kGb));
+    // Two mapped models the kernel counts as free: 32 GB with 8 in use says
+    // a 10 GB model fits, and beside the 20 GB already resident it does not.
+    CHECK(memory_has_room(10 * kGb, 0, 0, 8 * kGb, 32 * kGb));
+    CHECK(!memory_has_room(10 * kGb, 20 * kGb, 0, 8 * kGb, 32 * kGb));
+    // What is let go first counts as free: 24 GB of 32 in use, 10 of it a
+    // model that goes, holds a 10 GB one.
+    CHECK(!memory_has_room(10 * kGb, 0, 0, 24 * kGb, 32 * kGb));
+    CHECK(memory_has_room(10 * kGb, 0, 10 * kGb, 24 * kGb, 32 * kGb));
+    // A machine whose memory cannot be read is not said to have room.
+    CHECK(!memory_has_room(kGb, 0, 0, 0, 0));
+}
+
+TEST(a_roomier_load_of_the_same_file_replaces_the_copy_nobody_is_using) {
+    // Only where a model is named: CRUCIBLE_TEST_MODEL, a small GGUF, with a
+    // runtime installed that loads it. A chat's model wanted by a build's
+    // agent with more room is loaded again; the copy with less room, which
+    // nobody is using, goes rather than stay beside it.
+    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
+    if (named == nullptr || *named == '\0') {
+        return;
+    }
+    TempDir dir;
+    ModelHost host(dir.path() / "llama.log");
+    ModelParams params;
+    params.model = named;
+    params.path  = named;
+    params.n_ctx = 2048;
+    std::string error;
+    CHECK(host.acquire_expert("chat", params, {}, {}, error) != nullptr);
+    ModelParams roomier = params;
+    roomier.n_ctx_most  = 4096;
+    CHECK(host.acquire_expert("agent", roomier, {}, {}, error) != nullptr);
+    CHECK_EQ(host.expert_count(), std::size_t{1});
+    llama_log_set(nullptr, nullptr);
+}
+
 TEST(a_model_load_holds_off_a_runtime_until_it_is_over) {
     // Only where a model is named: CRUCIBLE_TEST_MODEL, a small GGUF, with a
     // runtime installed that loads it. A load used to walk ggml's lists with
