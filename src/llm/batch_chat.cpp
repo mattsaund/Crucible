@@ -67,7 +67,20 @@ int side_by_side(const ModelShape& shape, std::uint64_t room, int context, int n
     if (each == 0) {
         return 1;   // an attention the header did not describe: no figure to divide by
     }
-    return static_cast<int>(std::clamp<std::uint64_t>(room / each, 1, static_cast<std::uint64_t>(most)));
+    const auto fits = static_cast<int>(std::clamp<std::uint64_t>(room / each, 1, static_cast<std::uint64_t>(most)));
+    // How many run at once changes the arithmetic of every pass, and with it
+    // the wording of answers: two runs on one machine, at 27 and 24 at once
+    // after the desktop took 750 MB more, differed in 160 of 450. So the
+    // count moves in steps a little memory either way does not cross: one,
+    // two, four, then eights.
+    if (fits >= 8) {
+        return fits / 8 * 8;
+    }
+    int step = 1;
+    while (step * 2 <= fits) {
+        step *= 2;
+    }
+    return step;
 }
 
 }  // namespace detail

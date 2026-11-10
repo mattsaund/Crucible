@@ -7,6 +7,9 @@
 // exits non-zero if anything failed, which is all CTest needs.
 #pragma once
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <functional>
@@ -89,8 +92,13 @@ inline void report_failure(const char* file, int line, const std::string& messag
 
 inline int run_all() {
     int failed_cases = 0;
+    // How long each case took, for the slowest list at the end: a suite that
+    // took half a minute on every machine took twenty on the Mac runner, for
+    // a release and a half before anybody could say which cases did it.
+    std::vector<std::pair<double, std::string>> took;
     for (const TestCase& test : registry()) {
         const int before = failure_count();
+        const auto began = std::chrono::steady_clock::now();
         current_test() = test.name;
         // Flushed, not just ended. When a case crashes, whatever names are still
         // in the buffer die with the process, and the log then stops up to a
@@ -106,6 +114,19 @@ inline int run_all() {
         if (failure_count() > before) {
             ++failed_cases;
         }
+        took.emplace_back(std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count(), test.name);
+    }
+
+    std::sort(took.begin(), took.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    double total = 0.0;
+    for (const auto& one : took) {
+        total += one.first;
+    }
+    std::cout << "\nslowest of " << took.size() << " cases, " << static_cast<long>(total) << " s in all:\n";
+    for (std::size_t i = 0; i < took.size() && i < 15; ++i) {
+        char seconds[32];
+        std::snprintf(seconds, sizeof seconds, "%8.2f s  ", took[i].first);
+        std::cout << seconds << took[i].second << "\n";
     }
 
     std::cout << "\n"

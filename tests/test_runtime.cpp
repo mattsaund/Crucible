@@ -349,6 +349,80 @@ TEST(a_model_in_system_memory_needs_room_beside_the_ones_there) {
     CHECK(!memory_has_room(kGb, 0, 0, 0, 0));
 }
 
+TEST(the_page_cache_says_how_much_of_a_file_it_holds_where_it_can) {
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "model.gguf";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << std::string(1U << 20, 'x');
+    }
+    const double share = cached_share(file.string());
+#if defined(_WIN32)
+    // Windows has nothing to ask.
+    CHECK(share < 0.0);
+#else
+    // Just written, so held, whatever the page size.
+    CHECK(share > 0.5);
+    CHECK(share <= 1.0);
+#endif
+    // Nothing is said of a file that is not there, or is empty.
+    CHECK(cached_share((dir.path() / "missing.gguf").string()) < 0.0);
+    { std::ofstream empty(dir.path() / "empty.gguf"); }
+    CHECK(cached_share((dir.path() / "empty.gguf").string()) < 0.0);
+}
+
+TEST(a_cold_file_is_read_the_fastest_way_this_system_has) {
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "model.gguf";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << std::string(1U << 20, 'x');
+    }
+    ModelParams params;
+    params.path = file.string();
+    ComputeDevice card;
+    card.is_gpu       = true;
+    card.backend      = "CUDA";
+    card.memory_total = card.memory_free = 8ULL << 30;
+    card.link_gbps    = 31.5;   // sixteen lanes, faster than any disk
+    std::vector<ComputeDevice> gpus{card};
+
+    // Cold, over a fast link, it is mapped, with readers ahead of it wherever
+    // a mapped load reads the file from one thread. Windows reads it ahead
+    // itself.
+#if defined(_WIN32)
+    CHECK(reading_for(params, gpus, 0.0) == FileRead::Mapped);
+#else
+    CHECK(reading_for(params, gpus, 0.0) == FileRead::Prefetched);
+#endif
+    // Mostly cached, or where the cache cannot be asked, it is mapped as it was.
+    CHECK(reading_for(params, gpus, 0.9) == FileRead::Mapped);
+    CHECK(reading_for(params, gpus, -1.0) == FileRead::Mapped);
+
+    // Over a link slower than the disk, past the cache, but only where
+    // llama.cpp's direct I/O goes past it.
+    gpus[0].link_gbps = 0.01;
+#if defined(__linux__)
+    CHECK(reading_for(params, gpus, 0.0) == FileRead::Direct);
+#elif defined(__APPLE__)
+    CHECK(reading_for(params, gpus, 0.0) == FileRead::Prefetched);
+#else
+    CHECK(reading_for(params, gpus, 0.0) == FileRead::Mapped);
+#endif
+    // Never on Vulkan, whose wait on an upload does not return, nor for a
+    // model on the processor.
+    gpus[0].backend = "Vulkan";
+    CHECK(reading_for(params, gpus, 0.0) != FileRead::Direct);
+    gpus[0].backend     = "CUDA";
+    params.on_processor = true;
+    CHECK(reading_for(params, gpus, 0.0) != FileRead::Direct);
+
+    // Asked for, as "Dedicated VRAM only" asks, it is direct everywhere.
+    params.on_processor = false;
+    params.direct_io    = true;
+    CHECK(reading_for(params, gpus, 0.9) == FileRead::Direct);
+}
+
 TEST(a_roomier_load_of_the_same_file_replaces_the_copy_nobody_is_using) {
     // Only where a model is named: CRUCIBLE_TEST_MODEL, a small GGUF, with a
     // runtime installed that loads it. A chat's model wanted by a build's

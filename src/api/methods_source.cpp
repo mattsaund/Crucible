@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <optional>
 #include <sstream>
 
@@ -28,6 +29,8 @@
 #include "crucible/tools/preview.hpp"
 #include "crucible/tools/workshop.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/platform.hpp"
+#include "crucible/util/sha256.hpp"
 #include "crucible/util/text.hpp"
 
 namespace crucible::api {
@@ -674,6 +677,95 @@ Reply preview_page(const json& params, const Scene& scene) {
                      {"skipped", bundle.skipped}});
 }
 
+// --- what a page in the preview saved --------------------------------------------
+//
+// A page shown in the preview keeps its data as it would packaged as an app:
+// with window.crucible.save, and in localStorage, both answered by the window
+// (ui/preview.js). The webview's own storage does not outlive the window, so
+// what a page saves is written here too and read back the next time it is
+// shown, after a restart as well: in the folder Crucible keeps for the project,
+// a folder for each page holding data.json and storage.json, the two files a
+// made app keeps (tools/app_runner.cpp). The project is the one the page was
+// shown in, which the page says, since a page can go on saving after another
+// project has been opened. sessionStorage is not kept: it ends with the
+// window, as a tab's does.
+
+/// Which of a page's two files holds `kind`: "data" for what it saved with
+/// window.crucible.save, "local" for its localStorage. Empty for anything else.
+std::string kept_file_name(const std::string& kind) {
+    return kind == "data" ? "data.json" : kind == "local" ? "storage.json" : std::string();
+}
+
+/// The folder for `page` of the project at `root`: named for the page's file,
+/// and for the whole of its path by a digest, since that can be anything.
+std::filesystem::path kept_folder(const std::string& root, const std::string& page) {
+    std::string slug = std::filesystem::path(page).filename().string();
+    for (char& c : slug) {
+        if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '-' && c != '_') {
+            c = '-';
+        }
+    }
+    if (slug.size() > 40) {
+        slug.resize(40);
+    }
+    util::Sha256 digest;
+    digest.update(page);
+    return Project::at(root).dir / "preview" / (slug + "-" + digest.hex().substr(0, 8));
+}
+
+/// Lookups run on whichever worker is free, and two may write one page's file.
+std::mutex& kept_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+/// What a page saved when it was last shown: `data` and `local`, each only
+/// when the page has kept one.
+Reply preview_kept(const json& params, const Scene&) {
+    const auto root = params.value("root", std::string{});
+    const auto page = params.value("page", std::string{});
+    if (root.empty() || page.empty()) {
+        return bad("preview.kept needs the project and the page");
+    }
+    const std::filesystem::path folder = kept_folder(root, page);
+    json out = json::object();
+    const std::lock_guard<std::mutex> lock(kept_mutex());
+    for (const std::string kind : {"data", "local"}) {
+        const std::optional<std::string> text = slurp(folder / kept_file_name(kind));
+        json kept = text ? json::parse(*text, nullptr, false) : json();
+        // A file that does not parse was not written whole, and a storage
+        // that is not names and values is none: as good as nothing kept.
+        if (text && !kept.is_discarded() && (kind == "data" || kept.is_object())) {
+            out[kind] = std::move(kept);
+        }
+    }
+    return good(out);
+}
+
+/// Keep what a page saved, `value`, as `kind`, for the next time it is shown.
+Reply preview_keep(const json& params, const Scene&) {
+    const auto root = params.value("root", std::string{});
+    const auto page = params.value("page", std::string{});
+    const std::string name = kept_file_name(params.value("kind", std::string{}));
+    if (root.empty() || page.empty() || name.empty()) {
+        return bad("preview.keep needs the project, the page and which to keep");
+    }
+    const auto value = params.find("value");
+    if (value == params.end() || (name == "storage.json" && !value->is_object())) {
+        return bad("preview.keep needs what to keep");
+    }
+    const std::filesystem::path folder = kept_folder(root, page);
+    const std::lock_guard<std::mutex> lock(kept_mutex());
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    std::string error;
+    if (!util::write_file_atomically(folder / name,
+                                     value->dump(-1, ' ', false, json::error_handler_t::replace), error)) {
+        return bad(error);
+    }
+    return good();
+}
+
 // ---------------------------------------------------------------------------
 // Making the project's page a program
 // ---------------------------------------------------------------------------
@@ -862,6 +954,8 @@ void source_methods(std::vector<Method>& table) {
     table.push_back({"git.ci",             git_ci, nullptr});
     table.push_back({"preview.candidates", preview_candidates, nullptr});
     table.push_back({"preview.page",       preview_page, nullptr});
+    table.push_back({"preview.kept",       preview_kept, nullptr});
+    table.push_back({"preview.keep",       preview_keep, nullptr});
     table.push_back({"app.name",           app_name, nullptr});
     table.push_back({"app.package",        app_package, nullptr});
     table.push_back({"app.open",           nullptr, app_open});

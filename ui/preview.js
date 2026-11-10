@@ -20,10 +20,19 @@ state.preview = { pages: null, page: '', url: '', html: '', inlined: [], skipped
                   picked: null, changes: [], error: '', loading: false, stale: false,
                   making: null, made: null, shown: null, kept: '{}', storing: false };
 
-/// What pages in the preview have saved, by project and page, for as long
-/// as the window is open: with window.crucible.save, and in localStorage and
-/// sessionStorage. See DATA_SCRIPT and storageScript.
+/// What pages in the preview have saved, by project and page: with
+/// window.crucible.save, and in localStorage and sessionStorage. Held here
+/// while the window is open. The first two are written through to files of
+/// Crucible's own as well (preview.keep), since the webview's own storage
+/// does not outlive the window, and read back from them the first time a
+/// page is shown after a start (preview.kept). See DATA_SCRIPT and
+/// storageScript.
 const previewData = {};
+
+/// Writes on their way to those files, by key: present while one is, and
+/// true when another change came meanwhile, which is sent once it lands. One
+/// at a time, so an older write cannot land after a newer one.
+const previewWriting = {};
 
 /// What a page of the project is given to keep its data with: the same
 /// window.crucible.load() and save(data) the program it is packaged as
@@ -178,8 +187,10 @@ function tunedDocument(html, kept) {
   const storage = storageScript(kept || '{}');
   const data = `<script>${DATA_SCRIPT}<\/script>${storage ? `<script>${storage}<\/script>` : ''}`;
   // The data calls first of all, so the page's own scripts find them; the
-  // picker last, once there is a page to pick from.
-  const head = /<head[^>]*>/i.exec(html);
+  // picker last, once there is a page to pick from. Just inside the head, not
+  // a <header>, and after the doctype of a page with no head, which would be
+  // drawn in quirks mode with anything before its doctype.
+  const head = /<head(\s[^>]*)?>/i.exec(html) || /<!doctype[^>]*>/i.exec(html);
   let out = head ? html.slice(0, head.index + head[0].length) + data + html.slice(head.index + head[0].length)
                  : data + html;
   const at = out.lastIndexOf('</body>');
@@ -187,37 +198,51 @@ function tunedDocument(html, kept) {
   return out;
 }
 
-/// The key a page's preview data is remembered under: its project and the
-/// page, as they were when it was loaded, so a page still running after the
-/// project has changed keeps its data in its own. `kind` is which data:
-/// "data" for window.crucible.save, "local" and "session" for its storage.
-function previewDataKey(kind) {
+/// Where a page's preview data is remembered: its project and the page, as
+/// they were when it was loaded, so a page still running after the project
+/// has changed keeps its data in its own.
+function previewWhere() {
   const p = state.preview;
-  const where = p.shown || [(state.snapshot.project || {}).root || '', p.page];
-  return `preview-${kind || 'data'}:${JSON.stringify(where)}`;
+  return p.shown || [(state.snapshot.project || {}).root || '', p.page];
 }
 
-/// Keep what a page in the preview saved, under `kind`: in memory, and in
-/// this window's own storage when it has some. sessionStorage stays in
-/// memory only, the way a tab keeps it.
+/// The key a page's preview data is held under. `kind` is which data:
+/// "data" for window.crucible.save, "local" and "session" for its storage.
+function previewDataKey(kind, where) {
+  return `preview-${kind || 'data'}:${JSON.stringify(where || previewWhere())}`;
+}
+
+/// Keep what a page in the preview saved, under `kind`: in memory, and in a
+/// file of Crucible's own for all but sessionStorage, which ends with the
+/// window, the way a tab's does.
 function previewKeep(kind, value) {
-  const key = previewDataKey(kind);
+  const where = previewWhere();
+  const key = previewDataKey(kind, where);
   previewData[key] = value;
   if (kind === 'session') return;
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* no storage: memory will do */ }
+  if (key in previewWriting) { previewWriting[key] = true; return; }
+  const write = () => {
+    previewWriting[key] = false;
+    call('preview.keep', { root: where[0], page: where[1], kind, value: previewData[key] })
+      .catch(() => { /* kept in this window, at least */ })
+      .then(() => { if (previewWriting[key]) write(); else delete previewWriting[key]; });
+  };
+  write();
 }
 
 /// What a page in the preview saved under `kind`, or `none`.
 function previewKept(kind, none) {
   const key = previewDataKey(kind);
-  if (key in previewData) return previewData[key];
-  if (kind !== 'session') {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw !== null) return JSON.parse(raw);
-    } catch (e) { /* none, then */ }
+  return key in previewData ? previewData[key] : none;
+}
+
+/// What a page kept in those files, `kept` as preview.kept says it, held for
+/// each kind this window does not hold already: what it holds is newer.
+function previewRecall(where, kept) {
+  for (const kind of ['data', 'local']) {
+    const key = previewDataKey(kind, where);
+    if (kept && kind in kept && !(key in previewData)) previewData[key] = kept[kind];
   }
-  return none;
 }
 
 /// What the page's storage holds now, as the stand-in for it starts from.
@@ -374,8 +399,9 @@ function tellFrame(message) {
 
 async function loadPreview(page) {
   const p = state.preview;
+  const shown = [(state.snapshot.project || {}).root || '', page];
   p.page = page;
-  p.shown = [(state.snapshot.project || {}).root || '', page];
+  p.shown = shown;
   p.storing = false;
   p.html = '';
   p.picked = null;
@@ -387,7 +413,14 @@ async function loadPreview(page) {
   p.loading = true;
   render();
   try {
-    const got = await call('preview.page', { path: page });
+    const [got, kept] = await Promise.all([
+      call('preview.page', { path: page }),
+      // What it saved before, for a page shown for the first time since the
+      // window opened. Without it the page is shown all the same.
+      call('preview.kept', { root: shown[0], page }).catch(() => ({}))]);
+    previewRecall(shown, kept);
+    // Another page was asked for meanwhile, and that one is shown.
+    if (p.shown !== shown) return;
     p.html = got.html;
     // Fixed for as long as this is shown: the document is drawn again on
     // every redraw, and a different one would be a reload.

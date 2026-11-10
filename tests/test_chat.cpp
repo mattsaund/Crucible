@@ -458,7 +458,7 @@ TEST(a_turn_reads_a_file_and_answers_from_what_it_read) {
                                     "read notes.txt", "Programming is answering", ""}));
 }
 
-TEST(a_turn_is_not_run_the_same_call_twice) {
+TEST(a_turn_is_not_run_the_same_call_twice_and_answers_with_no_tools_offered) {
     Rig rig(script({reply("READ: notes.txt"), reply("READ: notes.txt"), reply("Done.")}));
     if (!rig.ready()) {
         skipped();
@@ -472,8 +472,13 @@ TEST(a_turn_is_not_run_the_same_call_twice) {
     CHECK_EQ(requests.size(), std::size_t{3});
     const json& third = requests.at(2)["messages"];
     CHECK_EQ(text_of(third.back()),
-             std::string("You already did exactly that this turn, and its result is above. Use it, "
-                         "and if it told you what you needed, answer now."));
+             std::string("You already did exactly that this turn, and its result is above. You have no "
+                         "tools left, so answer the question now from what you have, and say plainly if "
+                         "it is not enough."));
+    // The rounds before it were told of the tools, and it is not.
+    CHECK(has(text_of(requests.at(1)["messages"].front()), "You can act on the project"));
+    CHECK(!has(text_of(third.front()), "You can act on the project"));
+    CHECK(has(text_of(third.front()), kSystem));
 }
 
 TEST(a_turn_asks_before_it_writes_and_a_no_leaves_the_file_alone) {
@@ -576,35 +581,63 @@ TEST(an_edit_that_would_not_apply_is_run_rather_than_asked_about) {
     CHECK_EQ(turn.reply, std::string("Could not."));
 }
 
-TEST(a_turn_out_of_rounds_says_so_and_remembers_what_the_expert_said) {
-    // Twelve different reads, one a round: the most a turn may take.
+TEST(a_turn_out_of_rounds_answers_from_what_it_has_with_no_tools_offered) {
+    // Twelve different reads, one a round: the most a turn may take. The
+    // twelfth is not run, and the round after it answers.
     json replies = json::array();
     for (int i = 0; i < 12; ++i) {
         replies.push_back(reply("READ: f" + std::to_string(i) + ".txt"));
     }
-    replies.push_back(reply("Fine."));
+    replies.push_back(reply("William Shakespeare."));
+    Rig rig(json{{"replies", replies}});
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn turn = rig.ask("Who wrote Hamlet?");
+    CHECK_EQ(turn.actions.size(), std::size_t{11});
+    CHECK_EQ(turn.reply, std::string("William Shakespeare."));
+    CHECK(!turn.failed);
+
+    const std::vector<json> requests = rig.requests();
+    CHECK_EQ(requests.size(), std::size_t{13});
+    const std::string last = "That was the last action available this turn. Write the answer now from what you have.";
+    CHECK(!has(text_of(requests.at(10)["messages"].back()), last));
+    CHECK(has(text_of(requests.at(11)["messages"].back()), last));
+    const json& answering = requests.at(12)["messages"];
+    CHECK_EQ(text_of(answering[answering.size() - 2]), std::string("READ: f11.txt"));
+    CHECK(has(text_of(answering.back()), "That was not run. You have no tools left this turn"));
+    CHECK(has(text_of(requests.at(11)["messages"].front()), "You can act on the project"));
+    CHECK(!has(text_of(answering.front()), "You can act on the project"));
+
+    // The history keeps the answer.
+    rig.ask("Thanks.");
+    const json next = rig.requests().at(13)["messages"];
+    CHECK_EQ(next.size(), std::size_t{4});
+    CHECK_EQ(text_of(next[2]), std::string("William Shakespeare."));
+}
+
+TEST(a_turn_that_calls_even_with_no_tools_offered_says_so_and_remembers_what_the_expert_said) {
+    json replies = json::array();
+    for (int i = 0; i < 13; ++i) {
+        replies.push_back(reply("READ: f" + std::to_string(i) + ".txt"));
+    }
     Rig rig(json{{"replies", replies}});
     if (!rig.ready()) {
         skipped();
         return;
     }
     const Turn turn = rig.ask("Read everything.");
-    CHECK_EQ(turn.actions.size(), std::size_t{11});
     // A call left where the answer goes is never shown as the answer.
     CHECK_EQ(turn.reply, std::string("(ran out of turns before finishing. Ask again to carry on)"));
     CHECK(!turn.failed);
-
-    const std::vector<json> requests = rig.requests();
-    CHECK_EQ(requests.size(), std::size_t{12});
-    const std::string last = "That was the last action available this turn. Write the answer now from what you have.";
-    CHECK(!has(text_of(requests.at(10)["messages"].back()), last));
-    CHECK(has(text_of(requests.at(11)["messages"].back()), last));
+    CHECK_EQ(rig.requests().size(), std::size_t{13});
 
     // The history keeps what the expert said, not what was said about it.
     rig.ask("Well?");
-    const json next = rig.requests().at(12)["messages"];
+    const json next = rig.requests().at(13)["messages"];
     CHECK_EQ(next.size(), std::size_t{4});
-    CHECK_EQ(text_of(next[2]), std::string("READ: f11.txt"));
+    CHECK_EQ(text_of(next[2]), std::string("READ: f12.txt"));
 }
 
 TEST(a_turn_without_a_project_has_no_tools_and_one_round) {
@@ -677,13 +710,17 @@ TEST(a_turn_searches_and_is_told_when_it_asks_for_the_same_search_again) {
              std::string("You have already searched for \"capital of France\" and been given the "
                          "results above.\n\nThis was the last search available. Answer now from what "
                          "you have, and say plainly if it is not enough."));
+    // Asked for twice, the answer is asked for with no tools offered.
+    CHECK(!has(text_of(requests.at(2)["messages"].front()), "You can look things up on the internet."));
     CHECK(in_order(rig.statuses(), {"searching for \"capital of France\"",
                                     "already searched for \"capital of France\""}));
 }
 
-TEST(a_turn_that_keeps_searching_is_stopped_and_says_why) {
-    // No project: the search's own rounds, Settings' two and the answer.
-    Rig rig(json{{"replies", {reply("SEARCH: one"), reply("SEARCH: two"), reply("SEARCH: three")}},
+TEST(a_turn_that_keeps_searching_is_asked_to_answer_and_says_why_when_it_will_not) {
+    // No project: the search's own rounds, Settings' two and the answer, and
+    // then one with no tools offered.
+    Rig rig(json{{"replies", {reply("SEARCH: one"), reply("SEARCH: two"), reply("SEARCH: three"),
+                              reply("SEARCH: four")}},
                  {"results", json::array()}},
             [](Config& config) { config.tools.web_search = true; }, /*with_project=*/false);
     if (!rig.ready()) {
@@ -697,10 +734,14 @@ TEST(a_turn_that_keeps_searching_is_stopped_and_says_why) {
     if (turn.actions.size() == 2) {
         CHECK_EQ(turn.actions[0].summary, std::string("searched \"one\": nothing found for \"one\""));
     }
+    CHECK_EQ(rig.searches().size(), std::size_t{2});
     const std::vector<json> requests = rig.requests();
-    CHECK_EQ(requests.size(), std::size_t{3});
+    CHECK_EQ(requests.size(), std::size_t{4});
     CHECK(has(text_of(requests.at(2)["messages"].back()), "This was the last search available."));
     CHECK(!has(text_of(requests.at(1)["messages"].back()), "This was the last search available."));
+    CHECK(has(text_of(requests.at(2)["messages"].front()), "You can look things up on the internet."));
+    CHECK(has(text_of(requests.at(3)["messages"].back()), "That was not run."));
+    CHECK(!has(text_of(requests.at(3)["messages"].front()), "You can look things up on the internet."));
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,9 @@
 // policy that decides how much of one to use.
 #include "test_helpers.hpp"
 
+#include <cmath>
+#include <optional>
+
 // ---------------------------------------------------------------------------
 // GPU priority order
 //
@@ -102,7 +105,7 @@ TEST(between_links_alike_the_larger_card_comes_first) {
 
 TEST(links_differ_only_where_every_one_is_known_and_one_is_far_faster) {
     std::vector<ComputeDevice> gpus{gpu_at(0, "A"), gpu_at(1, "B"), gpu_at(2, "C")};
-    CHECK(!links_differ(gpus));                       // none known: Windows, a Mac
+    CHECK(!links_differ(gpus));                       // none known: a Mac, or a slot unread
     gpus[0].link_gbps = 31.5;
     gpus[1].link_gbps = 0.98;
     CHECK(!links_differ(gpus));                       // one still unknown
@@ -148,6 +151,179 @@ TEST(auto_mode_plans_fastest_link_first_where_the_links_differ) {
     policy   = split_policy(gpu, model, gpus);
     CHECK(policy.mode == GpuSplitMode::Priority);
     CHECK_EQ(policy.order.size(), std::size_t{3});
+}
+
+// ---------------------------------------------------------------------------
+// PCIe links
+//
+// Linux says a card's link in sysfs and Windows in its device properties, and
+// both are weighed by the same rules. Reading them takes the hardware. The
+// rules do not, and nor does finding a card among what Windows lists.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// An address as "domain:bus:device.function", in decimal, or "none", so a
+/// mismatch prints what was read.
+std::string address_text(const std::optional<pci::Address>& at) {
+    if (!at) {
+        return "none";
+    }
+    return std::to_string(at->domain) + ":" + std::to_string(at->bus) + ":" + std::to_string(at->device) + "."
+         + std::to_string(at->function);
+}
+
+/// Within a hundredth of a GB a second.
+bool about(double gbps, double expected) {
+    return std::abs(gbps - expected) < 0.01;
+}
+
+/// A PCI function on domain zero as Windows lists it.
+pci::Function function_at(std::uint32_t bus, std::uint32_t device, std::string instance, std::string parent,
+                          std::uint32_t max_speed, std::uint32_t lanes, std::uint32_t max_lanes) {
+    pci::Function function;
+    function.address.bus    = bus;
+    function.address.device = device;
+    function.instance       = std::move(instance);
+    function.parent         = std::move(parent);
+    function.max_speed      = max_speed;
+    function.lanes          = lanes;
+    function.max_lanes      = max_lanes;
+    return function;
+}
+
+}  // namespace
+
+TEST(a_bus_id_is_read_the_way_cuda_and_vulkan_write_it) {
+    CHECK_EQ(address_text(pci::parse_bus_id("0000:01:00.0")), std::string{"0:1:0.0"});
+    // Hex in either case, and a domain of eight digits as well as four.
+    CHECK_EQ(address_text(pci::parse_bus_id("0000:2b:1f.7")), std::string{"0:43:31.7"});
+    CHECK_EQ(address_text(pci::parse_bus_id("0001:2B:00.1")), std::string{"1:43:0.1"});
+    CHECK_EQ(address_text(pci::parse_bus_id("00000000:01:00.0")), std::string{"0:1:0.0"});
+    // A CUDA card split into virtual devices names no slot, and nor does
+    // anything PCI cannot address or that is not a bus id at all.
+    for (const char* id : {"0000:01:00.0-v1", "", "0000:01:00", "0000:01.00.0", "0000:100:00.0", "0000:01:20.0",
+                           "0000:01:00.8", " 0000:01:00.0", "0000:01:00.0 ", "-1:01:00.0", "0x0:01:00.0", "Metal"}) {
+        CHECK_EQ(address_text(pci::parse_bus_id(id)), std::string{"none"});
+    }
+}
+
+TEST(windows_places_a_function_by_its_bus_number_and_address) {
+    // DEVPKEY_Device_Address holds the device in its high word and the
+    // function in its low one. The domain Windows does not say.
+    CHECK_EQ(address_text(pci::address_of(1, 0)), std::string{"0:1:0.0"});
+    CHECK_EQ(address_text(pci::address_of(0x2b, (3U << 16) | 1U)), std::string{"0:43:3.1"});
+    // All ones is a bus driver that gave no address, and the rest are
+    // addresses no PCI function can have.
+    CHECK_EQ(address_text(pci::address_of(0, 0xFFFFFFFFU)), std::string{"none"});
+    CHECK_EQ(address_text(pci::address_of(0x100, 0)), std::string{"none"});
+    CHECK_EQ(address_text(pci::address_of(0, 0x20U << 16)), std::string{"none"});
+    CHECK_EQ(address_text(pci::address_of(0, 8)), std::string{"none"});
+}
+
+TEST(a_link_speed_code_is_the_rate_of_its_generation) {
+    // The PCIe registers' own codes, which Windows hands on as they are.
+    CHECK_EQ(pci::rate_of_code(1), 2.5);
+    CHECK_EQ(pci::rate_of_code(2), 5.0);
+    CHECK_EQ(pci::rate_of_code(3), 8.0);
+    CHECK_EQ(pci::rate_of_code(4), 16.0);
+    CHECK_EQ(pci::rate_of_code(5), 32.0);
+    CHECK_EQ(pci::rate_of_code(6), 64.0);
+    // Not said, or a code PCIe has no rate for.
+    CHECK_EQ(pci::rate_of_code(0), 0.0);
+    CHECK_EQ(pci::rate_of_code(7), 0.0);
+}
+
+TEST(a_link_runs_at_the_slower_end_over_the_lanes_agreed) {
+    // A fourth generation card on sixteen lanes of a port like it.
+    pci::Slot slot;
+    slot.card_rate  = 16.0;
+    slot.port_rate  = 16.0;
+    slot.lanes      = 16.0;
+    slot.card_lanes = 16.0;
+    slot.port_lanes = 16.0;
+    CHECK(about(pci::link_gbps(slot), 31.51));
+    // On a third generation port it runs at the port's rate, and on one lane
+    // at a sixteenth of that, which is what this machine's slowest cards read.
+    slot.port_rate = 8.0;
+    CHECK(about(pci::link_gbps(slot), 15.75));
+    slot.lanes = 1.0;
+    CHECK(about(pci::link_gbps(slot), 0.98));
+    // Up to 5 GT/s a lane carries four fifths of its rate.
+    slot.card_rate = slot.port_rate = 5.0;
+    slot.lanes     = 16.0;
+    CHECK(about(pci::link_gbps(slot), 8.0));
+    // The lanes agreed on, when not said, are the card's own, as far as the
+    // port goes.
+    slot.card_rate = slot.port_rate = 16.0;
+    slot.lanes      = 0.0;
+    slot.port_lanes = 4.0;
+    CHECK(about(pci::link_gbps(slot), 7.88));
+    // A rate the card does not say is the port's.
+    slot.card_rate = 0.0;
+    CHECK(about(pci::link_gbps(slot), 7.88));
+    // No rate, or no lanes, is no link known.
+    slot.port_rate = 0.0;
+    CHECK_EQ(pci::link_gbps(slot), 0.0);
+    pci::Slot no_lanes;
+    no_lanes.card_rate = no_lanes.port_rate = 16.0;
+    CHECK_EQ(pci::link_gbps(no_lanes), 0.0);
+}
+
+TEST(a_card_windows_lists_is_weighed_through_the_port_it_is_plugged_into) {
+    // A machine like this one as Windows lists it: a port of the processor,
+    // fifth generation on sixteen lanes, with a fourth generation card in it,
+    // and a port of the chipset wired for one lane, with another card.
+    const std::string processor_port = R"(PCI\VEN_8086&DEV_A70D&SUBSYS_7D251462&REV_01\3&11583659&0&08)";
+    const std::string chipset_port   = R"(PCI\VEN_8086&DEV_7A38&SUBSYS_7D251462&REV_11\3&11583659&0&E0)";
+    const std::string fast_card      = R"(PCI\VEN_10DE&DEV_2D04&SUBSYS_205E10DE&REV_A1\4&2D2A9D4F&0&0008)";
+    const std::string slow_card      = R"(PCI\VEN_10DE&DEV_2504&SUBSYS_397D1462&REV_A1\4&1F1E2B3C&0&00E0)";
+    std::vector<pci::Function> listed{
+        function_at(0, 1, processor_port, R"(ACPI\PNP0A08\0)", 5, 16, 16),
+        // Its port named in another case, which names the same device.
+        function_at(1, 0, fast_card, R"(pci\ven_8086&dev_a70d&subsys_7d251462&rev_01\3&11583659&0&08)", 4, 16, 16),
+        function_at(0, 0x1c, chipset_port, R"(ACPI\PNP0A08\0)", 4, 1, 1),
+        function_at(5, 0, slow_card, chipset_port, 4, 1, 16),
+    };
+
+    // The desktop is drawn on the fast card.
+    const pci::Link fast = pci::card_link(listed, *pci::parse_bus_id("0000:01:00.0"), fast_card);
+    CHECK(about(fast.gbps, 31.51));
+    CHECK(fast.display);
+    const pci::Link slow = pci::card_link(listed, *pci::parse_bus_id("0000:05:00.0"), fast_card);
+    CHECK(about(slow.gbps, 1.97));
+    CHECK(!slow.display);
+    // With no desktop known, no card draws it.
+    CHECK(!pci::card_link(listed, *pci::parse_bus_id("0000:01:00.0"), "").display);
+
+    // A card whose port is not among the functions listed, as one on the
+    // root complex itself, is weighed by its own figures.
+    listed.push_back(function_at(0, 2, R"(PCI\VEN_8086&DEV_A780&SUBSYS_7D251462&REV_04\3&11583659&0&10)",
+                                 R"(ACPI\PNP0A08\0)", 3, 8, 8));
+    CHECK(about(pci::card_link(listed, *pci::parse_bus_id("0000:00:02.0"), fast_card).gbps, 7.88));
+
+    // A card not listed is not known, and nor is one whose bus, device and
+    // function are listed twice, which is two domains Windows does not tell
+    // apart.
+    CHECK_EQ(pci::card_link(listed, *pci::parse_bus_id("0000:09:00.0"), fast_card).gbps, 0.0);
+    listed.push_back(function_at(1, 0, R"(PCI\VEN_10DE&DEV_2D04&SUBSYS_205E10DE&REV_A1\4&3A4B5C6D&0&0008)",
+                                 R"(PCI\VEN_8086&DEV_09AB&SUBSYS_00000000&REV_00\5&1234ABCD&0&08)", 4, 16, 16));
+    const pci::Link either = pci::card_link(listed, *pci::parse_bus_id("0000:01:00.0"), fast_card);
+    CHECK_EQ(either.gbps, 0.0);
+    CHECK(!either.display);
+}
+
+TEST(asking_this_system_about_a_slot_never_fails) {
+    // Whatever the machine, with cards or none. On Windows the first
+    // question lists every PCI function and the desktop's adapter for real.
+    for (const char* id : {static_cast<const char*>(nullptr), "", "not a bus id", "0000:01:00.0-v1"}) {
+        const pci::Link link = pci::link_of(id);
+        CHECK_EQ(link.gbps, 0.0);
+        CHECK(!link.display);
+    }
+    const pci::Link host = pci::link_of("0000:00:00.0");
+    CHECK(std::isfinite(host.gbps));
+    CHECK(host.gbps >= 0.0);
 }
 
 TEST(the_vulkan_backend_asks_for_the_spirv_headers) {

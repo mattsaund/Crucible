@@ -119,13 +119,14 @@ function capabilityIcons(l) {
 
 // --- logos ---------------------------------------------------------------------
 //
-// Beside each repository, the logo of whose model it is: Qwen's beside a GGUF
-// of Qwen3 that unsloth made. The core fetches each owner's picture once and
-// keeps it (market/logos.hpp); the page asks after a list is drawn, so the
-// list never waits for a picture.
+// Beside each repository, the picture its card names for it, or else the logo
+// of whose model it is: Qwen's beside a GGUF of Qwen3 that unsloth made. The
+// core fetches each picture once and keeps it (market/logos.hpp); the page
+// asks after a list is drawn, so the list never waits for a picture.
 
-/// Logos by whose they are, in lower case: { image, light } once known, the
-/// image a data: URL or '' for none, and null while one is on its way.
+/// Logos by whose they are, in lower case, an owner or a repository with a
+/// picture of its own: { image, light } once known, the image a data: URL or
+/// '' for none, and null while one is on its way.
 function logosNow() {
   return state.logos || (state.logos = {});
 }

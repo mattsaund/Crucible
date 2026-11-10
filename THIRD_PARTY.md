@@ -204,9 +204,10 @@ runs it over the start of [WikiText-2](https://huggingface.co/datasets/Salesforc
 (CC BY-SA 3.0 and GFDL), fetched the same way, once, and kept in the same folder.
 
 While you search in **Models**, the logos beside the results are the pictures
-of the organizations and people on Hugging Face, fetched from huggingface.co
-and cdn-avatars.huggingface.co and kept in Crucible's data folder. Each logo
-belongs to its owner.
+of the organizations and people on Hugging Face, or the picture a
+repository's own card names, fetched over https from huggingface.co, hf.co
+and the hub's servers they send the download to, and kept in Crucible's data
+folder. Each picture belongs to its owner.
 
 ## The training environment
 

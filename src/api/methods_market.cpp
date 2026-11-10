@@ -28,7 +28,7 @@ json listing_json(const market::Listing& l) {
                 {"params_b", l.params_b}, {"architecture", l.architecture}, {"context", l.context},
                 {"pipeline", l.pipeline}, {"vision", l.vision}, {"tools", l.tools},
                 {"reasoning", l.reasoning}, {"gated", l.gated}, {"license", l.license},
-                {"base_model", l.base_model}, {"logo", market::logo_owner(l.id, l.base_model)}};
+                {"base_model", l.base_model}, {"logo", market::logo_key(l)}};
 }
 
 /// A page of a search: the first, or the one the last page said was next.
@@ -139,10 +139,11 @@ Reply market_readme(const json& params, const Scene&) {
     return good(json{{"text", crucible::detail::scrub_utf8(text)}});
 }
 
-/// The logo beside a repository, by its id: whose it is, and the picture as
-/// a data: URL the page can show, or empty for none. The Models tab asks
-/// once per owner a list shows, after the list; anything else that names a
-/// repository can ask the same. See market/logos.hpp.
+/// The logo beside a repository, by its id: whose it is, an owner or the
+/// repository itself for a picture of its own, and the picture as a data:
+/// URL the page can show, or empty for none. The Models tab asks once per
+/// logo a list shows, after the list; anything else that names a repository
+/// can ask the same. See market/logos.hpp.
 Reply market_logo(const json& params, const Scene&) {
     const std::string id = text_of(params, "id");
     market::Logo      logo;

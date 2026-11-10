@@ -24,16 +24,58 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# actions: read, for asking whether this commit has passed its checks already.
 permissions:
   contents: write
+  actions: read
 
 jobs:
+  # The checks, in this run rather than before it. A tag used to wait for CI on
+  # main to pass, half an hour, and only then could the installers' hour
+  # start; now the two run side by side and the release is published only if
+  # both pass. A commit that passed its checks on a branch already is not
+  # checked twice.
+  checked:
+    name: Checked already
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      done: ${{ steps.look.outputs.done }}
+    steps:
+      - id: look
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --commit "$GITHUB_SHA" \
+                    --status success --json databaseId --jq 'length')"
+          echo "build runs that passed on $GITHUB_SHA: ${passed:-0}"
+          if [ "${passed:-0}" -gt 0 ]; then echo "done=true" >> "$GITHUB_OUTPUT"; else echo "done=false" >> "$GITHUB_OUTPUT"; fi
+
+  checks:
+    name: Checks
+    needs: checked
+    if: startsWith(github.ref, 'refs/tags/v') && needs.checked.outputs.done != 'true'
+    uses: ./.github/workflows/build.yml
+
   macos:
     name: macOS disk image
     runs-on: macos-latest
     timeout-minutes: 90
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Not on Windows, where the Visual Studio generator, the one
+      # people build with, takes no compiler launcher.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          max-size: 1G
 
       - name: Configure
         run: >
@@ -111,7 +153,8 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           if (-not (Test-Path $iscc)) { throw "no ISCC.exe at $iscc" }
           $version = ((& .\stage\bin\crucible.exe --version) | Select-Object -First 1).Split(' ')[-1]
-          & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" `
+          $numeric = $version.Split('-')[0]
+          & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" "/DNumericVersion=$numeric" `
                   "/O$PWD\dist" packaging\windows\crucible.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
 
@@ -126,8 +169,21 @@ jobs:
     # is built on the oldest runner still supported rather than the newest.
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Not on Windows, where the Visual Studio generator, the one
+      # people build with, takes no compiler launcher.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          max-size: 1G
 
       # WebKitGTK is what the interface is drawn in; the rest is what the
       # AppImage needs to carry.
@@ -187,16 +243,22 @@ jobs:
 
       - uses: softprops/action-gh-release@v3
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.recipe
           draft: true
 
   release:
     name: Publish the release
-    needs: [macos, windows, linux, runtimes-attach]
-    # Pushing the tag is the decision to release: the three installers have to
-    # pass, and the runtimes have to be on the draft, whichever of them built.
+    needs: [checked, checks, macos, windows, linux, runtimes-attach]
+    # Pushing the tag is the decision to release, and the run is what decides
+    # whether it goes out: the checks have to pass (here, or on the commit
+    # before), the three installers too, and the runtimes have to be on the
+    # draft, whichever of them built. Anything less leaves the draft unseen.
     if: >-
       startsWith(github.ref, 'refs/tags/v') && !cancelled()
+      && needs.checked.result == 'success'
+      && (needs.checked.outputs.done == 'true' || needs.checks.result == 'success')
       && needs.macos.result == 'success' && needs.windows.result == 'success'
       && needs.linux.result == 'success' && needs.runtimes-attach.result == 'success'
     runs-on: ubuntu-latest
@@ -213,4 +275,10 @@ jobs:
           # the installers are uploaded to the draft first and only then is
           # it made public, in this one step.
           draft: false
+          # A tag with a dash in it (v1.0.0-pre.1) is a pre-release: never
+          # Latest, so the website and everybody's update check stay on the
+          # last release, which is what Crucible's own version order says too
+          # (a pre-release of a version is older than the version).
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
           generate_release_notes: true

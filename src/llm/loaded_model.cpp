@@ -796,6 +796,36 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
         return result;
     }
 
+    // Some models read a picture with attention both ways, Gemma 3 and 4
+    // among them. llama.cpp decodes such a picture with the causal mask off
+    // and asserts that no batch read that way is larger than its micro-batch,
+    // ending the program when one is (llama-context.cpp, decode). Nor can a
+    // picture be read in parts: mtmd decodes it a batch at a time, and a part
+    // read before the rest never sees it. So those pictures go in batches of
+    // the micro-batch, llama.cpp's 512 unless Batch is lower, and each has to
+    // fit in one. ModelHost holds a projector that takes pictures of any size
+    // to that. One of a fixed size larger than it, Gemma 3's 256 tokens at a
+    // Batch below that, is refused rather than misread.
+    int       batch_size = std::max(1, std::min(request.params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
+    const int micro      = std::max(1, static_cast<int>(llama_n_ubatch(ctx_)));
+    for (std::size_t i = 0; i < mtmd_input_chunks_size(chunks.get()); ++i) {
+        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks.get(), i);
+        if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT
+            || !mtmd_decode_use_non_causal(vision_, chunk)) {
+            continue;
+        }
+        const std::size_t tokens = mtmd_input_chunk_get_n_tokens(chunk);
+        if (tokens > static_cast<std::size_t>(micro)) {
+            result.error = "this model reads a picture whole, and this one is " + std::to_string(tokens)
+                         + " tokens where it reads " + std::to_string(micro) + " at once";
+            if (tokens <= llama_context_default_params().n_ubatch) {
+                result.error += ". Raise \"Batch\" to " + std::to_string(tokens) + " or more";
+            }
+            return result;
+        }
+        batch_size = micro;
+    }
+
     // Started over: what the context held was text, and is no prefix of this.
     llama_memory_clear(llama_get_memory(ctx_), true);
     forget();
@@ -813,20 +843,6 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
     const auto prompt_start = Clock::now();
     result.stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks.get()));
     llama_pos past = 0;
-    int batch_size = std::max(1, std::min(request.params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
-    // A picture some models read with attention both ways -- Gemma 3 and 4
-    // among them -- is decoded with the causal mask off, and llama.cpp
-    // asserts that no batch read that way is larger than its micro-batch,
-    // ending the program when one is (llama-context.cpp, decode). The
-    // micro-batch stays at llama.cpp's 512 whatever Batch is set to, so with
-    // Batch above that, those pictures go in batches of the micro-batch.
-    for (std::size_t i = 0; i < mtmd_input_chunks_size(chunks.get()); ++i) {
-        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks.get(), i);
-        if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_TEXT
-            && mtmd_decode_use_non_causal(vision_, chunk)) {
-            batch_size = std::max(1, std::min(batch_size, static_cast<int>(llama_n_ubatch(ctx_))));
-        }
-    }
     if (mtmd_helper_eval_chunks(vision_, ctx_, chunks.get(), 0, 0, batch_size,
                                 /*logits_last=*/true, &past) != 0) {
         result.stats.canceled = sink.cancel && sink.cancel();

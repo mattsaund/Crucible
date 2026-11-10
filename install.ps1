@@ -667,7 +667,11 @@ Visual Studio Build Tools, then run this again:
     $configure = @('-S', $buildSrc, '-B', $buildDir) + $generator + @(
         '-DCMAKE_BUILD_TYPE=Release',
         "-DCMAKE_INSTALL_PREFIX=$Prefix",
-        '-DCRUCIBLE_BACKEND_DL=ON')
+        '-DCRUCIBLE_BACKEND_DL=ON',
+        # The unit tests are built only to be run, and nothing here runs
+        # them: building them was minutes of every install for nothing. CI
+        # builds and runs them on every push.
+        '-DCRUCIBLE_BUILD_TESTS=OFF')
 
     $configureLog = @(Invoke-Native 'cmake' $configure)
     if ($LASTEXITCODE -ne 0 -and (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {

@@ -6,6 +6,54 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 1.0.0-pre.1 (2026-11-10)
+
+The first of three pre-releases before 1.0.0. It is marked as a pre-release
+on GitHub, so the update check and the website stay on 0.9.9 until 1.0.0 is
+out, and it installs from its release page like any other.
+
+- **Releases in minutes rather than hours.** One run now checks, builds the
+  installers and publishes, and publishes only if all of it passes: about 13
+  minutes from the tag, where 0.9.9 took an hour and a half of builds after
+  half an hour of checks. The prebuilt runtimes are taken from the release
+  before when they would be built from the same llama.cpp the same way (each
+  release carries a note of how its runtimes were built), which was an hour
+  of CUDA on every release. The Mac's checks went from 25 minutes to 4: a
+  helper the tests start looked up the machine's name, which waits 36 seconds
+  on those test machines, for each of 30 tests. Windows compiles its common
+  headers once (MSVC only), and installing from source there no longer builds
+  tests it never runs.
+- **Preview pages keep what they save across a restart.** A page's
+  localStorage and its data are kept in Crucible's own files, so they are
+  there when Crucible starts again. sessionStorage still ends with the page.
+- **A made app reloads on Linux** instead of going blank, with what its
+  storage held.
+- **Bench vs base finds the base from the recipe.** A condensed copy is
+  benched against the file it was made from, and a fine-tune against the GGUF
+  of its base model that was downloaded, with file names only as a last
+  resort. A base that is not in the folder offers Get base.
+- **Models shows a repository's own picture** when its card names one on
+  Hugging Face, and the owner's logo otherwise.
+- **Windows fills the fastest card first.** Each card's PCIe link is read
+  from its device properties, as on Linux, and the card drawing the desktop
+  keeps room for it.
+- **Faster cold loads on a Mac** (macOS 15.4 and later): a model not yet in
+  memory is read by several readers beside its load.
+- **A picture is read whole.** Models that read a picture in both directions
+  (Gemma 3 and 4) are held to pictures that fit one batch, and Gemma 3 below
+  a Batch of 256 says to raise it, where a picture used to be read in halves.
+  A vision model's projector is placed by what it takes, measured, rather than
+  by a guess.
+- **A chat turn that runs out of tool rounds answers** from what it found,
+  and so does one that asks for the same thing twice. A small model could
+  call tools until the turn ended with no answer at all.
+- **The Bench gives the same answers run after run.** How many questions run
+  at once moves in steps (one, two, four, then eights), so a little memory
+  taken by something else no longer changes the answers. Measured, 32 at once
+  stays the most.
+- **Gemma 4's thinking goes in the thinking fold,** and the empty marker its
+  replies began with is gone.
+
 ## 0.9.9 (2026-11-06)
 
 Faster across the board and steadier, measured on a machine with three cards

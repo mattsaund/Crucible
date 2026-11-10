@@ -7,14 +7,19 @@
 # every push, and a change is not finished until all three are green.
 name: build
 
+# Branches only: a tag's checks are the installers workflow's (release.yml),
+# which runs this beside its own jobs when the commit has not passed it yet.
+# A tag used to run all of it again on a commit that had just passed.
 on:
   push:
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 # A newer push to the same branch makes the run for the older one pointless.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -26,8 +31,23 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # Read by cmake when it first configures, install.sh's included.
+      CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
+      CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
     steps:
       - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Not on Windows, where the Visual Studio generator, the one
+      # people build with, takes no compiler launcher.
+      - name: Compiler cache
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ matrix.os || runner.os }}
+          max-size: 1G
 
       # WebKitGTK: Crucible draws its window in the platform's own webview,
       # which on Linux is WebKitGTK, on GTK. macOS and Windows already have
@@ -39,12 +59,18 @@ jobs:
       # No generator named, on purpose: that is Makefiles on Linux and macOS
       # and Visual Studio on Windows -- the same ones install.sh and the
       # runtime builder get on those systems.
+      # On Windows the debug information goes in each object (/Z7) rather
+      # than in one database every compiler writes to (/Zi): with four
+      # compilers at once they queued for it. The linker still makes the PDB
+      # the test harness names a crash's function from.
       - name: Configure
-        run: >
-          cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCRUCIBLE_BACKEND_DL=ON
-          -DCRUCIBLE_BUILD_TESTS=ON
+        shell: bash
+        run: |
+          extra=()
+          if [ "$RUNNER_OS" = Windows ]; then
+            extra=(-DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded)
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRUCIBLE_BACKEND_DL=ON -DCRUCIBLE_BUILD_TESTS=ON "${extra[@]}"
 
       # RelWithDebInfo on Windows: Release, plus the PDB files that let the test
       # harness name the function a crash happened in. The Makefile generators
@@ -62,7 +88,8 @@ jobs:
       - name: Unit tests
         env:
           CRUCIBLE_PYTHON: python
-        run: ctest --test-dir build -C ${{ runner.os == 'Windows' && 'RelWithDebInfo' || 'Release' }} --output-on-failure
+        # Verbose, so the log ends with the slowest cases (tests/harness.hpp).
+        run: ctest --test-dir build -C ${{ runner.os == 'Windows' && 'RelWithDebInfo' || 'Release' }} --output-on-failure -V
 
       # The orchestrator's own tests: routing and the cook loop, in Python.
       - name: Orchestrator tests
@@ -90,8 +117,23 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      # Read by cmake when it first configures, install.sh's included.
+      CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
+      CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
     steps:
       - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Not on Windows, where the Visual Studio generator, the one
+      # people build with, takes no compiler launcher.
+      - name: Compiler cache
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ matrix.os || runner.os }}
+          max-size: 1G
 
       # Run from inside the checkout, install.sh builds that checkout rather
       # than fetching main -- so this installs the commit being tested. --yes

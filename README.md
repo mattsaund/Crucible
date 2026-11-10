@@ -165,7 +165,8 @@ Every model, local or not, gets the same tools in a trusted folder:
   and see whether it fits on the cards, runs partly on the CPU, or is too
   large. Downloads carry on after a dropped line or a restart and are checked
   against Hugging Face's checksum.
-- Each result shows its maker's logo, the original maker's for a repack.
+- Each result shows its own picture when its card names one, and otherwise
+  its maker's logo, the original maker's for a repack.
 - GGUF everywhere, MLX on Apple Silicon. LM Studio and Hugging Face folders
   work as they are.
 - Models that see pictures work when their `mmproj` projector sits beside them.

@@ -354,6 +354,13 @@ json Engine::serve_turn(const std::string& method, const json& params) {
     if (method == "turn.round") {
         ChatModel& model = *chat->held.model;
         std::vector<ChatMessage> messages = chat->opening;
+        // Instructions for this round alone, when the orchestrator sends
+        // them: the round that answers from what the turn found is offered no
+        // tools. The conversation is fitted with the longer ones, so these fit.
+        if (const auto system = params.find("system");
+            system != params.end() && system->is_string() && !messages.empty() && messages.front().role == "system") {
+            messages.front().content = system->get<std::string>();
+        }
         for (const json& one : params.value("messages", json::array())) {
             ChatMessage message{one.value("role", "user"), one.value("content", "")};
             if (const auto held = chat->pictures.find(one.value("pictures", std::string()));

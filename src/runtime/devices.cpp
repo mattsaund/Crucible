@@ -4,12 +4,16 @@
 #include "crucible/runtime/devices.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <numeric>
+#include <optional>
+#include <system_error>
 #include <utility>
 
 #include <ggml-backend.h>
@@ -19,14 +23,153 @@
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
 
+// After everything else, so none of the macros SetupAPI and its headers
+// define reaches the headers above.
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  include <setupapi.h>
+// Last, and with INITGUID set, so this file defines the property keys it
+// reads: without it, devpkey.h and pciprop.h only declare them, and nothing
+// else defines them for the linker.
+#  include <initguid.h>
+#  include <devpkey.h>
+#  include <pciprop.h>
+#endif
+
 namespace crucible {
+
+namespace pci {
 namespace {
 
-/// What the operating system says about the PCIe slot a card is in.
-struct PciLink {
-    double gbps    = 0.0;    ///< see ComputeDevice::link_gbps
-    bool   display = false;  ///< see ComputeDevice::display
-};
+/// The hex number at the front of `text`, taken off it. Nothing when `text`
+/// does not start with one.
+std::optional<std::uint32_t> take_hex(std::string_view& text) {
+    std::uint32_t value = 0;
+    const std::from_chars_result parsed = std::from_chars(text.data(), text.data() + text.size(), value, 16);
+    if (parsed.ec != std::errc() || parsed.ptr == text.data()) {
+        return std::nullopt;
+    }
+    text.remove_prefix(static_cast<std::size_t>(parsed.ptr - text.data()));
+    return value;
+}
+
+}  // namespace
+
+std::optional<Address> parse_bus_id(std::string_view id) {
+    // Four hex numbers, each but the last followed by its separator, and
+    // each no larger than PCI allows.
+    Address              address;
+    std::uint32_t* const fields[]     = {&address.domain, &address.bus, &address.device, &address.function};
+    const char           separators[] = {':', ':', '.'};
+    const std::uint32_t  most[]       = {0xFFFFFFFFU, 0xFFU, 0x1FU, 0x7U};
+    for (std::size_t i = 0; i < 4; ++i) {
+        const std::optional<std::uint32_t> value = take_hex(id);
+        if (!value || *value > most[i]) {
+            return std::nullopt;
+        }
+        *fields[i] = *value;
+        if (i < 3) {
+            if (id.empty() || id.front() != separators[i]) {
+                return std::nullopt;
+            }
+            id.remove_prefix(1);
+        }
+    }
+    if (!id.empty()) {
+        return std::nullopt;
+    }
+    return address;
+}
+
+std::optional<Address> address_of(std::uint32_t bus, std::uint32_t address) {
+    Address at;
+    at.bus      = bus;
+    at.device   = address >> 16;
+    at.function = address & 0xFFFFU;
+    if (at.bus > 0xFFU || at.device > 0x1FU || at.function > 0x7U) {
+        return std::nullopt;
+    }
+    return at;
+}
+
+double link_gbps(const Slot& slot) {
+    double rate = slot.card_rate;
+    if (slot.port_rate > 0.0) {
+        rate = rate > 0.0 ? std::min(rate, slot.port_rate) : slot.port_rate;
+    }
+    double lanes = slot.lanes > 0.0 ? slot.lanes : slot.card_lanes;
+    if (slot.port_lanes > 0.0 && lanes > slot.port_lanes) {
+        lanes = slot.port_lanes;
+    }
+    // A lane carries four fifths of its rate up to 5 GT/s (8b/10b) and
+    // 128/130 of it from 8 GT/s on (128b/130b), in bits: a byte is eight.
+    const double lane = rate < 8.0 ? rate * 0.8 / 8.0 : rate * 128.0 / 130.0 / 8.0;
+    return lane * lanes;
+}
+
+double rate_of_code(std::uint32_t code) {
+    // Windows hands the PCIe registers' own code on as it is. pciprop.h names
+    // only 1 and 2, written when 5 GT/s was the fastest there was, and a
+    // third generation card reads 3.
+    switch (code) {
+        case 1:  return 2.5;
+        case 2:  return 5.0;
+        case 3:  return 8.0;
+        case 4:  return 16.0;
+        case 5:  return 32.0;
+        case 6:  return 64.0;
+        default: return 0.0;
+    }
+}
+
+Link card_link(const std::vector<Function>& functions, const Address& card, std::string_view desktop) {
+    // By bus, device and function alone, since Windows does not say the
+    // domain. The same three in two domains are two cards, and which is
+    // which cannot be told.
+    const Function* found = nullptr;
+    for (const Function& function : functions) {
+        const Address& at = function.address;
+        if (at.bus == card.bus && at.device == card.device && at.function == card.function) {
+            if (found != nullptr) {
+                return {};
+            }
+            found = &function;
+        }
+    }
+    if (found == nullptr) {
+        return {};
+    }
+
+    // Instance ids name the same device in any case.
+    const auto same = [](std::string_view a, std::string_view b) {
+        return !a.empty() && format::to_lower(a) == format::to_lower(b);
+    };
+    Slot slot;
+    slot.card_rate  = rate_of_code(found->max_speed);
+    slot.lanes      = static_cast<double>(found->lanes);
+    slot.card_lanes = static_cast<double>(found->max_lanes);
+    // The port is what the card hangs off: a root port of the processor or
+    // the chipset, or a switch's. A card on the root complex itself, as a
+    // processor's own graphics is, has none listed, and its own figures stand.
+    for (const Function& port : functions) {
+        if (same(port.instance, found->parent)) {
+            slot.port_rate  = rate_of_code(port.max_speed);
+            slot.port_lanes = static_cast<double>(port.max_lanes);
+            break;
+        }
+    }
+    Link link;
+    link.gbps    = link_gbps(slot);
+    link.display = same(found->instance, desktop);
+    return link;
+}
+
+}  // namespace pci
+
+namespace {
 
 #if defined(__linux__)
 /// The first number in a sysfs file: "8.0 GT/s PCIe" is 8, "16" is 16. Zero
@@ -39,10 +182,9 @@ double sysfs_number(const std::filesystem::path& file) {
 
 /// Linux says, under /sys/bus/pci/devices/<bus id>: the card's own fastest
 /// rate, the lanes it agreed with the slot, and, one folder up, what the port
-/// it is plugged into allows. The rate a link runs at this moment is no use:
-/// an idle card drops to the slowest one and only speeds up under load.
-PciLink read_link(const std::string& bus_id) {
-    PciLink link;
+/// it is plugged into allows. See pci::link_gbps.
+pci::Link read_link(const std::string& bus_id) {
+    pci::Link link;
     std::error_code ec;
     const std::filesystem::path card =
         std::filesystem::canonical(std::filesystem::path("/sys/bus/pci/devices") / bus_id, ec);
@@ -51,48 +193,170 @@ PciLink read_link(const std::string& bus_id) {
     }
     link.display = sysfs_number(card / "boot_vga") == 1.0;
 
-    double rate = sysfs_number(card / "max_link_speed");    // GT/s
-    if (const double port = sysfs_number(card.parent_path() / "max_link_speed"); port > 0.0) {
-        rate = rate > 0.0 ? std::min(rate, port) : port;
-    }
-    double lanes = sysfs_number(card / "current_link_width");
-    if (lanes <= 0.0) {
-        lanes = sysfs_number(card / "max_link_width");
-    }
-    if (const double port = sysfs_number(card.parent_path() / "max_link_width"); port > 0.0 && lanes > port) {
-        lanes = port;
-    }
-    // A lane carries four fifths of its rate up to 5 GT/s (8b/10b) and
-    // 128/130 of it from 8 GT/s on (128b/130b), in bits: a byte is eight.
-    const double lane = rate < 8.0 ? rate * 0.8 / 8.0 : rate * 128.0 / 130.0 / 8.0;
-    link.gbps = lane * lanes;
+    pci::Slot slot;
+    slot.card_rate  = sysfs_number(card / "max_link_speed");    // GT/s
+    slot.port_rate  = sysfs_number(card.parent_path() / "max_link_speed");
+    slot.lanes      = sysfs_number(card / "current_link_width");
+    slot.card_lanes = sysfs_number(card / "max_link_width");
+    slot.port_lanes = sysfs_number(card.parent_path() / "max_link_width");
+    link.gbps = pci::link_gbps(slot);
     return link;
+}
+#elif defined(_WIN32)
+/// `wide` in UTF-8.
+std::string utf8(const wchar_t* wide) {
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) {
+        return {};
+    }
+    std::string out(static_cast<std::size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), bytes, nullptr, nullptr);
+    out.pop_back();   // the terminator WideCharToMultiByte counted
+    return out;
+}
+
+/// A device's string property in UTF-8, or empty when it has none. Sized
+/// for the one kind asked for, an instance id, which is 200 characters at
+/// most (MAX_DEVICE_ID_LEN).
+std::string string_property(HDEVINFO set, SP_DEVINFO_DATA& info, const DEVPROPKEY& key) {
+    wchar_t     text[256] = {};
+    DEVPROPTYPE type      = DEVPROP_TYPE_EMPTY;
+    if (SetupDiGetDevicePropertyW(set, &info, &key, &type, reinterpret_cast<PBYTE>(text),
+                                  static_cast<DWORD>(sizeof(text) - sizeof(wchar_t)), nullptr, 0) == FALSE
+        || type != DEVPROP_TYPE_STRING) {
+        return {};
+    }
+    return utf8(text);
+}
+
+/// A device's whole-number property, or nothing when it has none, since a
+/// bus number of zero is a real one.
+std::optional<std::uint32_t> number_property(HDEVINFO set, SP_DEVINFO_DATA& info, const DEVPROPKEY& key) {
+    ULONG       value = 0;
+    DEVPROPTYPE type  = DEVPROP_TYPE_EMPTY;
+    if (SetupDiGetDevicePropertyW(set, &info, &key, &type, reinterpret_cast<PBYTE>(&value),
+                                  static_cast<DWORD>(sizeof(value)), nullptr, 0) == FALSE
+        || (type != DEVPROP_TYPE_UINT32 && type != DEVPROP_TYPE_INT32)) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
+/// Every PCI function Windows lists, with what pci::card_link reads of each.
+/// Every one, and not the display adapters alone: what a card is plugged
+/// into, a root port or a switch's, is one too, and says what the slot allows.
+std::vector<pci::Function> pci_functions() {
+    std::vector<pci::Function> functions;
+    HDEVINFO set = SetupDiGetClassDevsW(nullptr, L"PCI", nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (set == INVALID_HANDLE_VALUE) {
+        return functions;
+    }
+    SP_DEVINFO_DATA info{};
+    info.cbSize = sizeof(info);
+    for (DWORD i = 0; SetupDiEnumDeviceInfo(set, i, &info) != FALSE; ++i) {
+        const std::optional<std::uint32_t> bus     = number_property(set, info, DEVPKEY_Device_BusNumber);
+        const std::optional<std::uint32_t> address = number_property(set, info, DEVPKEY_Device_Address);
+        if (!bus || !address) {
+            continue;
+        }
+        const std::optional<pci::Address> at = pci::address_of(*bus, *address);
+        wchar_t instance[256] = {};
+        if (!at || SetupDiGetDeviceInstanceIdW(set, &info, instance, static_cast<DWORD>(std::size(instance)),
+                                               nullptr) == FALSE) {
+            continue;
+        }
+        pci::Function function;
+        function.address   = *at;
+        function.instance  = utf8(instance);
+        function.parent    = string_property(set, info, DEVPKEY_Device_Parent);
+        // The fastest the card can run, and not the rate it runs at now
+        // (DEVPKEY_PciDevice_CurrentLinkSpeed), which drops while it idles.
+        function.max_speed = number_property(set, info, DEVPKEY_PciDevice_MaxLinkSpeed).value_or(0);
+        function.lanes     = number_property(set, info, DEVPKEY_PciDevice_CurrentLinkWidth).value_or(0);
+        function.max_lanes = number_property(set, info, DEVPKEY_PciDevice_MaxLinkWidth).value_or(0);
+        functions.push_back(std::move(function));
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return functions;
+}
+
+/// The instance id of the display adapter the primary monitor is on, the
+/// card the desktop is drawn on, or empty when that cannot be told.
+///
+/// Through the monitor: GDI says which display is the primary and gives its
+/// monitor's device interface, and in SetupAPI a monitor is a child of the
+/// adapter it is plugged into. GDI's own words for the adapter are its
+/// model, the same for two cards of a kind.
+std::string desktop_adapter() {
+    DISPLAY_DEVICEW display{};
+    display.cb = sizeof(display);
+    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &display, 0) != FALSE; ++i) {
+        if ((display.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) == 0) {
+            continue;
+        }
+        DISPLAY_DEVICEW monitor{};
+        monitor.cb = sizeof(monitor);
+        if (EnumDisplayDevicesW(display.DeviceName, 0, &monitor, EDD_GET_DEVICE_INTERFACE_NAME) == FALSE) {
+            return {};
+        }
+        HDEVINFO set = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+        if (set == INVALID_HANDLE_VALUE) {
+            return {};
+        }
+        // Opening the interface adds the monitor itself to the empty set.
+        std::string              adapter;
+        SP_DEVICE_INTERFACE_DATA opened{};
+        opened.cbSize = sizeof(opened);
+        SP_DEVINFO_DATA info{};
+        info.cbSize = sizeof(info);
+        if (SetupDiOpenDeviceInterfaceW(set, monitor.DeviceID, 0, &opened) != FALSE
+            && SetupDiEnumDeviceInfo(set, 0, &info) != FALSE) {
+            adapter = string_property(set, info, DEVPKEY_Device_Parent);
+        }
+        SetupDiDestroyDeviceInfoList(set);
+        return adapter;
+    }
+    return {};
+}
+
+/// Windows says it in each device's properties, through SetupAPI: the
+/// card's own fastest rate and the lanes it agreed with the slot, and, from
+/// its parent, what the port it is plugged into allows. See pci::card_link.
+pci::Link read_link(const std::string& bus_id) {
+    const std::optional<pci::Address> card = pci::parse_bus_id(bus_id);
+    if (!card) {
+        return {};
+    }
+    // Asked once for all the cards, since what is plugged in where, and the
+    // card the desktop is on, are the same for each.
+    static const std::vector<pci::Function> functions = pci_functions();
+    static const std::string                desktop   = desktop_adapter();
+    return pci::card_link(functions, *card, desktop);
 }
 #endif
 
-/// read_link, once per card: a slot does not change while Crucible runs,
-/// and devices are listed many times a load.
-PciLink link_of(const char* bus_id) {
+}  // namespace
+
+pci::Link pci::link_of(const char* bus_id) {
     if (bus_id == nullptr || *bus_id == '\0') {
         return {};
     }
-#if defined(__linux__)
-    static std::mutex                     mutex;
-    static std::map<std::string, PciLink> known;
-    const std::lock_guard<std::mutex>     lock(mutex);
+#if defined(__linux__) || defined(_WIN32)
+    // read_link once a card, since devices are listed many times a load.
+    static std::mutex                  mutex;
+    static std::map<std::string, Link> known;
+    const std::lock_guard<std::mutex>  lock(mutex);
     const auto found = known.find(bus_id);
     if (found != known.end()) {
         return found->second;
     }
     return known.emplace(bus_id, read_link(bus_id)).first->second;
 #else
-    // Windows keeps the figure behind its device manager's API, and a Mac's
-    // GPU shares the processor's memory: unknown, so ggml's order stands.
+    // A Mac's GPU shares the processor's memory: there is no link to read,
+    // so ggml's order stands.
     return {};
 #endif
 }
-
-}  // namespace
 
 std::vector<int> llama_layer_assignment(const std::vector<float>& split, std::size_t units) {
     std::vector<int> counts(split.size(), 0);
@@ -175,9 +439,9 @@ std::vector<ComputeDevice> compute_devices() {
         device.memory_total = props.memory_total;
         device.is_gpu       = props.type == GGML_BACKEND_DEVICE_TYPE_GPU;
         if (device.is_gpu) {
-            const PciLink link = link_of(props.device_id);
-            device.link_gbps   = link.gbps;
-            device.display     = link.display;
+            const pci::Link link = pci::link_of(props.device_id);
+            device.link_gbps     = link.gbps;
+            device.display       = link.display;
         }
         devices.push_back(std::move(device));
     }

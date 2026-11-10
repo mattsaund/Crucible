@@ -22,7 +22,8 @@ namespace {
 /// `<|constrain|>` is in the list only to be swallowed: it introduces the type
 /// of a tool call's arguments, and printing it would be exactly the noise this
 /// file exists to remove.
-constexpr std::array<std::string_view, 10> kMarkers{{
+constexpr std::array<std::string_view, 12> kMarkers{{
+    "<|channel>thought",
     "<|constrain|>",
     "<|channel|>",
     "<|message|>",
@@ -33,6 +34,7 @@ constexpr std::array<std::string_view, 10> kMarkers{{
     "<think>",
     "<|end|>",
     "<|call|>",
+    "<channel|>",
 }};
 
 /// The longest marker, which is how far back a partial one can reach.
@@ -378,10 +380,13 @@ void ResponseFilter::drain(Piece& piece, bool final_chunk) {
             header_.clear();
             sink_  = Sink::Discard;
             state_ = State::Text;
-        } else if (marker == "<think>" || marker == "<|think>") {
+        } else if (marker == "<think>" || marker == "<|think>" || marker == "<|channel>thought") {
+            // Gemma 4 thinks between <|channel>thought and <channel|>, and
+            // a reply it did not think for still begins with the empty pair:
+            // left in, every reply opened with it.
             sink_  = Sink::Reasoning;
             state_ = State::Text;
-        } else if (marker == "</think>") {
+        } else if (marker == "</think>" || marker == "<channel|>") {
             sink_  = Sink::Answer;
             state_ = State::Text;
         }

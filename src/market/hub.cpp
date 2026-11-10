@@ -143,6 +143,8 @@ Listing listing_of(const json& node) {
                 listing.base_model = base->front().get<std::string>();
             }
         }
+        // A picture of its own, which the Models tab shows as its logo.
+        listing.thumbnail = text(*card, "thumbnail");
     }
 
     // How big it is: the weights' own count when the hub read one, then the

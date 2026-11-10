@@ -169,15 +169,21 @@ Exits non-zero when the turn or the build failed.
 
 ## Releasing
 
-1. Set the version in `CMakeLists.txt`, `packaging/macos/dmg.sh`,
+1. Set the version in `CMakeLists.txt` (and `CRUCIBLE_VERSION_SUFFIX` beside
+   it for a pre-release, such as `-pre.1`), `packaging/macos/dmg.sh`,
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
-2. Push to `main` and wait for CI to pass on all three systems.
-3. Tag and push the tag: `git tag v0.9.5 && git push origin v0.9.5`.
-   The installers workflow builds the three installers and, in the same run,
-   the prebuilt runtimes. The runtimes go on a draft release as they finish,
-   and the release is published only when the installers are added to it, so
-   an install never finds a release without its runtimes.
+2. Push `main` and the tag together:
+   `git tag v1.0.0-pre.1 && git push origin main v1.0.0-pre.1`.
+   One run does the rest. The installers workflow checks the commit on all
+   three systems (or sees that a branch push already did), builds the three
+   installers, and takes each prebuilt runtime from an earlier release whose
+   note of how it was built (`runtime-*.tar.gz.recipe`) matches, building only
+   those that changed. Everything goes on a draft, and the draft is published
+   only if all of it passed, which makes a failed release one nobody sees. A
+   tag with a dash in it is published as a pre-release: never Latest, so the
+   website and the update check stay on the last release.
+3. Put the release notes on: `gh release edit <tag> --notes-file <file>`.
 
 ## Seen on 2026-10-10
 

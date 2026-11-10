@@ -80,6 +80,7 @@ class ScriptedCore:
         self.calls = []        # every method, in order
         self.moods = []
         self.sent = []         # the turn's own messages, each round
+        self.systems = []      # each round's own instructions, or None for the turn's
         self.paragraphs = []   # whether each round began with a paragraph
         self.ran = []
         self.asked_edit = []
@@ -121,6 +122,7 @@ class ScriptedCore:
             return {"dropped": self.dropped}
         if method == "turn.round":
             self.sent.append([dict(m) for m in params["messages"]])
+            self.systems.append(params.get("system"))
             self.paragraphs.append(params["paragraph"])
             out = self.rounds.pop(0) if self.rounds else said("(out of script)")
             if out["answer"] and not out.get("discard"):
@@ -367,11 +369,16 @@ class Tools(unittest.TestCase):
         ])
         self.assertIn(("thinking", "read notes.txt"), core.moods)
 
-    def test_the_same_call_twice_is_not_run_again(self):
-        core = run(ScriptedCore([said("READ: a.txt"), said("READ: a.txt"), said("Done.")]))
+    def test_the_same_call_twice_is_not_run_again_and_the_next_round_answers_with_no_tools(self):
+        core = run(ScriptedCore([said("READ: a.txt"), said("READ: a.txt"), said("Done."), said("Never.")]))
         self.assertEqual(core.ran, [("read", "a.txt")])
+        self.assertEqual(len(core.sent), 3)
         self.assertEqual(core.sent[2][-1], {"role": "user", "content": chat.ALREADY_DONE})
+        self.assertEqual(core.systems[:2], [None, None])
+        self.assertEqual(core.systems[2], "You are helpful." + chat.MARKDOWN)
         self.assertEqual(core.reply, "Done.")
+        self.assertNotIn("reply", core.ended)
+        self.assertTrue(core.ended["remember"])
 
     def test_a_write_is_asked_about_and_a_no_takes_back_what_was_said_about_it(self):
         core = run(ScriptedCore([said("Before.\nREAD: a.txt"), said("Writing.\nWRITE: a.txt\n```\nx\n```"),
@@ -404,13 +411,32 @@ class Tools(unittest.TestCase):
         self.assertEqual(core.asked_edit, [])
         self.assertEqual(core.ran, [("write", "a.txt"), ("write", "a.txt")])
 
-    def test_the_last_round_is_told_it_is_the_last_and_one_still_calling_says_so(self):
-        rounds = [said("READ: f%d.txt" % i) for i in range(chat.TOOL_ROUNDS)]
-        core = run(ScriptedCore(rounds + [said("Never asked.")]))
-        self.assertEqual(len(core.sent), chat.TOOL_ROUNDS)
+    def test_the_last_round_is_told_it_is_the_last_and_one_still_calling_is_asked_to_answer(self):
+        rounds = [said("READ: f%d.txt" % i) for i in range(chat.TOOL_ROUNDS - 1)]
+        core = run(ScriptedCore(rounds + [said("One more.\nREAD: last.txt"), said("Shakespeare."),
+                                          said("Never asked.")]))
+        self.assertEqual(len(core.sent), chat.TOOL_ROUNDS + 1)
         self.assertEqual(len(core.ran), chat.TOOL_ROUNDS - 1)
-        self.assertTrue(core.sent[-1][-1]["content"].endswith(chat.LAST_ACTION))
-        self.assertFalse(core.sent[-2][-1]["content"].endswith(chat.LAST_ACTION))
+        self.assertNotIn(("read", "last.txt"), core.ran)
+        self.assertTrue(core.sent[-2][-1]["content"].endswith(chat.LAST_ACTION))
+        self.assertFalse(core.sent[-3][-1]["content"].endswith(chat.LAST_ACTION))
+        # The call it made instead of answering goes back unrun, and the round
+        # after is offered no tools.
+        self.assertEqual(core.sent[-1][-2:], [
+            {"role": "assistant", "content": "One more.\nREAD: last.txt"},
+            {"role": "user", "content": chat.NOT_RUN},
+        ])
+        self.assertEqual(core.systems[:-1], [None] * chat.TOOL_ROUNDS)
+        self.assertEqual(core.systems[-1], "You are helpful." + chat.MARKDOWN)
+        # The call's line is off the reply, and what was said before it stays.
+        self.assertEqual(core.reply, "One more.\n\nShakespeare.")
+        self.assertNotIn("reply", core.ended)
+        self.assertTrue(core.ended["remember"])
+
+    def test_a_turn_that_calls_even_with_no_tools_offered_says_so(self):
+        rounds = [said("READ: f%d.txt" % i) for i in range(chat.TOOL_ROUNDS + 1)]
+        core = run(ScriptedCore(rounds + [said("Never asked.")]))
+        self.assertEqual(len(core.sent), chat.TOOL_ROUNDS + 1)
         self.assertEqual(core.ended["reply"], "(ran out of turns before finishing. Ask again to carry on)")
         self.assertTrue(core.ended["remember"])
 
@@ -440,14 +466,28 @@ class Searching(unittest.TestCase):
         self.assertEqual(core.reply, "Paris.")
         self.assertIn(("thinking", 'searching for "capital of France"'), core.moods)
         self.assertIn(("thinking", 'already searched for "capital of France"'), core.moods)
+        # Asked for twice, it answers next with no tools offered.
+        self.assertEqual(core.systems, [None, None, "You are helpful." + chat.MARKDOWN])
 
-    def test_the_last_search_says_so_and_a_turn_still_searching_says_why_it_stopped(self):
-        core = run(ScriptedCore([said("SEARCH: one"), said("SEARCH: two"), said("SEARCH: three")],
+    def test_the_last_search_says_so_and_a_turn_still_searching_is_asked_to_answer(self):
+        core = run(ScriptedCore([said("SEARCH: one"), said("SEARCH: two"), said("SEARCH: three"),
+                                 said("Nothing turned up.")],
                                 seat={"workshop": False, "tools": ""}, results=0), web_search=True)
         self.assertEqual(core.actions, ['searched "one": nothing found for "one"',
                                         'searched "two": nothing found for "two"'])
         self.assertFalse(core.sent[1][-1]["content"].endswith(chat.LAST_SEARCH))
         self.assertTrue(core.sent[2][-1]["content"].endswith(chat.LAST_SEARCH))
+        self.assertEqual(core.searched, ["one", "two"])
+        self.assertEqual(core.sent[3][-1], {"role": "user", "content": chat.NOT_RUN})
+        self.assertEqual(core.systems[3], "You are helpful." + chat.MARKDOWN)
+        self.assertEqual(core.reply, "Nothing turned up.")
+        self.assertNotIn("reply", core.ended)
+
+    def test_a_turn_still_searching_with_no_tools_offered_says_why_it_stopped(self):
+        core = run(ScriptedCore([said("SEARCH: one"), said("SEARCH: two"), said("SEARCH: three"),
+                                 said("SEARCH: four")],
+                                seat={"workshop": False, "tools": ""}, results=0), web_search=True)
+        self.assertEqual(len(core.sent), 4)
         self.assertEqual(core.ended["reply"], '(kept searching instead of answering. Raise "Searches '
                                               'per prompt" in Settings, Tools)')
 

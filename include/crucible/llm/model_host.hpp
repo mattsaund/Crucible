@@ -300,6 +300,23 @@ private:
 bool memory_has_room(std::uint64_t wanted, std::uint64_t resident, std::uint64_t going,
                      std::uint64_t used, std::uint64_t total);
 
+/// How much of `file` the page cache holds, from 0 to 1, or a negative
+/// number where that cannot be asked, as on Windows or of a file that cannot
+/// be opened.
+double cached_share(const std::string& file);
+
+/// How a load reads its model's file. See reading_for.
+enum class FileRead {
+    Mapped,      ///< mapped, as llama.cpp does unless asked otherwise
+    Prefetched,  ///< mapped, with readers bringing the file into the page cache beside the load
+    Direct,      ///< llama.cpp's direct I/O: no mapping, and past the page cache on Linux
+};
+
+/// How a load of `params` on `gpus` reads its file, `cached` of which the
+/// page cache holds (see cached_share), by what the load asks for and by
+/// what llama.cpp's loader does on this system. See model_host.cpp.
+FileRead reading_for(const ModelParams& params, const std::vector<ComputeDevice>& gpus, double cached);
+
 /// The context a load that asked for `n_ctx`, and may have up to `most`,
 /// gets: the first of `most`, three quarters of it, a half, three eighths
 /// and so on down that `fits`, in whole kilotokens above `n_ctx`, and never

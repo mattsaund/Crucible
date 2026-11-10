@@ -1221,8 +1221,8 @@ make_app_bundle() {
     <key>CFBundleName</key><string>Crucible</string>
     <key>CFBundleDisplayName</key><string>Crucible</string>
     <key>CFBundleIdentifier</key><string>dev.crucible.app</string>
-    <key>CFBundleVersion</key><string>$version</string>
-    <key>CFBundleShortVersionString</key><string>$version</string>
+    <key>CFBundleVersion</key><string>${version%%-*}</string>
+    <key>CFBundleShortVersionString</key><string>${version%%-*}</string>
     <key>CFBundleExecutable</key><string>Crucible</string>
     <key>CFBundleIconFile</key><string>crucible</string>
     <key>CFBundlePackageType</key><string>APPL</string>

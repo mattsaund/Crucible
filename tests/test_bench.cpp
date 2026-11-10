@@ -35,7 +35,14 @@ ModelShape small_model() {
 TEST(as_many_questions_at_once_as_the_cards_hold_a_cache_for) {
     const ModelShape shape = small_model();
     const std::uint64_t each = shape.kv_bytes(20480) + shape.state_bytes();
-    CHECK_EQ(detail::side_by_side(shape, each * 5 + each / 2, 20480, 512, 32), 5);
+    // In steps, so a little memory either way does not change the answers:
+    // room for five and a half is four.
+    CHECK_EQ(detail::side_by_side(shape, each * 5 + each / 2, 20480, 512, 32), 4);
+    CHECK_EQ(detail::side_by_side(shape, each * 7, 20480, 512, 32), 4);
+    CHECK_EQ(detail::side_by_side(shape, each * 16, 20480, 512, 32), 16);
+    // 27 and 24 at once once gave two runs different answers; both are 24 now.
+    CHECK_EQ(detail::side_by_side(shape, each * 27, 20480, 512, 32), 24);
+    CHECK_EQ(detail::side_by_side(shape, each * 24, 20480, 512, 32), 24);
     // Never more than the most, and never none.
     CHECK_EQ(detail::side_by_side(shape, each * 100, 20480, 512, 32), 32);
     CHECK_EQ(detail::side_by_side(shape, 0, 20480, 512, 32), 1);
@@ -54,7 +61,7 @@ TEST(a_sliding_window_is_charged_its_window_for_each_question) {
     oss.sliding_kv_per_token = 12 * 2 * 8 * 64 * 2;
     const std::uint64_t each = oss.kv_bytes(20480, oss.sliding_cells(20480, 512, true, 1));
     CHECK(each < oss.kv_bytes(20480) * 6 / 10);
-    CHECK_EQ(detail::side_by_side(oss, each * 3, 20480, 512, 32), 3);
+    CHECK_EQ(detail::side_by_side(oss, each * 3, 20480, 512, 32), 2);
 }
 
 TEST(a_shape_the_header_did_not_give_is_asked_one_at_a_time) {

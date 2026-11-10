@@ -85,6 +85,20 @@ TEST(think_tags_are_split_the_same_way) {
     }
 }
 
+TEST(gemma_fours_thinking_is_split_off_and_its_empty_pair_is_gone) {
+    // Gemma 4 thinks between <|channel>thought and <channel|>, and opens a
+    // reply it did not think for with the pair and nothing in it.
+    for (const std::size_t chunk : {1U, 3U, 999U}) {
+        const ResponseFilter::Piece thought =
+            filter_in_chunks("<|channel>thought\nWork it out.<channel|>The answer is 42.", chunk);
+        CHECK_EQ(thought.answer, "The answer is 42.");
+        CHECK_EQ(thought.reasoning, "\nWork it out.");
+        const ResponseFilter::Piece none = filter_in_chunks("<|channel>thought<channel|>Paris.", chunk);
+        CHECK_EQ(none.answer, "Paris.");
+        CHECK(none.reasoning.empty());
+    }
+}
+
 TEST(a_less_than_sign_in_an_answer_is_still_a_less_than_sign) {
     // The filter holds text back when it might be the start of a marker, and
     // the risk is that it holds back something that never was one -- or worse,
@@ -1019,3 +1033,53 @@ TEST(a_local_model_with_a_projector_reads_a_picture) {
     }
 }
 
+TEST(a_picture_read_whole_is_read_in_one_micro_batch_or_refused) {
+    // The same model at a Batch of 128, below the 256 tokens of a Gemma 3
+    // picture, and a picture large enough to take more than that where
+    // pictures come in any size. One a model reads with attention both ways
+    // is held to 128 tokens and read, or refused with what to raise when its
+    // size is fixed. Read in parts it would be misread, and in one batch
+    // larger than the micro-batch llama.cpp ends the program. A model that
+    // reads pictures one way reads this one too.
+    const char* named = std::getenv("CRUCIBLE_VISION_MODEL");
+    if (named == nullptr || *named == '\0') {
+        return;
+    }
+    TempDir dir;
+    ModelHost host(dir.path() / "llama.log");
+    ModelParams params;
+    params.model       = named;
+    params.path        = named;
+    params.n_ctx       = 4096;
+    params.n_batch     = 128;
+    params.max_tokens  = 32;
+    params.temperature = 0.0F;
+    std::string error;
+    LoadedModel* model = host.acquire_expert("eyes", params, {}, {}, error);
+    CHECK(model != nullptr);
+    if (model == nullptr) {
+        std::printf("      %s\n", error.c_str());
+        return;
+    }
+
+    const std::vector<ChatMessage> messages{
+        {"user", "What color is this picture? Answer with one word.",
+         {ChatImage{"image/bmp", format::base64(solid_bmp(1024, 220, 20, 20))}}}};
+    std::string answer;
+    ChatSink sink;
+    sink.on_text = [&answer](std::string_view text) { answer += text; };
+    const ChatResult result = model->chat(ChatRequest{messages, params, ""}, sink);
+    if (!result.error.empty()) {
+        CHECK(result.error.find("Raise \"Batch\" to") != std::string::npos);
+        if (result.error.find("Raise \"Batch\" to") == std::string::npos) {
+            std::printf("      %s\n", result.error.c_str());
+        }
+        return;
+    }
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    CHECK(answer.find("red") != std::string::npos);
+    if (answer.find("red") == std::string::npos) {
+        std::printf("      it said: %s\n", answer.c_str());
+    }
+}

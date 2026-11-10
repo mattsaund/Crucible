@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -143,6 +144,90 @@ std::vector<ComputeDevice> apply_priority_order(const std::vector<ComputeDevice>
 /// fast as another: a machine where which card a model goes to decides how
 /// long it takes to load. See GpuSplitMode::Auto in gpu_policy.hpp.
 bool links_differ(const std::vector<ComputeDevice>& gpus);
+
+/// A card's PCIe link, from what the system says of it. Linux says it in
+/// sysfs and Windows in each device's properties. Only the asking differs,
+/// so the rules are here, where a test on any system can check them.
+namespace pci {
+
+/// Where a device sits: the PCI domain, zero on all but the largest servers,
+/// the bus, and the device and function on it.
+struct Address {
+    std::uint32_t domain   = 0;
+    std::uint32_t bus      = 0;
+    std::uint32_t device   = 0;
+    std::uint32_t function = 0;
+
+    bool operator==(const Address&) const = default;
+};
+
+/// `id` read as the bus id ggml gives a card for its device id, which CUDA
+/// and Vulkan both write "0000:01:00.0": domain, bus, device and function,
+/// in hex. Nothing for anything else, a CUDA card split into virtual devices
+/// ("0000:01:00.0-v1") included, since no slot goes by that name.
+std::optional<Address> parse_bus_id(std::string_view id);
+
+/// Where Windows puts a PCI function by its bus number and its address
+/// (DEVPKEY_Device_BusNumber and DEVPKEY_Device_Address), with the device in
+/// the address's high word and the function in its low one. Windows does not
+/// say the domain, so it is zero. Nothing for an address the bus driver did
+/// not give, which is all ones, or one no PCI function can have.
+std::optional<Address> address_of(std::uint32_t bus, std::uint32_t address);
+
+/// A card's slot as the system says it. Rates are GT/s and widths are
+/// lanes, zero for whatever it does not say.
+struct Slot {
+    double card_rate  = 0.0;  ///< the fastest the card can run
+    double port_rate  = 0.0;  ///< the fastest the port it is plugged into can
+    double lanes      = 0.0;  ///< the lanes the card and the slot agreed on
+    double card_lanes = 0.0;  ///< the card's own most, for when `lanes` is not said
+    double port_lanes = 0.0;  ///< the port's most
+};
+
+/// GB a second over `slot`, the figure ComputeDevice::link_gbps holds: the
+/// slower of the two fastest rates, over the lanes agreed. Zero when the
+/// rate or the lanes are not known.
+///
+/// The fastest rates, and not the one the link runs at this moment, which is
+/// no use: an idle card drops to the slowest one and only speeds up under
+/// load.
+double link_gbps(const Slot& slot);
+
+/// The GT/s of a link speed as Windows gives it (DEVPKEY_PciDevice_MaxLinkSpeed
+/// and the like), which is the PCIe registers' own code: 1 for 2.5 GT/s, 2 for
+/// 5, 3 for 8, 4 for 16, 5 for 32 and 6 for 64. Zero for any other.
+double rate_of_code(std::uint32_t code);
+
+/// One PCI function as Windows lists it: a card, or the port of a root
+/// complex or a switch that a card is plugged into.
+struct Function {
+    Address       address;
+    std::string   instance;       ///< its device instance id
+    std::string   parent;         ///< the instance id of what it is plugged into
+    std::uint32_t max_speed = 0;  ///< the fastest it can run, a code for rate_of_code
+    std::uint32_t lanes     = 0;  ///< the lanes agreed on
+    std::uint32_t max_lanes = 0;  ///< its own most
+};
+
+/// What the system says of the slot a card is in.
+struct Link {
+    double gbps    = 0.0;    ///< see ComputeDevice::link_gbps
+    bool   display = false;  ///< see ComputeDevice::display
+};
+
+/// The link of the card at `card` among `functions`, through the port it is
+/// plugged into, which is its parent, and whether it draws the desktop, as
+/// the one whose instance id is `desktop` does. Unknown for a card not listed,
+/// or listed twice, which is two domains Windows cannot tell apart.
+Link card_link(const std::vector<Function>& functions, const Address& card, std::string_view desktop);
+
+/// What this system says of the slot of the card whose device id ggml gives
+/// as `bus_id`, which Linux says in sysfs and Windows in the devices'
+/// properties. Asked once a card, since a slot does not change while
+/// Crucible runs. Unknown on a Mac, whose GPU shares the processor's memory.
+Link link_of(const char* bus_id);
+
+}  // namespace pci
 
 /// What a model will want from the cards.
 ///

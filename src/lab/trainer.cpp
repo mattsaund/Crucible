@@ -332,6 +332,12 @@ void Trainer::dismiss() {
 bool Trainer::consume(const std::string& line) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (read_event(line, progress_)) {
+        // The lines before an event go with it. A run reads as finished the
+        // moment its "done" arrives, and its log used to be handed over only
+        // once the process had exited as well: anything that looked in
+        // between, a test on a busy machine among them, found it empty.
+        progress_.log_tail.assign(
+            log_.size() > kTailLines ? log_.end() - static_cast<long>(kTailLines) : log_.begin(), log_.end());
         return true;
     }
     // The script starts every event on a line of its own, which leaves a

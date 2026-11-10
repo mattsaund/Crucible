@@ -581,6 +581,17 @@ TEST(logos_are_asked_for_after_the_list_two_at_a_time_and_drawn_when_they_come) 
     CHECK(page().eval("repoLogo({ id: 'bench/only-gguf' })").find("src=\"data:image/png;base64,AAAA\"") != std::string::npos);
     CHECK_EQ(page().eval("String(state.logos['meta-llama'].image)"), "data:image/png;base64,AAAA");
     CHECK_EQ(page().eval("String('@bench/only-gguf' in state.logos)"), "false");
+    // A repository with a picture of its own is asked for by itself, beside
+    // its owner's other repositories, and drawn with it.
+    page().eval("askLogos([{ id: 'dealignai/Bonsai-GGUF', logo: 'dealignai/Bonsai-GGUF' },"
+                "  { id: 'dealignai/Plain-GGUF', logo: 'Qwen' }])");
+    CHECK_EQ(page().eval("repoLogo({ id: 'dealignai/Bonsai-GGUF', author: 'dealignai', logo: 'dealignai/Bonsai-GGUF' })"),
+             "<span class=\"logo\" aria-hidden=\"true\">D</span>");
+    page().eval("window.__answers['dealignai/Bonsai-GGUF'].ok({ owner: 'dealignai/Bonsai-GGUF', image: 'data:image/png;base64,BBBB' })");
+    CHECK(page().eval("repoLogo({ id: 'dealignai/Bonsai-GGUF', author: 'dealignai', logo: 'dealignai/Bonsai-GGUF' })")
+              .find("src=\"data:image/png;base64,BBBB\"") != std::string::npos);
+    CHECK(page().eval("repoLogo({ id: 'dealignai/Plain-GGUF', author: 'dealignai', logo: 'Qwen' })")
+              .find("src=\"data:image/png;base64,iVBORw0KGgo=\"") != std::string::npos);
     CHECK_EQ(page().eval("String(logosAsking)"), "0");
     page().eval("(call = window.__keptCall, render = window.__keptRender, state.logos = null,"
                 " delete logoOwners['bench/only-gguf'])");
@@ -2887,6 +2898,42 @@ TEST(the_storage_stand_in_behaves_as_a_browsers_own) {
     CHECK_EQ(fresh.eval("String(localStorage.length) + ' ' + localStorage.getItem('theme')"), "0 null");
 }
 
+TEST(a_made_apps_page_is_served_with_its_storage_before_anything_of_its_own) {
+    // On Linux an app's page is served afresh at every load, a reload's too,
+    // with the stand-ins inside it (tools/app_runner.cpp): just inside the
+    // head, ahead of the page's own scripts.
+    using crucible::tools::with_script_first;
+    CHECK_EQ(with_script_first("<!doctype html><html><head><title>B</title><script>mine()</script></head>", "s()"),
+             std::string("<!doctype html><html><head><script>s()</script><title>B</title><script>mine()</script></head>"));
+    CHECK_EQ(with_script_first("<HTML><HEAD lang=\"en\"><script>mine()</script>", "s()"),
+             std::string("<HTML><HEAD lang=\"en\"><script>s()</script><script>mine()</script>"));
+    // A header is no head. With no head, after the doctype, so a page written
+    // for standards mode is not drawn in quirks mode; with neither, first.
+    CHECK_EQ(with_script_first("<!DOCTYPE html><header>H</header><script>mine()</script>", "s()"),
+             std::string("<!DOCTYPE html><script>s()</script><header>H</header><script>mine()</script>"));
+    CHECK_EQ(with_script_first("<p>hi</p>", "s()"), std::string("<script>s()</script><p>hi</p>"));
+    // A head that only comes after the body has begun is none either.
+    CHECK_EQ(with_script_first("<!doctype html><body><script>document.write('<head>')</script>", "s()"),
+             std::string("<!doctype html><script>s()</script><body><script>document.write('<head>')</script>"));
+
+    // What its storage held, in a string nothing kept can end the element
+    // with, and run as the page runs it.
+    const std::string script = crucible::tools::page_storage_script(
+        "{\"local\":{\"note\":\"</script><script>bad()\",\"line\":\"a\xE2\x80\xA8" "b\","
+        "\"said\":\"\\\"hi\\\" \\\\ there\"},\"session\":{\"tab\":\"2\"}}",
+        "function (kind, items) { handed.push(kind + ' ' + JSON.stringify(items)); }");
+    CHECK(script.find("</script") == std::string::npos);
+    CHECK(script.find("\xE2\x80\xA8") == std::string::npos);
+    Engine app({"var window = this; var handed = [];", script});
+    CHECK(app.load_error().empty());
+    CHECK_EQ(app.eval("localStorage.getItem('note')"), "</script><script>bad()");
+    CHECK_EQ(app.eval("localStorage.getItem('said')"), R"("hi" \ there)");
+    CHECK_EQ(app.eval("String(localStorage.getItem('line') === 'a\\u2028b') + ' ' + sessionStorage.getItem('tab')"),
+             "true 2");
+    app.eval("sessionStorage.setItem('tab', '3'); 'set'");
+    CHECK_EQ(app.eval("handed.join('|')"), R"(session {"tab":"3"})");
+}
+
 TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
     // The window hands the page the stand-in, and the frame's document has
     // it after the data calls and before anything of the page's own.
@@ -2897,7 +2944,14 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
         window.__keptProject = state.snapshot.project;
         window.__drawn = 0;
         render = function () { window.__drawn += 1; };
-        call = function (method) {
+        // What is written to Crucible's files, and what they hold.
+        window.__keeps = []; window.__files = {}; window.__keepAnswer = null;
+        call = function (method, params) {
+          if (method === 'preview.keep') {
+            window.__keeps.push(JSON.stringify(params));
+            return window.__keepAnswer ? window.__keepAnswer() : Promise.resolve({});
+          }
+          if (method === 'preview.kept') return Promise.resolve(window.__files);
           return Promise.resolve(method !== 'preview.page' ? {} : { inlined: [], skipped: [],
             html: '<html><head><title>T</title><script>start()<\/script></head><body><p>x</p></body></html>' });
         };
@@ -2921,6 +2975,12 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
     CHECK(data != std::string::npos && storage != std::string::npos && theirs != std::string::npos);
     CHECK(data < storage);
     CHECK(storage < theirs);
+    // A page with no head has them after its doctype, which stays first, and
+    // a header is not taken for a head.
+    const std::string headless = page().eval(
+        "tunedDocument('<!doctype html><header>H</header><script>mine()<\\/script>', state.preview.kept)");
+    CHECK(headless.rfind("<!doctype html><script>", 0) == 0);
+    CHECK(headless.find("what: 'hello'") < headless.find("<header>"));
 
     // The frame run: what the page puts in its storage comes back, after the
     // word that it has started.
@@ -2975,8 +3035,53 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
     CHECK_EQ(page().eval("JSON.stringify(previewKept('data', null)) + ' ' + previewStorage()"),
              R"({"total":9} {"local":{"rows":"[3,4,5]"},"session":{"tab":"year"}})");
 
+    // Both written to Crucible's own files as well, under the project and the
+    // page, for the next start; sessionStorage never is.
+    const std::string keeps = page().eval("__keeps.join('\\n')");
+    CHECK(keeps.find(R"({"root":"/work/budget","page":"index.html","kind":"local","value":{"rows":"[3,4,5]"}})")
+          != std::string::npos);
+    CHECK(keeps.find(R"({"root":"/work/budget","page":"index.html","kind":"data","value":{"total":9}})")
+          != std::string::npos);
+    CHECK(keeps.find("session") == std::string::npos);
+
+    // One write at a time: what changes while one is on its way goes once it
+    // has landed, and only the newest of it.
+    page().eval("__keeps = []; window.__landing = null;"
+                "__keepAnswer = function () { return new Promise(function (done) { __landing = done; }); };"
+                "[1, 2, 3].forEach(function (n) { __says({ crucible: 'data', what: 'keep', kind: 'local',"
+                "  data: { rows: String(n) } }); }); 'kept'");
+    CHECK_EQ(page().eval("__keeps.map(function (k) { return JSON.parse(k).value.rows; }).join(' ')"), "1");
+    page().eval("__landing({}); 'landed'");
+    CHECK_EQ(page().eval("__keeps.map(function (k) { return JSON.parse(k).value.rows; }).join(' ')"), "1 3");
+    page().eval("__keepAnswer = null; __landing({}); 'landed'");
+    CHECK_EQ(page().eval("String('preview-local:[\"/work/budget\",\"index.html\"]' in previewWriting)"), "false");
+
+    // After a restart the window holds nothing, and the page is shown holding
+    // what those files kept: its localStorage, and its data for load().
+    page().eval("Object.keys(previewData).forEach(function (k) { delete previewData[k]; });"
+                "__files = { data: { total: 9 }, local: { rows: '[3,4,5]' } }; __show('/work/budget', 'index.html')");
+    CHECK_EQ(page().eval("state.preview.kept"), R"({"local":{"rows":"[3,4,5]"},"session":{}})");
+    page().eval("window.__answers = []; window.__tellWas = tellFrame;"
+                "tellFrame = function (m) { __answers.push(JSON.stringify(m)); };"
+                "__says({ crucible: 'data', what: 'load', id: 7 }); tellFrame = __tellWas; 'asked'");
+    CHECK_EQ(page().eval("__answers.join('|')"), R"({"crucible":"data-answer","id":7,"data":{"total":9}})");
+    // What this window holds is newer than the files, and wins over them.
+    page().eval("__says({ crucible: 'data', what: 'hello' });"
+                "__says({ crucible: 'data', what: 'keep', kind: 'local', data: { rows: '[]' } });"
+                "__show('/work/budget', 'index.html')");
+    CHECK_EQ(page().eval("state.preview.kept"), R"({"local":{"rows":"[]"},"session":{}})");
+    // Another page asked for while the first was still being read is the one
+    // shown, and the first does not draw over it.
+    page().eval("window.__slow = null; window.__callWas2 = call;"
+                "call = function (method, params) { if (method === 'preview.page' && params.path === 'slow.html')"
+                "  return new Promise(function (done) { __slow = done; }); return __callWas2(method, params); };"
+                "__show('/work/budget', 'slow.html'); __show('/work/budget', 'index.html'); 'asked'");
+    page().eval("__slow({ inlined: [], skipped: [], html: '<p>slow</p>' }); call = __callWas2; 'landed'");
+    CHECK_EQ(page().eval("state.preview.page + ' ' + String(state.preview.html.indexOf('slow') < 0)"), "index.html true");
+
     page().eval("(call = window.__keptCall, render = window.__keptRender, state.snapshot.project = window.__keptProject,"
                 " Object.assign(state.preview, { page: 'index.html', shown: null, kept: '{}', storing: false }),"
+                " Object.keys(previewData).forEach(function (k) { delete previewData[k]; }),"
                 " delete window.cruciblePageStorage)");
 }
 
@@ -3516,26 +3621,38 @@ TEST(a_board_entry_downloads_through_the_models_tab) {
 }
 
 TEST(a_model_made_in_create_is_benched_against_its_base) {
-    // A fine-tune of unsloth/Llama-3.2-1B at Q4_K_M, and GGUFs of that base
-    // here at two sizes, one named by a converter that puts the author first.
+    // A fine-tune of unsloth/Llama-3.2-1B at Q4_K_M. Here are GGUFs the
+    // Models tab downloaded from repositories made of it, one named the way a
+    // converter that puts the author first names it; one at its quantization
+    // that is only named for it; and others of other models.
     const std::string fixture =
         "window.__recipesWas = state.recipes; window.__modelsWas2 = state.models;"
         "state.models = { directory: '/m', display: '/m', models: ["
         "  { name: 'kitchen-physicist-Q4_K_M.gguf', path: '/m/kitchen-physicist-Q4_K_M.gguf', bytes: 9e8, format: 'gguf' },"
         "  { name: 'unsloth/Llama-3.2-1B-GGUF/Llama-3.2-1B-Q8_0.gguf', path: '/m/u/Llama-3.2-1B-Q8_0.gguf', bytes: 1.3e9, format: 'gguf' },"
-        "  { name: 'bartowski/x/unsloth_Llama-3.2-1B-Q4_K_M.gguf', path: '/m/b/unsloth_Llama-3.2-1B-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' },"
-        "  { name: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf', path: '/m/Llama-3.2-1B-Instruct-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' }] };"
+        "  { name: 'bartowski/unsloth_Llama-3.2-1B-GGUF/unsloth_Llama-3.2-1B-Q4_K_M.gguf',"
+        "    path: '/m/b/unsloth_Llama-3.2-1B-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' },"
+        "  { name: 'Llama-3.2-1B-Q4_K_M.gguf', path: '/m/Llama-3.2-1B-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' },"
+        "  { name: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf', path: '/m/Llama-3.2-1B-Instruct-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' },"
+        "  { name: 'x/Llama-3.2-1B-abliterated-GGUF/Llama-3.2-1B-abliterated-Q4_K_M.gguf',"
+        "    path: '/m/x/Llama-3.2-1B-abliterated-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' }] };"
         "state.recipes = { memory: 6e9, recipes: [aRecipe('finished', { trained_path: '/m/kitchen-physicist-Q4_K_M.gguf',"
         "  trained_there: true })] };"
         "state.open.recipe = 'kitchen-finished'; 'ok'";
     CHECK_EQ(page().eval(fixture), "ok");
     CHECK_EQ(drawn("views.create()"), "ok");
-    // Its base at its own quantization, by either name, and never another model.
+    // A download of its base at its own quantization first.
     CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string("/m/b/unsloth_Llama-3.2-1B-Q4_K_M.gguf"));
     CHECK(page().eval("views.create()").find("data-act=\"recipe-bench\" data-id=\"kitchen-finished\">Bench vs base")
           != std::string::npos);
+    // Then one at another, before a file that is only named for it.
     page().eval("state.models.models.splice(2, 1)");
     CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string("/m/u/Llama-3.2-1B-Q8_0.gguf"));
+    // An imatrix's repository is one of them too, at its own quantization.
+    page().eval("state.models.models.push({ name: 'mradermacher/Llama-3.2-1B-i1-GGUF/Llama-3.2-1B.i1-Q4_K_M.gguf',"
+                "  path: '/m/r/Llama-3.2-1B.i1-Q4_K_M.gguf', bytes: 8e8, format: 'gguf' })");
+    CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string("/m/r/Llama-3.2-1B.i1-Q4_K_M.gguf"));
+    page().eval("state.models.models.pop()");
     CHECK_EQ(page().eval("JSON.stringify(ggufParts('a/Big-UD-Q8_0-00001-of-00002.gguf'))"),
              std::string("{\"stem\":\"Big-UD-Q8_0\",\"model\":\"Big\",\"quant\":\"UD-Q8_0\"}"));
 
@@ -3573,8 +3690,15 @@ TEST(a_model_made_in_create_is_benched_against_its_base) {
     CHECK_EQ(page().eval("String(state.bench.versus)"), std::string("null"));
     page().eval("call = __callWas; render = __renderWas; state.snapshot = __snapshotWas");
 
+    // With nothing downloaded from it, the file named for it; never a file
+    // of another model, nor one made here.
+    page().eval("state.view = 'create'; state.models.models.splice(1, 1)");
+    CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string("/m/Llama-3.2-1B-Q4_K_M.gguf"));
+    page().eval("state.models.models.splice(1, 1)");
+    CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string(""));
+
     // Without a GGUF of the base here, the Models tab looks for one.
-    page().eval("state.view = 'create'; state.models.models = state.models.models.slice(0, 1)");
+    page().eval("state.models.models = state.models.models.slice(0, 1)");
     CHECK(page().eval("views.create()").find("data-act=\"recipe-base\" data-id=\"kitchen-finished\"") != std::string::npos);
     page().eval("call = function () { return new Promise(function () {}); };"
                 "actions['recipe-base']({ dataset: { id: 'kitchen-finished' } }); call = __callWas");
@@ -3584,13 +3708,23 @@ TEST(a_model_made_in_create_is_benched_against_its_base) {
     // export that is not a GGUF is no model Bench can run.
     page().eval("state.models.models.push({ name: 'flint-Q6_K.gguf', path: '/m/flint-Q6_K.gguf', bytes: 3e10, format: 'gguf' });"
                 "state.recipes = { memory: 6e9, recipes: [aRecipe('finished', { id: 'flint-q4', method: 'condense',"
-                "  base: { source: 'local', id: '/m/flint-Q6_K.gguf', path: '/m/flint-Q6_K.gguf', label: 'flint-Q6_K.gguf' },"
+                "  base: { source: 'local', id: '/m/flint-Q6_K.gguf', path: '/m/flint-Q6_K.gguf', label: 'flint-Q6_K.gguf',"
+                "    bytes: 3e10 },"
                 "  trained_path: '/m/flint Q4_K_M.gguf', trained_there: true, data: [], source_quantization: 'Q6_K' }),"
                 "  aRecipe('finished', { id: 'mlx-one', format: 'mlx', trained_path: '/m/mlx-one', trained_there: true })] };"
                 "state.open.recipe = 'flint-q4'");
     CHECK_EQ(drawn("views.create()"), "ok");
     CHECK(page().eval("views.create()").find("data-act=\"recipe-bench\" data-id=\"flint-q4\"") != std::string::npos);
     CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string("/m/flint-Q6_K.gguf"));
+    // Moved within the folder it is the same file, by its name and size, and
+    // never another quantization of the same model, which is no base of it.
+    page().eval("state.models.models = state.models.models.filter(function (m) { return m.name !== 'flint-Q6_K.gguf'; });"
+                "state.models.models.push({ name: 'flint-Q8_0.gguf', path: '/m/flint-Q8_0.gguf', bytes: 3.5e10, format: 'gguf' },"
+                "  { name: 'old/flint-Q6_K.gguf', path: '/m/old/flint-Q6_K.gguf', bytes: 3e10, format: 'gguf' })");
+    CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string("/m/old/flint-Q6_K.gguf"));
+    page().eval("state.models.models[state.models.models.length - 1].bytes = 2e10");
+    CHECK_EQ(page().eval("baseGguf(state.recipes.recipes[0])"), std::string(""));
+    CHECK(page().eval("views.create()").find("data-act=\"recipe-base\" data-id=\"flint-q4\"") != std::string::npos);
     page().eval("state.open.recipe = 'mlx-one'");
     CHECK(page().eval("views.create()").find("recipe-bench") == std::string::npos);
     CHECK(page().eval("views.create()").find("recipe-base") == std::string::npos);

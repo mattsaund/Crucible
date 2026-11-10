@@ -49,6 +49,8 @@ struct Listing {
     bool          gated     = false;  ///< needs a license accepted in a browser first
     std::string   license;            ///< "apache-2.0"
     std::string   base_model;         ///< what its card says it was made from: "Qwen/Qwen3-8B"
+    std::string   thumbnail;          ///< the picture its card names for it, as the card names it:
+                                      ///< a file of the repository, "logo.png", or an address
 };
 
 /// A page of a search, and where the next one is.

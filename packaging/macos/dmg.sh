@@ -23,7 +23,7 @@ set -euo pipefail
 
 PREFIX="${1:?usage: dmg.sh <installed-prefix> <output.dmg|output.app> [version]}"
 OUTPUT="${2:?usage: dmg.sh <installed-prefix> <output.dmg|output.app> [version]}"
-VERSION="${3:-0.9.9}"
+VERSION="${3:-1.0.0}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
@@ -51,8 +51,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>Crucible</string>
     <key>CFBundleDisplayName</key><string>Crucible</string>
     <key>CFBundleIdentifier</key><string>dev.crucible.app</string>
-    <key>CFBundleVersion</key><string>${VERSION}</string>
-    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${VERSION%%-*}</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION%%-*}</string>
     <key>CFBundleExecutable</key><string>Crucible</string>
     <key>CFBundleIconFile</key><string>crucible</string>
     <key>CFBundlePackageType</key><string>APPL</string>

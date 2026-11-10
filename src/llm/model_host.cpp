@@ -46,7 +46,7 @@
 #include <mtmd.h>
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -391,34 +391,6 @@ std::string vram_shortfall(const std::string& path, const ModelParams& params,
     return vram_shortfall(gpu_devices(), path, params, held, holder);
 }
 
-/// The card a projector of `file` goes on: the one with the most memory free
-/// once the model is on the cards, when its weights and room to encode a
-/// picture fit there; none, so the processor, when no card has that. Left to
-/// itself, clip asks the first card for the weights whatever is on it, and on
-/// a full one llama.cpp b11846 aborts the whole program rather than say no
-/// (clip.cpp, load_tensors). A 27B vision model loaded after others did just
-/// that, at 100%. The room is a quarter on top of the weights and half a
-/// gigabyte, a margin for the compute buffer rather than a measurement.
-ggml_backend_dev_t projector_card(const std::filesystem::path& file) {
-    std::error_code ec;
-    const std::uint64_t weights = std::filesystem::file_size(file, ec);
-    if (ec || weights == 0) {
-        return nullptr;
-    }
-    const std::uint64_t wants = weights + weights / 4 + (512ULL << 20);
-    const std::vector<ggml_backend_dev_t> listed = RuntimeRegistry::devices();
-    ggml_backend_dev_t best = nullptr;
-    std::uint64_t most = 0;
-    for (const ComputeDevice& card : gpu_devices()) {
-        const auto at = static_cast<std::size_t>(card.index);
-        if (at < listed.size() && listed[at] != nullptr && card.memory_free > most) {
-            most = card.memory_free;
-            best = listed[at];
-        }
-    }
-    return most >= wants ? best : nullptr;
-}
-
 /// The projector beside a model file, when it has one: a GGUF in the same
 /// folder with "mmproj" in its name -- the way vision models are published,
 /// and the way LM Studio lays them out. With several, the one whose name
@@ -484,10 +456,13 @@ bool direct_io_safe(const std::vector<ComputeDevice>& gpus) {
     });
 }
 
-/// How much of `file` the page cache holds, from 0 to 1, or a negative
-/// number where that cannot be asked.
+}  // namespace
+
 double cached_share(const std::string& file) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
+    // Asked of a mapping of the file, a page at a time (mincore). A mapping
+    // shares the cache's own pages, so it counts whatever an earlier read or
+    // load left there.
     const int fd = ::open(file.c_str(), O_RDONLY);
     if (fd < 0) {
         return -1.0;
@@ -499,10 +474,16 @@ double cached_share(const std::string& file) {
         void* mapped = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
         if (mapped != MAP_FAILED) {
             const auto page = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+            // A byte a page, unsigned on Linux and plain on macOS.
+#if defined(__APPLE__)
+            std::vector<char> resident((size + page - 1) / page);
+#else
             std::vector<unsigned char> resident((size + page - 1) / page);
-            if (::mincore(mapped, size, resident.data()) == 0) {
-                const auto held = std::count_if(resident.begin(), resident.end(),
-                                                [](unsigned char flags) { return (flags & 1U) != 0; });
+#endif
+            if (::mincore(static_cast<char*>(mapped), size, resident.data()) == 0) {
+                const auto held = std::count_if(resident.begin(), resident.end(), [](auto flags) {
+                    return (static_cast<unsigned char>(flags) & 1U) != 0;
+                });
                 share = static_cast<double>(held) / static_cast<double>(resident.size());
             }
             ::munmap(mapped, size);
@@ -511,10 +492,14 @@ double cached_share(const std::string& file) {
     ::close(fd);
     return share;
 #else
+    // Windows has no call that says which of a file's pages its cache holds.
+    // QueryWorkingSetEx answers only for pages this process has touched.
     (void)file;
     return -1.0;
 #endif
 }
+
+namespace {
 
 /// A link whose speed the system does not say is taken for a fast one, as
 /// every card was before links were read: what decides less than it would.
@@ -583,6 +568,18 @@ double reload_seconds(const LoadedModel& model) {
 /// second is cheaper to load again than to route around.
 constexpr double kReloadWorthKeeping = 5.0;
 
+/// Whether llama.cpp's direct I/O reads past the page cache here. Only on
+/// Linux, where it opens the file O_DIRECT. On macOS and Windows it opens the
+/// file buffered whatever it is asked (llama-mmap.cpp), so a load asked for
+/// direct I/O is only one without a mapping. The cache keeps its copy all the
+/// same, and on a Mac the weights are read into buffers of their own, where
+/// a mapping hands the GPU the cache's pages as they are.
+#if defined(__linux__)
+constexpr bool kDirectIoReal = true;
+#else
+constexpr bool kDirectIoReal = false;
+#endif
+
 /// Whether `params` loads faster read past the page cache than mapped.
 ///
 /// A mapped load reads the whole file into the page cache before the first
@@ -604,10 +601,10 @@ constexpr double kReloadWorthKeeping = 5.0;
 /// small model bound for a card on sixteen lanes is still mapped: cold, it
 /// loads a second or two slower, and every load after comes from memory.
 ///
-/// Linux only, where llama.cpp's direct I/O is real (O_DIRECT) and the page
+/// Only where llama.cpp's direct I/O is real (see kDirectIoReal) and the page
 /// cache can be asked about, and not on Vulkan: see direct_io_safe.
 bool reads_faster_direct(const ModelParams& params, const std::vector<ComputeDevice>& gpus, double cached) {
-    if (gpus.empty() || !direct_io_safe(gpus) || cached < 0.0 || cached >= 0.8) {
+    if (!kDirectIoReal || gpus.empty() || !direct_io_safe(gpus) || cached < 0.0 || cached >= 0.8) {
         return false;
     }
     std::error_code ec;
@@ -622,18 +619,36 @@ bool reads_faster_direct(const ModelParams& params, const std::vector<ComputeDev
     return too_large || by_links;
 }
 
+/// Whether Prefetch makes a cold mapped load faster here, which is where the
+/// load reads its file in from one thread before it goes on.
+///
+/// Linux, where llama.cpp maps the file with MAP_POPULATE, and macOS, where
+/// it asks madvise(MADV_WILLNEED) of the whole file. Since macOS 15.4 the
+/// kernel answers that by faulting every page in, a megabyte at a time,
+/// passing over those a reader already has under way (vm_map_willneed).
+/// Before 15.4 it read the first megabyte only, and the rest waited for the
+/// weights' first use after the load, so the readers, stopped with it, read
+/// little there. Not Windows, where llama.cpp has the system read the
+/// mapping in ahead of the load (PrefetchVirtualMemory), in large pieces
+/// several at a time, which is all the readers would add.
+#if defined(__linux__) || defined(__APPLE__)
+constexpr bool kPrefetchHelps = true;
+#else
+constexpr bool kPrefetchHelps = false;
+#endif
+
 /// Readers that bring a file into the page cache while a mapped load of it
 /// runs, stopped when this goes.
 ///
 /// A mapped load faults the file in a page at a time from one thread, which
 /// this machine's disk served at 0.83 GB a second; four readers of 16 MiB
 /// pieces at once had it at 1.17, and the mapped load finds its pages
-/// waiting. Linux only, where the mapping is filled before the load goes on
-/// (see reads_faster_direct): elsewhere this does nothing.
+/// waiting. Only where that is how a mapped load reads (see kPrefetchHelps).
+/// Elsewhere this does nothing.
 class Prefetch {
 public:
     explicit Prefetch(const std::string& file) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         fd_ = ::open(file.c_str(), O_RDONLY);
         struct stat about {};
         if (fd_ < 0 || ::fstat(fd_, &about) != 0) {
@@ -659,7 +674,7 @@ public:
     }
 
     ~Prefetch() {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         stop_.store(true);
         for (std::thread& reader : readers_) {
             reader.join();
@@ -674,13 +689,25 @@ public:
     Prefetch& operator=(const Prefetch&) = delete;
 
 private:
-    // Linux's alone, so no other platform keeps fields it never uses.
-#if defined(__linux__)
+    // Linux's and macOS's alone, so Windows keeps no fields it never uses.
+#if defined(__linux__) || defined(__APPLE__)
     std::atomic<bool>        stop_{false};
     std::vector<std::thread> readers_;
     int                      fd_ = -1;
 #endif
 };
+
+}  // namespace
+
+FileRead reading_for(const ModelParams& params, const std::vector<ComputeDevice>& gpus, double cached) {
+    if (!params.on_processor && direct_io_safe(gpus)
+        && (params.direct_io || reads_faster_direct(params, gpus, cached))) {
+        return FileRead::Direct;
+    }
+    return kPrefetchHelps && cached >= 0.0 && cached < 0.8 ? FileRead::Prefetched : FileRead::Mapped;
+}
+
+namespace {
 
 int resolve_threads(int configured) {
     if (configured > 0) {
@@ -920,6 +947,100 @@ std::uint64_t runtime_allowance(const std::vector<ComputeDevice>& gpus) {
     }
     return most;
 }
+
+#if defined(CRUCIBLE_HAS_MTMD)
+/// What mtmd's own dry run says of a projector on the device asked about, the
+/// processor for none: what it would hold there, and how it reads a picture.
+/// mtmd_get_memory_usage builds the projector without reading its weights and
+/// reserves the buffers it encodes a picture in, as llama-server does before
+/// it places one, in 7 to 18 ms on the processor and 9 to 110 on a card. It
+/// is the part of mtmd's API marked unstable, which costs little for the
+/// reason llama-ext.h does: the tag is pinned. Asked of a card it allocates
+/// there for real, and a card without room for the weights ends the program
+/// as a load would, so it is only asked of one the processor's figures say
+/// has that room.
+struct ProjectorDryRun {
+    std::uint64_t bytes       = 0;      ///< on the device asked about, or 0 when mtmd could not say
+    int           most_tokens = -1;     ///< the most a picture takes, when pictures come in any size
+    bool          whole       = false;  ///< a picture is read with attention both ways
+};
+
+ProjectorDryRun dry_run(const std::filesystem::path& file, mtmd_context_params vision, ggml_backend_dev_t device) {
+    vision.use_gpu = device != nullptr;
+    vision.device  = device;
+    const mtmd_memory_usage usage = mtmd_get_memory_usage(file.string().c_str(), vision);
+    ProjectorDryRun out;
+    out.most_tokens = usage.image_max_tokens;
+    out.whole       = usage.use_non_causal;
+    for (const auto& [where, bytes] : usage.backend_mem_usage) {
+        if (device == nullptr || where == device) {
+            out.bytes += bytes;
+        }
+    }
+    return out;
+}
+
+/// The card a projector of `file` goes on: the one with the most memory free
+/// once the model is on the cards, when what the projector takes fits there.
+/// None, so the processor, when no card has that. Left to itself, clip asks
+/// the first card for the weights whatever is on it, and on a full one
+/// llama.cpp b11846 aborts the whole program rather than say no (clip.cpp,
+/// load_tensors). A 27B vision model loaded after others did just that, at
+/// 100%.
+///
+/// What it takes is mtmd's own figure, asked of the card once the
+/// processor's says the card has room, and what a dry run cannot see: the
+/// backend's scratch space (runtime_allowance) and, where pictures come in
+/// any size, one larger than the picture the dry run encodes. Measured on an
+/// RTX 4070, 2026-11-10, against the card's free memory, with CUDA and with
+/// Vulkan: each projector took what its dry run said, within 8 MiB. With
+/// Gemma 3's, whose pictures are all one size, a picture then took 55 to 78
+/// MiB more. With the others the largest picture took close to twice the
+/// buffers their dry runs had: Qwen3.8's 4096 tokens 457 MiB where they had
+/// 248, Gemma 4 E2B's 1089 tokens 406 where they had 202. So the buffers
+/// again twice over, and the scratch space. The weights are what a dry run
+/// that encodes nothing says, not the file's size: Gemma 4 12B's are 253 MiB
+/// of a 152 MiB file. A projector mtmd cannot measure gets the margin 0.9.8
+/// guessed, a quarter on top of the file and half a gigabyte.
+ggml_backend_dev_t projector_card(const std::filesystem::path& file, const mtmd_context_params& vision,
+                                  const ProjectorDryRun& processor) {
+    const std::vector<ggml_backend_dev_t> listed = RuntimeRegistry::devices();
+    std::optional<ComputeDevice> best;
+    for (const ComputeDevice& card : gpu_devices()) {
+        const auto at = static_cast<std::size_t>(card.index);
+        if (at < listed.size() && listed[at] != nullptr && card.memory_free > (best ? best->memory_free : 0)) {
+            best = card;
+        }
+    }
+    if (!best) {
+        return nullptr;
+    }
+    ggml_backend_dev_t card = listed[static_cast<std::size_t>(best->index)];
+    if (processor.bytes == 0) {
+        std::error_code ec;
+        const std::uint64_t size = std::filesystem::file_size(file, ec);
+        return !ec && size > 0 && best->memory_free >= size + size / 4 + (512ULL << 20) ? card : nullptr;
+    }
+    mtmd_context_params bare = vision;
+    bare.warmup = false;
+    const std::uint64_t weights = dry_run(file, bare, nullptr).bytes;
+    // The same margin measured_shortfall keeps for a desktop that moves.
+    const std::uint64_t reserve = 128ULL << 20;
+    const auto          wants   = [&](std::uint64_t figure) {
+        const std::uint64_t buffers = figure > weights ? figure - weights : 0;
+        const std::uint64_t larger  = processor.most_tokens > 0 ? 2 * buffers : 0;
+        return figure + larger + runtime_allowance(*best) + reserve;
+    };
+    if (best->memory_free < wants(processor.bytes)) {
+        return nullptr;
+    }
+    // The card's own figure, which a backend without flash attention for the
+    // projector's heads would put well above the processor's. The larger of
+    // the two, in case the card's buffers could not be had for the dry run.
+    const ProjectorDryRun there = dry_run(file, vision, card);
+    return best->memory_free >= wants(std::max(there.bytes, processor.bytes)) ? card : nullptr;
+}
+#endif
 
 /// Whether the window cache could decide if `params` fits: a model with
 /// sliding-window layers, all of it bound for cards that say what they have
@@ -1508,16 +1629,15 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // full-size copy of every model in RAM long after it was uploaded -- and
     // reads it faster when it is not cached already. A model on the
     // processor is mapped, and works from the page cache's copy.
-    const double cached = cached_share(params.path);
-    if (!params.on_processor && direct_io_safe(gpus)
-        && (params.direct_io || reads_faster_direct(params, gpus, cached))) {
+    const FileRead file_read = reading_for(params, gpus, cached_share(params.path));
+    if (file_read == FileRead::Direct) {
         model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
     }
     // A file to be mapped that is not cached is read in ahead of the
     // mapping, by several readers at once. Gone, and its readers stopped,
     // once the load returns.
     std::optional<Prefetch> prefetch;
-    if (model_params.load_mode != LLAMA_LOAD_MODE_DIRECT_IO && cached >= 0.0 && cached < 0.8) {
+    if (file_read == FileRead::Prefetched) {
         prefetch.emplace(params.path);
     }
 
@@ -1603,17 +1723,31 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     if (role == Role::Expert) {
         if (const std::filesystem::path projector = find_projector(params.path); !projector.empty()) {
             mtmd_context_params vision = mtmd_context_params_default();
-            vision.use_gpu       = params.n_gpu_layers != 0;
+            vision.n_threads     = resolve_threads(params.n_threads);
+            vision.print_timings = false;
+            const ProjectorDryRun processor = dry_run(projector, vision, nullptr);
+            // Some models read a picture with attention both ways, Gemma 3
+            // and 4 among them, and have to read it in one micro-batch. A
+            // larger batch read that way ends the program (llama-context.cpp,
+            // decode), and a picture read in two is two halves that never saw
+            // each other. So a projector that takes pictures of any size is
+            // held to what one micro-batch reads, as llama-server holds it.
+            // One of a fixed size fits or is refused (chat_with_pictures).
+            const int micro = static_cast<int>(llama_n_ubatch(ctx));
+            if (processor.whole && processor.most_tokens > micro) {
+                vision.image_max_tokens = micro;
+                note(std::filesystem::path(params.path).filename().string() + ": pictures held to "
+                     + std::to_string(micro) + " tokens, what it reads in one micro-batch");
+            }
+            vision.use_gpu = params.n_gpu_layers != 0;
             if (vision.use_gpu) {
-                vision.device  = projector_card(projector);
+                vision.device  = projector_card(projector, vision, processor);
                 vision.use_gpu = vision.device != nullptr;
                 if (!vision.use_gpu) {
                     note(std::filesystem::path(params.path).filename().string()
                          + ": no card has room for its projector, so pictures are read on the processor");
                 }
             }
-            vision.n_threads     = resolve_threads(params.n_threads);
-            vision.print_timings = false;
             loaded->vision_ = mtmd_init_from_file(projector.string().c_str(), model, vision);
             if (loaded->vision_ != nullptr) {
                 loaded->projector_ = projector.string();
@@ -1628,9 +1762,11 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count());
     };
     const auto done = std::chrono::steady_clock::now();
+    const char* weights = file_read == FileRead::Direct       ? "read directly"
+                        : file_read == FileRead::Prefetched ? "mapped, read ahead"
+                                                            : "mapped";
     note(std::filesystem::path(params.path).filename().string() + ": planned in " + ms(began, loading)
-         + " ms, weights in " + ms(loading, weighed) + " ms ("
-         + (model_params.load_mode == LLAMA_LOAD_MODE_DIRECT_IO ? "read directly" : "mapped") + "), context in "
+         + " ms, weights in " + ms(loading, weighed) + " ms (" + weights + "), context in "
          + ms(weighed, contexted) + " ms, projector in " + ms(contexted, done) + " ms");
     return loaded;
 }

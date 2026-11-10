@@ -22,8 +22,10 @@ output it printed.
 A turn is bounded, because a turn that never writes an answer is a turn the
 person who asked gets nothing from. A dozen actions at most, the same call
 never run twice, a search asked for again refused, and the last round told it
-is the last. A turn that ends with a call where its answer should be says why
-in words instead.
+is the last. A turn that spends its rounds and still reaches for a tool, or
+asks for the same thing twice, is asked once more with no tools offered, to
+answer from what it has. One that ends with a call where its answer should be
+even so says why in words instead.
 
 The core does what only the core may: it seats the expert and holds its model
 for the turn, keeps the conversation the turn belongs to and fits it to the
@@ -84,8 +86,14 @@ PROJECT_VERBS = frozenset((
     "gh", "python", "start", "stop", "logs", "screenshot", "click", "move", "type", "key",
     "scroll"))
 
-ALREADY_DONE = ("You already did exactly that this turn, and its result is above. Use it, and "
-                "if it told you what you needed, answer now.")
+ALREADY_DONE = ("You already did exactly that this turn, and its result is above. You have no "
+                "tools left, so answer the question now from what you have, and say plainly if "
+                "it is not enough.")
+
+# What the round after the last is told about the call it made instead of
+# answering, which was not run.
+NOT_RUN = ("That was not run. You have no tools left this turn, so answer the question now "
+           "from what you have, and say plainly if it is not enough.")
 
 DECLINED = ("The user declined that edit; the file is unchanged. Do not try the same write "
             "again. Either explain what you were going to change and why, or propose "
@@ -177,9 +185,10 @@ def routed_prompt(prompt, pinned, attachments):
     return prompt + "\n\nAttached:" + "".join(" " + name for name in attachments)
 
 
-def system_prompt(params, seat):
+def system_prompt(params, seat, tools=True):
     """The expert's instructions for this turn, from the person's own prompt
-    and what the seated model can do."""
+    and what the seated model can do. Without `tools`, the same with none
+    offered: the round that answers from what the turn found."""
     text = params.get("system_prompt", "")
     effort = params.get("effort", "")
     if effort and not seat.get("remote") and seat.get("takes_effort"):
@@ -187,6 +196,10 @@ def system_prompt(params, seat):
         # field of the request instead, which the core sends with each round.
         text += "\n\nReasoning: " + effort
     text += MARKDOWN
+    if not tools:
+        # A model told it has tools reaches for them: a fine-tuned 3B asked
+        # who wrote Hamlet called them until the turn ran out.
+        return text
     if params.get("web_search"):
         # Only when the tool is switched on. An expert told it can search when
         # it cannot will offer to, which is worse than not having the tool.
@@ -428,12 +441,21 @@ class Turn:
         canceled = hit_limit = False
         output_tokens = 0
         shown = ""
+        # The round that answers from what the turn found, with no tools
+        # offered: one past the last, when the expert spent its rounds and
+        # still reached for a tool, or sooner, when it asked for the same
+        # thing twice. Either way it is going round, and another round with
+        # tools on offer is another call.
+        final = False
 
-        for round_ in range(rounds):
+        for round_ in range(rounds + 1):
             # A turn that reads a file, then writes one, then answers says
             # something each time, and each is kept -- a paragraph apart,
             # rather than run into the next sentence or replaced by it.
-            said = self.call("turn.round", {"messages": exchanges, "paragraph": bool(earlier)})
+            asked = {"messages": exchanges, "paragraph": bool(earlier)}
+            if final:
+                asked["system"] = system_prompt(params, seat, tools=False)
+            said = self.call("turn.round", asked)
             answer = said.get("answer", "")
             reasoning = said.get("reasoning", "")
             # That a different model answered than the one in the seat, mostly.
@@ -462,7 +484,7 @@ class Turn:
             hit_limit = bool(said.get("hit_limit"))
             output_tokens += int(said.get("output_tokens") or 0)
             shown = said.get("reply", "")
-            if canceled or round_ + 1 >= rounds:
+            if canceled or final or rounds == 1:
                 break
 
             last = round_ + 2 >= rounds
@@ -474,14 +496,27 @@ class Turn:
             # knows and the search below has bookkeeping of its own -- repeats,
             # the last-search warning -- that the file verbs do not want.
             call = parsed.get("call") if workshop else None
-            if call and call.get("kind") in PROJECT_VERBS:
-                earlier = self.act(call, answer, earlier, already_done, exchanges, last)
+            acting = bool(call) and call.get("kind") in PROJECT_VERBS
+            query = "" if acting else parsed.get("search") or ""
+            if not acting and not query:
+                break   # it answered, which is the ordinary case
+
+            if round_ + 1 >= rounds:
+                # Every round spent, and this one asked for more. What it asked
+                # for is not run, and comes off the reply the way a call that
+                # ran does, or a search's whole round. The next round answers.
+                if acting:
+                    earlier = paragraphs(earlier, prose_before_tool_call(answer, call["kind"]))
+                self.show(reply=earlier)
+                exchanges.append({"role": "assistant", "content": answer})
+                exchanges.append({"role": "user", "content": NOT_RUN})
+                final = True
                 continue
 
-            query = parsed.get("search") or ""
-            if not query:
-                break   # it answered, which is the ordinary case
-            self.search(query, answer, earlier, already_searched, exchanges, last)
+            if acting:
+                earlier, final = self.act(call, answer, earlier, already_done, exchanges, last)
+            else:
+                final = self.search(query, answer, earlier, already_searched, exchanges, last)
 
         # --- the end of the turn ------------------------------------------------
         #
@@ -503,7 +538,8 @@ class Turn:
 
     def act(self, call, answer, earlier, already_done, exchanges, last):
         """Run the project call `call` the expert made, put what came of it
-        above the reply, and hand the result back. The reply as it now reads."""
+        above the reply, and hand the result back. The reply as it now reads,
+        and whether the next round is the one that answers with no tools."""
         kind = call.get("kind", "")
         argument = call.get("argument", "")
         self.mood("thinking", doing(kind, argument))
@@ -513,15 +549,16 @@ class Turn:
 
         # The same call twice in one turn is a model going round, and the
         # second answer would be the first one again. Not run, and not drawn:
-        # it is told its result is already above. A write or an edit is the
-        # exception -- changing a file again is how a fix to it is made.
+        # it is told its result is already above, and to answer from it. A
+        # write or an edit is the exception -- changing a file again is how a
+        # fix to it is made.
         changes_a_file = kind in ("write", "edit")
         asked_for = kind + "\n" + argument
         if not changes_a_file and asked_for in already_done:
             self.show(reply=kept)
             exchanges.append({"role": "assistant", "content": answer})
             exchanges.append({"role": "user", "content": ALREADY_DONE})
-            return kept
+            return kept, True
         already_done.append(asked_for)
 
         # --- the gate ---------------------------------------------------------
@@ -541,7 +578,7 @@ class Turn:
                 self.show(actions=[{"summary": "declined the edit to " + argument}], reply=earlier)
                 exchanges.append({"role": "assistant", "content": answer})
                 exchanges.append({"role": "user", "content": DECLINED})
-                return earlier
+                return earlier, False
 
         result = self.call("turn.tool", {"call": call})
         # The diff a write made, or the output a command printed, kept for the
@@ -565,15 +602,16 @@ class Turn:
         if last:
             handback["content"] += LAST_ACTION
         exchanges.append(handback)
-        return kept
+        return kept, False
 
     def search(self, query, answer, earlier, already_searched, exchanges, last):
         """Look up what the expert asked for, and hand back what was found.
+        Whether the next round is the one that answers with no tools.
 
         Asking twice for the same thing is a model that has read the results
         and not known what to do with them. Running the search again would hand
         back the same page and invite it to do the same, so it is told instead
-        -- and that becomes its last search.
+        -- and the round after answers, with no tools offered.
         """
         repeat = query in already_searched
         already_searched.append(query)
@@ -603,6 +641,7 @@ class Turn:
             # the turn with nothing in it.
             handback += LAST_SEARCH
         exchanges.append({"role": "user", "content": handback})
+        return repeat
 
 
 def turn(core, params):

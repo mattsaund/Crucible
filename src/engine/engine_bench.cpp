@@ -235,7 +235,16 @@ json model_facts(const std::filesystem::path& file) {
 
 /// The most questions asked of a model at once. Past a few dozen a card is
 /// busy with the arithmetic rather than waiting on reads, and more at once
-/// only makes each answer slower.
+/// only makes each answer slower, the longest ones too, and those set when a
+/// run ends. Measured on an RTX 4070, 2026-11-10, with LFM2.5-1.2B through
+/// Quick at 8192 tokens a question, which lets 64 fit: 8 at once took 133 s,
+/// 16 108, 32 89 and 97, 48 88 and 95, and 64 92, the longest answer 35 s at
+/// 8, 57 to 61 at 32 and 69 to 75 at 48. Between 32 and 48 is less than two
+/// runs of either differ by, and 48 takes half again as much memory for its
+/// caches. At the Bench's own 20480 tokens the card held 24 to 27, as the
+/// desktop's share of it moved, in 92 to 95 s. LFM2.5-2.6B at F16, which
+/// thinks at length, answered 47 in its first five minutes at 8 at once, 109
+/// at 16 and 133 at the 24 the card held.
 constexpr int kMostAtOnce = 32;
 
 /// The same for a model on the processor, which runs out of arithmetic

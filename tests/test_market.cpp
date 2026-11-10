@@ -478,6 +478,58 @@ TEST(a_repository_shows_the_logo_of_whose_model_it_is) {
     CHECK_EQ(parse_model(kModel, Format::Gguf).listing.base_model, std::string("Qwen/Qwen3.8-27B"));
 }
 
+TEST(a_repository_whose_card_names_a_picture_of_its_own_shows_that) {
+    // A file of the repository, where the hub serves it, each part of its
+    // name written as an address writes it.
+    CHECK_EQ(thumbnail_url("dealignai/Bonsai-GGUF", "dealign_mascot.png"),
+             std::string("https://huggingface.co/dealignai/Bonsai-GGUF/resolve/main/dealign_mascot.png"));
+    CHECK_EQ(thumbnail_url("a/b", " ./images/my card+1.png\n"),
+             std::string("https://huggingface.co/a/b/resolve/main/images/my%20card%2B1.png"));
+    CHECK_EQ(thumbnail_url("a/b", "/thumb.png"), std::string("https://huggingface.co/a/b/resolve/main/thumb.png"));
+    // An address of the hub's own, over https whatever it says.
+    CHECK_EQ(thumbnail_url("a/b", "https://cdn-uploads.huggingface.co/production/uploads/68851b/asvt.png"),
+             std::string("https://cdn-uploads.huggingface.co/production/uploads/68851b/asvt.png"));
+    CHECK_EQ(thumbnail_url("a/b", "HTTP://huggingface.co/front/thumbnails/microsoft.png"),
+             std::string("https://huggingface.co/front/thumbnails/microsoft.png"));
+    CHECK_EQ(thumbnail_url("a/b", "https://us.aws.cdn.hf.co/x.png"), std::string("https://us.aws.cdn.hf.co/x.png"));
+    // Another server's is never asked for, however it is dressed up.
+    CHECK(thumbnail_url("a/b", "https://spacebunnyalpha.com/assets/hero.webp").empty());
+    CHECK(thumbnail_url("a/b", "https://huggingface.co.example.com/x.png").empty());
+    CHECK(thumbnail_url("a/b", "https://huggingface.co@example.com/x.png").empty());
+    CHECK(thumbnail_url("a/b", "https://evilhuggingface.co/x.png").empty());
+    CHECK(thumbnail_url("a/b", "https://huggingface.co:8443/x.png").empty());
+    CHECK(thumbnail_url("a/b", "https://huggingface.co").empty());
+    CHECK(thumbnail_url("a/b", "https://huggingface.co/x y.png").empty());
+    CHECK(thumbnail_url("a/b", "ftp://huggingface.co/x.png").empty());
+    CHECK(thumbnail_url("a/b", "data:image/png;base64,iVBORw0KGgo=").empty());
+    // Nor anything outside the repository, nor anything for no repository.
+    CHECK(thumbnail_url("a/b", "../../etc/passwd").empty());
+    CHECK(thumbnail_url("a/b", "images/../../x.png").empty());
+    CHECK(thumbnail_url("a/b", "images\\x.png").empty());
+    CHECK(thumbnail_url("a/b", "   ").empty());
+    CHECK(thumbnail_url("../x", "x.png").empty());
+    // Nor one longer written out than an address that is kept.
+    CHECK(thumbnail_url("a/b", std::string(900, '+') + ".png").empty());
+    CHECK(!thumbnail_url("a/b", std::string(500, '+') + ".png").empty());
+
+    // The card's own word for it, read with the rest of a search; such a
+    // repository is known by its own id, and one without by its owner's.
+    const Page page = parse_search(R"([
+      {"id": "dealignai/Bonsai-GGUF", "cardData": {"base_model": "Qwen/Qwen3.8-27B", "thumbnail": "dealign_mascot.png"}},
+      {"id": "s/Elsewhere-GGUF", "cardData": {"base_model": "Qwen/Qwen3.8-27B", "thumbnail": "https://example.com/a.png"}},
+      {"id": "t/Odd-GGUF", "cardData": {"thumbnail": ["a.png"]}},
+      {"id": "u/Plain-GGUF", "cardData": {"base_model": "google/gemma-4-e4b-it"}}])", "");
+    CHECK_EQ(page.listings.size(), std::size_t{4});
+    if (page.listings.size() == 4) {
+        CHECK_EQ(page.listings[0].thumbnail, std::string("dealign_mascot.png"));
+        CHECK_EQ(logo_key(page.listings[0]), std::string("dealignai/Bonsai-GGUF"));
+        CHECK_EQ(logo_key(page.listings[1]), std::string("Qwen"));
+        CHECK(page.listings[2].thumbnail.empty());
+        CHECK_EQ(logo_key(page.listings[2]), std::string("t"));
+        CHECK_EQ(logo_key(page.listings[3]), std::string("google"));
+    }
+}
+
 TEST(a_logo_is_a_picture_by_its_first_bytes_and_nothing_else) {
     CHECK_EQ(std::string(picture_type(picture("png", 40))), std::string("image/png"));
     CHECK_EQ(std::string(picture_type(picture("jpeg", 40))), std::string("image/jpeg"));
@@ -585,6 +637,56 @@ TEST(a_logo_asked_for_by_a_repositorys_id_needs_nothing_from_the_hub_once_kept) 
     CHECK(!logo("../../etc", out, error));
     CHECK(!logo("", out, error));
 
+    // A repository whose card names a picture of its own: that, and not the
+    // owner's. It is kept under its address, so a copy whose card names the
+    // same picture, as a copy's card most often does, has the one kept.
+    const std::string address = "https://huggingface.co/dealignai/Bonsai-GGUF/resolve/main/dealign_mascot.png";
+    Listing           mascot;
+    mascot.id         = "dealignai/Bonsai-GGUF";
+    mascot.base_model = "Qwen/Qwen3.8-27B";
+    mascot.thumbnail  = "dealign_mascot.png";
+    Listing copy;
+    copy.id         = "someone/Bonsai-copy-GGUF";
+    copy.base_model = "dealignai/Bonsai";
+    copy.thumbnail  = address;
+    Listing big;
+    big.id         = "someone/Big-Picture-GGUF";
+    big.base_model = "Qwen/Qwen3.8-27B";
+    big.thumbnail  = "https://cdn-uploads.huggingface.co/production/uploads/a/b.png";
+    remember_logos({mascot, copy, big});
+    CHECK_EQ(remembered_owner(mascot.id), std::string("Qwen"));
+    CHECK_EQ(remembered_thumbnail("DEALIGNAI/bonsai-gguf"), address);
+    CHECK_EQ(remembered_thumbnail(copy.id), address);
+    CHECK(remembered_thumbnail("unsloth/Qwen3.8-27B-GGUF").empty());
+    const auto pictures = [] {
+        std::vector<std::filesystem::path> found;
+        for (const auto& entry : std::filesystem::directory_iterator(logos_dir())) {
+            if (entry.path().filename().string().rfind("logo-~", 0) == 0) {
+                found.push_back(entry.path());
+            }
+        }
+        return found;
+    };
+    keep_logo(logos_dir(), {address, "image/png", picture("png", 700)});
+    CHECK_EQ(pictures().size(), std::size_t{1});
+    CHECK(logo(mascot.id, out, error));
+    CHECK_EQ(out.owner, std::string("dealignai/Bonsai-GGUF"));
+    CHECK_EQ(out.bytes.size(), std::size_t{700});
+    CHECK(logo(copy.id, out, error));
+    CHECK_EQ(out.owner, std::string("someone/Bonsai-copy-GGUF"));
+    CHECK_EQ(out.bytes.size(), std::size_t{700});
+    CHECK_EQ(pictures().size(), std::size_t{1});
+    const std::filesystem::path kept_picture = pictures().front();
+    // One known to be none to have, a picture too large say: the owner's.
+    keep_logo(logos_dir(), {thumbnail_url(big.id, big.thumbnail), "", ""});
+    CHECK(logo(big.id, out, error));
+    CHECK_EQ(out.owner, std::string("Qwen"));
+    CHECK_EQ(out.bytes.size(), std::size_t{500});
+    // Nothing named for a repository becomes a way out of the folder.
+    keep_logo(logos_dir(), {"a/../../escaped", "image/png", picture("png", 100)});
+    CHECK(!std::filesystem::exists(dir.path() / "escaped"));
+    CHECK_EQ(pictures().size(), std::size_t{2});
+
 #if !defined(_WIN32)
     // Windows finds curl beside itself whatever PATH says, so only here can
     // a machine be made that cannot reach the hub.
@@ -593,10 +695,34 @@ TEST(a_logo_asked_for_by_a_repositorys_id_needs_nothing_from_the_hub_once_kept) 
     age(logos_dir() / "logo-qwen", 40);
     CHECK(logo("unsloth/Qwen3.8-27B-GGUF", out, error));
     CHECK_EQ(out.mime, std::string("image/png"));
+    // A repository's own picture as well.
+    age(kept_picture, 40);
+    CHECK(logo(mascot.id, out, error));
+    CHECK_EQ(out.owner, std::string("dealignai/Bonsai-GGUF"));
+    CHECK_EQ(out.bytes.size(), std::size_t{700});
     // Never fetched, and the hub not there: no telling, so no answer.
     CHECK(!logo("bartowski/Original-GGUF", out, error));
     CHECK(!error.empty());
 #endif
+}
+
+TEST(what_was_said_of_each_repositorys_logo_is_read_back_from_before) {
+    // owners.json as an earlier Crucible wrote it, with no pictures of their
+    // own, beside one that has one.
+    TempDir              dir;
+    const ScopedDataHome home(dir.path());
+    std::filesystem::create_directories(logos_dir());
+    {
+        std::ofstream file(logos_dir() / "owners.json", std::ios::binary);
+        file << R"({"unsloth/qwen3.8-27b-gguf": ["Qwen", 1700000000],)"
+                R"( "dealignai/bonsai-gguf": ["Qwen", 1700000000, "https://huggingface.co/dealignai/Bonsai-GGUF/resolve/main/m.png"],)"
+                R"( "bad/one": ["Qwen", "then"]})";
+    }
+    CHECK_EQ(remembered_owner("unsloth/Qwen3.8-27B-GGUF"), std::string("Qwen"));
+    CHECK(remembered_thumbnail("unsloth/Qwen3.8-27B-GGUF").empty());
+    CHECK_EQ(remembered_thumbnail("dealignai/Bonsai-GGUF"),
+             std::string("https://huggingface.co/dealignai/Bonsai-GGUF/resolve/main/m.png"));
+    CHECK(remembered_owner("bad/one").empty());
 }
 
 TEST(logos_come_from_the_hub_when_asked_for_real) {
@@ -631,6 +757,14 @@ TEST(logos_come_from_the_hub_when_asked_for_real) {
     CHECK(out.mime.empty());
     CHECK(logo(nobody.id, out, error));
     CHECK(out.mime.empty());
+    // A card that names a picture of its own, a file of the repository: that,
+    // asked for by the repository's id alone.
+    CHECK(logo("dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF", out, error));
+    CHECK_EQ(out.owner, std::string("dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF"));
+    CHECK_EQ(out.mime, std::string("image/png"));
+    // And one whose picture is far larger than any logo: its owner's instead.
+    CHECK(logo("llmfan46/gemma-4-Ortenzya-The-Creative-Wordsmith-31B-it-uncensored-heretic-GGUF", out, error));
+    CHECK(out.owner.find('/') == std::string::npos);
     if (!error.empty()) {
         std::printf("      %s\n", error.c_str());
     }

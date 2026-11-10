@@ -62,7 +62,41 @@ jobs:
           echo "LLAMA_TAG=$tag" >> "$GITHUB_ENV"
           echo "using llama.cpp $tag"
 
+      # What the module is made from, and the name it goes under: the one
+      # place that says so (.github/scripts/runtime-recipe.sh), which the
+      # configure step below builds from as well.
+      - name: The recipe
+        shell: bash
+        run: |
+          bash .github/scripts/runtime-recipe.sh "${{ matrix.backend }}" "${{ matrix.platform }}" \
+               "${{ matrix.runs-on }}" | tee -a "$GITHUB_ENV"
+
+      # The same recipe on an earlier release is the same module: it is taken
+      # from there, with the note of its recipe, and nothing below is built.
+      # Each published release carries a note for every module on it, so the
+      # next one finds it whatever the release in between did.
+      - name: The same module on an earlier release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 10 \
+                       --json tagName --jq '.[].tagName'); do
+            rm -rf earlier && mkdir earlier
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET.recipe" \
+                                --dir earlier 2> /dev/null || continue
+            [ "$(tr -d '[:space:]' < "earlier/$ASSET.recipe")" = "$RECIPE" ] || continue
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir dist
+            cp "earlier/$ASSET.recipe" dist/
+            echo "REUSED=$tag" >> "$GITHUB_ENV"
+            echo "$ASSET is on $tag with the same recipe: taken from there"
+            exit 0
+          done
+          echo "no earlier release has $ASSET with this recipe: it is built here"
+
       - name: llama.cpp source
+        if: env.REUSED == ''
         shell: bash
         run: |
           curl --location --fail --silent --show-error \
@@ -77,7 +111,7 @@ jobs:
       # first run of this workflow failed. No version asked for means the
       # newest, which is the only pin that does not rot.
       - name: Vulkan SDK
-        if: matrix.backend == 'vulkan'
+        if: env.REUSED == '' && matrix.backend == 'vulkan'
         uses: jakoch/install-vulkan-sdk-action@v1.7.0
         with:
           install_runtime: true
@@ -88,7 +122,7 @@ jobs:
       # runtime is built with it, and Crucible fetches NVIDIA's cuBLAS for the
       # same release to run it with.
       - name: The CUDA release
-        if: matrix.backend == 'cuda'
+        if: env.REUSED == '' && matrix.backend == 'cuda'
         shell: bash
         run: |
           release="$(grep -m1 'kRelease' include/crucible/runtime/cuda_libraries.hpp \
@@ -114,7 +148,7 @@ jobs:
       # apt has its own names for them, and on Windows a 13.x subset that looks
       # complete leaves out crt/host_config.h, which every .cu file includes.
       - name: CUDA toolkit (Linux)
-        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        if: env.REUSED == '' && matrix.backend == 'cuda' && runner.os == 'Linux'
         run: |
           curl --location --fail --silent --show-error --remote-name \
                https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
@@ -130,7 +164,7 @@ jobs:
       # is what the action ran for 13.3.1. Its folder becomes CUDA_PATH, and if
       # the installer put nvcc somewhere else, that is found and used instead.
       - name: CUDA toolkit (Windows)
-        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        if: env.REUSED == '' && matrix.backend == 'cuda' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
@@ -151,58 +185,28 @@ jobs:
           "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & "$root\bin\nvcc.exe" --version
 
-      # The same flags src/runtime/builder.cpp uses, with two differences that
-      # come from building for somebody else's machine rather than this one:
-      #
-      #  - the CUDA architectures are llama.cpp's own list for a build that is
-      #    not native: kernels for the cards people run (Ampere, Ada,
-      #    Blackwell) and PTX from Turing up for the rest. The list once began
-      #    at Ampere, and every RTX 20 and GTX 16 failed at its first kernel;
-      #    prebuilt::kCudaKernels counts which list a download has.
-      #  - cudart is asked for statically, but ggml-cuda links it and cuBLAS
-      #    as shared libraries all the same: the module needs libcudart and
-      #    libcublas beside the driver, which is why the app fetches NVIDIA's
-      #    libraries with it (src/runtime/cuda_libraries.hpp).
-      # Windows CUDA builds through Ninja rather than Visual Studio.
-      #
-      # The VS generator compiles CUDA through MSBuild, which needs the toolkit's
-      # integration files inside the Visual Studio installation -- and a network
-      # install of the toolkit does not put them there, so cmake finds the
-      # toolkit, says so, and then stops at "No CUDA toolset found". Ninja calls
-      # nvcc directly and needs none of it. The other two Windows backends build
-      # fine as they are and are left alone.
+      # Ninja for Windows CUDA, and why, is in the recipe script with the
+      # flags; this sets up the compiler it needs.
       - name: MSVC environment
-        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        if: env.REUSED == '' && matrix.backend == 'cuda' && runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure
+        if: env.REUSED == ''
         shell: bash
         run: |
-          flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-                 -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF
-                 -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF
-                 -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
-                 -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF
-                 -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_CURL=OFF
-                 -DCMAKE_PROJECT_INCLUDE=$PWD/cmake/CrucibleUnversionHook.cmake)
-          case "${{ matrix.backend }}" in
-            cpu)    flags+=(-DGGML_CPU=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_METAL=OFF) ;;
-            vulkan) flags+=(-DGGML_VULKAN=ON -DGGML_CPU=OFF -DGGML_METAL=OFF) ;;
-            metal)  flags+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_CPU=OFF) ;;
-            cuda)   flags+=(-DGGML_CUDA=ON -DGGML_CPU=OFF -DGGML_METAL=OFF
-                            -DCMAKE_CUDA_RUNTIME_LIBRARY=Static) ;;
-          esac
-          if [ "${{ matrix.backend }}" = "cuda" ] && [ "${{ runner.os }}" = "Windows" ]; then
-            flags+=(-G Ninja)
-          fi
+          flags=()
+          while IFS= read -r flag; do flags+=("${flag//@SRC@/$PWD}"); done < flags.txt
           cmake -S llama-src -B build "${flags[@]}"
 
       - name: Build
+        if: env.REUSED == ''
         run: cmake --build build --config Release --target ggml --parallel 4
 
       # Only the modules. Everything else the build leaves in bin/ is either a
       # copy of one under another name or something ggml never opens.
       - name: Pack
+        if: env.REUSED == ''
         shell: bash
         run: |
           mkdir -p out dist
@@ -216,24 +220,16 @@ jobs:
           done
           ls -la out
           test "$(ls out | wc -l)" -gt 0
-          # CUDA's name says which kernels it has: prebuilt::kCudaKernels, read
-          # from the header the binary is compiled from.
-          suffix=""
-          if [ "${{ matrix.backend }}" = cuda ]; then
-            kernels="$(grep -m1 'kCudaKernels = ' include/crucible/runtime/prebuilt.hpp \
-                       | sed -E 's/.*kCudaKernels = ([0-9]+).*/\1/')"
-            test -n "$kernels"
-            suffix="-k$kernels"
-          fi
-          name="runtime-${{ matrix.backend }}-${{ matrix.platform }}-${LLAMA_TAG}${suffix}.tar.gz"
-          tar -czf "dist/$name" -C out .
+          tar -czf "dist/$ASSET" -C out .
+          echo "$RECIPE" > "dist/$ASSET.recipe"
           ls -la dist
-          echo "ASSET=$name" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v7
         with:
           name: runtime-${{ matrix.backend }}-${{ matrix.platform }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.recipe
 
   # Only when this runs on its own. Called from the installers workflow, the
   # github context is that workflow's -- its name is "installers" -- and it
@@ -253,5 +249,7 @@ jobs:
       - name: Attach
         uses: softprops/action-gh-release@v3
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.recipe
           draft: true

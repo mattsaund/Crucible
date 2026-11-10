@@ -1307,7 +1307,9 @@ VERSION="$(awk '/^project\(crucible/,/LANGUAGES/ { if ($1 == "VERSION") print $2
 check     "CMakeLists names a version" \
           test -n "$VERSION"
 check     "the binary is compiled with it, rather than a copy" \
-          grep -q 'CRUCIBLE_VERSION="${PROJECT_VERSION}"' "$ROOT/CMakeLists.txt"
+          grep -q 'CRUCIBLE_VERSION="${CRUCIBLE_VERSION}"' "$ROOT/CMakeLists.txt"
+check     "which is those numbers and a pre-release's suffix, if any" \
+          grep -qF 'set(CRUCIBLE_VERSION "${PROJECT_VERSION}${CRUCIBLE_VERSION_SUFFIX}")' "$ROOT/CMakeLists.txt"
 # Two packaging defaults carry a literal, used only when nothing passes one in.
 # They drift silently, and a .dmg that calls itself 0.1.0 is a Mac that will not
 # replace it with the newer copy.
@@ -1319,7 +1321,7 @@ check     "so does the Windows one" \
 check     "install.sh reports the version it just installed" \
           grep -q 'installed_version=' "$ROOT/install.sh"
 check     "and the macOS bundle takes its plist version from the binary too" \
-          grep -qF '<key>CFBundleVersion</key><string>$version</string>' "$ROOT/install.sh"
+          grep -qF '<key>CFBundleVersion</key><string>${version%%-*}</string>' "$ROOT/install.sh"
 check     "install.ps1 reports it as well" \
           grep -q "crucible.exe') --version" "$ROOT/install.ps1"
 
@@ -1349,8 +1351,20 @@ echo "  a runtime can arrive already built"
 # people rather than the four minutes. The workflow builds the same modules
 # from the same tag; the app downloads them and compiles only what is missing.
 RT="$ROOT/.github/workflows/runtimes.yml"
+RS="$ROOT/.github/scripts/runtime-recipe.sh"
 check     "there is a workflow that builds them" \
           test -f "$RT"
+# What a module is made from is written in one place, and the workflow builds
+# from it: a module with the same recipe on an earlier release is that module,
+# and is taken from there rather than built for an hour again.
+check     "the workflow builds from the recipe" \
+          grep -q 'runtime-recipe.sh' "$RT"
+check     "with the recipe's own flags" \
+          grep -q 'done < flags.txt' "$RT"
+check     "and takes a module with the same recipe from an earlier release" \
+          grep -q 'REUSED=' "$RT"
+check     "each module goes out with the note of its recipe" \
+          grep -q 'dist/\*.recipe' "$RT"
 # A tag builds them inside the installers' run, so the release can wait for
 # them. Run on the tag by themselves as well, every backend would build twice.
 check     "a tag builds them, in the same run as the installers" \
@@ -1362,7 +1376,7 @@ check_not "and not on the tag by itself as well" \
 # The name is the safety mechanism: backend, platform and llama.cpp tag, so a
 # module built against another llama.cpp cannot be asked for by accident.
 check     "the workflow names assets by backend, platform and tag" \
-          grep -q 'runtime-\${{ matrix.backend }}-\${{ matrix.platform }}-\${LLAMA_TAG}' "$RT"
+          grep -q 'runtime-\${backend}-\${platform}-\${tag}' "$RS"
 check     "and the app builds the same name" \
           grep -q '"runtime-" + std::string(backend_info(kind).id)' "$ROOT/src/runtime/prebuilt.cpp"
 check     "the workflow reads the tag from the file the build reads" \
@@ -1370,7 +1384,7 @@ check     "the workflow reads the tag from the file the build reads" \
 # Static cudart is asked for; ggml-cuda links cudart and cuBLAS shared anyway,
 # and the app fetches NVIDIA's libraries beside the module (cuda_libraries).
 check     "the CUDA module asks for cudart statically" \
-          grep -q 'CMAKE_CUDA_RUNTIME_LIBRARY=Static' "$RT"
+          grep -q 'CMAKE_CUDA_RUNTIME_LIBRARY=Static' "$RS"
 # llama.cpp's own list of architectures, Turing to Blackwell. An override
 # that began at Ampere left every RTX 20 and GTX 16 failing at its first
 # kernel, and the app has to know which list a download was built with.
@@ -1379,7 +1393,7 @@ check_not "it builds the architectures llama.cpp chooses" \
 check     "and a CUDA download records which kernels it has" \
           grep -q 'kCudaKernels' "$ROOT/include/crucible/runtime/prebuilt.hpp"
 check     "which the CUDA asset's name says, read from that header" \
-          grep -q "kCudaKernels = " "$RT"
+          grep -q "kCudaKernels = " "$RS"
 # One backend failing to build must not take the others with it.
 check     "a failed backend does not block the rest" \
           grep -q 'fail-fast: false' "$RT"
@@ -1393,9 +1407,17 @@ check     "on a draft, before anything is published" \
           awk '/^  runtimes-attach:/ { on = 1 } /^  release:/ { on = 0 } on && /draft: true/ { found = 1 }
                END { exit !found }' "$REL"
 check     "the release waits for the installers and the runtimes both" \
-          grep -q 'needs: \[macos, windows, linux, runtimes-attach\]' "$REL"
+          grep -q 'needs: \[checked, checks, macos, windows, linux, runtimes-attach\]' "$REL"
 check     "and is published only once the runtimes are on it" \
           grep -q "needs.runtimes-attach.result == 'success'" "$REL"
+# The checks run in the same run, and gate it: a tag is checked, built and
+# published in one go, or left an unseen draft.
+check     "and only if the checks passed, here or on the commit before" \
+          grep -q "needs.checks.result == 'success'" "$REL"
+check     "a tag with a dash in it is a pre-release, never Latest" \
+          grep -q "prerelease: \${{ contains(github.ref_name, '-') }}" "$REL"
+check     "and a tag does not run CI a second time on its own" \
+          grep -q 'branches: \["\*\*"\]' "$ROOT/.github/workflows/build.yml"
 # By hand, the runtimes workflow runs on its own and attaches to a tag's
 # release itself. Called, the github context is the caller's, so its name is
 # what tells the two apart.
@@ -1413,7 +1435,7 @@ check     "and not the name of the run that calls it" \
 # and passing the definitions file instead of the hook is the mistake that
 # looks identical in the log and produces modules nobody can load.
 check     "the workflow unversions what it builds" \
-          grep -q 'CMAKE_PROJECT_INCLUDE=$PWD/cmake/CrucibleUnversionHook.cmake' "$RT"
+          grep -q 'CMAKE_PROJECT_INCLUDE=@SRC@/cmake/CrucibleUnversionHook.cmake' "$RS"
 check     "the hook defers the sweep until the targets exist" \
           grep -q 'cmake_language(DEFER' "$ROOT/cmake/CrucibleUnversionHook.cmake"
 # The runtime builder writes the same hook at runtime, where there is no

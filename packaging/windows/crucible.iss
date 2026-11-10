@@ -17,7 +17,12 @@
   #define StageDir "stage"
 #endif
 #ifndef Version
-  #define Version "0.9.9"
+  #define Version "1.0.0"
+#endif
+; The numbers alone, for the file version Windows shows, which takes nothing
+; else: a pre-release's Version carries a suffix ("-pre.1").
+#ifndef NumericVersion
+  #define NumericVersion Version
 #endif
 
 [Setup]
@@ -26,6 +31,7 @@
 AppId={{44B700E9-B63E-51AB-8FA1-94D1BADF757D}
 AppName=Crucible
 AppVersion={#Version}
+VersionInfoVersion={#NumericVersion}
 AppPublisher=Crucible
 AppPublisherURL=https://github.com/mattsaund/Crucible
 DefaultDirName={localappdata}\Programs\Crucible

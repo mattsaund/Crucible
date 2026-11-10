@@ -1,8 +1,14 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     0.9.9
+    VERSION     1.0.0
     DESCRIPTION "An all in one local AI workshop: build software with agents, chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
+
+# A pre-release says so after the numbers ("-pre.1"). Crucible's update check
+# ranks it below the release with the same numbers, and the installers
+# workflow makes a tag with a dash a GitHub pre-release. Empty for a release.
+set(CRUCIBLE_VERSION_SUFFIX "-pre.1")
+set(CRUCIBLE_VERSION "${PROJECT_VERSION}${CRUCIBLE_VERSION_SUFFIX}")
 
 # ---------------------------------------------------------------------------
 # Standards & defaults
@@ -34,6 +40,14 @@ if(MSVC)
     # and mangles every one of them.
     add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>")
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>")
+    # The Visual Studio generator builds several projects at once but the
+    # files inside each one at a time, unless asked: crucible_core is a
+    # hundred of them, and the Windows build took twelve minutes where Linux
+    # took six. /MP compiles a project's files side by side, and changes
+    # nothing in what comes out. Ninja runs one compiler per file anyway.
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/MP>")
+    endif()
 endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -242,9 +256,10 @@ if(TARGET mtmd)
 endif()
 # ShellExecuteW: opening a program Crucible made as the person's own, not as
 # a child of Crucible's. See src/tools/apps.cpp. GDI and CoreText: the fonts
-# installed, for the Font setting. See src/util/fonts.cpp.
+# installed, for the Font setting. See src/util/fonts.cpp. SetupAPI: each
+# card's PCIe link, from its device properties. See src/runtime/devices.cpp.
 if(WIN32)
-    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32)
+    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32 setupapi)
 elseif(APPLE)
     target_link_libraries(crucible_core PRIVATE "-framework CoreText" "-framework CoreFoundation")
 endif()
@@ -269,6 +284,33 @@ if(CRUCIBLE_CONVERTER_CPP)
     target_compile_definitions(crucible_core PUBLIC CRUCIBLE_HAS_CONVERTER)
 endif()
 
+# What nearly every file of Crucible's includes, parsed once for the target
+# rather than once a file, under MSVC only. The Windows builds were the long
+# pole of a release, twelve minutes each on four cores already all busy, most
+# of it parsing the standard library and nlohmann/json again for each of a
+# hundred files. Linux and macOS compile every file on its own includes, so
+# one that forgets a header still fails there rather than passing here.
+# C++ only, and nothing from windows.h, whose macros some files set up first.
+set(CRUCIBLE_PRECOMPILED
+    "$<$<COMPILE_LANGUAGE:CXX>:<algorithm$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<chrono$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<cstdint$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<filesystem$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<functional$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<map$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<memory$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<mutex$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<optional$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<string$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<string_view$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<thread$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<unordered_map$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<vector$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<nlohmann/json.hpp$<ANGLE-R>>")
+if(MSVC)
+    target_precompile_headers(crucible_core PRIVATE ${CRUCIBLE_PRECOMPILED})
+endif()
+
 # The notices, compiled in so `crucible --licenses` can print them on a
 # machine that has only the binary.
 if(CRUCIBLE_NOTICES_CPP)
@@ -280,7 +322,7 @@ else()
 endif()
 
 target_compile_definitions(crucible_core PUBLIC
-    CRUCIBLE_VERSION="${PROJECT_VERSION}"
+    CRUCIBLE_VERSION="${CRUCIBLE_VERSION}"
     # The runtime builder compiles GPU backends from this exact llama.cpp tag.
     # A backend built from a different one would load and then crash on the
     # first tensor, so the tag the binary was built against travels with it.
@@ -456,6 +498,11 @@ if(CRUCIBLE_BUILD_TESTS)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         target_compile_options(crucible_tests PRIVATE ${_crucible_warnings})
     endif()
+    if(MSVC)
+        # Its own rather than crucible_core's: the tests are compiled with
+        # definitions of their own, and a precompiled header has to match.
+        target_precompile_headers(crucible_tests PRIVATE ${CRUCIBLE_PRECOMPILED})
+    endif()
     add_test(NAME core COMMAND crucible_tests)
 endif()
 
@@ -621,7 +668,7 @@ endif()
 # Configuration summary
 # ---------------------------------------------------------------------------
 message(STATUS "")
-message(STATUS "  Crucible ${PROJECT_VERSION}")
+message(STATUS "  Crucible ${CRUCIBLE_VERSION}")
 message(STATUS "  ------------------------------------------")
 message(STATUS "  build type    : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  compiler      : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

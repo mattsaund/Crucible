@@ -713,10 +713,13 @@ afterDraw.push(() => keepAtBottom('test-talk'));
 //
 // A fine-tune, or a condensed copy, run through Bench beside the model it was
 // made from: the same questions at the same size and effort, so the two
-// results say what the making did. The base has to be a GGUF on this machine.
-// A fine-tune's base is a Hugging Face repository of weights, so the one run
-// is a file in the models folder named for that repository, at the
-// fine-tune's own quantization when there is one.
+// results say what the making did. The base has to be a GGUF on this machine,
+// and it is found from what the recipe records. A condensed copy records the
+// file it was made from. A fine-tune records the Hugging Face repository of
+// weights it started from, so the one run is a GGUF the Models tab downloaded
+// from that repository or from one made of it, at the fine-tune's own
+// quantization when there is one. Only when there is none of those is a file
+// named for the model taken instead.
 
 /// A GGUF file's name in its parts: without the extension or a split set's
 /// part number (the stem), and that again without its quantization (the
@@ -728,25 +731,58 @@ function ggufParts(file) {
   return { stem, model: quant ? stem.slice(0, quant.index) : stem, quant: quant ? quant[1] : '' };
 }
 
-/// The GGUF a made model's base is on this machine, or '': for a condensed
-/// copy the file it was condensed from; for a fine-tune of a repository like
-/// LiquidAI/LFM2.5-1.2B-Instruct, a file of that name and a quantization,
-/// bare or with the author in front as some converters write it. Never a file
-/// made here itself.
+/// The repository a model in the folder was downloaded from, in lower case:
+/// "unsloth/llama-3.2-1b-gguf" for "unsloth/Llama-3.2-1B-GGUF/Llama-3.2-1B-Q8_0.gguf",
+/// the folders the Models tab puts a GGUF in. Empty for a file not two
+/// folders down.
+function downloadedFrom(m) {
+  const parts = String(m.name || '').split('/');
+  return parts.length === 3 ? `${parts[0]}/${parts[1]}`.toLowerCase() : '';
+}
+
+/// Whether the repository `repo`, in lower case, holds GGUFs of the
+/// repository `base`, "LiquidAI/LFM2.5-1.2B-Instruct": it is that one, or one
+/// named for it the way GGUF repositories are, "-GGUF" after the name, an
+/// imatrix's "-i1" before that, and for some the author in front.
+function ggufRepoOf(repo, base) {
+  const [author, name] = String(base).toLowerCase().split('/');
+  const theirs = repo.split('/')[1] || '';
+  if (!author || !name || !theirs) return false;
+  const bare = theirs.replace(/-gguf$/, '').replace(/-i1$/, '');
+  return repo === `${author}/${name}` || bare === name || bare === `${author}_${name}`;
+}
+
+/// The GGUF a made model's base is on this machine, or '', from what its
+/// recipe records (see above): for a condensed copy the file it was condensed
+/// from, or that file moved elsewhere in the folder, the same by its name and
+/// size; for a fine-tune of a repository on the hub, a GGUF downloaded from it
+/// or from one made of it. Failing those, a file named for the model and a
+/// quantization, bare or with the author in front as some converters write it.
+/// Never a file made here itself.
 function baseGguf(r) {
   const base = r.base || {};
   const source = base.path || base.id || '';
   const models = (state.models ? state.models.models || [] : [])
     .filter((m) => (m.format || 'gguf') === 'gguf' && !/mmproj/i.test(m.name));
-  if (/\.gguf$/i.test(source)) return models.some((m) => m.path === source) ? source : '';
-  const name = fileName(source).toLowerCase();
-  if (!name) return '';
-  const author = base.source === 'hub' && source.includes('/') ? source.split('/')[0].toLowerCase() : '';
+  if (/\.gguf$/i.test(source)) {
+    if (models.some((m) => m.path === source)) return source;
+    const file = fileName(source).toLowerCase();
+    const moved = models.find((m) => fileName(m.path).toLowerCase() === file && (!base.bytes || m.bytes === base.bytes));
+    return moved ? moved.path : '';
+  }
   const made = recipesList().map((x) => x.trained_path).filter(Boolean);
-  const found = models.filter((m) => !made.includes(m.path)
-    && [name, `${author}_${name}`].includes(ggufParts(m.name).model.toLowerCase()));
-  const same = found.find((m) => ggufParts(m.name).quant.toUpperCase() === String(r.quantization || '').toUpperCase());
-  return (same || found[0] || {}).path || '';
+  const theirs = models.filter((m) => !made.includes(m.path));
+  const atItsSize = (found) => {
+    const same = found.find((m) => ggufParts(m.name).quant.toUpperCase() === String(r.quantization || '').toUpperCase());
+    return (same || found[0] || {}).path || '';
+  };
+  const repo = base.source === 'hub' && String(base.id || '').includes('/') ? base.id : '';
+  const downloaded = repo ? theirs.filter((m) => ggufRepoOf(downloadedFrom(m), repo)) : [];
+  if (downloaded.length) return atItsSize(downloaded);
+  const name = fileName(repo || source).toLowerCase();
+  if (!name) return '';
+  const author = repo ? repo.split('/')[0].toLowerCase() : '';
+  return atItsSize(theirs.filter((m) => [name, `${author}_${name}`].includes(ggufParts(m.name).model.toLowerCase())));
 }
 
 /// What a made model's base is called, to look for on Hugging Face.

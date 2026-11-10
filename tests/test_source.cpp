@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/session/store.hpp"
 #include "crucible/tools/apps.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/tools/preview.hpp"
@@ -259,6 +260,70 @@ TEST(the_project_methods_read_inside_the_project_and_refuse_outside_it) {
     }
     // And git.ready answers anywhere: whether git is here is not about a project.
     CHECK(ask(bare, {{"method", "git.ready"}})["ok"] == true);
+}
+
+TEST(what_a_page_saves_in_the_preview_is_there_after_a_restart) {
+    // The window holds it while it is open (ui/preview.js); these keep it in
+    // Crucible's own folder for the project, for the next start.
+    const TempDir        data;
+    const ScopedDataHome scoped(data.path());
+    const TempDir        project;
+    const std::string    root = project.path().string();
+    api::Host            nobody;
+    api::Surface         surface(nobody);
+    const auto kept = [&surface](const std::string& at, const std::string& page) {
+        return ask(surface, {{"method", "preview.kept"}, {"params", {{"root", at}, {"page", page}}}});
+    };
+    const auto keep = [&surface](const std::string& at, const std::string& page, const std::string& kind,
+                                 const nlohmann::json& value) {
+        return ask(surface, {{"method", "preview.keep"},
+                             {"params", {{"root", at}, {"page", page}, {"kind", kind}, {"value", value}}}});
+    };
+
+    // Nothing kept yet, and nothing said about it.
+    nlohmann::json first = kept(root, "index.html");
+    CHECK(first["ok"] == true);
+    CHECK(first["result"].empty());
+
+    // What window.crucible.save was given and what localStorage holds, each
+    // read back as it was.
+    CHECK(keep(root, "index.html", "data", {{"total", 9}, {"rows", {1, 2}}})["ok"] == true);
+    CHECK(keep(root, "index.html", "local", {{"theme", "dark"}, {"rows", "[3]"}})["ok"] == true);
+    const nlohmann::json back = kept(root, "index.html");
+    CHECK_EQ(back["result"]["data"].dump(), std::string(R"({"rows":[1,2],"total":9})"));
+    CHECK_EQ(back["result"]["local"].dump(), std::string(R"({"rows":"[3]","theme":"dark"})"));
+
+    // In the project's own folder, a folder for the page holding the two
+    // files a made app keeps.
+    std::filesystem::path folder;
+    for (const auto& entry : std::filesystem::directory_iterator(Project::at(project.path()).dir / "preview")) {
+        folder = entry.path();
+    }
+    CHECK(folder.filename().string().rfind("index-html-", 0) == 0);
+    CHECK(std::filesystem::is_regular_file(folder / "data.json"));
+    CHECK(std::filesystem::is_regular_file(folder / "storage.json"));
+
+    // Saved again, the newer is what is there; null is something saved too.
+    CHECK(keep(root, "index.html", "data", nullptr)["ok"] == true);
+    CHECK(kept(root, "index.html")["result"].contains("data"));
+    CHECK(kept(root, "index.html")["result"]["data"].is_null());
+
+    // Per page and per project: another page, the same page of another
+    // project, start with nothing.
+    CHECK(kept(root, "app/index.html")["result"].empty());
+    CHECK(kept(root + "-other", "index.html")["result"].empty());
+
+    // sessionStorage is not kept, a storage is names and values, and the
+    // project and the page are both needed.
+    CHECK(keep(root, "index.html", "session", {{"tab", "1"}})["ok"] == false);
+    CHECK(keep(root, "index.html", "local", "not names")["ok"] == false);
+    CHECK(keep(root, "", "data", 1)["ok"] == false);
+    CHECK(kept("", "index.html")["ok"] == false);
+    CHECK_EQ(kept(root, "index.html")["result"]["local"].dump(), std::string(R"({"rows":"[3]","theme":"dark"})"));
+
+    // A file that was not written whole is as good as none.
+    write(folder / "storage.json", "{\"rows\": \"[3");
+    CHECK(!kept(root, "index.html")["result"].contains("local"));
 }
 
 TEST(a_build_is_started_through_the_same_door_as_a_cook) {

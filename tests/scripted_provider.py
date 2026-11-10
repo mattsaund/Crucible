@@ -42,6 +42,7 @@ closes: the test ends it by closing that.
 
 import http.server
 import json
+import socketserver
 import sys
 import threading
 import time
@@ -187,7 +188,16 @@ def main():
                         "usage": usage_of(reply, asked)}, "message_delta")
             self.event({"type": "message_stop"}, "message_stop")
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    class Server(http.server.ThreadingHTTPServer):
+        def server_bind(self):
+            # http.server asks here for the machine's full name, a reverse
+            # lookup of 127.0.0.1 that took 36 seconds on GitHub's macOS
+            # runners, before every test that starts this provider: twenty
+            # minutes of the Mac's checks. Nothing here needs the name.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
+    server = Server(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(server.server_address[1], flush=True)
