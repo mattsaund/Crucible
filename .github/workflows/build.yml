@@ -128,21 +128,22 @@ jobs:
     timeout-minutes: 90
     env:
       # Read by cmake when it first configures, install.sh's included.
-      CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
-      CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
+      CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.os == 'windows-latest' && 'sccache' || 'ccache' }}
+      CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.os == 'windows-latest' && 'sccache' || 'ccache' }}
     steps:
       - uses: actions/checkout@v7
 
-      # A compiler cache, kept between runs: llama.cpp's half of the build is
-      # the same from one run to the next, and so are most of Crucible's own
-      # files. Not on Windows, where the Visual Studio generator, the one
-      # people build with, takes no compiler launcher.
+      # A compiler cache, kept between runs, which install.sh and install.ps1
+      # both pick up from the launcher above. install.ps1 builds under Ninja
+      # in Visual Studio's own environment, where sccache works; its files
+      # built on the precompiled header are compiled every time, as for
+      # anybody installing, and llama.cpp's are the ones kept.
       - name: Compiler cache
-        if: runner.os != 'Windows'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ github.job }}-${{ matrix.os || runner.os }}
-          max-size: 1G
+          variant: ${{ runner.os == 'Windows' && 'sccache' || 'ccache' }}
+          max-size: 2G
 
       # Run from inside the checkout, install.sh builds that checkout rather
       # than fetching main -- so this installs the commit being tested. --yes
