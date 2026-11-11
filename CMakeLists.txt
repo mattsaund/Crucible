@@ -407,7 +407,9 @@ if(CRUCIBLE_BUILD_TOOLS)
         target_compile_options(crucible-routebench PRIVATE ${_crucible_warnings})
     endif()
     # crucible-smoke: one prompt through the whole engine with no window, for
-    # a platform's prompt path where a window cannot be opened.
+    # a platform's prompt path where a window cannot be opened, and what CI
+    # runs on each system: a model loaded and swapped on the runtime an
+    # install fetches, and a made app reloaded in its own window.
     add_executable(crucible-smoke tools/smoke.cpp)
     target_link_libraries(crucible-smoke PRIVATE crucible::core)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -627,9 +629,13 @@ if(CRUCIBLE_HAS_WEBVIEW)
     install(TARGETS crucible-app
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
-    # Packaging is tested with the real runner beside the test binary.
+    # Packaging is tested with the real runner beside the test binary, and
+    # crucible-smoke --app makes a program of it and opens that.
     if(TARGET crucible_tests)
         add_dependencies(crucible_tests crucible-app)
+    endif()
+    if(TARGET crucible-smoke)
+        add_dependencies(crucible-smoke crucible-app)
     endif()
 endif()
 

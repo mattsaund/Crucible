@@ -137,8 +137,11 @@ int run_runtime_status() {
 }
 
 int run_runtime_setup(bool quiet, bool force) {
+    return run_runtime_setup(quiet, force, wanted_here());
+}
+
+int run_runtime_setup(bool quiet, bool force, const std::vector<BackendKind>& wanted) {
     RuntimeRegistry::load_all();
-    const std::vector<BackendKind>   wanted    = wanted_here();
     const std::vector<RuntimeStatus> installed = RuntimeRegistry::scan();
 
     const auto already = [&installed](BackendKind kind) {
