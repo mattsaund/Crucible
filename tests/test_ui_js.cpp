@@ -1423,7 +1423,7 @@ TEST(general_settings_start_with_the_models_folder) {
     CHECK(general.find("<h2>MODELS</h2>") < general.find("DELEGATOR</h2>"));
 }
 
-TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
+TEST(an_mlx_model_is_offered_to_an_expert_and_to_the_delegator_where_mlx_runs) {
     const char* const with_models =
         "(function (what) { var m = state.models; state.models = { directory: '/m', display: '/m',"
         "  models: [{ name: 'small.gguf', bytes: 1000, format: 'gguf' },"
@@ -1437,11 +1437,12 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     const std::string expert = with("", "modelSelect('', '', {})");
     CHECK(expert.find("mlx-community/Qwen3-4B-4bit (MLX, ") != std::string::npos);
     CHECK(expert.find("cannot run here") == std::string::npos);
-    // The delegator scores with llama.cpp: an MLX model is listed, so a
-    // folder of them does not look empty, and not offered.
+    // The delegator's menu too, since an MLX model routes in a helper of its
+    // own (src/llm/mlx_delegator.hpp).
     const std::string delegator = with("", "modelSelect('', '', {}, true)");
-    CHECK(delegator.find("value=\"mlx-community/Qwen3-4B-4bit\" disabled") != std::string::npos);
-    CHECK(delegator.find("Qwen3-4B-4bit (MLX, 2.0 KB), cannot route") != std::string::npos);
+    CHECK(delegator.find("value=\"mlx-community/Qwen3-4B-4bit\" disabled") == std::string::npos);
+    CHECK(delegator.find("Qwen3-4B-4bit (MLX, 2.0 KB)") != std::string::npos);
+    CHECK(delegator.find("cannot") == std::string::npos);
     CHECK(delegator.find("value=\"small.gguf\" disabled") == std::string::npos);
     CHECK(delegator.find("small.gguf") != std::string::npos);
     // Where MLX cannot run, it is listed -- so it is plain it was found --
@@ -1450,6 +1451,11 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     CHECK(here.find("cannot run here") != std::string::npos);
     CHECK(here.find(" disabled") != std::string::npos);
     CHECK(here.find("MLX does not run on Windows") != std::string::npos);
+    // And not to the delegator either, there.
+    const std::string routing_here =
+        with(", mlx_unavailable: 'MLX does not run on Windows'", "modelSelect('', '', {}, true)");
+    CHECK(routing_here.find("value=\"mlx-community/Qwen3-4B-4bit\" disabled") != std::string::npos);
+    CHECK(routing_here.find("cannot run here") != std::string::npos);
 }
 
 namespace {
@@ -1493,14 +1499,18 @@ void delegator_page_restored() {
 
 }  // namespace
 
-TEST(a_folder_with_no_gguf_gets_the_delegator_one_and_seats_it) {
-    // A Mac's folder may hold MLX models only, and none of them can route.
-    // Beside the delegator's menu, Get one opens Models on a small GGUF, and
-    // once it is in the folder it is the delegator.
+TEST(a_folder_with_nothing_that_routes_here_gets_the_delegator_one_and_seats_it) {
+    // A folder may hold MLX models only. On a Mac that runs them, one of them
+    // can be the delegator, and there is nothing to get. Where MLX cannot
+    // run, none of them can route, so beside the delegator's menu Get one
+    // opens Models on a small GGUF, and once it is in the folder it is the
+    // delegator.
     const std::string set = delegator_page(
         "[{ name: 'mlx-community/Qwen3-4B-4bit', path: '/m/mlx-community/Qwen3-4B-4bit', bytes: 2000, format: 'mlx' }]",
         "", "[]");
     CHECK_EQ(set, "set");
+    CHECK(page().eval("views.settings()").find("data-act=\"delegator-get\"") == std::string::npos);
+    page().eval("state.models.mlx_unavailable = 'MLX does not run on Windows'");
     const std::string drawn = page().eval("views.settings()");
     CHECK(drawn.find("Qwen3-4B-4bit (MLX, ") != std::string::npos);
     CHECK(drawn.find("data-act=\"delegator-get\"") != std::string::npos);

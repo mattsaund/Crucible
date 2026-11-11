@@ -231,8 +231,10 @@ serve::Answer Engine::serve_request(const serve::Ask& ask, const serve::Sink& si
     // Under the models' lock throughout, as a route's scoring is: with it on
     // demand it is freed for an expert, and an answer halfway through it would
     // be reading memory that had gone. A route or a load waits for the
-    // answer, and the answer for them.
-    if (config.server.model.empty()) {
+    // answer, and the answer for them. An MLX delegator scores in a helper
+    // that cannot hold a conversation, so its model answers as any MLX model
+    // from the folder does, below.
+    if (config.server.model.empty() && !mlx::is_model_dir(config.router.path)) {
         std::unique_lock<std::mutex> host(host_mutex_, std::try_to_lock);
         if (!host.owns_lock()) {
             sink.waiting(serve_blocker());
@@ -550,7 +552,7 @@ serve::Answer Engine::serve_embeddings(const serve::Ask& ask, const serve::Sink&
         out.error  = "A provider's model makes no embeddings here: choose a model for them in Settings, Server";
         return out;
     }
-    if (config.server.model.empty()) {
+    if (config.server.model.empty() && !mlx::is_model_dir(config.router.path)) {
         // The delegator's, under the models' lock as its answers are.
         std::unique_lock<std::mutex> host(host_mutex_, std::try_to_lock);
         if (!host.owns_lock()) {

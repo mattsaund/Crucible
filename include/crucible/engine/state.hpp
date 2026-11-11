@@ -262,6 +262,10 @@ struct Snapshot {
     /// before every prompt, which makes it worth drawing.
     float delegator_progress = -1.0F;
 
+    /// The delegator is loading and nothing says how far along it is, as an
+    /// MLX model reads its weights without saying.
+    bool delegator_unmeasured = false;
+
     /// Why the delegator could not be loaded, or empty when it was (or none is
     /// set). Drawn on the delegator's row in the side menu rather than in the
     /// chat: it is a fact about a seat, and prompts are routed on keywords
@@ -374,6 +378,9 @@ public:
     /// The delegator is loading and is this far along, 0..1.
     void set_delegator_progress(float progress);
 
+    /// The delegator is loading, and nothing says how far along.
+    void set_delegator_loading();
+
     /// Why the delegator could not be loaded; empty clears it.
     void set_delegator_problem(std::string problem);
     void finish_turn(std::size_t turn, const GenerationStats& stats, long load_ms);
@@ -459,6 +466,7 @@ private:
     std::optional<ExpertId>              linked_;
     bool                                 delegator_ready_ = false;
     float                                delegator_progress_ = -1.0F;
+    bool                                 delegator_unmeasured_ = false;
     std::string                          delegator_problem_;
     /// The newest version of each turn. One a frame still holds is copied
     /// before it is written to; see writable().

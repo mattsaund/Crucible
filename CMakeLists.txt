@@ -201,6 +201,7 @@ add_library(crucible_core STATIC
     src/llm/remote_model.cpp
     src/llm/spend.cpp
     src/llm/prices.cpp
+    src/llm/mlx_delegator.cpp
     src/llm/mlx_server.cpp
     src/llm/model_host.cpp
 
@@ -270,6 +271,11 @@ endif()
 
 # The orchestrator package, compiled in. See src/orchestra/package.cpp.
 target_sources(crucible_core PRIVATE ${CRUCIBLE_ORCHESTRATOR_CPP})
+
+# The MLX delegator's helper, compiled in like the orchestrator, and written
+# out beside the training environment when an MLX model is the delegator. See
+# src/llm/mlx_delegator.cpp.
+target_sources(crucible_core PRIVATE ${CRUCIBLE_MLX_DELEGATOR_CPP})
 
 # The fine-tuning script, compiled in. Absent only if someone deleted it from
 # the source tree; the trainer then reports that rather than writing a file
@@ -460,6 +466,7 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_http.cpp
         tests/test_remote.cpp
         tests/test_lab.cpp
+        tests/test_mlx_delegator.cpp
         tests/test_trainer.cpp
         tests/test_prebuilt.cpp
         tests/test_update.cpp

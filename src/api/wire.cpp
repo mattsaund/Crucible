@@ -185,6 +185,8 @@ json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
     }
     if (snapshot.delegator_progress >= 0.0F) {
         out["delegator_progress"] = snapshot.delegator_progress;
+    } else if (snapshot.delegator_unmeasured) {
+        out["delegator_progress"] = -1;   // a spinner, loading with nothing to say how far
     }
     if (snapshot.resident) { out["resident"] = *snapshot.resident; }
     if (snapshot.linked)   { out["linked"]   = *snapshot.linked; }

@@ -52,6 +52,7 @@ Snapshot AppState::snapshot() const {
     copy.linked          = linked_;
     copy.delegator_ready = delegator_ready_;
     copy.delegator_progress = delegator_progress_;
+    copy.delegator_unmeasured = delegator_unmeasured_;
     copy.delegator_problem  = delegator_problem_;
     // Pointers, not turns: a turn the frame holds is copied by whoever
     // writes to it next, so sharing it here costs a reference count.
@@ -193,8 +194,9 @@ void AppState::set_bench(std::shared_ptr<const nlohmann::json> bench) {
 
 void AppState::set_delegator_ready(bool ready) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    delegator_ready_    = ready;
-    delegator_progress_ = -1.0F;
+    delegator_ready_      = ready;
+    delegator_progress_   = -1.0F;
+    delegator_unmeasured_ = false;
 }
 
 void AppState::set_delegator_problem(std::string problem) {
@@ -204,7 +206,14 @@ void AppState::set_delegator_problem(std::string problem) {
 
 void AppState::set_delegator_progress(float progress) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    delegator_progress_ = progress < 0.0F ? 0.0F : (progress > 1.0F ? 1.0F : progress);
+    delegator_progress_   = progress < 0.0F ? 0.0F : (progress > 1.0F ? 1.0F : progress);
+    delegator_unmeasured_ = false;
+}
+
+void AppState::set_delegator_loading() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    delegator_progress_   = -1.0F;
+    delegator_unmeasured_ = true;
 }
 
 Turn& AppState::writable(std::size_t index) {

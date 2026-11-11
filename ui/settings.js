@@ -172,15 +172,17 @@ function delegatorBetter(chosen) {
   return at > DELEGATORS.indexOf(best) ? best : null;
 }
 
-/// The menu, with a way to fetch a delegator: one for a folder with no GGUF
-/// in it (a Mac's MLX models cannot route), and a better one than the one
-/// chosen when the cards hold it. Either opens Models on it, and it is
-/// seated once it is in the folder unless another was chosen meanwhile.
+/// The menu, with a way to fetch a delegator. That is one for a folder with
+/// nothing in it that can route here (a GGUF, or an MLX model where MLX
+/// runs), or a better one than the one chosen when the cards hold it. Either
+/// opens Models on it, and it is seated once it is in the folder unless
+/// another was chosen meanwhile.
 function delegatorPicker(c) {
   const chosen = c.router ? c.router.model : '';
   const select = modelSelect(chosen, '', { id: 'router-model', 'data-change': 'router-model' }, true);
+  const mlx = state.models && !state.models.mlx_unavailable;
   const none = state.models && !state.models.problem
-    && !state.models.models.some((m) => m.format !== 'mlx');
+    && !state.models.models.some((m) => m.format !== 'mlx' || mlx);
   if (none) return `<div class="row">${select}<button class="action" data-act="delegator-get">Get one</button></div>`;
   const better = delegatorBetter(chosen);
   return better ? `<div class="row">${select}<span class="status">${escape(better.name)} routes better</span>

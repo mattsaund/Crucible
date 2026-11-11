@@ -30,6 +30,7 @@
 #include "crucible/config/config.hpp"
 #include "crucible/cook/journal.hpp"
 #include "crucible/engine/leases.hpp"
+#include "crucible/llm/mlx_delegator.hpp"
 #include "crucible/llm/mlx_server.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/llm/remote_model.hpp"
@@ -362,6 +363,18 @@ private:
     /// or none is set. Call with host_mutex_ held. `cancel` as load_router's.
     void ensure_router(const CancelCallback& cancel = {});
 
+    /// load_router for a delegator that is an MLX folder, which starts its
+    /// helper once there is room for it. See mlx_delegator.hpp.
+    void load_mlx_router(const ModelParams& router, const CancelCallback& cancel);
+
+    /// Whether the delegator set is loaded, a GGUF here or an MLX model in
+    /// its helper. With host_mutex_ held.
+    bool delegator_here() const;
+
+    /// delegator.format, .score and .generate answered by the MLX helper.
+    nlohmann::json serve_mlx_delegator(const std::string& method, const nlohmann::json& params,
+                                       const CancelCallback& cancel);
+
     /// Drop the delegator: between routes when "keep delegator loaded" is
     /// off, and in either mode for Eject, a changed runtime and changed
     /// loading settings. Call with host_mutex_ held.
@@ -674,6 +687,11 @@ private:
     /// Stop the MLX server, and put its seat back to dormant. With
     /// host_mutex_ held, and only when nobody holds a lease on its model.
     void stop_mlx();
+
+    /// The delegator, when it is an MLX model. It runs in a helper of its own,
+    /// since MLX's server cannot score, started and stopped with host_mutex_
+    /// held where a GGUF delegator is loaded and let go.
+    mlx::Delegator             mlx_delegator_;
 
     /// Tell the state what is in memory now: the delegator, the resident
     /// experts, an MLX model's server. With host_mutex_ held, after anything

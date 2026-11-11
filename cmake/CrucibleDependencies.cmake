@@ -245,6 +245,12 @@ foreach(_entry "__init__.py:Init" "__main__.py:Run" "main.py:Main" "rpc.py:Rpc"
     list(APPEND CRUCIBLE_ORCHESTRATOR_CPP ${_generated})
 endforeach()
 
+# The helper an MLX delegator runs in, on the training environment's Python
+# with mlx-lm. It imports MLX, which the orchestrator must not, so it is a
+# script of its own rather than part of that package.
+crucible_embed(CRUCIBLE_MLX_DELEGATOR_CPP ${CMAKE_CURRENT_LIST_DIR}/../scripts/mlx/delegator.py
+               kMlxDelegatorPy crucible::mlx::embedded mlx_delegator)
+
 set(CRUCIBLE_TRAINER_PY  ${CMAKE_CURRENT_LIST_DIR}/../scripts/trainer/finetune.py)
 set(CRUCIBLE_TRAINER_CPP "")
 if(EXISTS ${CRUCIBLE_TRAINER_PY})
