@@ -72,6 +72,10 @@ std::filesystem::path dropped_dir();
 /// picture by its path; safe to empty at any time.
 std::filesystem::path scratch_dir();
 
+/// data_dir()/https: the certificate the API server makes for itself, and
+/// its key. Kept, so a client told to trust it goes on trusting it.
+std::filesystem::path https_dir();
+
 /// Expand a leading `~` and resolve to an absolute path. Does not require the
 /// path to exist, so it is safe to call on a model path the user has not
 /// downloaded yet.

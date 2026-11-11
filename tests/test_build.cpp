@@ -764,6 +764,79 @@ TEST(the_screen_verbs_parse_and_a_word_that_starts_with_a_verb_is_not_one) {
     CHECK(tools::attempted_tool_call("SCREENSHOT", "") == tools::ToolKind::Screenshot);
 }
 
+// LFM2 and LFM2.5 call a tool as a Python list of calls whatever they are
+// told. An LFM2.5 2.6B given a build wrote its page this way, then READ the
+// same way eight times, and the task stopped with nothing written.
+TEST(a_call_written_the_way_lfm2_writes_one_is_the_call_it_stands_for) {
+    // Its contents with escaped line breaks, as it writes a short file.
+    const std::optional<tools::ToolCall> write = tools::parse_tool_call(
+        "[WRITE(path='index.html', content='<!doctype html>\\n<p class=\"x\">it\\'s here</p>\\n')]", "");
+    CHECK(write.has_value());
+    if (write) {
+        CHECK(write->kind == tools::ToolKind::Write);
+        CHECK_EQ(write->argument, std::string("index.html"));
+        CHECK_EQ(write->content, std::string("<!doctype html>\n<p class=\"x\">it's here</p>\n"));
+    }
+    // And with real ones, as it writes a long one, so the call runs over lines.
+    const std::optional<tools::ToolCall> long_write = tools::parse_tool_call(
+        "[WRITE(path='/home/me/code/todo/app.js', content='const items = [];\nfunction add(x) {\n  items.push(x);\n}\n')]\n",
+        "");
+    CHECK(long_write.has_value());
+    if (long_write) {
+        CHECK(long_write->kind == tools::ToolKind::Write);
+        CHECK_EQ(long_write->argument, std::string("/home/me/code/todo/app.js"));
+        CHECK_EQ(long_write->content, std::string("const items = [];\nfunction add(x) {\n  items.push(x);\n}\n"));
+    }
+    // Lower case, double quotes, the names it gives the arguments, and in order.
+    const std::optional<tools::ToolCall> read = tools::parse_tool_call("[read(file=\"notes/plan.md\")]", "");
+    CHECK(read.has_value() && read->kind == tools::ToolKind::Read && read->argument == "notes/plan.md");
+    const std::optional<tools::ToolCall> listed = tools::parse_tool_call("[LIST('src')]", "");
+    CHECK(listed.has_value() && listed->kind == tools::ToolKind::List && listed->argument == "src");
+    // The template's own markers, when they come through.
+    const std::optional<tools::ToolCall> run =
+        tools::parse_tool_call("<|tool_call_start|>[RUN(command=\"npm test -- --watch=false\")]<|tool_call_end|>", "");
+    CHECK(run.has_value() && run->kind == tools::ToolKind::Run && run->argument == "npm test -- --watch=false");
+    const std::optional<tools::ToolCall> done =
+        tools::parse_tool_call("Finished.\n[DONE(summary='Made index.html with a list and a form.')]", "");
+    CHECK(done.has_value() && done->kind == tools::ToolKind::Done
+          && done->argument == "Made index.html with a list and a form.");
+    // An edit's two halves become the blocks EDIT takes.
+    const std::optional<tools::ToolCall> edit = tools::parse_tool_call(
+        "[EDIT(path='style.css', search='h1 { font-size: 32px; }', replace='h1 { font-size: 28px; }')]", "");
+    CHECK(edit.has_value() && edit->kind == tools::ToolKind::Edit && edit->argument == "style.css");
+    if (edit) {
+        std::string error;
+        const std::vector<tools::EditBlock> blocks = tools::parse_edit_blocks(edit->content, error);
+        CHECK_EQ(blocks.size(), std::size_t{1});
+        if (blocks.size() == 1) {
+            CHECK_EQ(blocks[0].search, std::string("h1 { font-size: 32px; }"));
+            CHECK_EQ(blocks[0].replace, std::string("h1 { font-size: 28px; }"));
+        }
+    }
+    // A second call in the list is named, not run.
+    const std::optional<tools::ToolCall> two =
+        tools::parse_tool_call("[READ(path='a.js'), READ(path='b.js')]", "");
+    CHECK(two.has_value() && two->argument == "a.js" && two->unrun == "READ(path='b.js')");
+    // A NOTE before it gives way to it, as a NOTE line does.
+    const std::optional<tools::ToolCall> noted =
+        tools::parse_tool_call("[NOTE(text='starting')]\n[READ(path='index.html')]", "");
+    CHECK(noted.has_value() && noted->kind == tools::ToolKind::Read);
+
+    // Numbers are taken as they are written.
+    const std::optional<tools::ToolCall> click = tools::parse_tool_call("[CLICK(120, 340)]", "");
+    CHECK(click.has_value() && click->kind == tools::ToolKind::Click && click->argument == "120 340");
+
+    // Not calls. A link, a checkbox, a function that is no verb, a call in
+    // the middle of a sentence, one never closed, and Python that happens to
+    // call a function named like a verb.
+    CHECK(!tools::parse_tool_call("[READ](https://example.com/read)", "").has_value());
+    CHECK(!tools::parse_tool_call("```python\n[list(range(10))]\n[find(x)]\n```", "").has_value());
+    CHECK(!tools::parse_tool_call("[x] READ the docs first", "").has_value());
+    CHECK(!tools::parse_tool_call("[get_weather(city='Paris')]", "").has_value());
+    CHECK(!tools::parse_tool_call("Then it calls [READ(path='a.js')] to look.", "").has_value());
+    CHECK(!tools::parse_tool_call("[WRITE(path='a.js', content='never closed)]", "").has_value());
+}
+
 TEST(the_instructions_offer_each_group_only_when_its_switch_is_on) {
     tools::WorkshopSettings settings;
     settings.enabled = true;

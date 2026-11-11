@@ -867,8 +867,28 @@ function pageServer(c) {
         <button class="action" data-act="server-key-new">New</button>
         ${conf.api_key ? serverCopy(conf.api_key) : ''}</div>
       <div class="hint">Empty is open.</div></div>
+    ${setting('server.https', 'HTTPS', 'bool', '')}
+    ${conf.https ? serverCertificate(conf, s) : ''}
     ${conf.enabled ? serverAddresses(s) : ''}
     ${serverRecent(s)}`;
+}
+
+/// HTTPS: a certificate and key of the person's, or none for one Crucible
+/// makes for this machine and keeps. A client is given its file to trust, or
+/// checks it by its SHA-256, which are shown once it serves with it.
+function serverCertificate(conf, s) {
+  const file = (path, id, label, placeholder) => `<div class="field"><label for="${id}">${label}</label>
+      <div class="row">
+        <input id="${id}" data-path="${path}" data-change="set" spellcheck="false" autocomplete="off"
+               placeholder="${placeholder}" value="${escape(at(state.config, path) || '')}">
+        <button class="action" data-act="server-pick" data-path="${path}">Browse</button></div></div>`;
+  const row = (label, text) => `<div class="order-row">
+        <span class="order-name">${label} <code class="wrap">${escape(text)}</code></span>${serverCopy(text)}</div>`;
+  const serving = s.https && s.fingerprint;
+  return `${file('server.certificate', 'server-certificate', 'Certificate', 'Self-signed')}
+    ${conf.certificate ? file('server.certificate_key', 'server-certificate-key', 'Key', 'Same file') : ''}
+    ${serving ? `<div class="field">${row('SHA-256', s.fingerprint)}${
+      s.own_certificate && s.certificate ? row('File', s.certificate) : ''}</div>` : ''}`;
 }
 
 /// Whether it is running, in a word or two, and what a request waits for.
@@ -982,6 +1002,13 @@ const serverCopy = (text) => `<button class="action" data-act="server-copy" data
 
 actions['server-model'] = (e) => configure({ server: splitModel(e.value) });
 actions['server-embeddings'] = (e) => configure({ server: { embeddings: e.value } });
+
+/// The certificate or its key, chosen from the files on this machine.
+actions['server-pick'] = async (button) => {
+  const path = button.dataset.path;
+  const chosen = await pickPath({ title: path === 'server.certificate' ? 'Choose the certificate' : 'Choose its key' });
+  if (chosen) await configure(patchOf(path, chosen));
+};
 
 actions['server-copy'] = (button) => {
   const text = button.dataset.text || '';

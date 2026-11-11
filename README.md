@@ -222,7 +222,8 @@ Every model, local or not, gets the same tools in a trusted folder:
 - Tools, pictures, JSON answers and embeddings work as OpenAI's clients
   expect. A provider's model can be served too, to other computers only with
   a key.
-- No HTTPS. Put a reverse proxy in front for that.
+- HTTPS when you turn it on, with your own certificate or one Crucible makes
+  for this machine and keeps. Settings shows its SHA-256 to check it by.
 - Chats and builds keep working while it serves. A request waits its turn.
 - It listens only while it is on.
 

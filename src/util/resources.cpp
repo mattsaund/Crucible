@@ -3,6 +3,7 @@
 // See resources.hpp.
 #include "crucible/util/resources.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
@@ -104,7 +105,11 @@ bool parse_vm_stat(std::string_view text, std::uint64_t page_size, std::uint64_t
     std::uint64_t free_pages    = 0;
     std::uint64_t speculative   = 0;
     std::uint64_t purgeable     = 0;
+    std::uint64_t anonymous     = 0;
+    std::uint64_t wired         = 0;
+    std::uint64_t compressed    = 0;
     bool          saw_something = false;
+    bool          saw_anonymous = false;
 
     std::size_t at = 0;
     while (at <= text.size()) {
@@ -129,14 +134,29 @@ bool parse_vm_stat(std::string_view text, std::uint64_t page_size, std::uint64_t
         if (key == "Pages free")        { free_pages  = pages; saw_something = true; }
         if (key == "Pages speculative") { speculative = pages; saw_something = true; }
         if (key == "Pages purgeable")   { purgeable   = pages; saw_something = true; }
+        if (key == "Pages wired down")  { wired       = pages; }
+        if (key == "Pages occupied by compressor") { compressed = pages; }
+        if (key == "Anonymous pages")   { anonymous   = pages; saw_anonymous = true; }
     }
     if (!saw_something || total == 0) {
         return false;
     }
 
-    // Free, speculative and purgeable are all available without evicting
-    // anything anyone wants -- the same three the Activity Monitor leaves out
-    // of "memory used", and the same distinction MemAvailable draws on Linux.
+    if (saw_anonymous) {
+        // What Activity Monitor calls Memory Used: programs' own memory (less
+        // what they have marked purgeable), what is wired down, and what the
+        // compressor holds. Cached files are not in it, since the system gives
+        // them up to whatever asks, as Linux's MemAvailable counts its page
+        // cache. Counted as used, they left a Mac that had been up a while
+        // with almost nothing available, and models that fit were let go or
+        // refused.
+        const std::uint64_t own = anonymous > purgeable ? anonymous - purgeable : 0;
+        used = std::min(total, (own + wired + compressed) * page_size);
+        return true;
+    }
+
+    // An older vm_stat, without the anonymous pages: free, speculative and
+    // purgeable are what it says can go without evicting anything.
     const std::uint64_t available = (free_pages + speculative + purgeable) * page_size;
     used = available < total ? total - available : 0;
     return true;

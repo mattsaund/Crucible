@@ -535,6 +535,14 @@ struct ServerConfig {
     /// leaves the server open to whoever can reach it. Written to config.json
     /// in plain text, like a provider's key.
     std::string api_key;
+
+    /// HTTPS rather than HTTP. With the certificate file named here, PEM or
+    /// DER, and its key in `certificate_key`, or after the certificate in
+    /// its file when that is empty. With none named, a certificate Crucible
+    /// makes for this machine once and keeps (paths::https_dir).
+    bool        https = false;
+    std::string certificate;
+    std::string certificate_key;
 };
 
 /// The whole config file.

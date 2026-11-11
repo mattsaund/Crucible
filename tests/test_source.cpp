@@ -12,6 +12,7 @@
 
 #include "crucible/api/surface.hpp"
 #include "crucible/session/store.hpp"
+#include "crucible/tools/app_self_test.hpp"
 #include "crucible/tools/apps.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/tools/page_storage.hpp"
@@ -378,6 +379,55 @@ TEST(a_made_apps_address_answers_with_its_page_and_nothing_else) {
     CHECK(!is_app_page(""));
     CHECK(!is_app_page("/favicon.ico"));
     CHECK(!is_app_page("/index.html/more"));
+}
+
+TEST(a_made_apps_self_test_passes_only_a_reload_that_kept_everything) {
+    // crucible-app --self-test (tools/app_runner.cpp) is what CI runs on a
+    // real desktop of each system, and this is its verdict. A check that
+    // could not fail would prove nothing, so each way a reload goes wrong has
+    // to fail it, and say how.
+    using nlohmann::json;
+    using tools::self_test_failures;
+    const std::string address = "https://crucible-app.example/";
+    const json first{{"address", address}, {"native", true}, {"local", nullptr}, {"session", nullptr},
+                     {"saved", nullptr}};
+    const json second{{"address", address}, {"native", true}, {"local", "kept"}, {"session", "kept"},
+                      {"saved", {{"kept", "crucible-self-test"}}}};
+    CHECK(self_test_failures({first, second}, 2, address).empty());
+
+    const auto says = [](const std::vector<std::string>& failures, const std::string& what) {
+        for (const std::string& failure : failures) {
+            if (failure.find(what) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // Handed over as a string, where a reload empties the window.
+    json blank = second;
+    blank["address"] = "about:blank";
+    CHECK(says(self_test_failures({first, blank}, 2, address), "handed over as a string"));
+    // Kept from the first load rather than asked of the program again.
+    CHECK(says(self_test_failures({first, second}, 1, address), "served the page once"));
+    // Served before what the page kept had arrived.
+    for (const char* lost : {"local", "session"}) {
+        json forgot = second;
+        forgot[lost] = nullptr;
+        CHECK(says(self_test_failures({first, forgot}, 2, address), "after the reload"));
+    }
+    json unsaved = second;
+    unsaved["saved"] = nullptr;
+    CHECK(says(self_test_failures({first, unsaved}, 2, address), "window.crucible.load() gave null"));
+    // No bridge, a page whose check threw, and a second load that never came.
+    json bare = second;
+    bare["native"] = false;
+    CHECK(says(self_test_failures({first, bare}, 2, address), "no window.crucible"));
+    CHECK(says(self_test_failures({first, json{{"error", "TypeError"}}}, 2, address), "threw"));
+    CHECK(says(self_test_failures({first}, 1, address), "loaded once"));
+    // And a run that found its data folder holding something already.
+    json stale = first;
+    stale["local"] = "kept";
+    CHECK(says(self_test_failures({stale, second}, 2, address), "kept already"));
 }
 
 TEST(a_page_is_packaged_with_the_runner_beside_it) {

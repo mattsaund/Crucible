@@ -1253,3 +1253,32 @@ TEST(the_memory_settings_survive_a_round_trip_through_the_config_file) {
     CHECK(!read.gpu.gpu_only);
     CHECK(read.gpu.vram_only);
 }
+
+TEST(two_cards_of_one_model_are_two_cards_and_one_card_seen_twice_is_one) {
+    const auto gpu = [](const char* backend, const char* id, int index) {
+        ComputeDevice device;
+        device.index       = index;
+        device.backend     = backend;
+        device.description = "NVIDIA GeForce RTX 3090";
+        device.device_id   = id;
+        device.is_gpu      = true;
+        return device;
+    };
+    ComputeDevice cpu;
+    cpu.description = "CPU";
+
+    // Two RTX 3090s, each seen by CUDA and by Vulkan: two cards, CUDA's of
+    // each, as llama.cpp keeps them. By name the second card was left out.
+    const std::vector<ComputeDevice> gpus = distinct_gpus({
+        gpu("CUDA", "0000:01:00.0", 0), gpu("CUDA", "0000:02:00.0", 1),
+        gpu("Vulkan", "0000:01:00.0", 2), gpu("Vulkan", "0000:02:00.0", 3), cpu});
+    CHECK_EQ(gpus.size(), std::size_t{2});
+    if (gpus.size() == 2) {
+        CHECK_EQ(gpus[0].index, 0);
+        CHECK_EQ(gpus[1].index, 1);
+    }
+
+    // A card that reports no id is never taken for another, as in llama.cpp.
+    CHECK_EQ(distinct_gpus({gpu("CUDA", "", 0), gpu("Vulkan", "", 1)}).size(), std::size_t{2});
+}
+

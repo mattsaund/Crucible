@@ -314,6 +314,7 @@ button.action:disabled { color: var(--faint); cursor: default; }
 }
 .order-n { color: var(--faint); flex: 0 0 1.2rem; }
 .order-name { flex: 1; min-width: 0; }
+.order-name code.wrap { overflow-wrap: anywhere; }
 .order-row .action { padding: .2rem .6rem; }
 
 .slider-row { display: flex; gap: .8rem; align-items: center; }
@@ -972,7 +973,9 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
   background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 8px; padding: .8rem;
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
-.tune-rows { flex: 1; min-height: 0; overflow-y: auto; }
+/* Room on the right for the scrollbar. WebKitGTK's floats over the content,
+   and over the + buttons it took their clicks, so More did nothing. */
+.tune-rows { flex: 1; min-height: 0; overflow-y: auto; padding-right: 1rem; }
 .tune-list { max-height: 6rem; overflow-y: auto; }
 .tune-changes .row { flex-wrap: wrap; }
 .tune-changes .action { white-space: nowrap; }

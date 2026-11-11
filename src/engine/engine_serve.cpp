@@ -27,6 +27,7 @@
 #include <chrono>
 #include <thread>
 
+#include "crucible/config/paths.hpp"
 #include "crucible/llm/model_catalog.hpp"
 #include "crucible/llm/response_filter.hpp"
 
@@ -146,6 +147,12 @@ void Engine::configure_server(const Config& config) {
     // model is chosen.
     settings.network = config.server.network && (config.server.provider.empty() || !config.server.api_key.empty());
     settings.key     = config.server.api_key;
+    // HTTPS, with the person's certificate or Crucible's own, which is kept
+    // with the rest of its data.
+    settings.https           = config.server.https;
+    settings.certificate     = paths::expand_user(config.server.certificate);
+    settings.certificate_key = paths::expand_user(config.server.certificate_key);
+    settings.own_dir         = paths::https_dir();
     server_->apply(settings);
 }
 

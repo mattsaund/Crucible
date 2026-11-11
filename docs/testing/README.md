@@ -173,16 +173,19 @@ Exits non-zero when the turn or the build failed.
    it for a pre-release, such as `-pre.1`), `packaging/macos/dmg.sh`,
    `packaging/windows/crucible.iss`, `CHANGELOG.md` and `README.md`
    (`tests/test_install.sh` checks they agree).
-2. Push `main` and the tag together:
-   `git tag v1.0.0-pre.1 && git push origin main v1.0.0-pre.1`.
-   One run does the rest. The installers workflow checks the commit on all
-   three systems (or sees that a branch push already did), builds the three
-   installers, and takes each prebuilt runtime from an earlier release whose
-   note of how it was built (`runtime-*.tar.gz.recipe`) matches, building only
-   those that changed. Everything goes on a draft, and the draft is published
-   only if all of it passed, which makes a failed release one nobody sees. A
-   tag with a dash in it is published as a pre-release: never Latest, so the
-   website and the update check stay on the last release.
+2. Push `main`, and the tag once its checks have passed:
+   `git push origin main`, then
+   `git tag v1.0.0-pre.1 && git push origin v1.0.0-pre.1`.
+   Every push is checked on all three systems, and its three installers are
+   built and opened. The tag's run publishes the installers of the run that
+   passed on its commit, which takes minutes; pushed together, before that
+   run has passed, the tag's run checks the commit and builds them itself.
+   It takes each prebuilt runtime from an earlier release whose note of how
+   it was built (`runtime-*.tar.gz.recipe`) matches, building only those that
+   changed. Everything goes on a draft, and the draft is published only if
+   all of it passed, which makes a failed release one nobody sees. A tag with
+   a dash in it is published as a pre-release: never Latest, so the website
+   and the update check stay on the last release.
 3. Put the release notes on: `gh release edit <tag> --notes-file <file>`.
 
 ## Seen on 2026-10-10
