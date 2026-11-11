@@ -639,7 +639,10 @@ add_library(crucible_llama_chat STATIC
     "${_chat_dir}/jinja/string.cpp"
     "${_chat_dir}/jinja/value.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/llm/llama_common.cpp")
-target_include_directories(crucible_llama_chat SYSTEM PUBLIC "${_chat_dir}")
+# What uses it names its headers by their folder, <common/chat.h>: names as
+# plain as log.h, json.h and http.h, on the include path of every file of
+# Crucible's, would stand in front of any header of the system's that has one.
+target_include_directories(crucible_llama_chat SYSTEM PRIVATE "${_chat_dir}" INTERFACE "${llama_SOURCE_DIR}")
 # The same nlohmann/json as the rest of Crucible, rather than the copy in
 # llama.cpp's vendor folder: one version of its templates in the program.
 target_link_libraries(crucible_llama_chat PUBLIC llama PRIVATE nlohmann_json::nlohmann_json Threads::Threads)

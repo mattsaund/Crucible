@@ -25,14 +25,14 @@
 #include <random>
 #include <set>
 
+#include <common/chat.h>
 #include <llama.h>
-
-#include "chat.h"
 
 #if defined(CRUCIBLE_HAS_MTMD)
 #include <mtmd.h>
 #endif
 
+#include "crucible/llm/response_filter.hpp"
 #include "crucible/llm/sampling.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/text.hpp"
@@ -427,26 +427,25 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     Handing                        handing(sink);
     const std::vector<std::string> stops = session->additional_stops();
     common_chat_input              pending;
-    std::string                    said;
+    std::string                    said;   ///< all of the answer, as the model wrote it
     shaping.on_piece = [&](std::string_view piece, llama_token token) {
         pending.append(std::string(piece), token);
         if (!whole_characters(pending.text)) {
             return true;
         }
-        bool more = true;
-        if (!stops.empty()) {
-            const std::size_t before = said.size();
-            said += pending.text;
-            std::size_t first = std::string::npos;
-            for (const std::string& stop : stops) {
-                if (!stop.empty()) {
-                    first = std::min(first, said.find(stop, before > stop.size() ? before - stop.size() : 0));
-                }
+        bool              more   = true;
+        const std::size_t before = said.size();
+        said += pending.text;
+        std::size_t first = std::string::npos;
+        for (const std::string& stop : stops) {
+            if (!stop.empty()) {
+                first = std::min(first, said.find(stop, before > stop.size() ? before - stop.size() : 0));
             }
-            if (first != std::string::npos) {
-                more = false;
-                pending.truncate(first > before ? first - before : 0);
-            }
+        }
+        if (first != std::string::npos) {
+            more = false;
+            pending.truncate(first > before ? first - before : 0);
+            said.resize(std::max(first, before));
         }
         try {
             handing.update(session->feed(pending), false);
@@ -457,12 +456,27 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         return more;
     };
     const std::string ended = sample_shaped(request.params, shaping, sink.cancel, result.stats);
+    said += pending.text;
     try {
         handing.update(session->finish(pending), true);
     } catch (const std::exception&) {
         // The end of it is in no shape the parser knows -- cut off by
-        // max_tokens partway through a call, say. What was handed on stands.
-        handing.update(handing.shown(), true);
+        // max_tokens partway through a call, say. What was handed on stands,
+        // and an answer none of which could be read is sorted the way the
+        // chat sorts one, its thinking from its words, rather than lost.
+        const common_chat_msg& shown = handing.shown();
+        if (shown.content.empty() && shown.reasoning_content.empty() && shown.tool_calls.empty()) {
+            ResponseFilter          filter;
+            ResponseFilter::Piece   sorted = filter.feed(said);
+            const ResponseFilter::Piece rest   = filter.flush();
+            common_chat_msg         whole;
+            whole.role              = "assistant";
+            whole.reasoning_content = sorted.reasoning + rest.reasoning;
+            whole.content           = sorted.answer + rest.answer;
+            handing.update(whole, true);
+        } else {
+            handing.update(shown, true);
+        }
     }
     if (!blobs.empty()) {
         // What the context now holds starts with pictures, which no later
