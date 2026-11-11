@@ -568,18 +568,6 @@ double reload_seconds(const LoadedModel& model) {
 /// second is cheaper to load again than to route around.
 constexpr double kReloadWorthKeeping = 5.0;
 
-/// Whether llama.cpp's direct I/O reads past the page cache here. Only on
-/// Linux, where it opens the file O_DIRECT. On macOS and Windows it opens the
-/// file buffered whatever it is asked (llama-mmap.cpp), so a load asked for
-/// direct I/O is only one without a mapping. The cache keeps its copy all the
-/// same, and on a Mac the weights are read into buffers of their own, where
-/// a mapping hands the GPU the cache's pages as they are.
-#if defined(__linux__)
-constexpr bool kDirectIoReal = true;
-#else
-constexpr bool kDirectIoReal = false;
-#endif
-
 /// Whether `params` loads faster read past the page cache than mapped.
 ///
 /// A mapped load reads the whole file into the page cache before the first

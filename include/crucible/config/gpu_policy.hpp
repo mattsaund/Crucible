@@ -102,4 +102,26 @@ std::vector<int> delegator_cards(const GpuConfig& gpu, const ModelParams& params
 /// Put a model wholly on one card, by device index.
 void pin_to_card(ModelParams& params, int device);
 
+/// Whether llama.cpp's direct I/O reads past the page cache here. Only on
+/// Linux, where it opens the file O_DIRECT. On macOS and Windows it opens the
+/// file buffered whatever it is asked (llama-mmap.cpp), so a load asked for
+/// direct I/O is only one without a mapping. The cache keeps its copy all the
+/// same, and on a Mac the weights are read into buffers of their own, where
+/// a mapping hands the GPU the cache's pages as they are.
+#if defined(__linux__)
+inline constexpr bool kDirectIoReal = true;
+#else
+inline constexpr bool kDirectIoReal = false;
+#endif
+
+namespace detail {
+
+/// The memory settings stamped onto one model, as apply_gpu_policy stamps
+/// them on a machine with a GPU or without one, where direct I/O reads past
+/// the page cache or does not (kDirectIoReal, on this one). Apart so that
+/// the tests can ask it of every system from any one of them.
+void stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu, bool direct_io_real);
+
+}  // namespace detail
+
 }  // namespace crucible

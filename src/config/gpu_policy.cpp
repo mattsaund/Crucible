@@ -80,13 +80,23 @@ std::string replan(ModelParams& params, const GpuConfig& gpu, const ModelFit* fi
     return describe_split(gpus, plan);
 }
 
+/// Which card the delegator belongs on. See place_delegator.
+int delegator_device(const std::vector<ComputeDevice>& gpus, const SplitPolicy& policy, const GpuConfig& gpu) {
+    if (gpus.empty() || policy.mode != GpuSplitMode::Priority) {
+        return gpu.main_gpu;
+    }
+    return apply_priority_order(gpus, policy.order).back().index;
+}
+
+}  // namespace
+
 /// Turn the two memory settings into the llama.cpp knobs they mean.
 ///
 /// Applied to every model including the delegator, and applied whatever the
 /// split mode is -- "where the compute happens" is a separate question from
 /// "how it is divided between cards", and "auto" is an answer to the second
 /// one only.
-void stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu) {
+void detail::stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu, bool direct_io_real) {
     if (have_gpu && gpu.gpu_only) {
         // Negative means every layer plus the output, which is what llama.cpp
         // does with -1 (see llama_model::n_gpu_layers). Overriding the
@@ -98,20 +108,17 @@ void stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu) {
     }
     if (gpu.vram_only) {
         params.no_host   = true;
-        params.direct_io = true;
+        // Read past the page cache, so the weights take no RAM on their way
+        // to the cards, on Linux, where direct I/O does that. Elsewhere it
+        // only turns the mapping off and keeps nothing out of RAM: Windows
+        // caches the file all the same, and a Mac would hold the weights
+        // twice in its one memory, in the cache and in buffers of their own.
+        // There a model is mapped as any other is. What the setting is for,
+        // refusing a model that does not fit, is the same everywhere.
+        params.direct_io = direct_io_real;
         params.vram_only = true;
     }
 }
-
-/// Which card the delegator belongs on. See place_delegator.
-int delegator_device(const std::vector<ComputeDevice>& gpus, const SplitPolicy& policy, const GpuConfig& gpu) {
-    if (gpus.empty() || policy.mode != GpuSplitMode::Priority) {
-        return gpu.main_gpu;
-    }
-    return apply_priority_order(gpus, policy.order).back().index;
-}
-
-}  // namespace
 
 SplitPolicy split_policy(const GpuConfig& gpu, const ModelParams& params, const std::vector<ComputeDevice>& gpus) {
     SplitPolicy policy{gpu_split_mode_from_id(gpu.mode), gpu.priority};
@@ -229,10 +236,10 @@ std::string apply_gpu_policy(Config& config) {
         config.gpu.priority = std::move(kept);
     }
 
-    stamp_memory(config.router, config.gpu, have_gpu);
-    stamp_memory(config.defaults, config.gpu, have_gpu);
+    detail::stamp_memory(config.router, config.gpu, have_gpu, kDirectIoReal);
+    detail::stamp_memory(config.defaults, config.gpu, have_gpu, kDirectIoReal);
     for (auto& [id, expert] : config.experts) {
-        stamp_memory(expert, config.gpu, have_gpu);
+        detail::stamp_memory(expert, config.gpu, have_gpu, kDirectIoReal);
     }
 
     // "Auto" plans nothing, except over cards whose links differ, where each
