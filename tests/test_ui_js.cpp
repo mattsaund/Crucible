@@ -2899,9 +2899,9 @@ TEST(the_storage_stand_in_behaves_as_a_browsers_own) {
 }
 
 TEST(a_made_apps_page_is_served_with_its_storage_before_anything_of_its_own) {
-    // On Linux an app's page is served afresh at every load, a reload's too,
-    // with the stand-ins inside it (tools/app_runner.cpp): just inside the
-    // head, ahead of the page's own scripts.
+    // An app's page is served afresh at every load, a reload's too, with the
+    // stand-ins inside it (tools/app_runner.cpp): just inside the head, ahead
+    // of the page's own scripts.
     using crucible::tools::with_script_first;
     CHECK_EQ(with_script_first("<!doctype html><html><head><title>B</title><script>mine()</script></head>", "s()"),
              std::string("<!doctype html><html><head><script>s()</script><title>B</title><script>mine()</script></head>"));

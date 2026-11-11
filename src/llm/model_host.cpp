@@ -568,18 +568,6 @@ double reload_seconds(const LoadedModel& model) {
 /// second is cheaper to load again than to route around.
 constexpr double kReloadWorthKeeping = 5.0;
 
-/// Whether llama.cpp's direct I/O reads past the page cache here. Only on
-/// Linux, where it opens the file O_DIRECT. On macOS and Windows it opens the
-/// file buffered whatever it is asked (llama-mmap.cpp), so a load asked for
-/// direct I/O is only one without a mapping. The cache keeps its copy all the
-/// same, and on a Mac the weights are read into buffers of their own, where
-/// a mapping hands the GPU the cache's pages as they are.
-#if defined(__linux__)
-constexpr bool kDirectIoReal = true;
-#else
-constexpr bool kDirectIoReal = false;
-#endif
-
 /// Whether `params` loads faster read past the page cache than mapped.
 ///
 /// A mapped load reads the whole file into the page cache before the first
@@ -1777,7 +1765,8 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
                                        std::string& error,
                                        const Keep& keep,
                                        bool* crowded,
-                                       bool beside_mlx) {
+                                       bool beside_mlx,
+                                       const std::function<void()>& idle_mlx) {
     if (crowded != nullptr) {
         *crowded = false;
     }
@@ -1820,17 +1809,31 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
     }
     // Where models live in the machine's memory, that is where the room is
     // made: on a Mac, as well as on its GPU's share of the memory.
+    //
+    // An MLX model nobody is using goes the same way, after those experts,
+    // while the delegator still has no room. Its process is out of this
+    // host's sight but not out of the memory figures asked here, and on a
+    // Mac it shares the one memory with the delegator.
     const ModelParams planned = placed_delegator(params);
     const bool        system  = in_system_memory(gpu_devices());
-    while (!experts_.empty()
-           && (!vram_shortfall(planned.path, planned, 0, {}).empty() || (system && !memory_holds(params)))) {
-        if (!free_one(keep)) {
-            if (crowded != nullptr) {
-                *crowded = true;
-            }
-            error = "the experts in use leave no room for the delegator";
-            return nullptr;
+    const auto        no_room = [&] {
+        return !vram_shortfall(planned.path, planned, 0, {}).empty() || (system && !memory_holds(params));
+    };
+    std::function<void()> unused_mlx = idle_mlx;
+    while ((!experts_.empty() || unused_mlx) && no_room()) {
+        if (free_one(keep)) {
+            continue;
         }
+        if (unused_mlx) {
+            unused_mlx();
+            unused_mlx = nullptr;
+            continue;
+        }
+        if (crowded != nullptr) {
+            *crowded = true;
+        }
+        error = "the experts in use leave no room for the delegator";
+        return nullptr;
     }
 
     // An MLX model in use is in a process of its own, where this host can
