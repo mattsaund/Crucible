@@ -9,6 +9,11 @@
 //   crucible-routebench ~/.local/share/crucible/models/LFM2-1.2B-Q8_0.gguf
 //   crucible-routebench model.gguf --cases tools/routes/build-tasks.json
 //   crucible-routebench model.gguf --decide tools/routes/answer-or-build.json
+//   crucible-routebench ~/models/LFM2.5-1.2B-Instruct-MLX-bf16 --cases tools/routes/five-seats.json
+//
+// A folder is an MLX model, scored in the helper the app scores it in
+// (src/llm/mlx_delegator.hpp), so the same model as a GGUF and as MLX can be
+// measured side by side.
 //
 // The built-in cases are questions for nine seats. tools/routes has five seats
 // of questions, and the tasks a build hands out, worded the way a build words
@@ -40,6 +45,8 @@
 
 #include "crucible/config/config.hpp"
 #include "crucible/llm/model_host.hpp"
+#include "crucible/llm/mlx_delegator.hpp"
+#include "crucible/llm/mlx_server.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/routing/benchmark.hpp"
 #include "crucible/lab/python.hpp"
@@ -150,7 +157,7 @@ int decide(orchestra::Link& orchestrator, const std::string& file, const std::st
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::printf("usage: crucible-routebench <router-model.gguf> [--gpu-layers N]\n");
+        std::printf("usage: crucible-routebench <router-model.gguf or MLX folder> [--gpu-layers N]\n");
         return 2;
     }
 
@@ -208,17 +215,28 @@ int main(int argc, char** argv) {
         }
     }
 
-    ModelHost host(paths::log_file());
-    std::string error;
-    LoadedModel* model = host.acquire_router(params, [](float) {}, {}, error);
-    if (model == nullptr) {
-        std::printf("could not load: %s\n", error.c_str());
-        return 1;
+    ModelHost        host(paths::log_file());
+    mlx::Delegator   helper;
+    const bool       mlx_model = mlx::is_model_dir(params.path);
+    LoadedModel*     model     = nullptr;
+    std::string      error;
+    if (mlx_model) {
+        if (!helper.start(params.path, {}, error)) {
+            std::printf("could not load: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("%s\nMLX, %.1f GB\n\n", params.path.c_str(),
+                    static_cast<double>(mlx::model_bytes(params.path)) / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        model = host.acquire_router(params, [](float) {}, {}, error);
+        if (model == nullptr) {
+            std::printf("could not load: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("%s\n%.2fB parameters, %.1f GB\n\n", params.path.c_str(),
+                    static_cast<double>(model->params()) / 1e9,
+                    static_cast<double>(model->bytes()) / (1024.0 * 1024.0 * 1024.0));
     }
-
-    std::printf("%s\n%.2fB parameters, %.1f GB\n\n", params.path.c_str(),
-                static_cast<double>(model->params()) / 1e9,
-                static_cast<double>(model->bytes()) / (1024.0 * 1024.0 * 1024.0));
 
     // Every seat on the roster is scored, and the scorer can only answer with
     // one of them. This measures the delegator's job and nothing else.
@@ -281,6 +299,14 @@ int main(int argc, char** argv) {
             for (const json& one : asked.value("messages", json::array())) {
                 messages.push_back({one.value("role", "user"), one.value("content", "")});
             }
+            if (mlx_model) {
+                std::string why;
+                std::string text = helper.format(messages, why);
+                if (!why.empty()) {
+                    throw std::runtime_error(why);
+                }
+                return json{{"text", std::move(text)}};
+            }
             return json{{"text", model->format_chat(messages, true)}};
         }
         if (called == "delegator.score") {
@@ -288,9 +314,11 @@ int main(int argc, char** argv) {
             for (const json& one : asked.value("labels", json::array())) {
                 labels.push_back(one.get<std::string>());
             }
+            const std::string prompt = asked.value("prompt", "");
+            const std::string prefix = asked.value("prefix", "");
             json out = json::array();
-            for (const float score : model->score_labels(asked.value("prompt", ""), labels, {},
-                                                         asked.value("prefix", ""))) {
+            for (const float score : mlx_model ? helper.score(prompt, labels, prefix, params.n_ctx, {})
+                                               : model->score_labels(prompt, labels, {}, prefix)) {
                 out.push_back(score <= kUnscored ? json(nullptr) : json(score));
             }
             return json{{"scores", out}, {"canceled", false}};
