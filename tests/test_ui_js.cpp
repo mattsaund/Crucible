@@ -2849,6 +2849,20 @@ TEST(the_preview_gives_a_page_its_data_calls_and_makes_it_an_app) {
     CHECK(said.find("\"id\":1,\"data\":true") != std::string::npos);
     CHECK(said.find("\"id\":2,\"data\":{\"rows\":[3]}") != std::string::npos);
 
+    // A page by address is not the project's page: what it saves is not kept
+    // over that page's data, and nothing it asks for is answered.
+    const std::string other = page().eval(
+        "(function () { var told = []; var keep = tellFrame; tellFrame = function (m) { told.push(m); };"
+        " state.preview.url = 'http://localhost:3000';"
+        " previewMessage({ crucible: 'data', what: 'save', id: 3, data: { rows: ['theirs'] } });"
+        " previewMessage({ crucible: 'data', what: 'load', id: 4 });"
+        " state.preview.url = '';"
+        " previewMessage({ crucible: 'data', what: 'load', id: 5 });"
+        " tellFrame = keep; return JSON.stringify(told); })()");
+    CHECK(other.find("\"id\":3") == std::string::npos);
+    CHECK(other.find("\"id\":4") == std::string::npos);
+    CHECK(other.find("\"id\":5,\"data\":{\"rows\":[3]}") != std::string::npos);
+
     // The bar offers to make the page an app; making one asks its name, and
     // what was made offers to open it.
     page().eval("state.chatPane = 'preview'");
