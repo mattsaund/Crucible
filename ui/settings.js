@@ -814,11 +814,16 @@ actions['worker-model'] = (e) => {
 function pageServer(c) {
   const conf = c.server || {};
   const s = state.snapshot.server || {};
+  // A provider's model is the person's credit: other computers are let at it
+  // only with a key, and without one the server stays on this machine.
+  const held = conf.provider && conf.network && !conf.api_key;
   return `<h1>Server</h1>
     ${setting('server.enabled', 'On', 'bool', serverLine(s, !!conf.enabled))}
     <div class="field"><label for="server-model">Model</label>${serverModelSelect(c)}</div>
+    <div class="field"><label for="server-embeddings">Embeddings</label>${serverEmbeddingsSelect(c)}</div>
     ${setting('server.port', 'Port', 'int', '')}
-    ${setting('server.network', 'Serve on the local network', 'bool', '')}
+    ${setting('server.network', 'Serve on the local network', 'bool',
+      held ? '<span class="tag">needs a key</span>' : '')}
     <div class="field"><label for="server-key">API key</label>
       <div class="row">
         <input id="server-key" type="password" data-path="server.api_key" data-change="set"
@@ -842,9 +847,11 @@ function serverLine(s, on) {
 }
 
 /// The delegator, the experts' models and the models folder: whatever on
-/// this machine can answer.
+/// this machine can answer. Then each provider's models, which spend the
+/// person's credit, and so reach other computers only with a key.
 function serverModelSelect(c) {
-  const chosen = at(c, 'server.model') || '';
+  const provider = at(c, 'server.provider') || '';
+  const chosen = provider ? `${provider}|${at(c, 'server.model') || ''}` : at(c, 'server.model') || '';
   const delegator = fileName(at(c, 'router.model'));
   const names = {};
   for (const e of state.snapshot.experts || []) names[e.id] = e.name;
@@ -868,23 +875,52 @@ function serverModelSelect(c) {
     html += `<optgroup label="Models folder">${files.map((m) =>
       option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
   }
-  if (chosen && !shown) html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+  for (const p of (state.providers ? state.providers.providers : [])) {
+    const offered = p.models.slice();
+    const named = provider === p.id ? at(c, 'server.model') || '' : '';
+    if (named && !offered.includes(named)) offered.unshift(named);
+    if (offered.length) {
+      html += `<optgroup label="${escape(p.name)} (others need a key)">${
+        offered.map((m) => option(`${p.id}|${m}`, m)).join('')}</optgroup>`;
+    }
+  }
+  if (chosen && !shown) html += option(chosen, `${fileName(splitModel(chosen).model)} (not in the models folder)`);
   return `<select id="server-model" data-change="server-model">${html}</select>`;
 }
 
+/// What /v1/embeddings answers with when a request names no model: the
+/// model served, or one from the folder, an embedding model as a rule.
+function serverEmbeddingsSelect(c) {
+  const chosen = at(c, 'server.embeddings') || '';
+  const files = (state.models ? state.models.models : []).filter((m) => m.format !== 'mlx');
+  const option = (value, label) =>
+    `<option value="${escape(value)}"${value === chosen ? ' selected' : ''}>${escape(label)}</option>`;
+  let html = option('', 'The model served');
+  if (files.length) {
+    html += `<optgroup label="Models folder">${files.map((m) =>
+      option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
+  }
+  if (chosen && !files.some((m) => m.name === chosen)) {
+    html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+  }
+  return `<select id="server-embeddings" data-change="server-embeddings">${html}</select>`;
+}
+
 /// Where other programs reach it: this machine, and the network when it
-/// serves there.
+/// serves there, each by IPv4 and by IPv6 where it listens on both.
 function serverAddresses(s) {
   const where = s.addresses || {};
-  const rows = [['This machine', where.local], ['Network', where.network]].filter(([, url]) => url);
+  const six = ' <span class="tag">IPv6</span>';
+  const rows = [['This machine', where.local], ['This machine' + six, where.local6], ['Network', where.network],
+                ['Network' + six, where.network6]].filter(([, url]) => url);
   if (!rows.length) return '';
   // What another computer is given: this machine's address on the network
   // and the port, plainly, as an app's host and port fields ask for them.
   // Shown with the network off too, marked so, to be read off before then.
-  const host = s.lan ? `${s.lan}:${s.port}` : '';
-  const reach = host ? `<div class="order-row">
+  const hosts = [s.lan ? `${s.lan}:${s.port}` : '', s.lan6 ? `[${s.lan6}]:${s.port}` : ''].filter(Boolean);
+  const reach = hosts.map((host) => `<div class="order-row">
         <span class="order-name">IP and port <code>${escape(host)}</code>${
-          s.network ? '' : ' <span class="tag">off</span>'}</span>${s.network ? serverCopy(host) : ''}</div>` : '';
+          s.network ? '' : ' <span class="tag">off</span>'}</span>${s.network ? serverCopy(host) : ''}</div>`).join('');
   return `<h2 style="margin-top:1.8rem">ADDRESSES</h2>
     <div class="field">${rows.map(([label, url]) => `<div class="order-row">
         <span class="order-name">${label} <code>${escape(url)}</code></span>${serverCopy(url)}</div>`).join('')}${reach}</div>`;
@@ -908,7 +944,8 @@ function serverRecent(s) {
 const serverCopy = (text) => `<button class="action" data-act="server-copy" data-text="${escape(text)}">${
   state.open.copied === text ? 'Copied' : 'Copy'}</button>`;
 
-actions['server-model'] = (e) => configure({ server: { model: e.value } });
+actions['server-model'] = (e) => configure({ server: splitModel(e.value) });
+actions['server-embeddings'] = (e) => configure({ server: { embeddings: e.value } });
 
 actions['server-copy'] = (button) => {
   const text = button.dataset.text || '';

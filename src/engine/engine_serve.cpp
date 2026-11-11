@@ -413,8 +413,8 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
         const bool offered = !ask.tools.is_null() && ask.tool_choice != "none";
         if (offered || has_tool_turns(ask.chat) || !ask.schema.empty()) {
             out.status = 400;
-            out.error  = std::string(offered || has_tool_turns(ask.chat) ? "Tools" : "A JSON response_format")
-                       + " needs a model on this machine, and this server's is "
+            out.error  = std::string(offered || has_tool_turns(ask.chat) ? "Tools need" : "A JSON response_format needs")
+                       + " a GGUF model on this machine, and this server's is "
                        + (params.remote() ? "a provider's" : "an MLX model");
             return out;
         }

@@ -4,16 +4,22 @@
 // port of its own, with the app's own client (curl underneath).
 //
 // The server is asked of a stand-in model -- one that says what it was told,
-// with a line of thinking first -- so every way a request can go is one a
-// test can walk in a moment and with no weights: the models list, an answer
-// whole and streamed, a key wrong and right, an open server, a body too
-// large, a model that is not the one served, stop sequences, a port already
-// taken. Where CRUCIBLE_TEST_MODEL names a small GGUF, the same requests go
-// through the engine to that model as well.
+// with a line of thinking first, and one that calls the tools it is offered
+// and embeds what it is given -- so every way a request can go is one a test
+// can walk in a moment and with no weights: the models list, an answer whole
+// and streamed, a tool call whole and in deltas, the calls and results of a
+// conversation, a JSON response_format, pictures, embeddings, a key wrong and
+// right, an open server, a body too large or too deep, a model that is not
+// the one served, stop sequences, a port already taken, IPv4 and IPv6. Where
+// CRUCIBLE_TEST_MODEL names a small GGUF, requests go through the engine to
+// that model as well, tools and JSON and embeddings with them.
 #include "test_helpers.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -22,6 +28,7 @@
 
 #include "crucible/engine/engine.hpp"
 #include "crucible/serve/server.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/http.hpp"
 
 namespace {
@@ -219,7 +226,432 @@ json chat(const std::string& said, json extra = json::object()) {
     return body;
 }
 
+/// A tool a request offers, as OpenAI's API has one.
+json weather_tool(const std::string& name = "get_weather") {
+    return json{{"type", "function"},
+                {"function", {{"name", name},
+                              {"description", "The weather in a city"},
+                              {"parameters", {{"type", "object"},
+                                              {"properties", {{"city", {{"type", "string"}}}}},
+                                              {"required", json::array({"city"})}}}}}};
+}
+
+/// A model that calls the first tool it is offered, its arguments a piece
+/// at a time, after a word; and that embeds a text as its length and the
+/// count of its spaces, scaled to unit length.
+class Caller final : public serve::Backend {
+public:
+    std::string model() const override { return "caller.gguf"; }
+    std::string embedder() const override { return "embedder.gguf"; }
+
+    serve::Answer answer(const serve::Ask& ask, const serve::Sink& sink) override {
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            asked = ask;
+        }
+        sink.waiting("");
+        serve::Answer out;
+        out.prompt_tokens = 7;
+        if (ask.embed) {
+            for (const std::string& text : ask.texts) {
+                const float length = static_cast<float>(text.size());
+                const auto  spaces = static_cast<float>(std::count(text.begin(), text.end(), ' '));
+                const float norm   = std::sqrt(length * length + spaces * spaces + 1.0F);
+                out.vectors.push_back({length / norm, spaces / norm, 1.0F / norm});
+            }
+            return out;
+        }
+        if (ask.tools.is_null() || ask.tool_choice == "none") {
+            sink.answer("No tools.");
+            out.completion_tokens = 2;
+            return out;
+        }
+        const std::string name = ask.tools[0]["function"]["name"].get<std::string>();
+        sink.answer("Checking.");
+        sink.call(serve::CallPiece{0, "call_abc", name, ""});
+        for (const char* piece : {"{\"city\":", " \"Pa", "ris\"}"}) {
+            sink.call(serve::CallPiece{0, "", "", piece});
+        }
+        out.completion_tokens = 9;
+        return out;
+    }
+
+    serve::Ask last() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return asked;
+    }
+
+private:
+    std::mutex mutex;
+    serve::Ask asked;
+};
+
+/// A server on a free port answered by the caller.
+struct Calling {
+    Caller        model;
+    serve::Server server{model};
+    int           port = 0;
+
+    explicit Calling(bool network = false) {
+        serve::Settings settings;
+        settings.enabled = true;
+        settings.port    = 0;
+        settings.network = network;
+        server.apply(settings);
+        port = server.status().port;
+    }
+
+    std::string url(const std::string& path) const {
+        return "http://127.0.0.1:" + std::to_string(port) + path;
+    }
+};
+
+/// What a stream's tool calls add up to, by index: OpenAI's shape, as a
+/// client puts the deltas back together.
+json calls_of(const Events& events) {
+    json calls = json::array();
+    for (const json& event : events.data) {
+        if (!event.contains("choices") || event["choices"].empty()) {
+            continue;
+        }
+        const json& delta = event["choices"][0].value("delta", json::object());
+        for (const json& call : delta.value("tool_calls", json::array())) {
+            const auto index = call.value("index", 0);
+            while (calls.size() <= static_cast<std::size_t>(index)) {
+                calls.push_back(json{{"id", ""}, {"name", ""}, {"arguments", ""}});
+            }
+            json& into = calls[static_cast<std::size_t>(index)];
+            if (call.contains("id")) {
+                into["id"] = into["id"].get<std::string>() + call["id"].get<std::string>();
+            }
+            const json function = call.value("function", json::object());
+            if (function.contains("name")) {
+                into["name"] = into["name"].get<std::string>() + function["name"].get<std::string>();
+            }
+            into["arguments"] = into["arguments"].get<std::string>() + function.value("arguments", "");
+        }
+    }
+    return calls;
+}
+
 }  // namespace
+
+TEST(a_tool_offered_reaches_the_model_and_its_call_comes_back_whole) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    json body = chat("What is the weather in Paris?", {{"tools", json::array({weather_tool()})}});
+    body["model"] = "caller.gguf";
+    const util::http::Response answered = post(running.url("/v1/chat/completions"), body.dump());
+    CHECK_EQ(answered.status, 200);
+    const json reply   = parsed(answered);
+    const json message = reply["choices"][0]["message"];
+    CHECK(reply["choices"][0].value("finish_reason", "") == "tool_calls");
+    CHECK(message.value("content", "") == "Checking.");
+    CHECK(message["tool_calls"].size() == 1);
+    CHECK(message["tool_calls"][0].value("id", "") == "call_abc");
+    CHECK(message["tool_calls"][0].value("type", "") == "function");
+    CHECK(message["tool_calls"][0]["function"].value("name", "") == "get_weather");
+    CHECK(message["tool_calls"][0]["function"].value("arguments", "") == R"({"city": "Paris"})");
+
+    // What the model was asked: the tools as sent, and the conversation in
+    // OpenAI's shape beside the text of it.
+    const serve::Ask asked = running.model.last();
+    CHECK(asked.tools.is_array() && asked.tools.size() == 1);
+    CHECK_EQ(asked.tool_choice, "auto");
+    CHECK(!asked.parallel_tool_calls.has_value());
+    CHECK(asked.chat.is_array() && asked.chat.size() == 2);
+    CHECK(asked.chat[1].value("content", "") == "What is the weather in Paris?");
+}
+
+TEST(a_tool_call_streams_as_deltas_a_client_puts_back_together) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    json body = chat("Weather?", {{"tools", json::array({weather_tool()})}, {"stream", true}});
+    body.erase("model");
+    const Events events = stream(running.url("/v1/chat/completions"), body);
+    CHECK_EQ(events.status, 200);
+    CHECK(events.done);
+    const json calls = calls_of(events);
+    CHECK(calls.size() == 1);
+    if (calls.size() == 1) {
+        // The id and the name once, whole, and the arguments as they came.
+        CHECK(calls[0].value("id", "") == "call_abc");
+        CHECK(calls[0].value("name", "") == "get_weather");
+        CHECK(calls[0].value("arguments", "") == R"({"city": "Paris"})");
+    }
+    const Told told = told_by(events);
+    CHECK_EQ(told.content, "Checking.");
+    CHECK_EQ(told.finish, "tool_calls");
+}
+
+TEST(a_named_tool_choice_offers_that_tool_alone_and_requires_it) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    json body = chat("Hello", {{"tools", json::array({weather_tool("get_weather"), weather_tool("get_time")})},
+                               {"tool_choice", {{"type", "function"}, {"function", {{"name", "get_time"}}}}},
+                               {"parallel_tool_calls", false}});
+    body.erase("model");
+    const json reply = parsed(post(running.url("/v1/chat/completions"), body.dump()));
+    CHECK(reply["choices"][0]["message"]["tool_calls"][0]["function"].value("name", "") == "get_time");
+    const serve::Ask asked = running.model.last();
+    CHECK(asked.tools.size() == 1);
+    CHECK_EQ(asked.tool_choice, "required");
+    CHECK(asked.parallel_tool_calls.has_value() && !*asked.parallel_tool_calls);
+
+    // A function that is not offered, a choice of no known kind, and the old
+    // names for tools are refused, naming the parameter.
+    body["tool_choice"] = {{"type", "function"}, {"function", {{"name", "get_mood"}}}};
+    const util::http::Response missing = post(running.url("/v1/chat/completions"), body.dump());
+    CHECK_EQ(missing.status, 400);
+    CHECK(parsed(missing)["error"].value("param", "") == "tool_choice");
+    body["tool_choice"] = "sometimes";
+    CHECK_EQ(post(running.url("/v1/chat/completions"), body.dump()).status, 400);
+    json old = chat("Hello", {{"functions", json::array({weather_tool()["function"]})}});
+    old.erase("model");
+    const util::http::Response renamed = post(running.url("/v1/chat/completions"), old.dump());
+    CHECK_EQ(renamed.status, 400);
+    CHECK(parsed(renamed)["error"].value("param", "") == "functions");
+    json bad = chat("Hello", {{"tools", json::array({json{{"type", "function"}, {"function", json::object()}}})}});
+    bad.erase("model");
+    CHECK_EQ(post(running.url("/v1/chat/completions"), bad.dump()).status, 400);
+
+    // "none" is taken, and the model answers in words.
+    body = chat("Hello", {{"tools", json::array({weather_tool()})}, {"tool_choice", "none"}});
+    body.erase("model");
+    const json words = parsed(post(running.url("/v1/chat/completions"), body.dump()));
+    CHECK(words["choices"][0]["message"].value("content", "") == "No tools.");
+    CHECK(words["choices"][0].value("finish_reason", "") == "stop");
+}
+
+TEST(a_conversation_with_calls_and_their_results_is_read_in_openai_shape) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    const json messages = json::array(
+        {json{{"role", "developer"}, {"content", "Use the tools."}},
+         json{{"role", "user"}, {"content", "Weather in Paris?"}},
+         json{{"role", "assistant"},
+              {"content", nullptr},
+              {"tool_calls", json::array({json{{"id", "call_1"},
+                                               {"type", "function"},
+                                               {"function", {{"name", "get_weather"},
+                                                             {"arguments", R"({"city":"Paris"})"}}}}})}},
+         json{{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", R"({"temperature": 18})"}}});
+    const json body{{"messages", messages}, {"tools", json::array({weather_tool()})}};
+    CHECK_EQ(post(running.url("/v1/chat/completions"), body.dump()).status, 200);
+    const serve::Ask asked = running.model.last();
+    CHECK(asked.chat.size() == 4);
+    if (asked.chat.size() == 4) {
+        CHECK(asked.chat[0].value("role", "") == "developer");   // as it came, for the template
+        CHECK(asked.chat[2]["tool_calls"][0]["function"].value("arguments", "") == R"({"city":"Paris"})");
+        CHECK(asked.chat[2]["content"].is_null());
+        CHECK(asked.chat[3].value("tool_call_id", "") == "call_1");
+    }
+    CHECK(asked.messages.size() == 4);
+    if (asked.messages.size() == 4) {
+        CHECK_EQ(asked.messages[0].role, "system");   // as a model asked the chat's way reads it
+        CHECK_EQ(asked.messages[3].role, "tool");
+    }
+
+    // A result that names no call, and an assistant that says nothing and
+    // calls nothing, are refused.
+    json orphan = body;
+    orphan["messages"][3].erase("tool_call_id");
+    CHECK_EQ(post(running.url("/v1/chat/completions"), orphan.dump()).status, 400);
+    json empty = body;
+    empty["messages"][2].erase("tool_calls");
+    CHECK_EQ(post(running.url("/v1/chat/completions"), empty.dump()).status, 400);
+}
+
+TEST(a_json_response_format_becomes_the_schema_the_answer_is_held_to) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    json body = chat("A cat, as JSON", {{"response_format", {{"type", "json_object"}}}});
+    body.erase("model");
+    CHECK_EQ(post(running.url("/v1/chat/completions"), body.dump()).status, 200);
+    const json object_only{{"type", "object"}};
+    CHECK(json::parse(running.model.last().schema) == object_only);
+
+    const json schema{{"type", "object"}, {"properties", {{"name", {{"type", "string"}}}}}, {"required", {"name"}}};
+    body["response_format"] = {{"type", "json_schema"}, {"json_schema", {{"name", "cat"}, {"strict", true},
+                                                                         {"schema", schema}}}};
+    CHECK_EQ(post(running.url("/v1/chat/completions"), body.dump()).status, 200);
+    CHECK(json::parse(running.model.last().schema) == schema);
+
+    body["response_format"] = {{"type", "text"}};
+    CHECK_EQ(post(running.url("/v1/chat/completions"), body.dump()).status, 200);
+    CHECK(running.model.last().schema.empty());
+
+    body["response_format"] = {{"type", "yaml"}};
+    const util::http::Response refused = post(running.url("/v1/chat/completions"), body.dump());
+    CHECK_EQ(refused.status, 400);
+    CHECK(parsed(refused)["error"].value("param", "") == "response_format");
+    body["response_format"] = {{"type", "json_schema"}, {"json_schema", {{"schema", "an object, please"}}}};
+    CHECK_EQ(post(running.url("/v1/chat/completions"), body.dump()).status, 400);
+}
+
+TEST(a_picture_is_taken_as_a_data_url_and_never_fetched) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    const std::string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    const auto with_picture = [&](const std::string& url, const std::string& role = "user") {
+        return json{{"messages", json::array({json{
+                        {"role", role},
+                        {"content", json::array({json{{"type", "text"}, {"text", "What is this?"}},
+                                                 json{{"type", "image_url"}, {"image_url", {{"url", url}}}}})}}})}};
+    };
+    CHECK_EQ(post(running.url("/v1/chat/completions"), with_picture("data:image/png;base64," + png).dump()).status,
+             200);
+    const serve::Ask asked = running.model.last();
+    CHECK(asked.messages.size() == 1);
+    if (asked.messages.size() == 1) {
+        CHECK_EQ(asked.messages[0].content, "What is this?");
+        CHECK(asked.messages[0].images.size() == 1);
+        if (asked.messages[0].images.size() == 1) {
+            CHECK_EQ(asked.messages[0].images[0].mime, "image/png");
+            CHECK_EQ(asked.messages[0].images[0].data, png);
+        }
+        // Where the picture was, for the template.
+        CHECK(asked.chat[0]["content"][1].value("type", "") == "media_marker");
+    }
+
+    // A picture on the web is not fetched: this machine would fetch whatever
+    // anybody who can reach it named, on its network too.
+    const util::http::Response web = post(running.url("/v1/chat/completions"),
+                                          with_picture("https://example.com/cat.png").dump());
+    CHECK_EQ(web.status, 400);
+    CHECK(parsed(web)["error"].value("message", "").find("data:") != std::string::npos);
+    CHECK_EQ(post(running.url("/v1/chat/completions"), with_picture("data:image/png;base64,***").dump()).status, 400);
+    CHECK_EQ(post(running.url("/v1/chat/completions"), with_picture("data:text/plain;base64,aGk=").dump()).status, 400);
+    CHECK_EQ(post(running.url("/v1/chat/completions"),
+                  with_picture("data:image/png;base64," + png, "system").dump()).status, 400);
+}
+
+TEST(embeddings_come_back_as_floats_or_base64_from_the_model_named) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    const json body{{"input", json::array({"one two three", "four"})}, {"encoding_format", "float"}};
+    const util::http::Response answered = post(running.url("/v1/embeddings"), body.dump());
+    CHECK_EQ(answered.status, 200);
+    const json reply = parsed(answered);
+    CHECK(reply.value("object", "") == "list");
+    CHECK(reply.value("model", "") == "embedder.gguf");   // the one chosen for embeddings
+    CHECK(reply["data"].size() == 2);
+    CHECK(reply["usage"].value("prompt_tokens", 0) == 7);
+    const std::vector<float> first = reply["data"][0]["embedding"].get<std::vector<float>>();
+    CHECK(first.size() == 3);
+    CHECK(reply["data"][1].value("index", -1) == 1);
+    CHECK(running.model.last().embed);
+    CHECK(running.model.last().texts.size() == 2);
+
+    // OpenAI's own client asks for base64: the floats' bytes.
+    const json b64 = parsed(post(running.url("/v1/embeddings"), json{{"input", "one two three"},
+                                                                     {"encoding_format", "base64"}}.dump()));
+    std::string bytes;
+    CHECK(format::from_base64(b64["data"][0].value("embedding", ""), bytes));
+    CHECK(bytes.size() == 3 * sizeof(float));
+    if (bytes.size() == 3 * sizeof(float)) {
+        std::vector<float> decoded(3);
+        std::memcpy(decoded.data(), bytes.data(), bytes.size());
+        CHECK(decoded == first);
+    }
+
+    // Shortened, and of unit length again.
+    const json shorter = parsed(post(running.url("/v1/embeddings"), json{{"input", "one two three"},
+                                                                         {"dimensions", 2}}.dump()));
+    const std::vector<float> two = shorter["data"][0]["embedding"].get<std::vector<float>>();
+    CHECK(two.size() == 2);
+    if (two.size() == 2) {
+        CHECK(std::fabs(two[0] * two[0] + two[1] * two[1] - 1.0F) < 1e-5F);
+    }
+    CHECK_EQ(post(running.url("/v1/embeddings"), json{{"input", "x"}, {"dimensions", 4}}.dump()).status, 400);
+
+    // The model served may be named too; any other may not, nor may the
+    // embeddings model be chatted with.
+    CHECK_EQ(post(running.url("/v1/embeddings"), json{{"input", "x"}, {"model", "caller"}}.dump()).status, 200);
+    CHECK_EQ(running.model.last().model, "caller.gguf");
+    CHECK_EQ(post(running.url("/v1/embeddings"), json{{"input", "x"}, {"model", "text-embedding-3-small"}}.dump()).status,
+             404);
+    json talk = chat("hello");
+    talk["model"] = "embedder.gguf";
+    CHECK_EQ(post(running.url("/v1/chat/completions"), talk.dump()).status, 400);
+
+    // Text only, and something of it.
+    for (const json& input : {json(""), json::array(), json::array({1, 2, 3}), json(42)}) {
+        const util::http::Response refused = post(running.url("/v1/embeddings"), json{{"input", input}}.dump());
+        CHECK_EQ(refused.status, 400);
+        CHECK(parsed(refused)["error"].value("param", "") == "input");
+    }
+    CHECK_EQ(post(running.url("/v1/embeddings"), json{{"input", "x"}, {"encoding_format", "int8"}}.dump()).status, 400);
+
+    // Both are listed, for a client to pick each from.
+    const json listed = parsed(get(running.url("/v1/models")));
+    CHECK(listed["data"].size() == 2);
+    CHECK_EQ(get(running.url("/v1/models/embedder")).status, 200);
+}
+
+TEST(a_body_nested_past_any_conversation_is_refused) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    std::string deep = "1";
+    for (int i = 0; i < 200; ++i) {
+        deep = "[" + deep + "]";
+    }
+    const std::string body = R"({"messages":[{"role":"user","content":"hi"}],"metadata":)" + deep + "}";
+    const util::http::Response refused = post(running.url("/v1/chat/completions"), body);
+    CHECK_EQ(refused.status, 400);
+    CHECK(parsed(refused)["error"].value("message", "").find("nests") != std::string::npos);
+}
+
+TEST(the_server_listens_on_ipv4_and_ipv6_both) {
+    if (!curl_here()) {
+        return;
+    }
+    // This machine: 127.0.0.1, and ::1 beside it where there is IPv6.
+    {
+        Calling running;
+        CHECK_EQ(get(running.url("/v1/models")).status, 200);
+        if (running.server.status().ipv6) {
+            CHECK_EQ(get("http://[::1]:" + std::to_string(running.port) + "/v1/models").status, 200);
+        } else {
+            std::printf("      no IPv6 here: ::1 not tried\n");
+        }
+    }
+    // The network: one socket for both kinds, IPv4 coming in on it too.
+    {
+        Calling running(true);
+        CHECK(running.server.status().listening);
+        CHECK_EQ(get(running.url("/v1/models")).status, 200);
+        if (running.server.status().ipv6) {
+            CHECK_EQ(get("http://[::1]:" + std::to_string(running.port) + "/v1/models").status, 200);
+        }
+        // From where a request came is said as a person reads it, not as
+        // the IPv6 address an IPv4 client arrives on.
+        json hello = chat("hi");
+        hello.erase("model");
+        CHECK_EQ(post(running.url("/v1/chat/completions"), hello.dump()).status, 200);
+        const std::vector<serve::Record> recent = running.server.status().recent;
+        CHECK(!recent.empty());
+        if (!recent.empty()) {
+            CHECK_EQ(recent.front().from, "127.0.0.1");
+        }
+    }
+}
 
 TEST(the_server_listens_nowhere_until_it_is_turned_on) {
     StandIn       model;
@@ -463,6 +895,7 @@ TEST(what_the_server_does_not_take_is_refused_in_openai_shape) {
     CHECK_EQ(bad.status, 400);
     CHECK(parsed(bad)["error"].value("type", "") == "invalid_request_error");
     CHECK_EQ(post(running.url("/v1/chat/completions"), json{{"messages", json::array()}}.dump()).status, 400);
+    // A tool's result that answers no call.
     json tool = chat("hi");
     tool["messages"].push_back(json{{"role", "tool"}, {"content", "42"}});
     CHECK_EQ(post(running.url("/v1/chat/completions"), tool.dump()).status, 400);
@@ -613,9 +1046,19 @@ TEST(the_status_is_written_for_the_page_with_its_addresses) {
     CHECK(out["addresses"].value("local", "") == "http://localhost:8338/v1");
     CHECK(out["addresses"].value("network", "") == "http://192.168.1.20:8338/v1");
     CHECK(out["recent"][0].value("completion", 0) == 40);
+    CHECK(!out["addresses"].contains("local6"));
+
+    // Both kinds of address, where it listens on both.
+    status.ipv6 = true;
+    status.lan6 = "fd00::20";
+    const json both = serve::status_json(status);
+    CHECK(both["addresses"].value("local6", "") == "http://[::1]:8338/v1");
+    CHECK(both["addresses"].value("network6", "") == "http://[fd00::20]:8338/v1");
+    CHECK(both.value("lan6", "") == "fd00::20");
 
     status.network = false;
     CHECK(!serve::status_json(status)["addresses"].contains("network"));
+    CHECK(!serve::status_json(status)["addresses"].contains("network6"));
     status.listening = false;
     CHECK(serve::status_json(status)["addresses"].empty());
 }
@@ -625,24 +1068,65 @@ TEST(the_server_settings_survive_the_config_file) {
     CHECK(!config.server.enabled);
     CHECK_EQ(config.server.port, ServerConfig::kDefaultPort);
     CHECK(config.server.port != 1234);   // LM Studio's
-    config.server.enabled = true;
-    config.server.model   = "LFM2.5-1.2B-Instruct-Q8_0.gguf";
-    config.server.port    = 9001;
-    config.server.network = true;
-    config.server.api_key = "sk-local";
+    config.server.enabled    = true;
+    config.server.model      = "LFM2.5-1.2B-Instruct-Q8_0.gguf";
+    config.server.embeddings = "nomic-embed-text-v1.5.Q8_0.gguf";
+    config.server.port       = 9001;
+    config.server.network    = true;
+    config.server.api_key    = "sk-local";
     std::vector<std::string> warnings;
     const Config back = config_from_json_text(config_to_json_text(config), warnings);
     CHECK(back.server.enabled);
     CHECK_EQ(back.server.model, "LFM2.5-1.2B-Instruct-Q8_0.gguf");
+    CHECK_EQ(back.server.embeddings, "nomic-embed-text-v1.5.Q8_0.gguf");
+    CHECK(back.server.provider.empty());
     CHECK_EQ(back.server.port, 9001);
     CHECK(back.server.network);
     CHECK_EQ(back.server.api_key, "sk-local");
+
+    config.server.provider = "anthropic";
+    config.server.model    = "claude-opus-5-5";
+    const Config remote = config_from_json_text(config_to_json_text(config), warnings);
+    CHECK_EQ(remote.server.provider, "anthropic");
+    CHECK_EQ(remote.server.model, "claude-opus-5-5");
 
     // A port no machine has is the default, and said.
     warnings.clear();
     const Config odd = config_from_json_text(R"({"server": {"port": 70000}})", warnings);
     CHECK_EQ(odd.server.port, ServerConfig::kDefaultPort);
     CHECK(!warnings.empty());
+}
+
+TEST(a_providers_model_reaches_other_computers_only_with_a_key) {
+    // Every request to it is the person's credit spent: with the network on
+    // and no key, the server stays on this machine. No request is made, so
+    // the provider need not be there.
+    TempDir              dir;
+    const ScopedDataHome scoped(dir.path());
+    Config               config;
+    Provider             far;
+    far.id       = "far";
+    far.name     = "Far";
+    far.kind     = "openai";
+    far.base_url = "http://127.0.0.1:9/v1";
+    config.providers.push_back(far);
+    config.server.enabled  = true;
+    config.server.port     = 0;
+    config.server.network  = true;
+    config.server.provider = "far";
+    config.server.model    = "far-model";
+    AppState state;
+    Engine   engine(config, state, {});
+    engine.start();
+    CHECK(engine.server_status().listening);
+    CHECK(!engine.server_status().network);
+    CHECK_EQ(engine.server_status().model, "far-model");
+
+    config.server.api_key = "sk-local";
+    engine.apply_config(config);
+    CHECK(engine.server_status().listening);
+    CHECK(engine.server_status().network);
+    engine.stop();
 }
 
 TEST(the_engine_serves_a_real_model) {
@@ -709,6 +1193,40 @@ TEST(the_engine_serves_a_real_model) {
     json other = question;
     other["model"] = "gpt-4o";
     CHECK_EQ(post(base + "/v1/chat/completions", other.dump()).status, 404);
+
+    // A tool, written into the prompt by the model's own template and its
+    // call read back out of the answer.
+    json weather = json{{"model", id},
+                        {"messages", json::array({json{{"role", "user"},
+                                                       {"content", "What is the weather in Paris? Use the tool."}}})},
+                        {"tools", json::array({weather_tool()})},
+                        {"temperature", 0},
+                        {"max_tokens", 128}};
+    const json called = parsed(post(base + "/v1/chat/completions", weather.dump()));
+    const json calls  = called["choices"][0]["message"].value("tool_calls", json::array());
+    CHECK(!calls.empty());
+    if (!calls.empty()) {
+        CHECK(calls[0]["function"].value("name", "") == "get_weather");
+        const json arguments = json::parse(calls[0]["function"].value("arguments", ""), nullptr, false);
+        CHECK(arguments.is_object() && arguments.contains("city"));
+        std::printf("      called: %s\n", calls[0]["function"].dump().c_str());
+    }
+    CHECK(called["choices"][0].value("finish_reason", "") == "tool_calls");
+
+    // JSON, held to by a grammar.
+    json cat = question;
+    cat["messages"][0]["content"] = "Describe a cat with a name and an age, as JSON.";
+    cat["response_format"]        = {{"type", "json_object"}};
+    cat["max_tokens"]             = 96;
+    const std::string described =
+        parsed(post(base + "/v1/chat/completions", cat.dump()))["choices"][0]["message"].value("content", "");
+    CHECK(json::parse(described, nullptr, false).is_object());
+    std::printf("      as JSON: %s\n", described.c_str());
+
+    // Embeddings, from the model served.
+    const json embedded = parsed(post(base + "/v1/embeddings", json{{"input", json::array({"a cat", "a dog"})}}.dump()));
+    CHECK(embedded["data"].size() == 2);
+    CHECK(!embedded["data"][0]["embedding"].empty());
 
     // Held while it answered and let go after: the next seat may have it.
     CHECK(engine.server_status().recent.size() >= 3);
