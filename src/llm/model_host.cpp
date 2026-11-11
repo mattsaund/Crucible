@@ -1810,11 +1810,10 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
     // Where models live in the machine's memory, that is where the room is
     // made: on a Mac, as well as on its GPU's share of the memory.
     //
-    // An MLX model nobody is using goes the same way, once those experts
-    // have and the delegator still has no room: it was loaded beside one
-    // whether the two fit or not. Its process is out of this host's sight,
-    // but not out of the cards' figure or the machine's, which are what is
-    // asked, and on a Mac the two share the one memory.
+    // An MLX model nobody is using goes the same way, after those experts,
+    // while the delegator still has no room. Its process is out of this
+    // host's sight but not out of the memory figures asked here, and on a
+    // Mac it shares the one memory with the delegator.
     const ModelParams planned = placed_delegator(params);
     const bool        system  = in_system_memory(gpu_devices());
     const auto        no_room = [&] {

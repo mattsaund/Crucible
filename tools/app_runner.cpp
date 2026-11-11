@@ -256,10 +256,11 @@ void serve(WebKitURISchemeRequest* request, gpointer data) {
 /// Where WebView2 is given the page, for the same reason as WebKitGTK: an
 /// https address of the program's own, whose every request WebView2 hands
 /// this program to answer (WebResourceRequested), so that nothing is ever
-/// fetched from it. A scheme of its own WebView2 takes only from the
-/// environment the webview makes, and only in a WebView2 newer than the one
-/// the webview is built against. The name is under .example, which RFC 2606
-/// keeps from ever being a real site's.
+/// fetched from it. WebView2 takes a scheme of the program's own only in the
+/// options its environment is made with, which the webview makes without
+/// any, and only from versions newer than the 1.0.1150.38 it is built
+/// against. The name is under .example, which RFC 2606 keeps from ever being
+/// a real site's.
 constexpr const char*    kAddress   = "https://crucible-app.example/";
 constexpr const wchar_t* kAddresses = L"https://crucible-app.example/*";
 

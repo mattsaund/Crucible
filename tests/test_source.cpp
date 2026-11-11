@@ -358,8 +358,8 @@ TEST(an_app_is_named_from_its_page_and_its_names_are_safe_everywhere) {
 TEST(a_made_apps_address_answers_with_its_page_and_nothing_else) {
     // crucible-app serves its page from an address of its own, so that a
     // reload has somewhere to go back to (tools/app_runner.cpp): a scheme of
-    // its own on Linux and on a Mac, which hand over the path asked for, and
-    // an https address on Windows, which hands over the whole address. The
+    // its own on Linux and on a Mac, and an https address on Windows. Linux
+    // hands over the path asked for, the other two the whole address. The
     // page is "/" or "/index.html", whatever the query, and nothing else
     // there is the program's.
     using tools::address_path;
