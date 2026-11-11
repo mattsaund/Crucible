@@ -26,29 +26,288 @@
 // Given seconds, it presses Stop after that long, and what was answered by
 // then is kept as a stopped run's is: a sample of a model too slow to run
 // through whole.
+//
+//   crucible-smoke --runtime cpu
+//   crucible-smoke --host <first.gguf> [<second.gguf>]
+//   crucible-smoke --app [seconds]
+//
+// What CI runs on each system, on a runner that is a real machine of it.
+// --runtime puts one runtime in place with the installer's own code, which
+// downloads the one published for this llama.cpp and platform and compiles
+// it only when there is none: the same module an installed Crucible runs.
+// --host then loads models on whatever is installed, through the model host
+// as a prompt does, swaps them and lets them go: see smoke_host. --app makes
+// a page into a program the way Make app does and opens it with
+// --self-test, which reloads it in its own window: see smoke_app.
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "crucible/app/setup_runtimes.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/cook/journal.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
+#include "crucible/llm/loaded_model.hpp"
+#include "crucible/llm/model_host.hpp"
 #include "crucible/routing/expert.hpp"
 #include "crucible/routing/router.hpp"
+#include "crucible/runtime/backend.hpp"
+#include "crucible/tools/apps.hpp"
+#include "crucible/util/format.hpp"
+#include "crucible/util/subprocess.hpp"
 
 using namespace crucible;
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double ms_since(Clock::time_point from) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - from).count();
+}
+
+/// The last `count` lines of `file`, printed: what llama.cpp said before a
+/// step failed, which the model host writes there rather than to a terminal.
+void print_tail(const std::filesystem::path& file, std::size_t count) {
+    std::ifstream            in(file);
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(in, line);) {
+        lines.push_back(line);
+    }
+    std::printf("the last of %s:\n", file.string().c_str());
+    for (std::size_t i = lines.size() > count ? lines.size() - count : 0; i < lines.size(); ++i) {
+        std::printf("  %s\n", lines[i].c_str());
+    }
+}
+
+/// The runtime `id` put in place as `crucible --install-runtimes` puts it,
+/// with the same code, and it alone. See the file comment.
+int smoke_runtime(const std::string& id) {
+    const std::optional<BackendKind> kind = backend_from_id(id);
+    if (!kind) {
+        std::printf("no runtime called %s\n", id.c_str());
+        return 2;
+    }
+    const int status = run_runtime_setup(/*quiet=*/false, /*force=*/false, {*kind});
+    // 2 is "already in place", which a second run here finds.
+    return status == 0 || status == 2 ? 0 : 1;
+}
+
+/// What a model says to `prompt`, greedy, so that the same model says the
+/// same thing every time.
+struct Said {
+    std::string     text;
+    GenerationStats stats;
+};
+
+Said ask(LoadedModel& model, const std::string& prompt, int tokens) {
+    ModelParams params;
+    params.temperature = 0.0F;
+    params.seed        = 1234;
+    params.max_tokens  = tokens;
+    Said said;
+    said.stats = model.generate(prompt, params, [&said](std::string_view chunk) { said.text += chunk; }, {});
+    return said;
+}
+
+/// The model host alone, as the engine drives it, on whatever runtimes are
+/// installed. `first` is loaded and asked to go on with a story, `second` is
+/// loaded beside it and asked, and `first` asked for again is held rather
+/// than loaded. Both are let go, and `first` loaded again has to tell the
+/// same story word for word. Then `second` is the delegator and scores two
+/// labels as routing does, and is let go. Each step is said, and one that
+/// does not hold fails the run: a platform's whole loading path, on models
+/// small enough for any machine. With one file, the second load is the same
+/// file with a context of another size, which is still a load of its own.
+int smoke_host(const std::string& first_file, const std::string& second_file) {
+    int failures = 0;
+    const auto held = [&failures](bool ok, const std::string& what) {
+        if (!ok) {
+            std::printf("FAILED: %s\n", what.c_str());
+            ++failures;
+        }
+        return ok;
+    };
+    const auto name_of = [](const ModelParams& params) {
+        return std::filesystem::path(params.path).filename().string();
+    };
+
+    ModelParams first;
+    first.model = first.path = std::filesystem::absolute(first_file).string();
+    ModelParams second;
+    second.model = second.path = std::filesystem::absolute(second_file).string();
+    if (second.path == first.path) {
+        second.n_ctx = first.n_ctx / 2;
+    }
+    const std::string story = "Once upon a time";
+
+    auto       at = Clock::now();
+    ModelHost  host(paths::log_file());
+    std::string devices;
+    for (const std::string& device : ModelHost::devices()) {
+        devices += (devices.empty() ? "" : ", ") + device;
+    }
+    std::printf("host up in %.0f ms, on %s\n", ms_since(at), devices.empty() ? "no device" : devices.c_str());
+    if (!held(!devices.empty(), "no runtime is loaded: install one with crucible-smoke --runtime cpu")) {
+        print_tail(paths::log_file(), 20);
+        return 1;
+    }
+
+    std::string error;
+    at = Clock::now();
+    LoadedModel* one = host.acquire_expert("first", first, {}, {}, error);
+    if (!held(one != nullptr, name_of(first) + " did not load: " + error)) {
+        print_tail(paths::log_file(), 20);
+        return 1;
+    }
+    std::printf("%s loaded in %.0f ms, %s\n", name_of(first).c_str(), ms_since(at),
+                format::bytes(one->bytes()).c_str());
+    const Said told = ask(*one, story, 24);
+    std::printf("  %d tokens at %.0f a second: %s%s\n", told.stats.output_tokens, told.stats.tokens_per_second(),
+                story.c_str(), told.text.c_str());
+    held(told.stats.output_tokens > 0 && !told.text.empty(), name_of(first) + " said nothing");
+
+    at = Clock::now();
+    LoadedModel* two = host.acquire_expert("second", second, {}, {}, error);
+    if (!held(two != nullptr && two != one, name_of(second) + " did not load beside it: " + error)) {
+        print_tail(paths::log_file(), 20);
+        return 1;
+    }
+    std::printf("%s loaded in %.0f ms, %s, beside it: %zu models held, %s\n", name_of(second).c_str(),
+                ms_since(at), format::bytes(two->bytes()).c_str(), host.expert_count(),
+                format::bytes(host.resident_bytes()).c_str());
+    held(host.expert_count() == 2, "the first model was let go to make room for a second this small");
+    const Said other = ask(*two, story, 24);
+    std::printf("  %d tokens at %.0f a second: %s%s\n", other.stats.output_tokens,
+                other.stats.tokens_per_second(), story.c_str(), other.text.c_str());
+    held(other.stats.output_tokens > 0 && !other.text.empty(), name_of(second) + " said nothing");
+
+    at = Clock::now();
+    LoadedModel* again = host.acquire_expert("first", first, {}, {}, error);
+    std::printf("%s asked for again: %s in %.0f ms\n", name_of(first).c_str(),
+                again == one ? "held, not loaded" : "loaded again", ms_since(at));
+    held(again == one, "the first model was loaded again while it was still held");
+
+    host.release_experts();
+    std::printf("both let go: %zu held, %s\n", host.expert_count(), format::bytes(host.resident_bytes()).c_str());
+    held(host.expert_count() == 0 && host.resident_bytes() == 0, "the models were still held after letting go");
+
+    at = Clock::now();
+    LoadedModel* back = host.acquire_expert("first", first, {}, {}, error);
+    if (!held(back != nullptr, name_of(first) + " did not load again: " + error)) {
+        print_tail(paths::log_file(), 20);
+        return 1;
+    }
+    std::printf("%s loaded again in %.0f ms\n", name_of(first).c_str(), ms_since(at));
+    const Said retold = ask(*back, story, 24);
+    held(retold.text == told.text, "loaded again, it told another story: " + retold.text);
+    host.release_experts();
+
+    at = Clock::now();
+    LoadedModel* delegator = host.acquire_router(second, {}, {}, error);
+    if (!held(delegator != nullptr, name_of(second) + " did not load as the delegator: " + error)) {
+        print_tail(paths::log_file(), 20);
+        return 1;
+    }
+    std::printf("%s loaded as the delegator in %.0f ms\n", name_of(second).c_str(), ms_since(at));
+    // Labels as routing writes them, a seat's name with no space before it.
+    const std::vector<float> scores =
+        delegator->score_labels(story + ", there was a little", {"girl", "dragon"}, {});
+    held(scores.size() == 2 && scores[0] > kUnscored && scores[1] > kUnscored, "the delegator scored no labels");
+    if (scores.size() == 2) {
+        std::printf("  scored \"girl\" %.2f and \"dragon\" %.2f\n", static_cast<double>(scores[0]),
+                    static_cast<double>(scores[1]));
+    }
+    host.release_router();
+    held(host.router() == nullptr, "the delegator was still held after letting it go");
+
+    if (failures != 0) {
+        print_tail(paths::log_file(), 20);
+    }
+    std::printf("%s\n", failures == 0 ? "every step held" : "some steps did not hold");
+    return failures == 0 ? 0 : 1;
+}
+
+/// A page made into a program the way the Preview's Make app makes one, and
+/// that program opened with --self-test, which loads its page in a window of
+/// its own, reloads it as a page does in one click, and exits 0 only when the
+/// page was served from the program's own address both times and found what
+/// it had kept (tools/app_runner.cpp). What it found is printed, and its exit
+/// status is this one's. The program goes where a person's would, unless
+/// CRUCIBLE_APPS_DIR names somewhere else.
+int smoke_app(int seconds) {
+    const std::filesystem::path project = paths::data_dir() / "smoke-app";
+    std::error_code ec;
+    std::filesystem::remove_all(project, ec);
+    std::filesystem::create_directories(project, ec);
+    const auto write = [&project](const char* name, const char* text) {
+        std::ofstream out(project / name, std::ios::binary | std::ios::trunc);
+        out << text;
+    };
+    // A page of the kind a build makes: its title is the program's name, and
+    // its stylesheet and script are files of their own until it is packaged.
+    write("index.html",
+          "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Crucible Smoke App</title>"
+          "<link rel=\"stylesheet\" href=\"style.css\"></head>\n"
+          "<body><h1>Clicks</h1><p id=\"count\">0</p><button id=\"add\">Add</button>"
+          "<script src=\"app.js\"></script></body></html>\n");
+    write("style.css", "body { font: 16px sans-serif; padding: 2rem; }\n");
+    write("app.js",
+          "var count = Number(localStorage.getItem('count') || 0);\n"
+          "function show() { document.getElementById('count').textContent = count; }\n"
+          "document.getElementById('add').addEventListener('click', function () {\n"
+          "  count += 1; localStorage.setItem('count', String(count)); show();\n"
+          "});\nshow();\n");
+
+    std::string error;
+    const std::optional<tools::apps::Made> made = tools::apps::package(project, "index.html", "", error);
+    if (!made) {
+        std::printf("could not make the program: %s\n", error.c_str());
+        return 1;
+    }
+    std::printf("made %s, %s\n", made->name.c_str(), made->where.c_str());
+    std::filesystem::path program = made->launch;
+#if defined(__APPLE__)
+    // A bundle is opened by the program inside it, which is what is run here
+    // so that it can be given the flag and its exit status read.
+    if (std::filesystem::is_directory(program, ec)) {
+        program = program / "Contents" / "MacOS" / tools::apps::detail::slug(made->name);
+    }
+#endif
+    const std::filesystem::path report = paths::data_dir() / "smoke-app-report.txt";
+    std::filesystem::remove(report, ec);
+    const auto      at  = Clock::now();
+    const util::Ran ran = util::run({program.string(), "--self-test", report.string(), std::to_string(seconds)},
+                                    program.parent_path(), {}, seconds + 30);
+    std::ifstream in(report);
+    const std::string said((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::printf("%s", said.empty() ? "it wrote no report\n" : said.c_str());
+    if (!ran.started) {
+        std::printf("could not start %s: %s\n", program.string().c_str(), ran.error.c_str());
+        return 1;
+    }
+    const bool passed = ran.status == 0 && !ran.timed_out;
+    std::printf("%s exited with %d after %.1f s%s\n", program.filename().string().c_str(), ran.status,
+                ms_since(at) / 1000.0, ran.timed_out ? ", stopped for taking too long" : "");
+    if (!passed && !ran.output.empty()) {
+        std::printf("what it printed:\n%s\n", ran.output.c_str());
+    }
+    return passed ? 0 : 1;
+}
 
 /// A build of `directive` on `expert`, with `question` asked in the chat
 /// while it works when there is one. See the file comment.
@@ -239,6 +498,15 @@ int smoke_bench(const std::string& model, const std::string& size, const std::st
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 3 && std::string(argv[1]) == "--runtime") {
+        return smoke_runtime(argv[2]);
+    }
+    if (argc >= 3 && std::string(argv[1]) == "--host") {
+        return smoke_host(argv[2], argc >= 4 ? argv[3] : argv[2]);
+    }
+    if (argc >= 2 && std::string(argv[1]) == "--app") {
+        return smoke_app(argc >= 3 ? std::atoi(argv[2]) : 60);
+    }
     if (argc >= 4 && std::string(argv[1]) == "--build") {
         return smoke_build(argv[2], argv[3], argc >= 5 ? argv[4] : "");
     }
@@ -249,7 +517,10 @@ int main(int argc, char** argv) {
     if (argc < 4) {
         std::printf("usage: crucible-smoke <delegator.gguf or -> <expert.gguf> \"a question\"\n"
                     "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n"
-                    "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n");
+                    "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n"
+                    "       crucible-smoke --runtime cpu\n"
+                    "       crucible-smoke --host <first.gguf> [<second.gguf>]\n"
+                    "       crucible-smoke --app [seconds]\n");
         return 2;
     }
     const std::string delegator = argv[1];

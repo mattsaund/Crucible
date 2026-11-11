@@ -35,6 +35,10 @@ namespace crucible {
 /// 1 when at least one could not be, and 2 when there was nothing to do.
 int run_runtime_setup(bool quiet, bool force);
 
+/// The same for `wanted` alone, in that order: what CI asks for when it puts
+/// the processor's runtime in place the way an install does, and no other.
+int run_runtime_setup(bool quiet, bool force, const std::vector<BackendKind>& wanted);
+
 /// The backends this machine should end up with: the CPU always, CUDA where
 /// there is an NVIDIA driver, and Metal or Vulkan where the platform has them.
 std::vector<BackendKind> runtimes_wanted_here();
