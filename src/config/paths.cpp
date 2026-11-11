@@ -81,6 +81,7 @@ std::filesystem::path runtime_build_dir() { return data_dir() / "runtime-build";
 std::filesystem::path projects_dir()      { return data_dir() / "projects"; }
 std::filesystem::path dropped_dir()       { return data_dir() / "dropped"; }
 std::filesystem::path scratch_dir()       { return data_dir() / "scratch"; }
+std::filesystem::path https_dir()         { return data_dir() / "https"; }
 std::filesystem::path home_folder()       { return home_dir() / ".crucible"; }
 std::filesystem::path scratchpad_dir()    { return home_folder() / "Scratchpad"; }
 

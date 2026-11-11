@@ -3342,6 +3342,39 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(taken.find("<span class=\"bad\">Port 8338 is in use</span>") != std::string::npos);
     CHECK(taken.find("ADDRESSES") == std::string::npos);
 
+    // HTTPS with Crucible's own certificate: the address says so, and what a
+    // client checks it by is there to copy.
+    page().eval("state.config.server = { enabled: true, model: 'physics.gguf', port: 8338, network: false,"
+                "  api_key: '', https: true, certificate: '', certificate_key: '' };"
+                "state.snapshot.server = { enabled: true, listening: true, port: 8338, network: false, key: false,"
+                "  error: '', model: 'physics.gguf', answering: false, waiting: '', queued: 0,"
+                "  addresses: { local: 'https://localhost:8338/v1' }, lan: '', https: true,"
+                "  fingerprint: 'AB:CD:EF', certificate: '/home/x/.local/share/crucible/https/certificate.pem',"
+                "  own_certificate: true, recent: [] }");
+    CHECK_EQ(drawn("views.settings()"), "ok");
+    const std::string secure = page().eval("views.settings()");
+    CHECK(secure.find("id=\"f-server-https\"") != std::string::npos);
+    CHECK(secure.find("<code>https://localhost:8338/v1</code>") != std::string::npos);
+    CHECK(secure.find("placeholder=\"Self-signed\"") != std::string::npos);
+    CHECK(secure.find("server-certificate-key") == std::string::npos);   // no key without a certificate named
+    CHECK(secure.find("SHA-256 <code class=\"wrap\">AB:CD:EF</code>") != std::string::npos);
+    CHECK(secure.find("File <code class=\"wrap\">/home/x/.local/share/crucible/https/certificate.pem</code>")
+          != std::string::npos);
+    // The person's own certificate: its key named beside it, and no file of
+    // Crucible's to give out.
+    page().eval("state.config.server.certificate = '/etc/ssl/server.crt';"
+                "state.snapshot.server.own_certificate = false");
+    const std::string theirs = page().eval("views.settings()");
+    CHECK(theirs.find("value=\"/etc/ssl/server.crt\"") != std::string::npos);
+    CHECK(theirs.find("placeholder=\"Same file\"") != std::string::npos);
+    CHECK(theirs.find("File <code") == std::string::npos);
+    // One that will not serve says why, where the server says it is on.
+    page().eval("var s = state.snapshot.server; s.listening = false; s.https = false; s.fingerprint = '';"
+                "s.error = 'The key does not match the certificate'; s.addresses = {}");
+    CHECK_EQ(drawn("views.settings()"), "ok");
+    CHECK(page().eval("views.settings()").find("<span class=\"bad\">The key does not match the certificate</span>")
+          != std::string::npos);
+
     // Put back, for anything that runs after.
     page().eval("state.snapshot.server = window.__serverWas; delete state.config.server;"
                 "state.settingsPage = 'general'");

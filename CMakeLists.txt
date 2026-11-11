@@ -216,6 +216,7 @@ add_library(crucible_core STATIC
 
     # serve: a model offered to other programs, in OpenAI's shape
     src/serve/server.cpp
+    src/serve/tls.cpp
 
     # app: process-level actions that are not the window
     # api: the one JSON door every interface comes through
@@ -259,8 +260,10 @@ endif()
 # a child of Crucible's. See src/tools/apps.cpp. GDI and CoreText: the fonts
 # installed, for the Font setting. See src/util/fonts.cpp. SetupAPI: each
 # card's PCIe link, from its device properties. See src/runtime/devices.cpp.
+# IP Helper: this machine's addresses, for the certificate the API server
+# makes for itself. See src/serve/tls.cpp.
 if(WIN32)
-    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32 setupapi)
+    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32 setupapi iphlpapi)
 elseif(APPLE)
     target_link_libraries(crucible_core PRIVATE "-framework CoreText" "-framework CoreFoundation")
 endif()

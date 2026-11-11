@@ -105,6 +105,57 @@ target_compile_definitions(crucible_miniz PUBLIC MINIZ_NO_TIME MINIZ_NO_ARCHIVE_
                                                  MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
 set_target_properties(crucible_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# --- Mbed TLS: HTTPS for the API server ------------------------------------------
+#
+# The API server speaks HTTPS when asked to, through cpp-httplib's Mbed TLS
+# backend (crucible_httplib, below). Compiled in like miniz rather than looked
+# for: OpenSSL is on every Linux machine and on neither of the other two, and
+# a static library leaves nothing beside the program for an installer to
+# carry. The 3.6 line, Mbed TLS's long-term support branch.
+#
+# The release archive rather than the repository, as for miniz: it carries
+# the files Mbed TLS's own build would otherwise generate with Python, and
+# the framework its repository keeps as a submodule. Its libraries only: no
+# programs, no tests, no headers to install, and warnings that stay warnings,
+# since a compiler newer than theirs would otherwise stop the build. The
+# libraries' own install rules are in no component of Crucible's, so the
+# installers, which install `crucible` alone, carry none of it.
+#
+# Here, before llama.cpp, while BUILD_SHARED_LIBS is still off: two of its
+# libraries leave the choice to that, and would otherwise come out as files
+# of their own to ship.
+#
+# cmake/mbedtls/config.h is read at the end of Mbed TLS's own configuration,
+# by everything that includes its headers, Crucible's files among them.
+set(CRUCIBLE_MBEDTLS_TAG 3.6.7 CACHE STRING "Mbed TLS release the API server's HTTPS is built with")
+set(ENABLE_PROGRAMS              OFF CACHE INTERNAL "")
+set(ENABLE_TESTING               OFF CACHE INTERNAL "")
+set(MBEDTLS_FATAL_WARNINGS       OFF CACHE INTERNAL "")
+set(INSTALL_MBEDTLS_HEADERS      OFF CACHE INTERNAL "")
+set(USE_STATIC_MBEDTLS_LIBRARY   ON  CACHE INTERNAL "")
+set(USE_SHARED_MBEDTLS_LIBRARY   OFF CACHE INTERNAL "")
+set(GEN_FILES                    OFF CACHE INTERNAL "")
+set(MBEDTLS_USER_CONFIG_FILE "${CMAKE_CURRENT_LIST_DIR}/mbedtls/config.h" CACHE INTERNAL "")
+FetchContent_Declare(mbedtls
+    URL      https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${CRUCIBLE_MBEDTLS_TAG}/mbedtls-${CRUCIBLE_MBEDTLS_TAG}.tar.bz2
+    URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+# It asks for CMake 3.5's behavior, which CMake 4 warns it will stop giving.
+# 3.10's changes nothing a static library is built with, and is what CMake
+# documents this variable for: a third party's project, added as it is.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+FetchContent_MakeAvailable(mbedtls)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+foreach(_lib mbedcrypto mbedx509 mbedtls everest p256m)
+    if(TARGET ${_lib})
+        # Its headers are system headers to Crucible's strict warnings, as
+        # llama.cpp's are, and threading_alt.h is beside the configuration:
+        # the lock Windows gets (see cmake/mbedtls/threading_alt.h).
+        set_target_properties(${_lib} PROPERTIES SYSTEM TRUE POSITION_INDEPENDENT_CODE ON)
+        target_include_directories(${_lib} SYSTEM PUBLIC "${CMAKE_CURRENT_LIST_DIR}/mbedtls")
+    endif()
+endforeach()
+
 # ---------------------------------------------------------------------------
 # The window
 # ---------------------------------------------------------------------------
@@ -581,12 +632,26 @@ endif()
 # cpp-httplib, which llama.cpp carries in its vendor folder for its own server
 # and builds only with LLAMA_BUILD_COMMON, which is off here. Compiled from
 # that copy rather than fetched: it is the one this llama.cpp tag pins, and
-# nothing new comes down for it. Without TLS, as LM Studio's server and
-# llama-server are: it answers on this machine, or on its network when asked.
+# nothing new comes down for it. This is the only copy in the program: the
+# one llama.cpp would build is its cpp-httplib target, which exists only with
+# LLAMA_BUILD_COMMON, and of `common` only files that never include it are
+# compiled here (crucible_llama_chat, below).
+#
+# With Mbed TLS, for HTTPS. The definitions are PUBLIC because they decide
+# what httplib.h declares, SSLServer among them, and the size of what it
+# declares: a file that included it without them would be reading other
+# classes than httplib.cpp was compiled with. Mbed TLS's configuration comes
+# the same way, with its libraries. And none of httplib's own client side,
+# which would look for the system's root certificates: Crucible's requests
+# go through curl (see util/http.hpp), and the server needs none of them.
 set(CRUCIBLE_HTTPLIB_DIR "${llama_SOURCE_DIR}/vendor/cpp-httplib")
 add_library(crucible_httplib STATIC "${CRUCIBLE_HTTPLIB_DIR}/httplib.cpp")
 target_include_directories(crucible_httplib SYSTEM PUBLIC "${CRUCIBLE_HTTPLIB_DIR}")
-target_link_libraries(crucible_httplib PRIVATE Threads::Threads)
+target_compile_definitions(crucible_httplib PUBLIC
+    CPPHTTPLIB_MBEDTLS_SUPPORT
+    CPPHTTPLIB_DISABLE_MACOSX_AUTOMATIC_ROOT_CERTIFICATES
+    CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
+target_link_libraries(crucible_httplib PUBLIC mbedtls mbedx509 mbedcrypto PRIVATE Threads::Threads)
 set_target_properties(crucible_httplib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Its warnings are its own business, as llama.cpp's build says too.
 if(MSVC)
