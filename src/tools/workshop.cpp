@@ -48,6 +48,7 @@
 #include <sstream>
 #include <system_error>
 #include <thread>
+#include <utility>
 
 #include "crucible/tools/computer.hpp"
 #include "crucible/tools/fetch.hpp"
@@ -1530,6 +1531,414 @@ std::vector<std::string> shell_argv(std::string_view shell, const std::string& c
     return {name, "-c", command};
 }
 
+namespace {
+
+// --- a call written the way LFM2 writes one -------------------------------------
+//
+// LFM2 and LFM2.5 call a tool as a Python list of calls, and keep to that
+// whatever they are told: `[WRITE(path='index.html', content='<!doctype ...')]`.
+// Their template wraps it in <|tool_call_start|> and <|tool_call_end|>, which
+// do not reach the text. An LFM2.5 2.6B given a build wrote its page that
+// way, then READ the same way eight times, and the task stopped with nothing
+// written. So the function's name is taken as the verb and its arguments by
+// name or in order, and the call is the one the protocol has. Only at the
+// start of a line, like a verb.
+
+void append_utf8(std::string& out, unsigned long code) {
+    if (code < 0x80) {
+        out += static_cast<char>(code);
+    } else if (code < 0x800) {
+        out += static_cast<char>(0xC0 | (code >> 6));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else if (code < 0x10000) {
+        out += static_cast<char>(0xE0 | (code >> 12));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else if (code < 0x110000) {
+        out += static_cast<char>(0xF0 | (code >> 18));
+        out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    }
+}
+
+/// A Python string at `at`, '...' or "..." or either tripled, with an r or u
+/// before it or not, its escapes undone and `at` moved past it. A line break
+/// inside a single-quoted one is kept, since the model writes them.
+std::optional<std::string> python_string(std::string_view text, std::size_t& at) {
+    std::size_t i   = at;
+    bool        raw = false;
+    while (i < text.size() && (text[i] == 'r' || text[i] == 'R' || text[i] == 'u' || text[i] == 'U')) {
+        raw = raw || text[i] == 'r' || text[i] == 'R';
+        ++i;
+    }
+    if (i >= text.size() || (text[i] != '\'' && text[i] != '"') || i - at > 1) {
+        return std::nullopt;
+    }
+    const char  quote  = text[i];
+    const bool  triple = text.substr(i, 3) == std::string(3, quote);
+    std::size_t p      = i + (triple ? 3 : 1);
+    std::string value;
+    while (p < text.size()) {
+        const char c = text[p];
+        if (c == quote && (!triple || text.substr(p, 3) == std::string(3, quote))) {
+            at = p + (triple ? 3 : 1);
+            return value;
+        }
+        if (c != '\\' || raw || p + 1 >= text.size()) {
+            value += c;
+            ++p;
+            continue;
+        }
+        const char e = text[p + 1];
+        p += 2;
+        const auto hex = [&](std::size_t digits) {
+            unsigned long code = 0;
+            std::size_t   read = 0;
+            for (; read < digits && p < text.size() && std::isxdigit(static_cast<unsigned char>(text[p])) != 0;
+                 ++read, ++p) {
+                code = code * 16 + static_cast<unsigned long>(
+                    std::isdigit(static_cast<unsigned char>(text[p])) != 0
+                        ? text[p] - '0'
+                        : std::tolower(static_cast<unsigned char>(text[p])) - 'a' + 10);
+            }
+            append_utf8(value, code);
+        };
+        switch (e) {
+            case 'n':  value += '\n'; break;
+            case 't':  value += '\t'; break;
+            case 'r':  value += '\r'; break;
+            case '0':  value += '\0'; break;
+            case 'b':  value += '\b'; break;
+            case 'f':  value += '\f'; break;
+            case 'v':  value += '\v'; break;
+            case 'a':  value += '\a'; break;
+            case '\\': value += '\\'; break;
+            case '\'': value += '\''; break;
+            case '"':  value += '"';  break;
+            case '\n': break;   // a line continued
+            case 'x':  hex(2); break;
+            case 'u':  hex(4); break;
+            case 'U':  hex(8); break;
+            default:   value += '\\'; value += e; break;   // Python keeps an unknown one
+        }
+    }
+    return std::nullopt;   // never closed
+}
+
+struct PythonArgument {
+    std::string name;    ///< empty when given in order
+    std::string value;
+};
+
+void skip_space(std::string_view text, std::size_t& at) {
+    while (at < text.size() && std::isspace(static_cast<unsigned char>(text[at])) != 0) {
+        ++at;
+    }
+}
+
+/// Whether a value that is not a string is one a call of the model's has: a
+/// number, True, False or None. Anything else (a name, a list, a call) is
+/// code, like `[list(range(10))]` in a Python answer, and not a call.
+bool plain_value(std::string_view value) {
+    if (value == "True" || value == "False" || value == "None") {
+        return true;
+    }
+    std::size_t at = value.size() > 1 && (value[0] == '-' || value[0] == '+') ? 1 : 0;
+    bool digits = false;
+    for (; at < value.size(); ++at) {
+        if (std::isdigit(static_cast<unsigned char>(value[at])) != 0) {
+            digits = true;
+        } else if (value[at] != '.') {
+            return false;
+        }
+    }
+    return digits;
+}
+
+/// The arguments of a call whose "(" is just before `at`, up to its ")",
+/// with `at` moved past that. A value that is not a string is kept as it is
+/// written, when it is a plain one.
+std::optional<std::vector<PythonArgument>> python_arguments(std::string_view text, std::size_t& at) {
+    std::vector<PythonArgument> arguments;
+    for (;;) {
+        skip_space(text, at);
+        if (at >= text.size()) {
+            return std::nullopt;
+        }
+        if (text[at] == ')') {
+            ++at;
+            return arguments;
+        }
+        PythonArgument argument;
+        std::size_t    name_end = at;
+        while (name_end < text.size()
+               && (std::isalnum(static_cast<unsigned char>(text[name_end])) != 0 || text[name_end] == '_')) {
+            ++name_end;
+        }
+        std::size_t equals = name_end;
+        skip_space(text, equals);
+        if (name_end > at && equals < text.size() && text[equals] == '='
+            && (equals + 1 >= text.size() || text[equals + 1] != '=')) {
+            argument.name = format::to_lower(text.substr(at, name_end - at));
+            at            = equals + 1;
+            skip_space(text, at);
+        }
+        if (std::optional<std::string> first = python_string(text, at)) {
+            argument.value = std::move(*first);
+            // 'one' 'two' is one string in Python.
+            for (std::size_t next = at;;) {
+                skip_space(text, next);
+                std::optional<std::string> more = python_string(text, next);
+                if (!more) {
+                    break;
+                }
+                argument.value += *more;
+                at = next;
+            }
+        } else {
+            // As written, up to the comma or bracket that ends it.
+            const std::size_t start = at;
+            int depth = 0;
+            for (; at < text.size(); ++at) {
+                const char c = text[at];
+                if (c == '\'' || c == '"') {
+                    if (!python_string(text, at)) {
+                        return std::nullopt;
+                    }
+                    --at;
+                } else if (c == '(' || c == '[' || c == '{') {
+                    ++depth;
+                } else if (c == ')' || c == ']' || c == '}') {
+                    if (depth == 0) {
+                        break;
+                    }
+                    --depth;
+                } else if (c == ',' && depth == 0) {
+                    break;
+                }
+            }
+            argument.value = trim(text.substr(start, at - start));
+            if (!plain_value(argument.value)) {
+                return std::nullopt;
+            }
+        }
+        arguments.push_back(std::move(argument));
+        skip_space(text, at);
+        if (at < text.size() && text[at] == ',') {
+            ++at;
+        } else if (at >= text.size() || text[at] != ')') {
+            return std::nullopt;
+        }
+    }
+}
+
+/// The verb a function is named for, or None. WRITE, write and Write alike.
+ToolKind verb_named(std::string_view name) {
+    std::string upper(name);
+    for (char& c : upper) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    for (const Verb& verb : kVerbs) {
+        if (upper == verb.word) {
+            return verb.kind;
+        }
+    }
+    return ToolKind::None;
+}
+
+/// One call, `NAME(arguments)`, at `at`, as the protocol's call.
+std::optional<ToolCall> python_call(std::string_view text, std::size_t& at) {
+    skip_space(text, at);
+    std::size_t name_end = at;
+    while (name_end < text.size()
+           && (std::isalnum(static_cast<unsigned char>(text[name_end])) != 0 || text[name_end] == '_')) {
+        ++name_end;
+    }
+    const ToolKind kind = verb_named(text.substr(at, name_end - at));
+    if (kind == ToolKind::None || name_end >= text.size() || text[name_end] != '(') {
+        return std::nullopt;
+    }
+    at = name_end + 1;
+    std::optional<std::vector<PythonArgument>> arguments = python_arguments(text, at);
+    if (!arguments) {
+        return std::nullopt;
+    }
+
+    // By name first, from the names models give them, then in order.
+    std::vector<bool> used(arguments->size(), false);
+    const auto take = [&](std::initializer_list<std::string_view> names) -> std::optional<std::string> {
+        for (const std::string_view name : names) {
+            for (std::size_t i = 0; i < arguments->size(); ++i) {
+                if (!used[i] && (*arguments)[i].name == name) {
+                    used[i] = true;
+                    return (*arguments)[i].value;
+                }
+            }
+        }
+        return std::nullopt;
+    };
+    const auto next = [&]() -> std::optional<std::string> {
+        for (std::size_t i = 0; i < arguments->size(); ++i) {
+            if (!used[i] && (*arguments)[i].name.empty()) {
+                used[i] = true;
+                return (*arguments)[i].value;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto rest = [&]() {
+        std::string joined;
+        for (std::size_t i = 0; i < arguments->size(); ++i) {
+            if (!used[i]) {
+                used[i] = true;
+                joined += (joined.empty() ? "" : " ") + (*arguments)[i].value;
+            }
+        }
+        return joined;
+    };
+    const std::initializer_list<std::string_view> kPath = {"path", "file", "filename", "file_path", "filepath",
+                                                           "file_name", "target", "name", "page", "dir",
+                                                           "directory", "folder"};
+    const std::initializer_list<std::string_view> kBody = {"content", "contents", "text", "code", "body",
+                                                           "data", "source", "file_content", "new_content",
+                                                           "script", "arguments"};
+
+    ToolCall call;
+    call.kind = kind;
+    switch (kind) {
+        case ToolKind::Write:
+        case ToolKind::Mcp: {
+            const std::optional<std::string> path = kind == ToolKind::Mcp ? take({"tool", "name", "server"})
+                                                                          : take(kPath);
+            const std::optional<std::string> body = take(kBody);
+            call.argument = path ? *path : next().value_or("");
+            call.content  = body ? *body : next().value_or("");
+            break;
+        }
+        case ToolKind::Python:
+        case ToolKind::Type: {
+            const std::optional<std::string> body = take(kBody);
+            call.content = body ? *body : next().value_or("");
+            if (kind == ToolKind::Type && call.content.find('\n') == std::string::npos) {
+                call.argument = std::exchange(call.content, std::string());
+            }
+            break;
+        }
+        case ToolKind::Edit: {
+            const std::optional<std::string> path = take(kPath);
+            call.argument = path ? *path : next().value_or("");
+            const std::optional<std::string> old_text =
+                take({"search", "old", "old_string", "old_text", "find", "original", "before"});
+            const std::optional<std::string> new_text =
+                take({"replace", "new", "new_string", "new_text", "replacement", "updated", "after"});
+            if (old_text && new_text) {
+                call.content = "<<<<<<< SEARCH\n" + *old_text + "\n=======\n" + *new_text + "\n>>>>>>> REPLACE\n";
+            } else {
+                const std::optional<std::string> body = take({"content", "edits", "blocks", "diff", "changes"});
+                call.content = body ? *body : next().value_or("");
+            }
+            break;
+        }
+        case ToolKind::Run:
+        case ToolKind::Git:
+        case ToolKind::Gh:
+        case ToolKind::Start: {
+            const std::optional<std::string> command = take({"command", "cmd", "args", "arguments", "line"});
+            if (const std::optional<std::string> shell = take({"shell"});
+                shell && known_shell(format::to_lower(*shell))) {
+                call.shell = format::to_lower(*shell);
+            }
+            call.argument = command ? *command : rest();
+            break;
+        }
+        case ToolKind::Render: {
+            const std::optional<std::string> page = take(kPath);
+            const std::optional<std::string> out  = take({"out", "output", "to", "png", "pdf", "picture", "image"});
+            call.argument = page ? *page : next().value_or("");
+            if (out) {
+                call.argument += " to " + *out;
+            }
+            if (const std::string more = rest(); !more.empty()) {
+                call.argument += " " + more;
+            }
+            break;
+        }
+        default: {
+            const std::optional<std::string> named =
+                take({"path", "file", "filename", "file_path", "dir", "directory", "folder", "query", "pattern",
+                      "url", "summary", "text", "message", "question", "note", "task", "name", "keys", "key"});
+            call.argument = named ? *named : rest();
+            break;
+        }
+    }
+    if (!keeps_argument_verbatim(kind)) {
+        call.argument = unquote(call.argument);
+    }
+    return call;
+}
+
+constexpr std::string_view kToolCallOpen = "<|tool_call_start|>";
+
+/// Whether a line opens the way such a call does, `[VERB(`, so that the lines
+/// after it are only gathered up for one that might be.
+bool opens_python_call(std::string_view line) {
+    std::size_t at = 0;
+    skip_space(line, at);
+    if (line.substr(at, kToolCallOpen.size()) == kToolCallOpen) {
+        at += kToolCallOpen.size();
+        skip_space(line, at);
+    }
+    if (at >= line.size() || line[at] != '[') {
+        return false;
+    }
+    std::size_t end = ++at;
+    while (end < line.size() && (std::isalnum(static_cast<unsigned char>(line[end])) != 0 || line[end] == '_')) {
+        ++end;
+    }
+    return end < line.size() && line[end] == '(' && verb_named(line.substr(at, end - at)) != ToolKind::None;
+}
+
+/// A call in LFM2's way that opens the text, or nothing. `consumed` is how much
+/// of the text it took. A second call in the same list is named in `unrun`.
+std::optional<ToolCall> python_call_list(std::string_view text, std::size_t& consumed) {
+    std::size_t at = 0;
+    skip_space(text, at);
+    if (text.substr(at, kToolCallOpen.size()) == kToolCallOpen) {
+        at += kToolCallOpen.size();
+        skip_space(text, at);
+    }
+    if (at >= text.size() || text[at] != '[') {
+        return std::nullopt;
+    }
+    ++at;
+    std::optional<ToolCall> call = python_call(text, at);
+    if (!call) {
+        return std::nullopt;
+    }
+    skip_space(text, at);
+    if (at < text.size() && text[at] == ',') {
+        ++at;
+        skip_space(text, at);
+        const std::size_t second = at;
+        std::size_t       end    = at;
+        if (python_call(text, end)) {
+            call->unrun = trim(text.substr(second, end - second));
+            at          = end;
+        }
+        while (at < text.size() && text[at] != ']') {
+            ++at;
+        }
+    }
+    if (at >= text.size() || text[at] != ']') {
+        return std::nullopt;
+    }
+    consumed = at + 1;
+    return call;
+}
+
+}  // namespace
+
 std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_view reasoning) {
     // The first call in the reply, except that a NOTE gives way to an action
     // after it. Models narrate before they act -- "NOTE: starting task 1",
@@ -1547,7 +1956,43 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
             ToolCall call;
             call.kind = verb_of(lines[i], call.argument, call.shell);
             if (call.kind == ToolKind::None) {
-                continue;
+                // LFM2's own way, which runs over several lines when a
+                // file's contents are in it.
+                if (!opens_python_call(lines[i])) {
+                    continue;
+                }
+                std::string from;
+                for (std::size_t j = i; j < lines.size(); ++j) {
+                    from += lines[j];
+                    from += '\n';
+                }
+                std::size_t                   consumed = 0;
+                const std::optional<ToolCall> own      = python_call_list(from, consumed);
+                if (!own) {
+                    continue;
+                }
+                const std::size_t through =
+                    i + static_cast<std::size_t>(std::count(from.begin(), from.begin() + static_cast<std::ptrdiff_t>(consumed), '\n'));
+                if (own->kind == ToolKind::Note) {
+                    if (!note) {
+                        note = own;
+                    }
+                    i = through;
+                    continue;
+                }
+                call = *own;
+                for (std::size_t j = through + 1; names_the_next && call.unrun.empty() && j < lines.size(); ++j) {
+                    std::string argument;
+                    std::string shell;
+                    const ToolKind next = verb_of(lines[j], argument, shell);
+                    if (next != ToolKind::None && next != ToolKind::Note) {
+                        call.unrun = trim(lines[j]);
+                    }
+                }
+                if (!names_the_next) {
+                    call.unrun.clear();
+                }
+                return call;
             }
             // "RUN: RENDER: index.html to page.png" -- one of these verbs handed
             // to the shell, where it is a command not found. Taken as the verb.
