@@ -1230,6 +1230,30 @@ TEST(the_engine_serves_a_real_model) {
 
     // Held while it answered and let go after: the next seat may have it.
     CHECK(engine.server_status().recent.size() >= 3);
+
+    // The same file as the delegator, which routes in a context of 1024
+    // tokens and is served in one of its own as long as a model from the
+    // folder would have: a conversation longer than routing's is answered.
+    config.router.model  = file.string();
+    config.router.n_ctx  = 1024;
+    config.server.model  = "";
+    config.resolve_models();
+    engine.apply_config(config);
+    std::string filler;
+    for (int i = 0; i < 700; ++i) {
+        filler += "item" + std::to_string(i) + " ";
+    }
+    const json longer{{"messages", json::array({json{{"role", "user"},
+                                                     {"content", "A list: " + filler + ". The secret word is PELICAN."}},
+                                                json{{"role", "assistant"}, {"content", "Noted."}},
+                                                json{{"role", "user"}, {"content", "The secret word? One word."}}})},
+                      {"temperature", 0},
+                      {"max_tokens", 8}};
+    const json kept = parsed(post(base + "/v1/chat/completions", longer.dump()));
+    CHECK(kept["usage"].value("prompt_tokens", 0) > 1024);
+    CHECK(kept["choices"][0]["message"].value("content", "").find("PELICAN") != std::string::npos);
+    std::printf("      the delegator, %d tokens in: %s\n", kept["usage"].value("prompt_tokens", 0),
+                kept["choices"][0]["message"].value("content", "").c_str());
     engine.stop();
     CHECK(!engine.server_status().listening);
 }
