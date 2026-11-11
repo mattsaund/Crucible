@@ -14,6 +14,7 @@
 #include "crucible/session/store.hpp"
 #include "crucible/tools/apps.hpp"
 #include "crucible/tools/git.hpp"
+#include "crucible/tools/page_storage.hpp"
 #include "crucible/tools/preview.hpp"
 
 namespace {
@@ -352,6 +353,31 @@ TEST(an_app_is_named_from_its_page_and_its_names_are_safe_everywhere) {
     CHECK(plist.find("<key>CFBundleExecutable</key><string>a-b</string>") != std::string::npos);
     const std::string entry = tools::apps::detail::desktop_entry("Budget", "/home/x/.local/share/crucible-apps/budget/budget");
     CHECK(entry.find("Exec=\"/home/x/.local/share/crucible-apps/budget/budget\"") != std::string::npos);
+}
+
+TEST(a_made_apps_address_answers_with_its_page_and_nothing_else) {
+    // crucible-app serves its page from an address of its own, so that a
+    // reload has somewhere to go back to (tools/app_runner.cpp): a scheme of
+    // its own on Linux and on a Mac, which hand over the path asked for, and
+    // an https address on Windows, which hands over the whole address. The
+    // page is "/" or "/index.html", whatever the query, and nothing else
+    // there is the program's.
+    using tools::address_path;
+    using tools::is_app_page;
+    CHECK_EQ(std::string(address_path("https://crucible-app.example/")), std::string("/"));
+    CHECK_EQ(std::string(address_path("https://crucible-app.example/index.html?from=reload#top")),
+             std::string("/index.html"));
+    CHECK_EQ(std::string(address_path("https://crucible-app.example/favicon.ico")), std::string("/favicon.ico"));
+    CHECK_EQ(std::string(address_path("crucible-app://app/")), std::string("/"));
+    // A query before any path is no path, even one that holds a slash.
+    CHECK_EQ(std::string(address_path("https://crucible-app.example?next=/index.html")), std::string());
+    CHECK_EQ(std::string(address_path("about:blank")), std::string());
+    CHECK(is_app_page("/"));
+    CHECK(is_app_page("/index.html"));
+    CHECK(is_app_page(address_path("https://crucible-app.example/?x=1")));
+    CHECK(!is_app_page(""));
+    CHECK(!is_app_page("/favicon.ico"));
+    CHECK(!is_app_page("/index.html/more"));
 }
 
 TEST(a_page_is_packaged_with_the_runner_beside_it) {

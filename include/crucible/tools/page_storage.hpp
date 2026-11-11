@@ -7,10 +7,10 @@
 // sandboxed frame and the other handed to its window as a string. A browser
 // gives a page like that no storage at all: reading localStorage throws. A
 // page that keeps its data there, which is most pages written anywhere but
-// here, then cannot save anything, and its forms seem dead. On Linux an
-// app's page is served instead, from an address of the program's own, and
-// has the stand-ins all the same, so that what it keeps is in the same file
-// on every system.
+// here, then cannot save anything, and its forms seem dead. An app's page is
+// served instead, from an address of the program's own, wherever its window
+// allows that, and has the stand-ins all the same, so that what it keeps is
+// in the same file on every system and however it was shown.
 //
 // So both are replaced, before the page's own scripts run, by ones that
 // behave as a browser's do (strings in and strings out, null for a name
@@ -238,6 +238,26 @@ inline std::string with_script_first(std::string_view page, std::string_view scr
     }
     return std::string(page.substr(0, at)) + "<script>" + std::string(script) + "</script>"
          + std::string(page.substr(at));
+}
+
+/// Whether a request to an app's own address is for its page, by the path
+/// it asks for: "/" or "/index.html". Nothing else there is the program's,
+/// since the page is bundled into one file with everything it references
+/// put inside it.
+inline bool is_app_page(std::string_view path) {
+    return path == "/" || path == "/index.html";
+}
+
+/// The path of `address`, without its query or its fragment: "/index.html"
+/// of "https://crucible-app.example/index.html?a=1". Empty when it has none.
+inline std::string_view address_path(std::string_view address) {
+    const std::size_t scheme = address.find("://");
+    const std::size_t end    = address.find_first_of("/?#", scheme == std::string_view::npos ? 0 : scheme + 3);
+    if (end == std::string_view::npos || address[end] != '/') {
+        return {};
+    }
+    const std::string_view path = address.substr(end);
+    return path.substr(0, path.find_first_of("?#"));
 }
 
 }  // namespace crucible::tools
