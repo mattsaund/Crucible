@@ -843,6 +843,11 @@ void Engine::run() {
     while (cooking_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+    // A benchmark the same way: its model is held by a lease, and its
+    // questions are read on a thread of its own. stop() has told it to stop.
+    while (benching_.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 
     // A load for the box's choice has been told to stop; it is gone before
     // the models are.
@@ -855,6 +860,13 @@ void Engine::run() {
     if (preparing.joinable()) {
         preparing.join();
     }
+
+    // The API server answers on a thread of its own, with a model from the
+    // folder held by a lease rather than by the models' lock. It is stopped,
+    // and that thread joined, before the models go. stop() stops it as well,
+    // but this thread hears it is to stop first, and it freed the model a
+    // request was still reading with: Crucible crashed as it closed.
+    server_->stop();
 
     // Free the models before the backend goes away, and stop MLX's server and
     // the orchestrator, which are processes of their own and would outlive

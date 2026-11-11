@@ -1063,6 +1063,55 @@ TEST(turning_it_off_ends_a_request_in_flight_at_once) {
     CHECK(!server.status().answering);
 }
 
+TEST(an_answer_the_server_stops_under_goes_out_as_a_failure_not_a_whole_answer) {
+    if (!curl_here()) {
+        return;
+    }
+    // A model that says a word and goes on until it is told to stop, then
+    // ends without an error, as the engine's does: it cannot tell the server
+    // stopping from a client that went. Crucible closing mid-answer sent what
+    // had come so far as a whole answer, finished as if the model had chosen
+    // to. It looks every millisecond, as a model does between tokens, and so
+    // ends before the request's thread next looks up from its wait.
+    class Endless final : public serve::Backend {
+    public:
+        std::string model() const override { return "endless.gguf"; }
+        serve::Answer answer(const serve::Ask&, const serve::Sink& sink) override {
+            sink.waiting("");
+            sink.answer("Once");
+            for (int i = 0; i < 30000 && !sink.cancel(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            serve::Answer out;
+            out.completion_tokens = 1;
+            return out;
+        }
+    };
+    Endless         model;
+    serve::Server   server(model);
+    serve::Settings on;
+    on.enabled = true;
+    server.apply(on);
+    const std::string url = "http://127.0.0.1:" + std::to_string(server.status().port) + "/v1/chat/completions";
+
+    json asking = chat("tell me a long story");
+    asking.erase("model");
+    util::http::Response answered;
+    std::thread          client([&] { answered = post(url, asking.dump()); });
+    bool answering = false;
+    for (int i = 0; i < 200 && !answering; ++i) {
+        answering = server.status().answering;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(answering);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));   // the word has come
+
+    server.stop();
+    client.join();
+    CHECK_EQ(answered.status, 503);
+    CHECK(parsed(answered)["error"].value("code", "") == "server_stopped");
+}
+
 TEST(a_client_that_never_finishes_holds_up_nothing) {
     if (!curl_here()) {
         return;
@@ -1637,5 +1686,75 @@ TEST(the_engine_serves_a_real_model) {
     std::printf("      the delegator, %d tokens in: %s\n", kept["usage"].value("prompt_tokens", 0),
                 kept["choices"][0]["message"].value("content", "").c_str());
     engine.stop();
+    CHECK(!engine.server_status().listening);
+}
+
+TEST(crucible_closing_mid_answer_frees_the_model_only_once_the_request_is_done) {
+    // Only where a model is named, as above. A request answered by a model
+    // from the folder holds it with a lease, not the models' lock, and the
+    // engine's own thread freed every model as soon as it was told to stop,
+    // while stop() was still waiting for the server: the request went on
+    // reading from a context that was gone, and Crucible crashed as it
+    // closed. The server's thread is done with the model before it is freed.
+    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
+    if (named == nullptr || *named == '\0' || !curl_here()) {
+        return;
+    }
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    TempDir                     dir;
+    const ScopedDataHome        scoped(dir.path());
+    std::error_code             ec;
+    std::filesystem::create_directories(paths::data_dir(), ec);
+    std::filesystem::create_directory_symlink(runtimes, paths::runtimes_dir(), ec);
+    if (ec) {
+        std::printf("      skipped: the runtimes could not be linked in (%s)\n", ec.message().c_str());
+        return;
+    }
+
+    const std::filesystem::path file(named);
+    Config config;
+    config.models_dir     = file.parent_path().string();
+    config.defaults.n_ctx = 8192;
+    config.server.enabled = true;
+    config.server.port    = 0;
+    config.server.model   = file.string();
+    config.resolve_models();
+    AppState state;
+    Engine   engine(config, state, {});
+    engine.start();
+    const std::string base = "http://127.0.0.1:" + std::to_string(engine.server_status().port);
+
+    // Loaded first, so the request below is answered as soon as it comes.
+    const json hello{{"messages", json::array({json{{"role", "user"}, {"content", "Hello."}}})},
+                     {"max_tokens", 1}};
+    CHECK_EQ(post(base + "/v1/chat/completions", hello.dump()).status, 200);
+
+    // A long prompt and a long answer: still being read or written when
+    // Crucible closes.
+    std::string filler;
+    for (int i = 0; i < 1500; ++i) {
+        filler += "item" + std::to_string(i) + " ";
+    }
+    const json longer{{"messages", json::array({json{{"role", "user"}, {"content", "Count these: " + filler}}})},
+                      {"max_tokens", 2048}};
+    util::http::Response answered;
+    std::thread          asking([&] { answered = post(base + "/v1/chat/completions", longer.dump()); });
+    bool                 answering = false;
+    for (int i = 0; i < 400 && !answering; ++i) {
+        const serve::Status now = engine.server_status();
+        answering = now.answering && now.waiting.empty();
+        if (!answering) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+    CHECK(answering);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const auto began = std::chrono::steady_clock::now();
+    engine.stop();
+    asking.join();
+    const auto took = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - began);
+    CHECK(took.count() < 30);
+    CHECK(answered.status != 200);
     CHECK(!engine.server_status().listening);
 }

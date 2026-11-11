@@ -1045,7 +1045,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             sink.answer    = [&job](std::string_view text) { job->add(false, text); };
             sink.reasoning = [&job](std::string_view text) { job->add(true, text); };
             sink.call      = [&job](const CallPiece& piece) { job->add_call(piece); };
-            sink.cancel    = [this, &job] { return job->dropped.load() || quitting.load(); };
+            // The server stopping under an answer leaves it cut short, which
+            // the backend cannot tell from a client that went or a stop
+            // sequence met. Noted here, so it goes out as the failure it is
+            // rather than as a whole answer. Atomic: a backend may ask from
+            // a thread of its compute's.
+            std::atomic<bool> stopped_under{false};
+            sink.cancel = [this, &job, &stopped_under] {
+                if (quitting.load()) {
+                    stopped_under = true;
+                    return true;
+                }
+                return job->dropped.load();
+            };
             sink.waiting   = [this, &job](const std::string& what) {
                 {
                     const std::lock_guard<std::mutex> lock(job->mutex);
@@ -1067,6 +1079,11 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             } catch (...) {
                 answer.error  = "the model failed";
                 answer.status = 500;
+            }
+            if (stopped_under.load() && answer.error.empty()) {
+                answer.error  = "The server stopped";
+                answer.status = 503;
+                answer.code   = "server_stopped";
             }
             job->finish(std::move(answer));
             {
