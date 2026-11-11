@@ -1759,6 +1759,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         const auto made = [&] {
             auto one = std::make_unique<httplib::Server>();
             routes(*one, gone);
+            one->set_ipv6_v6only(false);   // said, not left to the library's default
             return one;
         };
         // The first address, which decides the port. The listener just let
