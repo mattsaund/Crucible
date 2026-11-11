@@ -33,21 +33,29 @@ jobs:
     timeout-minutes: 60
     env:
       # Read by cmake when it first configures, install.sh's included.
-      CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
-      CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.os != 'windows-latest' && 'ccache' || '' }}
+      CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.os == 'windows-latest' && 'sccache' || 'ccache' }}
+      CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.os == 'windows-latest' && 'sccache' || 'ccache' }}
     steps:
       - uses: actions/checkout@v7
 
       # A compiler cache, kept between runs: llama.cpp's half of the build is
       # the same from one run to the next, and so are most of Crucible's own
-      # files. Not on Windows, where the Visual Studio generator, the one
-      # people build with, takes no compiler launcher.
+      # files. On Windows it is sccache under Ninja, since the Visual Studio
+      # generator takes no compiler launcher. The files that use the
+      # precompiled header are compiled every time all the same, so what it
+      # saves there is llama.cpp's four and a half minutes. The installers
+      # workflow and install.ps1 still build the way people do, under Visual
+      # Studio.
       - name: Compiler cache
-        if: runner.os != 'Windows'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ github.job }}-${{ matrix.os || runner.os }}
-          max-size: 1G
+          variant: ${{ runner.os == 'Windows' && 'sccache' || 'ccache' }}
+          max-size: 2G
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       # WebKitGTK: Crucible draws its window in the platform's own webview,
       # which on Linux is WebKitGTK, on GTK. macOS and Windows already have
@@ -56,9 +64,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
 
-      # No generator named, on purpose: that is Makefiles on Linux and macOS
-      # and Visual Studio on Windows -- the same ones install.sh and the
-      # runtime builder get on those systems.
+      # No generator named on Linux and macOS, on purpose: Makefiles, the same
+      # ones install.sh and the runtime builder get there. Ninja on Windows,
+      # for the compiler cache above.
       # On Windows the debug information goes in each object (/Z7) rather
       # than in one database every compiler writes to (/Zi): with four
       # compilers at once they queued for it. The linker still makes the PDB
@@ -68,7 +76,8 @@ jobs:
         run: |
           extra=()
           if [ "$RUNNER_OS" = Windows ]; then
-            extra=(-DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded)
+            extra=(-G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+                   -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded)
           fi
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRUCIBLE_BACKEND_DL=ON -DCRUCIBLE_BUILD_TESTS=ON "${extra[@]}"
 
