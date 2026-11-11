@@ -183,13 +183,16 @@ double tidy(float value) {
 /// The API server's block, the same in a saved file and a new one.
 json server_json(const ServerConfig& server) {
     return json{
-        {"enabled",    server.enabled},
-        {"model",      server.model},
-        {"provider",   server.provider},
-        {"embeddings", server.embeddings},
-        {"port",       server.port},
-        {"network",    server.network},
-        {"api_key",    server.api_key},
+        {"enabled",         server.enabled},
+        {"model",           server.model},
+        {"provider",        server.provider},
+        {"embeddings",      server.embeddings},
+        {"port",            server.port},
+        {"network",         server.network},
+        {"api_key",         server.api_key},
+        {"https",           server.https},
+        {"certificate",     server.certificate},
+        {"certificate_key", server.certificate_key},
     };
 }
 
@@ -692,6 +695,9 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*server, "port",    config.server.port,    "server", warnings);
         read_field(*server, "network", config.server.network, "server", warnings);
         read_field(*server, "api_key", config.server.api_key, "server", warnings);
+        read_field(*server, "https",   config.server.https,   "server", warnings);
+        read_field(*server, "certificate", config.server.certificate, "server", warnings);
+        read_field(*server, "certificate_key", config.server.certificate_key, "server", warnings);
         if (config.server.port < 1 || config.server.port > 65535) {
             warnings.emplace_back("server.port: " + std::to_string(config.server.port)
                                   + " is outside 1..65535 (keeping the default)");

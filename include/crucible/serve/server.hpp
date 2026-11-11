@@ -5,25 +5,28 @@
 //
 // What LM Studio's server and llama-server do, for a model Crucible holds: an
 // editor's assistant, a script, another machine on the network, each pointed
-// at http://<this machine>:<port>/v1 as if it were OpenAI. Five routes and
-// nothing else -- the models list, a chat completion, a text completion,
-// embeddings and a browser's preflight -- so what reaches it is a
-// conversation or a text and what leaves it is the answer. No request names a
-// file or reaches the window's own API (api/surface.hpp), which stays inside
-// the process. A tool a request offers is one the client runs: the model's
-// call goes back to the client, which sends the result in its next request.
+// at http://<this machine>:<port>/v1 as if it were OpenAI, or at https://
+// when it is asked to speak HTTPS (see tls.hpp). Five routes and nothing
+// else -- the models list, a chat completion, a text completion, embeddings
+// and a browser's preflight -- so what reaches it is a conversation or a text
+// and what leaves it is the answer. No request names a file or reaches the
+// window's own API (api/surface.hpp), which stays inside the process. A tool
+// a request offers is one the client runs: the model's call goes back to the
+// client, which sends the result in its next request.
 //
-// The HTTP is cpp-httplib's, compiled from the copy llama.cpp carries. What
-// answers is a Backend: the engine, which holds the model the way a seat
-// holds one (see engine_serve.cpp), or a stand-in in the tests. Requests are
-// answered one at a time, in the order they came, on a thread of the
-// server's own, so the requests' threads only ever wait on the server and a
-// stop never waits on a model. While one waits -- for the chat to finish with
-// the model, for memory, for a load -- the status says what for.
+// The HTTP is cpp-httplib's, compiled from the copy llama.cpp carries, and
+// its HTTPS is the same on Mbed TLS. What answers is a Backend: the engine,
+// which holds the model the way a seat holds one (see engine_serve.cpp), or
+// a stand-in in the tests. Requests are answered one at a time, in the order
+// they came, on a thread of the server's own, so the requests' threads only
+// ever wait on the server and a stop never waits on a model. While one waits
+// -- for the chat to finish with the model, for memory, for a load -- the
+// status says what for.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -170,6 +173,15 @@ struct Settings {
     int         port    = 0;      ///< 0 takes any free port, which is for the tests
     bool        network = false;  ///< every address of this machine, not the loopback alone
     std::string key;              ///< empty leaves it open
+
+    /// HTTPS rather than HTTP, with the certificate in `certificate` and its
+    /// key in `certificate_key`, which is empty when the key follows the
+    /// certificate in its file. With no certificate named, Crucible's own,
+    /// made the first time and kept in `own_dir` (see tls.hpp).
+    bool                  https = false;
+    std::filesystem::path certificate;
+    std::filesystem::path certificate_key;
+    std::filesystem::path own_dir;
 };
 
 /// One request answered, for the list in Settings.
@@ -204,6 +216,14 @@ struct Status {
     /// its IPv6 address there when it has one other computers can reach.
     std::string lan;
     std::string lan6;
+
+    /// Listening over HTTPS, with a certificate whose SHA-256 is this, as a
+    /// client shows one: the file to give a client to trust it by, and
+    /// whether it is Crucible's own.
+    bool        https = false;
+    std::string fingerprint;
+    std::string certificate;
+    bool        own_certificate = false;
 
     bool        answering = false;  ///< a request has the model
     std::string waiting;            ///< what the request being answered waits for

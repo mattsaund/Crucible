@@ -22,6 +22,7 @@ ask.
 | [miniz](https://github.com/richgel999/miniz) | `3.1.2` | MIT | opens the zip inside a `.docx`, `.xlsx`, `.pptx` or OpenDocument file attached to a prompt, and inflates a PDF's streams, and unpacks that converter |
 | [KaTeX](https://github.com/KaTeX/KaTeX) | `0.19.0` | MIT | draws math in replies; its script, stylesheet and fonts are compiled in |
 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | `0.62.0` | MIT | the local API server's HTTP, from the copy llama.cpp carries |
+| [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | `3.6.7` | Apache-2.0 | the local API server's HTTPS, and the certificate it makes for this machine when you name none |
 
 The interface has no typeface of its own: it is drawn in the system's font,
 or in whichever installed one is named in **Settings → General**.
@@ -60,7 +61,9 @@ on the machine can see it.
 Crucible accepts connections in one place: the local API server in
 **Settings → Server**, and only while it is on. It listens on this machine
 alone (127.0.0.1) unless **Serve on the local network** is on, and it answers
-the OpenAI API for the one model chosen there, and nothing else.
+the OpenAI API for the one model chosen there, and nothing else. With
+**HTTPS** on it speaks TLS through Mbed TLS, compiled in, with a certificate
+you choose or one it makes for this machine and keeps in its data folder.
 
 ## What an attachment is read with
 

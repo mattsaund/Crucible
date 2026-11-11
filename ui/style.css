@@ -314,6 +314,7 @@ button.action:disabled { color: var(--faint); cursor: default; }
 }
 .order-n { color: var(--faint); flex: 0 0 1.2rem; }
 .order-name { flex: 1; min-width: 0; }
+.order-name code.wrap { overflow-wrap: anywhere; }
 .order-row .action { padding: .2rem .6rem; }
 
 .slider-row { display: flex; gap: .8rem; align-items: center; }
