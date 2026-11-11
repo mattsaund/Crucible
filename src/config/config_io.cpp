@@ -183,11 +183,13 @@ double tidy(float value) {
 /// The API server's block, the same in a saved file and a new one.
 json server_json(const ServerConfig& server) {
     return json{
-        {"enabled", server.enabled},
-        {"model",   server.model},
-        {"port",    server.port},
-        {"network", server.network},
-        {"api_key", server.api_key},
+        {"enabled",    server.enabled},
+        {"model",      server.model},
+        {"provider",   server.provider},
+        {"embeddings", server.embeddings},
+        {"port",       server.port},
+        {"network",    server.network},
+        {"api_key",    server.api_key},
     };
 }
 
@@ -685,6 +687,8 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
     if (const auto server = doc.find("server"); server != doc.end() && server->is_object()) {
         read_field(*server, "enabled", config.server.enabled, "server", warnings);
         read_field(*server, "model",   config.server.model,   "server", warnings);
+        read_field(*server, "provider", config.server.provider, "server", warnings);
+        read_field(*server, "embeddings", config.server.embeddings, "server", warnings);
         read_field(*server, "port",    config.server.port,    "server", warnings);
         read_field(*server, "network", config.server.network, "server", warnings);
         read_field(*server, "api_key", config.server.api_key, "server", warnings);

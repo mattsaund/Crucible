@@ -514,6 +514,17 @@ struct ServerConfig {
     /// folder or a path, or empty for the delegator.
     std::string model;
 
+    /// The provider `model` is asked through, by Provider::id, or empty for
+    /// a model on this machine. Every request to one is spent from the
+    /// person's credit, so it is served to other computers only with a key
+    /// set: without one the server listens on this machine alone.
+    std::string provider;
+
+    /// What /v1/embeddings answers with when a request names no model: a
+    /// model as a seat names one -- an embedding model, as a rule -- or empty
+    /// for the model served.
+    std::string embeddings;
+
     int port = kDefaultPort;
 
     /// Every address this machine has rather than 127.0.0.1 alone: LM

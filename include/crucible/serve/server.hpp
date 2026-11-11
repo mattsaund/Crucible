@@ -5,11 +5,13 @@
 //
 // What LM Studio's server and llama-server do, for a model Crucible holds: an
 // editor's assistant, a script, another machine on the network, each pointed
-// at http://<this machine>:<port>/v1 as if it were OpenAI. Four routes and
-// nothing else -- the models list, a chat completion, a text completion and a
-// browser's preflight -- so what reaches it is a conversation and what leaves
-// it is the answer. No request names a file, runs a tool or reaches the
-// window's own API (api/surface.hpp), which stays inside the process.
+// at http://<this machine>:<port>/v1 as if it were OpenAI. Five routes and
+// nothing else -- the models list, a chat completion, a text completion,
+// embeddings and a browser's preflight -- so what reaches it is a
+// conversation or a text and what leaves it is the answer. No request names a
+// file or reaches the window's own API (api/surface.hpp), which stays inside
+// the process. A tool a request offers is one the client runs: the model's
+// call goes back to the client, which sends the result in its next request.
 //
 // The HTTP is cpp-httplib's, compiled from the copy llama.cpp carries. What
 // answers is a Backend: the engine, which holds the model the way a seat
@@ -42,13 +44,37 @@ struct Ask {
     /// between the asking and the answering can make so.
     std::string model;
 
-    /// A chat completion's conversation.
+    /// A chat completion's conversation: each message's text, and the
+    /// pictures that came with it, for a model asked the way the chat asks
+    /// one.
     std::vector<ChatMessage> messages;
+
+    /// The same conversation in OpenAI's shape, for a model on this machine
+    /// (see LoadedModel::open_chat): the calls an assistant made and the
+    /// results sent back, and each picture a {"type": "media_marker"} part
+    /// where it was, its bytes in `messages`' pictures in the same order.
+    nlohmann::json chat;
+
+    /// The tools offered, OpenAI's list, or null; how the model may use them
+    /// ("auto", "none", "required"); whether it may call more than one at a
+    /// time, unset to leave it to the model.
+    nlohmann::json      tools;
+    std::string         tool_choice = "auto";
+    std::optional<bool> parallel_tool_calls;
+
+    /// What the answer must be, as JSON Schema text: {"type": "object"} for
+    /// OpenAI's JSON mode, the schema itself for a structured output. Empty
+    /// for anything.
+    std::string schema;
 
     /// A text completion's prompt, read as it is, with no chat template
     /// around it. `raw` says which of the two this is.
     std::string prompt;
     bool        raw = false;
+
+    /// For /v1/embeddings: the texts to embed. `embed` says this is one.
+    std::vector<std::string> texts;
+    bool                     embed = false;
 
     // What the request set of the sampling. What it left out is the model's
     // own: Settings, Generation.
@@ -60,15 +86,26 @@ struct Ask {
     std::optional<int>           max_tokens;
     std::optional<std::uint32_t> seed;
 
-    /// How hard a reasoning model should think: low, medium or high. Empty
-    /// leaves it to the model.
+    /// How hard a reasoning model should think: low, medium or high, or none
+    /// for not at all where the model can be told so. Empty leaves it to the
+    /// model.
     std::string effort;
+};
+
+/// A tool call as it streams: which call of the answer it is, its id and
+/// name with its first piece, and more of its arguments after.
+struct CallPiece {
+    int         index = 0;
+    std::string id;
+    std::string name;
+    std::string arguments;
 };
 
 /// Where an answer goes as it comes.
 struct Sink {
     std::function<void(std::string_view)> answer;      ///< the content
     std::function<void(std::string_view)> reasoning;   ///< a thinking model's working
+    std::function<void(const CallPiece&)> call;        ///< a tool call begun or grown
 
     /// True once the answer is not wanted: the client went, the server is
     /// stopping, or a stop sequence was met.
@@ -98,6 +135,9 @@ struct Answer {
 
     /// OpenAI's code for it, when it has one: "context_length_exceeded".
     std::string code;
+
+    /// An embeddings request's vectors, one for each text, in order.
+    std::vector<std::vector<float>> vectors;
 };
 
 /// What answers.
@@ -109,6 +149,11 @@ public:
     /// there is none to serve.
     virtual std::string model() const = 0;
 
+    /// The id /v1/embeddings answers with when a request names no model: a
+    /// model chosen for embeddings, or the one served. A request may name
+    /// either.
+    virtual std::string embedder() const { return model(); }
+
     /// Answer `ask`, telling `sink` as it goes. Blocks until it is done or
     /// `sink.cancel` says to stop. Called on the server's own thread, one
     /// request at a time.
@@ -116,10 +161,14 @@ public:
 };
 
 /// Where it listens: ServerConfig, less the model, which is the backend's.
+///
+/// This machine is 127.0.0.1 and ::1; the network is every address of this
+/// machine, IPv4 and IPv6 on one socket where the system has IPv6, and IPv4
+/// alone where it does not.
 struct Settings {
     bool        enabled = false;
     int         port    = 0;      ///< 0 takes any free port, which is for the tests
-    bool        network = false;  ///< every address of this machine, not 127.0.0.1 alone
+    bool        network = false;  ///< every address of this machine, not the loopback alone
     std::string key;              ///< empty leaves it open
 };
 
@@ -145,9 +194,16 @@ struct Status {
     bool        key       = false;  ///< a key is asked for
     std::string error;              ///< why it is not listening, when it was asked to
     std::string model;              ///< the id served, empty when there is none
+    std::string embedder;           ///< the id embeddings come from, when it is another
 
-    /// This machine's address on its network, while it listens there.
+    /// Listening on IPv6 as well as IPv4: ::1 beside 127.0.0.1, or both on
+    /// the network.
+    bool        ipv6 = false;
+
+    /// This machine's address on its network, while it listens there, and
+    /// its IPv6 address there when it has one other computers can reach.
     std::string lan;
+    std::string lan6;
 
     bool        answering = false;  ///< a request has the model
     std::string waiting;            ///< what the request being answered waits for
@@ -163,9 +219,10 @@ nlohmann::json status_json(const Status& status);
 class Server {
 public:
     /// The largest request body taken. A long conversation is well under a
-    /// megabyte of text; anything near this is not one, and is refused before
-    /// it is read.
-    static constexpr std::size_t kLargestBody = std::size_t{4} << 20;
+    /// megabyte of text, and a photograph sent with one a few megabytes of
+    /// base64, as OpenAI takes pictures of up to twenty; anything past this
+    /// is not a conversation, and is refused before it is read.
+    static constexpr std::size_t kLargestBody = std::size_t{20} << 20;
 
     /// `changed` is called, from any thread, whenever what status() says has
     /// moved: so the window can draw it.

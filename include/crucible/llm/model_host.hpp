@@ -166,6 +166,20 @@ public:
     /// Engine::release_router.
     void release_router();
 
+    /// The delegator with a context fit for a conversation, for the API
+    /// server: one of its own on the same weights, of up to `n_ctx` tokens
+    /// -- routing's is a few thousand, and keeps the prompts routing has
+    /// read, which a client's conversations would push out. Made the first
+    /// time it is asked and freed with the delegator; as large as the cards
+    /// hold beside what is on them now, never past what the model was
+    /// trained to read. The delegator itself when no larger context fits or
+    /// none is asked for, and null when it is not loaded.
+    LoadedModel* router_for_serving(int n_ctx);
+
+    /// Let go of that context, when the server no longer serves the
+    /// delegator.
+    void release_router_serving();
+
     /// The machine-wide GPU settings, used to re-plan every model's split
     /// against live video memory as it is loaded. See refresh_gpu_split.
     void set_gpu_config(const GpuConfig& gpu) { gpu_ = gpu; }
@@ -283,6 +297,10 @@ private:
     /// The delegator as it was last asked for, loaded or not: what an
     /// expert's grown context leaves room for. See with_room.
     ModelParams                  router_asked_;
+
+    /// How the loaded delegator was loaded, placed on the cards: what its
+    /// serving context is made like. See router_for_serving.
+    ModelParams                  router_loaded_;
     /// Least recently used first: the one at the back was asked for last.
     std::vector<Resident>        experts_;
 

@@ -8,6 +8,24 @@
 
 namespace crucible::llm {
 
+llama_sampler* build_grammar_sampler(const llama_vocab* vocab, const std::string& grammar, bool lazy,
+                                     const std::vector<std::string>& patterns,
+                                     const std::vector<std::int32_t>& tokens) {
+    if (grammar.empty()) {
+        return nullptr;
+    }
+    if (!lazy) {
+        return llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+    }
+    std::vector<const char*> said;
+    said.reserve(patterns.size());
+    for (const std::string& pattern : patterns) {
+        said.push_back(pattern.c_str());
+    }
+    return llama_sampler_init_grammar_lazy_patterns(vocab, grammar.c_str(), "root", said.data(), said.size(),
+                                                    tokens.data(), tokens.size());
+}
+
 llama_sampler* build_sampler_chain(const llama_vocab* vocab,
                                    const ModelParams& params,
                                    const std::string& grammar) {
