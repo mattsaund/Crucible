@@ -23,6 +23,7 @@ struct ComputeDevice {
     std::string name;         ///< ggml's short name, e.g. "CUDA0"
     std::string description;  ///< the human one, e.g. "NVIDIA GeForce RTX 4070"
     std::string backend;      ///< the registry that owns it, e.g. "CUDA"
+    std::string device_id;    ///< the driver's id for the card, its PCI address where it has one
 
     std::uint64_t memory_total = 0;
     std::uint64_t memory_free  = 0;
@@ -60,6 +61,11 @@ std::vector<ComputeDevice> compute_devices();
 /// by position in that list: disagree by one entry and every card gets the
 /// share meant for its neighbor.
 std::vector<ComputeDevice> gpu_devices();
+
+/// The GPUs of `devices` as llama.cpp keeps them: a card is the same card
+/// only when both report a device id and the ids match. Two cards of one
+/// model share a name, never an id.
+std::vector<ComputeDevice> distinct_gpus(std::vector<ComputeDevice> devices);
 
 /// The `tensor_split` array llama.cpp reads, from a plan indexed by ggml device
 /// index.

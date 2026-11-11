@@ -10,9 +10,11 @@
 //
 // It drives the curl binary rather than linking a library. curl ships with
 // Windows, with macOS and with every Linux anybody installs this on, so it
-// costs no build dependency and no TLS stack of our own to keep patched; and a
-// child process is a thing that can be killed, which is what makes a request
-// cancelable at any moment rather than at the next timeout.
+// costs no build dependency and no TLS client of our own, with root
+// certificates to keep current. The API server's HTTPS is the one TLS
+// compiled in (see serve/tls.hpp). And a child process is a thing that can
+// be killed, which is what makes a request cancelable at any moment rather
+// than at the next timeout.
 //
 // Nothing secret is ever on a command line. The URL, the headers and the body
 // are written to a private file and curl is told to read it -- argv is visible

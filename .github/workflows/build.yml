@@ -59,10 +59,11 @@ jobs:
 
       # WebKitGTK: Crucible draws its window in the platform's own webview,
       # which on Linux is WebKitGTK, on GTK. macOS and Windows already have
-      # what it needs; Linux packages it.
+      # what it needs; Linux packages it. And a display to open a window on,
+      # which the Linux runner has none of: see the made app's step below.
       - name: Window headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev xvfb
 
       # No generator named on Linux and macOS, on purpose: Makefiles, the same
       # ones install.sh and the runtime builder get there. Ninja on Windows,
@@ -117,6 +118,76 @@ jobs:
         run: |
           /bin/bash tests/test_install.sh
           /bin/bash tests/test_uninstall.sh
+
+      # The two steps after this one run what the unit tests cannot: a model
+      # loaded, and a window opened. Each runner is a real machine of its
+      # system, and for Windows nothing else ever runs these paths before a
+      # person does. They keep Crucible's files in a folder of their own.
+      #
+      # Two tiny models for them, pinned by address and digest and kept
+      # between runs: llama.cpp's own test models, a 260K one in f32 and a
+      # 15M one in q4_0, about 20 MB together.
+      - name: Two tiny models
+        uses: actions/cache@v6
+        with:
+          path: tiny-models
+          key: tiny-models-${{ runner.os }}-270cba1b-6151b192
+
+      - name: Two tiny models, fetched and checked
+        shell: bash
+        run: |
+          digest() { if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+          model() {
+            if [ ! -f "tiny-models/$1" ]; then
+              mkdir -p tiny-models
+              curl --location --fail --silent --show-error --retry 3 --output "tiny-models/$1" "$2"
+            fi
+            test "$(digest "tiny-models/$1")" = "$3" || { echo "tiny-models/$1 is not the file pinned" >&2; exit 1; }
+          }
+          model stories260K-f32.gguf \
+            https://huggingface.co/ggml-org/test-model-stories260K/resolve/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf \
+            270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+          model stories15M-q4_0.gguf \
+            https://huggingface.co/ggml-org/tiny-llamas/resolve/99dd1a73db5a37100bd4ae633f4cfce6560e1567/stories15M-q4_0.gguf \
+            6151b1929d7f5aa3385d9ddef3393e55587c0a55de661562322bc51dfda93a04
+          ls -l tiny-models
+
+      # A model on this system the way the app runs one. The processor's
+      # runtime is put in place by the installer's own code, which downloads
+      # the module published for this llama.cpp and this system, so it is the
+      # module an installed Crucible runs and not one built beside the tests.
+      # Then the model host loads the two models on it, asks each for a few
+      # words, swaps them, lets them go and loads one again, which has to say
+      # the same words, and scores labels with the other as the delegator.
+      # See tools/smoke.cpp.
+      - name: A model loads, answers and swaps
+        shell: bash
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/crucible-data
+          XDG_CONFIG_HOME: ${{ runner.temp }}/crucible-config
+        run: |
+          build/bin/crucible-smoke --runtime cpu
+          build/bin/crucible-smoke --host tiny-models/stories260K-f32.gguf tiny-models/stories15M-q4_0.gguf
+
+      # A made app's reload, in the system's own webview: WebKitGTK's scheme
+      # on Linux, WKURLSchemeHandler on macOS and WebView2's
+      # WebResourceRequested on Windows. A page is made into a program where
+      # Make app puts one, and the program is opened with --self-test, which
+      # has its page keep something and reload, and exits 0 only when the page
+      # came back from the program's own address with what it kept. See
+      # tools/app_runner.cpp. The Mac and Windows runners have a desktop
+      # signed in; Linux's is a virtual display.
+      - name: A made app reloads in its own window
+        shell: bash
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/crucible-data
+          XDG_CONFIG_HOME: ${{ runner.temp }}/crucible-config
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run --auto-servernum build/bin/crucible-smoke --app 60
+          else
+            build/bin/crucible-smoke --app 60
+          fi
 
   install:
     name: install (${{ matrix.os }})
@@ -208,11 +279,24 @@ jobs:
               # that says 0 is a plist built from an unset variable.
               /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
                                       "$app/Contents/Info.plist"
+              # And what is clicked starts the program installed: the bundle
+              # is a launcher for it, and a launcher pointing at nothing is
+              # an icon that does nothing.
+              "$app/Contents/MacOS/Crucible" --version
               exit 0
             fi
           done
           echo "no Crucible.app in /Applications or ~/Applications" >&2
           exit 1
+
+      # The window a made app runs in, as installed beside crucible, opened on
+      # this desktop with --self-test: its page keeps something and reloads,
+      # and has to come back from the program's own address with what it
+      # kept. See tools/app_runner.cpp.
+      - name: And a made app's window opens and reloads
+        if: runner.os == 'macOS'
+        run: |
+          "$HOME/.local/bin/crucible-app" --self-test "$RUNNER_TEMP/self-test.txt" 60
 
       # As people run it: from a string, with no script file behind it. That is
       # the case where a bare `exit` used to close the window, so it is the one
@@ -265,13 +349,224 @@ jobs:
           exit 0
 
       # Same again: the shortcuts are what somebody pins to a taskbar, and a
-      # shortcut that was never made is not an error anywhere else.
+      # shortcut that was never made is not an error anywhere else. Nor is one
+      # that points at a program that is not there, so each one's target is
+      # looked for too.
       - name: And there are shortcuts to click
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          $shell = New-Object -ComObject WScript.Shell
           foreach ($where in @([Environment]::GetFolderPath('Programs'),
                                [Environment]::GetFolderPath('Desktop'))) {
             $link = Join-Path $where 'Crucible.lnk'
             if (-not (Test-Path $link)) { throw "no shortcut at $link" }
+            $target = $shell.CreateShortcut($link).TargetPath
+            Write-Output "$link -> $target"
+            if (-not (Test-Path -LiteralPath $target)) { throw "$link points at $target, which is not there" }
           }
+
+      # The window a made app runs in, as installed beside crucible.exe,
+      # opened on this desktop with --self-test, as on the Mac above. A
+      # program with no console is not waited for by PowerShell unless asked,
+      # so it is started and waited for here, and only for itself: -Wait
+      # waits for WebView2's own processes too, which may outlive it. Its
+      # handle is read at once, without which its exit code is gone by the
+      # time it has exited.
+      - name: And a made app's window opens and reloads
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'self-test.txt'
+          $run = Start-Process -FilePath "$env:LOCALAPPDATA\Programs\Crucible\bin\crucible-app.exe" `
+                               -ArgumentList @('--self-test', "`"$report`"", '60') -PassThru
+          $null = $run.Handle
+          if (-not $run.WaitForExit(120000)) { $run.Kill(); throw 'crucible-app --self-test did not end' }
+          if (Test-Path $report) { Get-Content $report }
+          if ($run.ExitCode -ne 0) { throw "crucible-app --self-test exited with $($run.ExitCode)" }
+          exit 0
+
+  # The double-click installers, built on every push and opened or run the
+  # way the platform would: a disk image to drag into Applications, a setup
+  # .exe, and an AppImage that runs where it lands. A release (release.yml)
+  # publishes the ones built here for its commit, rather than building them
+  # for the first time as it goes out, which is when a broken one used to be
+  # found.
+  dmg:
+    name: macOS disk image
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Kept by every branch's runs and main's, so a release's, on a
+      # tag, starts from main's.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          max-size: 1G
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      # The staged prefix is an ordinary install; the packaging scripts turn
+      # that layout into a bundle without moving anything inside it.
+      - name: Stage
+        run: cmake --install build --config Release --component crucible --prefix "$PWD/stage"
+
+      - name: Disk image
+        run: |
+          version="$(./stage/bin/crucible --version | awk 'NR==1 {print $NF}')"
+          bash packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
+
+      # Mount it and look: a .dmg that builds is not the same as one that opens,
+      # and the failure mode is a download nobody can use.
+      - name: The image opens and holds an application
+        run: |
+          hdiutil attach dist/Crucible-macOS.dmg -mountpoint /tmp/crucible-dmg -nobrowse
+          test -x /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible
+          test -f /tmp/crucible-dmg/Crucible.app/Contents/Info.plist
+          ls /tmp/crucible-dmg/Crucible.app/Contents/lib/crucible/
+          # Sealed, every library in it signed: what a bundle has to be for
+          # Gatekeeper to call it unidentified rather than damaged.
+          codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app
+          # And it starts, which a binary with a broken signature does not:
+          # Apple Silicon kills it before main.
+          /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible --version
+          hdiutil detach /tmp/crucible-dmg
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-macOS
+          path: dist/Crucible-macOS.dmg
+
+  setup:
+    name: Windows setup
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+    steps:
+      - uses: actions/checkout@v7
+
+      # As the Windows build and test job builds: sccache under Ninja, in
+      # Visual Studio's own environment, with the same compiler and the same
+      # Release flags the Visual Studio generator gives. Without the
+      # precompiled header, which no cache can keep a file built on, and
+      # which the tests are built without too, so what ships is built the way
+      # what was tested is.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          variant: sccache
+          max-size: 1G
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+          -DCRUCIBLE_PRECOMPILE_HEADERS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Stage
+        run: cmake --install build --component crucible --prefix "$PWD\stage"
+
+      # Inno Setup is on the Windows runner image already; installing it is the
+      # fallback rather than the plan, so a change in the image is a slower run
+      # and not a failed one.
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "no ISCC.exe at $iscc" }
+          $version = ((& .\stage\bin\crucible.exe --version) | Select-Object -First 1).Split(' ')[-1]
+          $numeric = $version.Split('-')[0]
+          & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" "/DNumericVersion=$numeric" `
+                  "/O$PWD\dist" packaging\windows\crucible.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-Windows
+          path: dist/Crucible-Setup.exe
+
+  appimage:
+    name: Linux AppImage
+    # An AppImage is only as portable as the glibc it was linked against, so it
+    # is built on the oldest runner still supported rather than the newest.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Kept by every branch's runs and main's, so a release's, on a
+      # tag, starts from main's.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          max-size: 1G
+
+      # WebKitGTK is what the interface is drawn in; the rest is what the
+      # AppImage needs to carry.
+      - name: Window headers
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev libgtk-3-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Stage
+        run: cmake --install build --component crucible --prefix "$PWD/stage"
+
+      - name: AppImage
+        run: bash packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"
+
+      # The runner has no display, so this is as far as the check goes: the file
+      # runs, finds its libraries, and prints its version.
+      - name: The AppImage runs
+        run: ./dist/Crucible-x86_64.AppImage --appimage-extract-and-run --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-Linux
+          path: dist/Crucible-x86_64.AppImage

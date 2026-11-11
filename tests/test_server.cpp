@@ -10,7 +10,8 @@
 // and streamed, a tool call whole and in deltas, the calls and results of a
 // conversation, a JSON response_format, pictures, embeddings, a key wrong and
 // right, an open server, a body too large or too deep, a model that is not
-// the one served, stop sequences, a port already taken, IPv4 and IPv6. Where
+// the one served, stop sequences, a port already taken, IPv4 and IPv6, and
+// HTTPS with a certificate made here or brought, kept and checked. Where
 // CRUCIBLE_TEST_MODEL names a small GGUF, requests go through the engine to
 // that model as well, tools and JSON and embeddings with them.
 #include "test_helpers.hpp"
@@ -20,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -27,7 +29,9 @@
 #include <thread>
 
 #include "crucible/engine/engine.hpp"
+#include "crucible/llm/open_chat.hpp"
 #include "crucible/serve/server.hpp"
+#include "crucible/serve/tls.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/http.hpp"
 
@@ -268,6 +272,11 @@ public:
         }
         const std::string name = ask.tools[0]["function"]["name"].get<std::string>();
         sink.answer("Checking.");
+        if (ask.chat.is_array() && !ask.chat.empty() && ask.chat.back().value("content", "") == "Cut short") {
+            out.completion_tokens = 2;   // the limit came before the call
+            out.hit_limit         = true;
+            return out;
+        }
         sink.call(serve::CallPiece{0, "call_abc", name, ""});
         for (const char* piece : {"{\"city\":", " \"Pa", "ris\"}"}) {
             sink.call(serve::CallPiece{0, "", "", piece});
@@ -386,6 +395,75 @@ TEST(a_tool_call_streams_as_deltas_a_client_puts_back_together) {
     const Told told = told_by(events);
     CHECK_EQ(told.content, "Checking.");
     CHECK_EQ(told.finish, "tool_calls");
+}
+
+TEST(a_chat_template_that_will_not_write_a_conversation_says_why_in_its_own_words) {
+    // As llama.cpp's Jinja reports a template that refuses: the template
+    // quoted around the place it stopped, then the reason, which is all a
+    // client can use.
+    bool raised = false;
+    const std::string refusal =
+        "\n------------\nWhile executing CallExpression at line 1, column 191 in source:\n"
+        "...'system' else 0)) -%}{{- raise_exception('Conversation roles must alternate user...\n"
+        "                                           ^\n"
+        "Error: Jinja Exception: Conversation roles must alternate user/assistant/user/assistant/...";
+    CHECK_EQ(detail::template_said(refusal, &raised),
+             "Conversation roles must alternate user/assistant/user/assistant/...");
+    CHECK(raised);
+
+    // One that fails rather than refuses, and errors that are not a template's.
+    const std::string failure = "\n------------\nWhile executing FilterExpression at line 2, column 5 in source:\n"
+                                "{{ x | nope }}\n    ^\nError: Unknown filter 'nope'";
+    CHECK_EQ(detail::template_said(failure, &raised), "Unknown filter 'nope'");
+    CHECK(!raised);
+    CHECK(detail::template_said("JSON schema conversion failed").empty());
+    CHECK(detail::template_said("std::exception").empty());
+
+    // One that cannot be read says why, from llama.cpp's own reader: loading
+    // a model passes the reason on as only "std::exception".
+    const std::string unreadable = detail::why_unreadable("{% if %}<|im_start|>{{ messages }}<|im_end|>");
+    CHECK(!unreadable.empty());
+    CHECK(unreadable.find("std::exception") == std::string::npos);
+    CHECK(unreadable.find('\n') == std::string::npos);
+    CHECK(detail::why_unreadable("{% for message in messages %}{{ message['content'] }}{% endfor %}").empty());
+}
+
+TEST(a_required_call_comes_back_alone_without_the_words_said_before_it) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    json body = chat("Weather?", {{"tools", json::array({weather_tool()})}, {"tool_choice", "required"}});
+    body.erase("model");
+
+    // Whole: the call, and content null, as OpenAI sends a required call.
+    const json reply   = parsed(post(running.url("/v1/chat/completions"), body.dump()));
+    const json message = reply["choices"][0]["message"];
+    CHECK(message.contains("content") && message["content"].is_null());
+    CHECK(message["tool_calls"].size() == 1);
+    CHECK(reply["choices"][0].value("finish_reason", "") == "tool_calls");
+
+    // Streamed: the call's deltas, and no words.
+    body["stream"] = true;
+    const Events events = stream(running.url("/v1/chat/completions"), body);
+    CHECK(events.done);
+    CHECK(calls_of(events).size() == 1);
+    const Told told = told_by(events);
+    CHECK_EQ(told.content, "");
+    CHECK_EQ(told.finish, "tool_calls");
+
+    // A call that never came (the limit met first): the words are all there
+    // is, so they come back, whole and streamed.
+    body = chat("Cut short", {{"tools", json::array({weather_tool()})}, {"tool_choice", "required"}});
+    body.erase("model");
+    const json cut = parsed(post(running.url("/v1/chat/completions"), body.dump()));
+    CHECK(cut["choices"][0]["message"].value("content", "") == "Checking.");
+    CHECK(!cut["choices"][0]["message"].contains("tool_calls"));
+    CHECK(cut["choices"][0].value("finish_reason", "") == "length");
+    body["stream"] = true;
+    const Told cut_told = told_by(stream(running.url("/v1/chat/completions"), body));
+    CHECK_EQ(cut_told.content, "Checking.");
+    CHECK_EQ(cut_told.finish, "length");
 }
 
 TEST(a_named_tool_choice_offers_that_tool_alone_and_requires_it) {
@@ -985,6 +1063,55 @@ TEST(turning_it_off_ends_a_request_in_flight_at_once) {
     CHECK(!server.status().answering);
 }
 
+TEST(an_answer_the_server_stops_under_goes_out_as_a_failure_not_a_whole_answer) {
+    if (!curl_here()) {
+        return;
+    }
+    // A model that says a word and goes on until it is told to stop, then
+    // ends without an error, as the engine's does: it cannot tell the server
+    // stopping from a client that went. Crucible closing mid-answer sent what
+    // had come so far as a whole answer, finished as if the model had chosen
+    // to. It looks every millisecond, as a model does between tokens, and so
+    // ends before the request's thread next looks up from its wait.
+    class Endless final : public serve::Backend {
+    public:
+        std::string model() const override { return "endless.gguf"; }
+        serve::Answer answer(const serve::Ask&, const serve::Sink& sink) override {
+            sink.waiting("");
+            sink.answer("Once");
+            for (int i = 0; i < 30000 && !sink.cancel(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            serve::Answer out;
+            out.completion_tokens = 1;
+            return out;
+        }
+    };
+    Endless         model;
+    serve::Server   server(model);
+    serve::Settings on;
+    on.enabled = true;
+    server.apply(on);
+    const std::string url = "http://127.0.0.1:" + std::to_string(server.status().port) + "/v1/chat/completions";
+
+    json asking = chat("tell me a long story");
+    asking.erase("model");
+    util::http::Response answered;
+    std::thread          client([&] { answered = post(url, asking.dump()); });
+    bool answering = false;
+    for (int i = 0; i < 200 && !answering; ++i) {
+        answering = server.status().answering;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(answering);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));   // the word has come
+
+    server.stop();
+    client.join();
+    CHECK_EQ(answered.status, 503);
+    CHECK(parsed(answered)["error"].value("code", "") == "server_stopped");
+}
+
 TEST(a_client_that_never_finishes_holds_up_nothing) {
     if (!curl_here()) {
         return;
@@ -1059,8 +1186,19 @@ TEST(the_status_is_written_for_the_page_with_its_addresses) {
     status.network = false;
     CHECK(!serve::status_json(status)["addresses"].contains("network"));
     CHECK(!serve::status_json(status)["addresses"].contains("network6"));
+    // Over HTTPS, every address says so.
+    status.https       = true;
+    status.network     = true;
+    status.fingerprint = "AB:CD";
+    const json secure = serve::status_json(status);
+    CHECK(secure["addresses"].value("local", "") == "https://localhost:8338/v1");
+    CHECK(secure["addresses"].value("network6", "") == "https://[fd00::20]:8338/v1");
+    CHECK(secure.value("https", false));
+    CHECK(secure.value("fingerprint", "") == "AB:CD");
+
     status.listening = false;
     CHECK(serve::status_json(status)["addresses"].empty());
+    CHECK(!serve::status_json(status).value("https", true));
 }
 
 TEST(the_server_settings_survive_the_config_file) {
@@ -1074,6 +1212,9 @@ TEST(the_server_settings_survive_the_config_file) {
     config.server.port       = 9001;
     config.server.network    = true;
     config.server.api_key    = "sk-local";
+    config.server.https      = true;
+    config.server.certificate     = "~/certs/server.crt";
+    config.server.certificate_key = "~/certs/server.key";
     std::vector<std::string> warnings;
     const Config back = config_from_json_text(config_to_json_text(config), warnings);
     CHECK(back.server.enabled);
@@ -1083,6 +1224,10 @@ TEST(the_server_settings_survive_the_config_file) {
     CHECK_EQ(back.server.port, 9001);
     CHECK(back.server.network);
     CHECK_EQ(back.server.api_key, "sk-local");
+    CHECK(back.server.https);
+    CHECK_EQ(back.server.certificate, "~/certs/server.crt");
+    CHECK_EQ(back.server.certificate_key, "~/certs/server.key");
+    CHECK(!Config{}.server.https);   // off until somebody turns it on
 
     config.server.provider = "anthropic";
     config.server.model    = "claude-opus-5-5";
@@ -1126,6 +1271,292 @@ TEST(a_providers_model_reaches_other_computers_only_with_a_key) {
     engine.apply_config(config);
     CHECK(engine.server_status().listening);
     CHECK(engine.server_status().network);
+    engine.stop();
+}
+
+// --- HTTPS -----------------------------------------------------------------------
+
+namespace {
+
+/// curl, told to trust `certificate` and nothing else, asking for `url`:
+/// what it printed and how it ended. The curl on the machine, as another
+/// program calling the server would use it.
+util::Ran curl_trusting(const std::string& certificate, const std::string& url) {
+    std::vector<std::string> argv{"curl", "--silent", "--show-error", "--max-time", "20", "--cacert", certificate};
+#if defined(_WIN32)
+    // Schannel, under the curl Windows ships, asks whoever signed a
+    // certificate whether it was revoked, and one that signed itself has
+    // nobody to ask.
+    argv.emplace_back("--ssl-no-revoke");
+#endif
+    argv.push_back(url);
+    return util::run(argv, {}, {}, 30);
+}
+
+/// A server over HTTPS on a free port, answered by the stand-in: with the
+/// certificate and key named, or Crucible's own kept in `own_dir`.
+struct Secure {
+    StandIn       model;
+    serve::Server server{model};
+    int           port = 0;
+    std::string   error;
+
+    explicit Secure(const std::filesystem::path& own_dir, const std::filesystem::path& certificate = {},
+                    const std::filesystem::path& key = {}) {
+        serve::Settings settings;
+        settings.enabled         = true;
+        settings.port            = 0;
+        settings.https           = true;
+        settings.certificate     = certificate;
+        settings.certificate_key = key;
+        settings.own_dir         = own_dir;
+        error = server.apply(settings);
+        port  = server.status().port;
+    }
+
+    std::string url(const std::string& path, const std::string& host = "localhost") const {
+        return "https://" + host + ":" + std::to_string(port) + path;
+    }
+};
+
+void write_text(const std::filesystem::path& file, const std::string& text) {
+    std::ofstream out(file, std::ios::binary);
+    out << text;
+}
+
+/// The certificate in `pem` as DER: the base64 between its lines, decoded.
+std::string der_of(const std::string& pem) {
+    std::string base64;
+    std::istringstream lines(pem);
+    for (std::string line; std::getline(lines, line);) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.rfind("-----", 0) != 0) {
+            base64 += line;
+        }
+    }
+    std::string der;
+    return format::from_base64(base64, der) ? der : std::string();
+}
+
+bool holds(const std::vector<std::string>& list, const std::string& name) {
+    return std::find(list.begin(), list.end(), name) != list.end();
+}
+
+}  // namespace
+
+TEST(https_answers_a_client_that_trusts_the_certificate_crucible_made) {
+    if (!curl_here()) {
+        return;
+    }
+    TempDir      dir;
+    const Secure secure(dir.path() / "https");
+    CHECK_EQ(secure.error, "");
+    const serve::Status status = secure.server.status();
+    CHECK(status.listening);
+    CHECK(status.https);
+    CHECK(status.own_certificate);
+    CHECK_EQ(status.fingerprint.size(), std::size_t{95});   // 32 pairs and the colons between
+    CHECK(std::filesystem::exists(status.certificate));
+
+    const util::Ran listed = curl_trusting(status.certificate, secure.url("/v1/models"));
+    CHECK_EQ(listed.status, 0);
+    const json body = json::parse(listed.output, nullptr, false);
+    CHECK(body.is_object() && body.value("object", "") == "list");
+    CHECK(body.is_object() && body["data"][0].value("id", "") == "stand-in.gguf");
+    if (listed.status != 0) {
+        std::printf("      curl said: %s\n", listed.output.c_str());
+    }
+#if !defined(_WIN32)
+    // By its address as well, which the certificate names beside the name.
+    // Not where Schannel checks a certificate the client was handed, since
+    // it reads only the names in it.
+    CHECK_EQ(curl_trusting(status.certificate, secure.url("/v1/models", "127.0.0.1")).status, 0);
+#endif
+    // And a chat answered over it, streamed as it would be in the clear. The
+    // body from a file, which no command line has to quote.
+    write_text(dir.path() / "asked.json", chat("over https", json{{"stream", true}}).dump());
+    std::vector<std::string> argv{"curl", "--silent", "--show-error", "--max-time", "20", "--cacert",
+                                  status.certificate, "-H", "Content-Type: application/json",
+                                  "--data-binary", "@" + (dir.path() / "asked.json").string()};
+#if defined(_WIN32)
+    argv.emplace_back("--ssl-no-revoke");
+#endif
+    argv.push_back(secure.url("/v1/chat/completions"));
+    const util::Ran streamed = util::run(argv, {}, {}, 30);
+    CHECK_EQ(streamed.status, 0);
+    CHECK(streamed.output.find("over") != std::string::npos);
+    CHECK(streamed.output.find("data: [DONE]") != std::string::npos);
+
+    // The page is given the https addresses, and what a client checks.
+    const json page = serve::status_json(status);
+    CHECK(page["addresses"].value("local", "").rfind("https://localhost:", 0) == 0);
+    CHECK(page.value("https", false));
+    CHECK_EQ(page.value("fingerprint", ""), status.fingerprint);
+    CHECK(page.value("own_certificate", false));
+}
+
+TEST(plain_http_to_the_https_port_fails_at_once_and_harms_nothing) {
+    if (!curl_here()) {
+        return;
+    }
+    TempDir      dir;
+    const Secure secure(dir.path() / "https");
+    CHECK(secure.server.status().listening);
+
+    const auto          began = std::chrono::steady_clock::now();
+    util::http::Request request;
+    request.url             = "http://127.0.0.1:" + std::to_string(secure.port) + "/v1/models";
+    request.timeout_seconds = 20;
+    const util::http::Response plain = util::http::send(request);
+    CHECK_EQ(plain.status, 0);   // no HTTP answer at all: the handshake was not one
+    CHECK(!plain.error.empty());
+    CHECK(std::chrono::steady_clock::now() - began < std::chrono::seconds(10));
+
+    // Still there, and still answering the way it should.
+    CHECK(secure.server.status().listening);
+    CHECK_EQ(curl_trusting(secure.server.status().certificate, secure.url("/v1/models")).status, 0);
+}
+
+TEST(a_key_that_is_not_the_certificates_is_refused_and_said) {
+    TempDir                 dir;
+    const serve::tls::Names here{{"localhost"}, {"127.0.0.1", "::1"}};
+    serve::tls::Pem         one;
+    serve::tls::Pem         other;
+    std::string             error;
+    CHECK(serve::tls::make(here, 30, one, error));
+    CHECK(serve::tls::make(here, 30, other, error));
+    write_text(dir.path() / "server.crt", one.certificate);
+    write_text(dir.path() / "server.key", other.key);
+
+    Secure mismatched(dir.path() / "own", dir.path() / "server.crt", dir.path() / "server.key");
+    CHECK_EQ(mismatched.error, "The key does not match the certificate");
+    CHECK(!mismatched.server.status().listening);
+    CHECK_EQ(mismatched.server.status().error, mismatched.error);
+    // Nothing of Crucible's own was made in its place.
+    CHECK(!std::filesystem::exists(dir.path() / "own"));
+
+    // The right key, after the certificate in one file, serves.
+    write_text(dir.path() / "both.pem", one.certificate + one.key);
+    const Secure matched(dir.path() / "own", dir.path() / "both.pem");
+    CHECK_EQ(matched.error, "");
+    CHECK(matched.server.status().https);
+    CHECK(!matched.server.status().own_certificate);
+    CHECK_EQ(matched.server.status().fingerprint, serve::tls::fingerprint(one.certificate));
+    if (curl_here()) {
+        write_text(dir.path() / "trust.crt", one.certificate);
+        CHECK_EQ(curl_trusting((dir.path() / "trust.crt").string(), matched.url("/v1/models")).status, 0);
+    }
+}
+
+TEST(what_will_not_serve_over_https_says_why) {
+    const serve::tls::Names here{{"localhost"}, {"127.0.0.1"}};
+    serve::tls::Pem         good;
+    serve::tls::Pem         other;
+    std::string             error;
+    CHECK(serve::tls::make(here, 30, good, error));
+    CHECK(serve::tls::make(here, 30, other, error));
+
+    serve::tls::Pem out;
+    CHECK_EQ(serve::tls::prepare({"not a certificate", good.key}, out), "Not a certificate");
+    CHECK_EQ(serve::tls::prepare({good.certificate, "not a key"}, out), "Not a key");
+    CHECK_EQ(serve::tls::prepare({good.certificate, other.key}, out), "The key does not match the certificate");
+    serve::tls::Pem old;
+    CHECK(serve::tls::make(here, -2, old, error));   // good until two days ago
+    CHECK_EQ(serve::tls::prepare(old, out), "The certificate has expired");
+
+    // DER is taken as well as PEM, and written as PEM for the listener.
+    const std::string der = der_of(good.certificate);
+    CHECK(!der.empty());
+    CHECK_EQ(serve::tls::prepare({der, good.key}, out), "");
+    CHECK_EQ(out.certificate, good.certificate);
+    CHECK_EQ(serve::tls::fingerprint(der), serve::tls::fingerprint(good.certificate));
+
+    // Files that are not there, said as such.
+    TempDir              dir;
+    serve::tls::Identity identity;
+    CHECK(!serve::tls::load(dir.path() / "missing.crt", {}, dir.path() / "own", identity, error));
+    CHECK_EQ(error, "Cannot read the certificate");
+    write_text(dir.path() / "server.crt", good.certificate);
+    CHECK(!serve::tls::load(dir.path() / "server.crt", dir.path() / "missing.key", dir.path() / "own", identity, error));
+    CHECK_EQ(error, "Cannot read the key");
+}
+
+TEST(the_certificate_crucible_makes_is_kept_and_used_again) {
+    TempDir              dir;
+    serve::tls::Identity first;
+    serve::tls::Identity again;
+    std::string          error;
+    CHECK(serve::tls::own(dir.path(), false, first, error));
+    CHECK(first.own);
+    CHECK(std::filesystem::exists(dir.path() / "certificate.pem"));
+    CHECK(std::filesystem::exists(dir.path() / "key.pem"));
+    CHECK(serve::tls::own(dir.path(), false, again, error));
+    CHECK(first.pem == again.pem);
+    CHECK_EQ(again.fingerprint, first.fingerprint);
+
+    // For this machine, by name and by address, and good for as long as
+    // Apple's systems take one.
+    CHECK(holds(first.names, "localhost"));
+    CHECK(holds(first.names, "127.0.0.1"));
+    CHECK(holds(first.names, "::1"));
+    const std::time_t now   = std::time(nullptr);
+    const std::time_t until = serve::tls::expires(first.pem.certificate);
+    CHECK(until > now + std::time_t{serve::tls::kOwnDays - 1} * 86400);
+    CHECK(until <= now + std::time_t{serve::tls::kOwnDays} * 86400 + 60);
+#if !defined(_WIN32)
+    // The key is this user's alone.
+    const auto perms = std::filesystem::status(dir.path() / "key.pem").permissions();
+    CHECK((perms & (std::filesystem::perms::group_all | std::filesystem::perms::others_all))
+          == std::filesystem::perms::none);
+#endif
+
+    // A server started on it again, as after a restart, shows the same.
+    {
+        const Secure secure(dir.path());
+        CHECK_EQ(secure.error, "");
+        CHECK_EQ(secure.server.status().fingerprint, first.fingerprint);
+    }
+
+    // Asked for a new one, it makes another; one near its end is made again
+    // by itself, so a client is never shown one that ran out.
+    serve::tls::Identity renewed;
+    CHECK(serve::tls::own(dir.path(), true, renewed, error));
+    CHECK(renewed.fingerprint != first.fingerprint);
+    serve::tls::Pem ending;
+    CHECK(serve::tls::make(serve::tls::this_machine(), serve::tls::kRenewDays - 1, ending, error));
+    write_text(dir.path() / "certificate.pem", ending.certificate);
+    write_text(dir.path() / "key.pem", ending.key);
+    serve::tls::Identity replaced;
+    CHECK(serve::tls::own(dir.path(), false, replaced, error));
+    CHECK(replaced.fingerprint != serve::tls::fingerprint(ending.certificate));
+    CHECK(serve::tls::expires(replaced.pem.certificate) > now + std::time_t{serve::tls::kRenewDays} * 86400);
+}
+
+TEST(the_engine_keeps_its_certificate_with_its_data) {
+    TempDir              dir;
+    const ScopedDataHome scoped(dir.path());
+    Config               config;
+    config.server.enabled = true;
+    config.server.port    = 0;
+    config.server.https   = true;
+    AppState state;
+    Engine   engine(config, state, {});
+    engine.start();
+    const serve::Status status = engine.server_status();
+    CHECK(status.listening);
+    CHECK(status.https);
+    CHECK(status.own_certificate);
+    CHECK(std::filesystem::path(status.certificate).parent_path() == paths::https_dir());
+    CHECK(paths::https_dir().string().rfind(dir.path().string(), 0) == 0);
+
+    // Off again, the same server over HTTP.
+    config.server.https = false;
+    engine.apply_config(config);
+    CHECK(engine.server_status().listening);
+    CHECK(!engine.server_status().https);
+    CHECK(serve::status_json(engine.server_status())["addresses"].value("local", "").rfind("http://", 0) == 0);
     engine.stop();
 }
 
@@ -1255,5 +1686,75 @@ TEST(the_engine_serves_a_real_model) {
     std::printf("      the delegator, %d tokens in: %s\n", kept["usage"].value("prompt_tokens", 0),
                 kept["choices"][0]["message"].value("content", "").c_str());
     engine.stop();
+    CHECK(!engine.server_status().listening);
+}
+
+TEST(crucible_closing_mid_answer_frees_the_model_only_once_the_request_is_done) {
+    // Only where a model is named, as above. A request answered by a model
+    // from the folder holds it with a lease, not the models' lock, and the
+    // engine's own thread freed every model as soon as it was told to stop,
+    // while stop() was still waiting for the server: the request went on
+    // reading from a context that was gone, and Crucible crashed as it
+    // closed. The server's thread is done with the model before it is freed.
+    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
+    if (named == nullptr || *named == '\0' || !curl_here()) {
+        return;
+    }
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    TempDir                     dir;
+    const ScopedDataHome        scoped(dir.path());
+    std::error_code             ec;
+    std::filesystem::create_directories(paths::data_dir(), ec);
+    std::filesystem::create_directory_symlink(runtimes, paths::runtimes_dir(), ec);
+    if (ec) {
+        std::printf("      skipped: the runtimes could not be linked in (%s)\n", ec.message().c_str());
+        return;
+    }
+
+    const std::filesystem::path file(named);
+    Config config;
+    config.models_dir     = file.parent_path().string();
+    config.defaults.n_ctx = 8192;
+    config.server.enabled = true;
+    config.server.port    = 0;
+    config.server.model   = file.string();
+    config.resolve_models();
+    AppState state;
+    Engine   engine(config, state, {});
+    engine.start();
+    const std::string base = "http://127.0.0.1:" + std::to_string(engine.server_status().port);
+
+    // Loaded first, so the request below is answered as soon as it comes.
+    const json hello{{"messages", json::array({json{{"role", "user"}, {"content", "Hello."}}})},
+                     {"max_tokens", 1}};
+    CHECK_EQ(post(base + "/v1/chat/completions", hello.dump()).status, 200);
+
+    // A long prompt and a long answer: still being read or written when
+    // Crucible closes.
+    std::string filler;
+    for (int i = 0; i < 1500; ++i) {
+        filler += "item" + std::to_string(i) + " ";
+    }
+    const json longer{{"messages", json::array({json{{"role", "user"}, {"content", "Count these: " + filler}}})},
+                      {"max_tokens", 2048}};
+    util::http::Response answered;
+    std::thread          asking([&] { answered = post(base + "/v1/chat/completions", longer.dump()); });
+    bool                 answering = false;
+    for (int i = 0; i < 400 && !answering; ++i) {
+        const serve::Status now = engine.server_status();
+        answering = now.answering && now.waiting.empty();
+        if (!answering) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+    CHECK(answering);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const auto began = std::chrono::steady_clock::now();
+    engine.stop();
+    asking.join();
+    const auto took = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - began);
+    CHECK(took.count() < 30);
+    CHECK(answered.status != 200);
     CHECK(!engine.server_status().listening);
 }

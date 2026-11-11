@@ -3,11 +3,12 @@
 // The API server. See server.hpp for what it is and why it is shaped so.
 //
 // Three things live here. The HTTP: the routes, the key, CORS, how large a
-// body may be, and the addresses it listens on. OpenAI's shapes: a request
-// read into an Ask, an answer written back as a completion or as server-sent
-// events, tool calls and all, and every refusal as OpenAI's error object,
-// which is what a client knows how to read. And the queue: requests waiting
-// their turn, and the one thread that hands each to the backend.
+// body may be, and the addresses it listens on, over HTTPS when asked (the
+// certificate is tls.cpp's). OpenAI's shapes: a request read into an Ask, an
+// answer written back as a completion or as server-sent events, tool calls
+// and all, and every refusal as OpenAI's error object, which is what a client
+// knows how to read. And the queue: requests waiting their turn, and the one
+// thread that hands each to the backend.
 #include "crucible/serve/server.hpp"
 
 #include <algorithm>
@@ -37,6 +38,7 @@
 #include <unistd.h>
 #endif
 
+#include "crucible/serve/tls.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/sha256.hpp"
 
@@ -818,6 +820,12 @@ struct Job {
     Answer      answer;
     std::string waiting;
 
+    /// When a call is required, the reply is the call alone, as OpenAI
+    /// sends it: words the model says around it are held, and dropped once
+    /// a call comes. A call that never comes (cut short, say) gives them back.
+    std::string held;
+    bool        called = false;
+
     /// Set when nobody wants the rest: the client went, the server is
     /// stopping, a stop sequence was met. Read between tokens.
     std::atomic<bool> dropped{false};
@@ -829,7 +837,11 @@ struct Job {
         {
             const std::lock_guard<std::mutex> lock(mutex);
             started = true;
-            if (!pieces.empty() && !pieces.back().is_call && pieces.back().reasoning == reasoning) {
+            if (!reasoning && ask.tool_choice == "required") {
+                if (!called) {
+                    held += text;
+                }
+            } else if (!pieces.empty() && !pieces.back().is_call && pieces.back().reasoning == reasoning) {
                 pieces.back().text += text;
             } else {
                 Piece piece;
@@ -845,10 +857,28 @@ struct Job {
         {
             const std::lock_guard<std::mutex> lock(mutex);
             started = true;
+            called  = true;
+            held.clear();
             Piece piece;
             piece.is_call = true;
             piece.call    = call;
             pieces.push_back(std::move(piece));
+        }
+        moved.notify_all();
+    }
+
+    /// The model is through: its answer, after any words still held.
+    void finish(Answer&& given) {
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (!held.empty()) {
+                Piece piece;
+                piece.text = std::move(held);
+                pieces.push_back(std::move(piece));
+                held.clear();
+            }
+            answer = std::move(given);
+            done   = true;
         }
         moved.notify_all();
     }
@@ -942,6 +972,13 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     bool                                          ipv6 = false;   ///< one of them listens on IPv6
     std::shared_ptr<std::atomic<bool>>            closing;        ///< the listeners' own: set when they are going
 
+    /// Over HTTPS, with this certificate, while it listens so: its SHA-256,
+    /// its file, and whether it is Crucible's own.
+    bool        https = false;
+    std::string certificate_sha256;
+    std::string certificate_file;
+    bool        own_certificate = false;
+
     std::deque<std::shared_ptr<Job>> queue;
     std::shared_ptr<Job>             current;
     std::condition_variable          arrived;  ///< a job was queued, or it is time to go
@@ -1008,7 +1045,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             sink.answer    = [&job](std::string_view text) { job->add(false, text); };
             sink.reasoning = [&job](std::string_view text) { job->add(true, text); };
             sink.call      = [&job](const CallPiece& piece) { job->add_call(piece); };
-            sink.cancel    = [this, &job] { return job->dropped.load() || quitting.load(); };
+            // The server stopping under an answer leaves it cut short, which
+            // the backend cannot tell from a client that went or a stop
+            // sequence met. Noted here, so it goes out as the failure it is
+            // rather than as a whole answer. Atomic: a backend may ask from
+            // a thread of its compute's.
+            std::atomic<bool> stopped_under{false};
+            sink.cancel = [this, &job, &stopped_under] {
+                if (quitting.load()) {
+                    stopped_under = true;
+                    return true;
+                }
+                return job->dropped.load();
+            };
             sink.waiting   = [this, &job](const std::string& what) {
                 {
                     const std::lock_guard<std::mutex> lock(job->mutex);
@@ -1031,12 +1080,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                 answer.error  = "the model failed";
                 answer.status = 500;
             }
-            {
-                const std::lock_guard<std::mutex> lock(job->mutex);
-                job->answer = std::move(answer);
-                job->done   = true;
+            if (stopped_under.load() && answer.error.empty()) {
+                answer.error  = "The server stopped";
+                answer.status = 503;
+                answer.code   = "server_stopped";
             }
-            job->moved.notify_all();
+            job->finish(std::move(answer));
             {
                 const std::lock_guard<std::mutex> lock(mutex);
                 current.reset();
@@ -1755,9 +1804,35 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// being no one address that is both 127.0.0.1 and ::1: the second on
     /// the port the first was given, where the machine has IPv6.
     std::string open(const Settings& wanted) {
+        // The certificate first: one that will not serve is said before a
+        // port is taken, and Crucible's own is made here the first time.
+        tls::Identity identity;
+        if (wanted.https) {
+            std::string why;
+            if (!tls::load(wanted.certificate, wanted.certificate_key, wanted.own_dir, identity, why)) {
+                return why;
+            }
+        }
         auto gone = std::make_shared<std::atomic<bool>>(false);
-        const auto made = [&] {
-            auto one = std::make_unique<httplib::Server>();
+        // A listener over HTTPS reads the certificate and key it is given
+        // into a context of its own. Null when Mbed TLS would not take them
+        // after all, which tls::load has already made unlikely.
+        const auto made = [&]() -> std::unique_ptr<httplib::Server> {
+            std::unique_ptr<httplib::Server> one;
+            if (wanted.https) {
+                httplib::SSLServer::PemMemory pem{};
+                pem.cert_pem     = identity.pem.certificate.c_str();
+                pem.cert_pem_len = identity.pem.certificate.size();
+                pem.key_pem      = identity.pem.key.c_str();
+                pem.key_pem_len  = identity.pem.key.size();
+                auto secure      = std::make_unique<httplib::SSLServer>(pem);
+                if (!secure->is_valid()) {
+                    return nullptr;
+                }
+                one = std::move(secure);
+            } else {
+                one = std::make_unique<httplib::Server>();
+            }
             routes(*one, gone);
             one->set_ipv6_v6only(false);   // said, not left to the library's default
             return one;
@@ -1788,14 +1863,21 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::vector<std::unique_ptr<httplib::Server>> servers;
         bool on_ipv6 = false;
         int  bound   = wanted.port;
+        const std::string no_tls = "HTTPS could not start";
         if (wanted.network) {
             auto both = made();
+            if (!both) {
+                return no_tls;
+            }
             if (bind_first(*both, "::", bound)) {
                 on_ipv6 = true;
                 servers.push_back(std::move(both));
             } else {
                 auto four = made();
                 bound     = wanted.port;
+                if (!four) {
+                    return no_tls;
+                }
                 if (!bind_first(*four, "0.0.0.0", bound)) {
                     return failed();
                 }
@@ -1803,11 +1885,14 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             }
         } else {
             auto four = made();
+            if (!four) {
+                return no_tls;
+            }
             if (!bind_first(*four, "127.0.0.1", bound)) {
                 return failed();
             }
             servers.push_back(std::move(four));
-            if (auto six = made(); six->bind_to_port("::1", bound)) {
+            if (auto six = made(); six && six->bind_to_port("::1", bound)) {
                 on_ipv6 = true;
                 servers.push_back(std::move(six));
             }
@@ -1820,12 +1905,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         }
 
         const std::lock_guard<std::mutex> lock(mutex);
-        this->http      = std::move(servers);
-        this->listeners = std::move(threads);
-        this->ipv6      = on_ipv6;
-        this->closing   = std::move(gone);
-        this->port      = bound;
-        this->since     = now_seconds();
+        this->http               = std::move(servers);
+        this->listeners          = std::move(threads);
+        this->ipv6               = on_ipv6;
+        this->closing            = std::move(gone);
+        this->port               = bound;
+        this->since              = now_seconds();
+        this->https              = wanted.https;
+        this->certificate_sha256 = identity.fingerprint;
+        this->certificate_file   = identity.file.string();
+        this->own_certificate    = identity.own;
         return {};
     }
 
@@ -1852,6 +1941,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             closed_port = http_was.empty() ? closed_port : port;
             port        = 0;
             ipv6        = false;
+            https       = false;
+            certificate_sha256.clear();
+            certificate_file.clear();
+            own_certificate = false;
         }
         if (closing_was) {
             closing_was->store(true);   // a request's thread waiting on its answer gives up
@@ -1885,7 +1978,14 @@ std::string Server::apply(const Settings& wanted) {
     bool same_place = false;
     {
         const std::lock_guard<std::mutex> lock(s.mutex);
-        same_place = !s.http.empty() && wanted.enabled && wanted.port == s.settings.port && wanted.network == s.settings.network;
+        // The same address, and the same certificate when there is one: a
+        // file named again is read again only when the listener starts again.
+        same_place = !s.http.empty() && wanted.enabled && wanted.port == s.settings.port
+                  && wanted.network == s.settings.network && wanted.https == s.settings.https
+                  && (!wanted.https
+                      || (wanted.certificate == s.settings.certificate
+                          && wanted.certificate_key == s.settings.certificate_key
+                          && wanted.own_dir == s.settings.own_dir));
         s.settings   = wanted;
         s.key_digest = wanted.key.empty() ? std::string() : digest_of(wanted.key);
         s.settings.key.clear();   // the digest is all that is kept
@@ -1962,6 +2062,10 @@ Status Server::status() const {
                                                        [](const auto& job) { return !job->dropped.load(); }));
         out.recent.assign(s.recent.begin(), s.recent.end());
         current = s.current;
+        out.https           = s.https;
+        out.fingerprint     = s.certificate_sha256;
+        out.certificate     = s.certificate_file;
+        out.own_certificate = s.own_certificate;
         if (out.listening) {
             // Asked again now and then, not on every snapshot: a laptop
             // moves between networks, and the address with it. Asked with
@@ -1995,16 +2099,17 @@ json status_json(const Status& status) {
     // network by this machine's address there, and its IPv6 one beside it.
     json addresses = json::object();
     if (status.listening) {
-        const std::string port = std::to_string(status.port);
-        addresses["local"] = "http://localhost:" + port + "/v1";
+        const std::string port   = std::to_string(status.port);
+        const std::string scheme = status.https ? "https://" : "http://";
+        addresses["local"] = scheme + "localhost:" + port + "/v1";
         if (status.ipv6) {
-            addresses["local6"] = "http://[::1]:" + port + "/v1";
+            addresses["local6"] = scheme + "[::1]:" + port + "/v1";
         }
         if (status.network && !status.lan.empty()) {
-            addresses["network"] = "http://" + status.lan + ":" + port + "/v1";
+            addresses["network"] = scheme + status.lan + ":" + port + "/v1";
         }
         if (status.network && status.ipv6 && !status.lan6.empty()) {
-            addresses["network6"] = "http://[" + status.lan6 + "]:" + port + "/v1";
+            addresses["network6"] = scheme + "[" + status.lan6 + "]:" + port + "/v1";
         }
     }
     json recent = json::array();
@@ -2020,6 +2125,10 @@ json status_json(const Status& status) {
                 {"embedder", status.embedder},   {"ipv6", status.listening && status.ipv6},
                 {"lan", status.listening ? status.lan : std::string()},
                 {"lan6", status.listening && status.ipv6 ? status.lan6 : std::string()},
+                {"https", status.listening && status.https},
+                {"fingerprint", status.listening ? status.fingerprint : std::string()},
+                {"certificate", status.listening ? status.certificate : std::string()},
+                {"own_certificate", status.listening && status.own_certificate},
                 {"recent", std::move(recent)}};
 }
 

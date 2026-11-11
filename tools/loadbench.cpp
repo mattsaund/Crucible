@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -51,6 +52,7 @@
 #include "crucible/llm/model_host.hpp"
 #include "crucible/runtime/devices.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/text.hpp"
 
 using namespace crucible;
 
@@ -269,11 +271,23 @@ int bench_chat(const std::vector<std::string>& prompts, bool cold, bool traced, 
         for (const LocalModel& model : after.local_models) {
             loaded += (loaded.empty() ? "" : ", ") + model.file;
         }
+        // How much it wrote and how much of that was thinking: what a
+        // reasoning effort changes.
         std::printf("%-48.48s -> %-14s load %6ld ms  first token %7.0f ms  %5.1f tok/s  answered %7.0f ms  "
-                    "settled %6.0f ms  [%s]%s\n",
+                    "settled %6.0f ms  %d tokens, %zu chars thought  [%s]%s\n",
                     line.c_str(), turn.route ? turn.route->expert.c_str() : "?", turn.load_ms, first_ms,
-                    turn.tokens_per_second, answered_ms, settle_ms, loaded.c_str(),
-                    turn.failed ? (" FAILED: " + turn.reply.substr(0, 120)).c_str() : "");
+                    turn.tokens_per_second, answered_ms, settle_ms, turn.output_tokens, turn.reasoning.size(),
+                    loaded.c_str(), turn.failed ? (" FAILED: " + turn.reply.substr(0, 120)).c_str() : "");
+        if (!turn.failed) {
+            // The start of what it said, on one line: that it answered, and
+            // with something that reads like an answer. Cut where a character
+            // ends, so the output stays UTF-8.
+            std::string opening = detail::scrub_utf8(std::string_view(turn.reply).substr(0, 200));
+            for (char& c : opening) {
+                c = c == '\n' || c == '\r' ? ' ' : c;
+            }
+            std::printf("    said: %s\n", opening.c_str());
+        }
         std::fflush(stdout);
         if (pause_s > 0.0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<long>(pause_s * 1000.0)));

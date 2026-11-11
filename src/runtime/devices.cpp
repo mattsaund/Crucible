@@ -430,6 +430,9 @@ std::vector<ComputeDevice> compute_devices() {
         if (props.description != nullptr) {
             device.description = props.description;
         }
+        if (props.device_id != nullptr) {
+            device.device_id = props.device_id;
+        }
         if (ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(handle); reg != nullptr) {
             if (const char* reg_name = ggml_backend_reg_name(reg); reg_name != nullptr) {
                 device.backend = reg_name;
@@ -448,22 +451,24 @@ std::vector<ComputeDevice> compute_devices() {
     return devices;
 }
 
-std::vector<ComputeDevice> gpu_devices() {
+std::vector<ComputeDevice> gpu_devices() { return distinct_gpus(compute_devices()); }
+
+std::vector<ComputeDevice> distinct_gpus(std::vector<ComputeDevice> devices) {
     std::vector<ComputeDevice> gpus;
-    for (ComputeDevice& device : compute_devices()) {
+    for (ComputeDevice& device : devices) {
         if (!device.is_gpu) {
             continue;
         }
-        // De-duplicated by description, the way llama.cpp de-duplicates by the
-        // driver's device id. Install CUDA and Vulkan together and every NVIDIA
-        // card is reported twice; llama.cpp keeps the first of each, and a
+        // Install CUDA and Vulkan together and every NVIDIA card is reported
+        // twice, under one device id; llama.cpp keeps the first of each, and a
         // split planned against a list it does not share would give every card
-        // the share meant for its neighbor.
-        const bool seen = std::any_of(gpus.begin(), gpus.end(),
-                                      [&device](const ComputeDevice& other) {
-                                          return !device.description.empty() &&
-                                                 other.description == device.description;
-                                      });
+        // the share meant for its neighbor. By the id, as llama.cpp does, and
+        // never by the name: two cards of one model have the same name, and
+        // the second was left out of every split.
+        const bool seen = !device.device_id.empty()
+                       && std::any_of(gpus.begin(), gpus.end(), [&device](const ComputeDevice& other) {
+                              return other.device_id == device.device_id;
+                          });
         if (!seen) {
             gpus.push_back(std::move(device));
         }

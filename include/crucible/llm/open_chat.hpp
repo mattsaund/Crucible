@@ -16,6 +16,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -121,5 +122,20 @@ struct Embedded {
     /// A text is longer than the model reads at once: this many tokens.
     int too_long = 0;
 };
+
+namespace detail {
+
+/// An error from a chat template in the template's own words. The Jinja
+/// engine quotes the template around the place it stopped, which means
+/// nothing to whoever sent the request, since they did not write it. Empty
+/// when `what` is not a template's error. `raised` says whether the template
+/// refused on purpose (raise_exception) rather than failing.
+std::string template_said(std::string_view what, bool* raised = nullptr);
+
+/// Why a chat template cannot be read, found by reading it. Empty when it
+/// can be, and when what stops it says nothing.
+std::string why_unreadable(const std::string& source);
+
+}  // namespace detail
 
 }  // namespace crucible

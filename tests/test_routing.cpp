@@ -470,3 +470,28 @@ TEST(module_names_match_the_convention_ggml_loads_by) {
 #endif
 #endif
 }
+
+TEST(gpt_oss_is_shown_its_earlier_answers_the_way_its_own_template_writes_them) {
+    // gpt-oss's template is told by what llama.cpp tells it by; a ChatML one
+    // is not it.
+    CHECK(detail::is_harmony("{{- '<|start|>system<|message|>' }}...<|channel|>final"));
+    CHECK(!detail::is_harmony("{{ '<|im_start|>' + message['role'] }}"));
+
+    // An earlier answer on the final channel, ended with <|end|>: what the
+    // model's template renders for this conversation, after its own system
+    // message. llama.cpp's Harmony wrote it on no channel, ended with the
+    // <|return|> a reply ends on and the model never reads.
+    const std::vector<ChatMessage> chat = {
+        {"system", "Be brief."},
+        {"user", "Plan seating for 6 at a round table."},
+        {"assistant", "Alternate couples around the table."},
+        {"user", "Now for 8 people."},
+    };
+    CHECK_EQ(detail::harmony_chat(chat, /*add_assistant_prefix=*/true),
+             std::string("<|start|>system<|message|>Be brief.<|end|>"
+                         "<|start|>user<|message|>Plan seating for 6 at a round table.<|end|>"
+                         "<|start|>assistant<|channel|>final<|message|>Alternate couples around the table.<|end|>"
+                         "<|start|>user<|message|>Now for 8 people.<|end|>"
+                         "<|start|>assistant"));
+    CHECK(detail::harmony_chat(chat, /*add_assistant_prefix=*/false).find("<|return|>") == std::string::npos);
+}

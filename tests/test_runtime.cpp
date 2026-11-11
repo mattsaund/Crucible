@@ -939,9 +939,21 @@ TEST(macos_page_counts_become_bytes_used) {
     std::uint64_t used = 0;
     CHECK(util::parse_vm_stat(vm_stat, page, total, used));
 
-    // Free, speculative and purgeable are all available without evicting
-    // anything anyone wants, which is 175 of the 1000 pages.
+    // An older vm_stat, with no anonymous pages: free, speculative and
+    // purgeable are what can go, 175 of the 1000 pages.
     CHECK_EQ(used, std::uint64_t{825} * page);
+
+    // Today's: what Activity Monitor calls Memory Used, the programs' own
+    // pages less the purgeable ones, wired and compressed. 275 + 150 + 30 of
+    // the 1000. The 400 pages of cached files are not in it: counted, a Mac
+    // up a while had next to nothing available and let models go that fit.
+    const std::string current = vm_stat
+        + "File-backed pages:                400.\n"
+          "Anonymous pages:                  300.\n"
+          "Pages stored in compressor:        90.\n"
+          "Pages occupied by compressor:      30.\n";
+    CHECK(util::parse_vm_stat(current, page, total, used));
+    CHECK_EQ(used, std::uint64_t{455} * page);
 
     // Nothing recognizable is not a reading, however long the text is.
     CHECK(!util::parse_vm_stat("no pages here\n", page, total, used));

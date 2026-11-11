@@ -555,6 +555,10 @@ actions['app-open'] = () => guard(() => call('app.open', { launch: state.preview
 
 /// What the page says back: the element picked, or its data to keep.
 function previewMessage(m) {
+  // A page by address is a site of its own, not one of the project's pages:
+  // nothing it says is kept for one. It is shown in the frame the last file
+  // page was, and its saves went to that page's data.
+  if (state.preview.url) return;
   if (m.crucible === 'data') {
     // Kept for as long as the window is open, and in this window's own
     // storage when it has some, under the project and the page.

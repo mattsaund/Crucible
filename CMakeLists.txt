@@ -7,7 +7,7 @@ project(crucible
 # A pre-release says so after the numbers ("-pre.1"). Crucible's update check
 # ranks it below the release with the same numbers, and the installers
 # workflow makes a tag with a dash a GitHub pre-release. Empty for a release.
-set(CRUCIBLE_VERSION_SUFFIX "-pre.2")
+set(CRUCIBLE_VERSION_SUFFIX "-pre.3")
 set(CRUCIBLE_VERSION "${PROJECT_VERSION}${CRUCIBLE_VERSION_SUFFIX}")
 
 # ---------------------------------------------------------------------------
@@ -216,6 +216,7 @@ add_library(crucible_core STATIC
 
     # serve: a model offered to other programs, in OpenAI's shape
     src/serve/server.cpp
+    src/serve/tls.cpp
 
     # app: process-level actions that are not the window
     # api: the one JSON door every interface comes through
@@ -259,8 +260,10 @@ endif()
 # a child of Crucible's. See src/tools/apps.cpp. GDI and CoreText: the fonts
 # installed, for the Font setting. See src/util/fonts.cpp. SetupAPI: each
 # card's PCIe link, from its device properties. See src/runtime/devices.cpp.
+# IP Helper: this machine's addresses, for the certificate the API server
+# makes for itself. See src/serve/tls.cpp.
 if(WIN32)
-    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32 setupapi)
+    target_link_libraries(crucible_core PRIVATE shell32 gdi32 user32 setupapi iphlpapi)
 elseif(APPLE)
     target_link_libraries(crucible_core PRIVATE "-framework CoreText" "-framework CoreFoundation")
 endif()
@@ -407,7 +410,9 @@ if(CRUCIBLE_BUILD_TOOLS)
         target_compile_options(crucible-routebench PRIVATE ${_crucible_warnings})
     endif()
     # crucible-smoke: one prompt through the whole engine with no window, for
-    # a platform's prompt path where a window cannot be opened.
+    # a platform's prompt path where a window cannot be opened, and what CI
+    # runs on each system: a model loaded and swapped on the runtime an
+    # install fetches, and a made app reloaded in its own window.
     add_executable(crucible-smoke tools/smoke.cpp)
     target_link_libraries(crucible-smoke PRIVATE crucible::core)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -627,9 +632,13 @@ if(CRUCIBLE_HAS_WEBVIEW)
     install(TARGETS crucible-app
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
-    # Packaging is tested with the real runner beside the test binary.
+    # Packaging is tested with the real runner beside the test binary, and
+    # crucible-smoke --app makes a program of it and opens that.
     if(TARGET crucible_tests)
         add_dependencies(crucible_tests crucible-app)
+    endif()
+    if(TARGET crucible-smoke)
+        add_dependencies(crucible-smoke crucible-app)
     endif()
 endif()
 

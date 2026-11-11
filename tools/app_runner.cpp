@@ -27,20 +27,31 @@
 //
 // Nothing else of Crucible is in it -- no models, no engine -- so it is small,
 // starts at once, and runs on a machine Crucible was never installed on.
+//
+// Run with --self-test it checks that reload on the desktop it is on, and
+// exits with what it found: see SelfTest. CI runs it on all three systems,
+// since no unit test can open a window.
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
+#include <vector>
 
+#include "crucible/tools/app_self_test.hpp"
 #include "crucible/tools/page_storage.hpp"
 #include "webkit_env.hpp"
 
@@ -49,6 +60,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <shellapi.h>
 #include <shlwapi.h>
 #elif defined(__APPLE__)
 #include <CoreGraphics/CoreGraphics.h>
@@ -198,6 +210,156 @@ std::string document_of(const std::string& page, const json& local, const json& 
 struct Served {
     std::function<std::string()> document;
 };
+
+/// --self-test: the reload a made app depends on, checked on the desktop it
+/// runs on, which no unit test can open a window on. CI runs it on Linux,
+/// macOS and Windows.
+///
+/// The program starts as it always does, with its own page or the page it
+/// shows when that is missing, and kSelfTestProbe reports each load. The
+/// first one is asked to reload. The second has to be the program's page,
+/// served again from the program's own address by the program itself, and
+/// has to find what the first kept in all three places: see
+/// crucible/tools/app_self_test.hpp. That is the reload the address exists
+/// for. A page handed over as a string reloads to an empty window, and one
+/// served before what it kept arrived comes back without it.
+///
+/// Exits 0 when all of that held, 1 when any of it did not, and 2 when the
+/// second load never came. What each load found, and why it failed, is
+/// printed and written to the report file named after --self-test. The data
+/// it keeps is in a folder made for the run and removed after it, never in
+/// the person's own.
+class SelfTest {
+public:
+    SelfTest(fs::path report, std::string address) : report_(std::move(report)), address_(std::move(address)) {}
+
+    /// The program answered a request for its page.
+    void served() {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        ++served_;
+    }
+
+    /// What a load of the page found. True when it is to reload.
+    bool heard(const json& said) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (over_) {
+            return false;
+        }
+        loads_.push_back(said);
+        if (said.contains("error")) {
+            fail("the page's check threw: " + said["error"].dump());
+            over_ = true;
+            return false;
+        }
+        if (loads_.size() == 1) {
+            return true;
+        }
+        for (const std::string& failure : crucible::tools::self_test_failures(loads_, served_, address_)) {
+            fail(failure);
+        }
+        code_ = failures_.empty() ? 0 : 1;
+        over_ = true;
+        return false;
+    }
+
+    /// The second load never came, or the window stopped answering.
+    void give_up(const std::string& why) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (over_) {
+            return;
+        }
+        fail(why);
+        code_ = 2;
+        over_ = true;
+    }
+
+    bool over() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return over_;
+    }
+
+    int code() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return code_;
+    }
+
+    /// What happened, printed and written to the report.
+    void write() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::ostringstream out;
+        out << "crucible-app self-test at " << address_ << "\n";
+        for (std::size_t i = 0; i < loads_.size(); ++i) {
+            out << "load " << (i + 1) << ": " << loads_[i].dump(-1, ' ', false, json::error_handler_t::replace)
+                << "\n";
+        }
+        out << "the program served its page " << served_ << (served_ == 1 ? " time" : " times") << "\n";
+        if (failures_.empty() && code_ == 0) {
+            out << "passed: served from its own address both times, and the reload found what was kept\n";
+        }
+        for (const std::string& failure : failures_) {
+            out << "failed: " << failure << "\n";
+        }
+        const std::string text = out.str();
+        std::fputs(text.c_str(), stdout);
+        std::fflush(stdout);
+        if (!report_.empty()) {
+            std::ofstream file(report_, std::ios::binary | std::ios::trunc);
+            file << text;
+        }
+    }
+
+private:
+    void fail(const std::string& why) {
+        failures_.push_back(why);
+        code_ = 1;
+    }
+
+    mutable std::mutex       mutex_;
+    fs::path                 report_;
+    std::string              address_;
+    std::vector<json>        loads_;
+    std::vector<std::string> failures_;
+    int                      served_ = 0;
+    int                      code_   = 1;
+    bool                     over_   = false;
+};
+
+/// A folder for one self-test's data, in the system's temporary folder, so
+/// that a run never reads or writes what somebody kept with the app.
+fs::path scratch_folder() {
+    std::random_device random;
+    std::error_code    ec;
+    const fs::path     base = fs::temp_directory_path(ec);
+    return (ec ? fs::path(".") : base) / ("crucible-app-self-test-" + std::to_string(random()));
+}
+
+/// The command line's arguments after the program's name, as UTF-8.
+std::vector<std::string> arguments(int argc, char** argv) {
+#if defined(_WIN32)
+    // WinMain has no argv, and the narrow command line is in the code page
+    // the manifest sets, so it is read wide and converted.
+    (void)argc;
+    (void)argv;
+    std::vector<std::string> out;
+    int       count = 0;
+    LPWSTR*   wide  = ::CommandLineToArgvW(::GetCommandLineW(), &count);
+    for (int i = 1; wide != nullptr && i < count; ++i) {
+        const int length = ::WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string one(length > 0 ? static_cast<std::size_t>(length) : 1U, '\0');
+        if (length > 0) {
+            ::WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, one.data(), length, nullptr, nullptr);
+        }
+        one.resize(one.size() - 1);   // its terminator
+        out.push_back(std::move(one));
+    }
+    if (wide != nullptr) {
+        ::LocalFree(wide);
+    }
+    return out;
+#else
+    return std::vector<std::string>(argv + (argc > 0 ? 1 : 0), argv + (argc > 0 ? argc : 0));
+#endif
+}
 
 #if defined(WEBVIEW_GTK)
 /// Where WebKitGTK is given the page, from a scheme of the program's own.
@@ -617,18 +779,31 @@ bool handed(webview::webview& view) {
 
 #if defined(_WIN32)
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    const std::vector<std::string> args = arguments(0, nullptr);
 #else
-int main() {
+int main(int argc, char** argv) {
+    const std::vector<std::string> args = arguments(argc, argv);
 #endif
 #if !defined(_WIN32) && !defined(__APPLE__)
     crucible::gui::avoid_nvidia_dmabuf_renderer();
 #endif
+    // --self-test [report] [seconds]. See SelfTest.
+    const bool     testing = !args.empty() && args[0] == "--self-test";
+    const fs::path report  = testing && args.size() > 1 ? fs::absolute(args[1]) : fs::path();
+    const double   seconds = testing && args.size() > 2 ? std::atof(args[2].c_str()) : 60.0;
+    const fs::path scratch = testing ? scratch_folder() : fs::path();
+#if defined(WEBVIEW_GTK) || defined(WEBVIEW_EDGE) || defined(WEBVIEW_COCOA)
+    SelfTest test(report, kAddress);
+#else
+    SelfTest test(report, "");
+#endif
+
     const fs::path folder = app_folder();
     const json about = json::parse(read_all(folder / "app.json"), nullptr, false);
     const std::string name = about.is_object() ? about.value("name", std::string("App")) : "App";
     const int width  = about.is_object() ? about.value("width", 1100) : 1100;
     const int height = about.is_object() ? about.value("height", 760) : 760;
-    const fs::path data = data_file(name);
+    const fs::path data = testing ? scratch / "data.json" : data_file(name);
 
     // localStorage, stood in for (crucible/tools/page_storage.hpp) and kept in
     // a file of its own beside the data, so neither can write over the other;
@@ -642,6 +817,9 @@ int main() {
     // Served, with the stand-ins inside the page, holding what the storage
     // holds each time it is asked for.
     Served served{[&] {
+        if (testing) {
+            test.served();
+        }
         const std::string page = read_all(folder / "index.html");
         return page.empty() ? missing_page(name)
                             : document_of(page, json::parse(read_all(storage), nullptr, false), session, keep);
@@ -682,6 +860,20 @@ int main() {
         return given[0] == "local" && write_whole(storage, given[1]) ? "true" : "false";
     });
 
+    // What each load of the page found, for --self-test, which ends once the
+    // second has said or when it is not coming.
+    if (testing) {
+        view.bind("__crucibleSelfTest", [&test, &view](const std::string& arguments) -> std::string {
+            const json given  = json::parse(arguments, nullptr, false);
+            const bool reload = test.heard(given.is_array() && !given.empty() ? given[0] : json::object());
+            if (test.over()) {
+                view.dispatch([&view] { view.terminate(); });
+            }
+            return reload ? "\"reload\"" : "null";
+        });
+        view.init(crucible::tools::kSelfTestProbe);
+    }
+
     // Handed over as a string, with the stand-ins put in before it as it
     // starts, holding what the storage held then. Not inside the page itself:
     // WebView2 takes a page of two megabytes at most as a string, and a page's
@@ -721,6 +913,46 @@ int main() {
 #else
     as_string();
 #endif
+
+    // A self-test that has not ended by its deadline has failed, and ends
+    // there. Asked of the window's own thread, where ending its loop has to
+    // happen, and from here when that thread no longer answers.
+    std::atomic<bool> ended{false};
+    std::thread       deadline;
+    if (testing) {
+        deadline = std::thread([&] {
+            const auto until = [&ended](std::chrono::steady_clock::time_point when) {
+                while (!ended.load() && std::chrono::steady_clock::now() < when) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                return ended.load();
+            };
+            const double limit = seconds > 0.0 ? seconds : 60.0;
+            if (until(std::chrono::steady_clock::now()
+                      + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                          std::chrono::duration<double>(limit)))) {
+                return;
+            }
+            test.give_up("the page did not load twice in " + std::to_string(static_cast<int>(limit)) + " seconds");
+            view.dispatch([&view] { view.terminate(); });
+            if (until(std::chrono::steady_clock::now() + std::chrono::seconds(10))) {
+                return;
+            }
+            test.write();
+            std::_Exit(2);
+        });
+    }
     view.run();
+    ended = true;
+    if (deadline.joinable()) {
+        deadline.join();
+    }
+    if (testing) {
+        test.give_up("the window closed before the page had loaded twice");
+        test.write();
+        std::error_code ec;
+        fs::remove_all(scratch, ec);
+        return test.code();
+    }
     return 0;
 }

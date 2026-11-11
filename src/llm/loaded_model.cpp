@@ -204,6 +204,14 @@ std::string LoadedModel::format_chat(const std::vector<ChatMessage>& messages,
     if (tmpl == nullptr) {
         tmpl = "chatml";
     }
+    // gpt-oss is written here rather than by llama.cpp, whose Harmony puts an
+    // earlier answer on no channel and ends it with <|return|>, the token that
+    // ends a reply being written and, as the model's own template says, never
+    // one it reads. So every turn after the first showed it a conversation
+    // unlike any it was trained on.
+    if (detail::is_harmony(tmpl)) {
+        return detail::harmony_chat(messages, add_assistant_prefix);
+    }
 
     std::size_t capacity = 0;
     for (const ChatMessage& message : messages) {
@@ -238,6 +246,27 @@ std::string LoadedModel::format_chat(const std::vector<ChatMessage>& messages,
 }
 
 namespace detail {
+
+bool is_harmony(std::string_view chat_template) {
+    return chat_template.find("<|start|>") != std::string_view::npos
+        && chat_template.find("<|channel|>") != std::string_view::npos;
+}
+
+std::string harmony_chat(const std::vector<ChatMessage>& messages, bool add_assistant_prefix) {
+    std::string out;
+    for (const ChatMessage& message : messages) {
+        // The answer alone: the working that led to it is never shown again,
+        // as the model's template drops it from every earlier turn.
+        out += message.role == "assistant" ? "<|start|>assistant<|channel|>final<|message|>"
+                                           : "<|start|>" + message.role + "<|message|>";
+        out += message.content;
+        out += "<|end|>";
+    }
+    if (add_assistant_prefix) {
+        out += "<|start|>assistant";
+    }
+    return out;
+}
 
 std::size_t reusable_prefix(const std::vector<llama_token>& cached,
                             const std::vector<llama_token>& wanted) {
