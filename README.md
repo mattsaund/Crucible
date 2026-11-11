@@ -167,8 +167,8 @@ Every model, local or not, gets the same tools in a trusted folder:
   against Hugging Face's checksum.
 - Each result shows its own picture when its card names one, and otherwise
   its maker's logo, the original maker's for a repack.
-- GGUF everywhere, MLX on Apple Silicon. LM Studio and Hugging Face folders
-  work as they are.
+- GGUF everywhere, MLX on Apple Silicon, where an MLX model can be the
+  delegator too. LM Studio and Hugging Face folders work as they are.
 - Models that see pictures work when their `mmproj` projector sits beside them.
 - Models stay loaded while they fit, so a follow-up question loads nothing.
   When one has to make room, the one used longest ago goes, and one in use is

@@ -41,6 +41,11 @@ class Subprocess;
 namespace crucible::mlx {
 
 /// One MLX model as the delegator, in a process of its own.
+///
+/// start, stop and the questions (format, score, generate) are taken one at
+/// a time by whoever owns it: the engine asks them all under its host lock.
+/// A question writes to the helper outside this class's own lock, so a stop
+/// on another thread in the middle of one would close the pipe under it.
 class Delegator {
 public:
     Delegator();
