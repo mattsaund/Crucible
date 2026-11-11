@@ -1060,6 +1060,55 @@ TEST(turning_it_off_ends_a_request_in_flight_at_once) {
     CHECK(!server.status().answering);
 }
 
+TEST(an_answer_the_server_stops_under_goes_out_as_a_failure_not_a_whole_answer) {
+    if (!curl_here()) {
+        return;
+    }
+    // A model that says a word and goes on until it is told to stop, then
+    // ends without an error, as the engine's does: it cannot tell the server
+    // stopping from a client that went. Crucible closing mid-answer sent what
+    // had come so far as a whole answer, finished as if the model had chosen
+    // to. It looks every millisecond, as a model does between tokens, and so
+    // ends before the request's thread next looks up from its wait.
+    class Endless final : public serve::Backend {
+    public:
+        std::string model() const override { return "endless.gguf"; }
+        serve::Answer answer(const serve::Ask&, const serve::Sink& sink) override {
+            sink.waiting("");
+            sink.answer("Once");
+            for (int i = 0; i < 30000 && !sink.cancel(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            serve::Answer out;
+            out.completion_tokens = 1;
+            return out;
+        }
+    };
+    Endless         model;
+    serve::Server   server(model);
+    serve::Settings on;
+    on.enabled = true;
+    server.apply(on);
+    const std::string url = "http://127.0.0.1:" + std::to_string(server.status().port) + "/v1/chat/completions";
+
+    json asking = chat("tell me a long story");
+    asking.erase("model");
+    util::http::Response answered;
+    std::thread          client([&] { answered = post(url, asking.dump()); });
+    bool answering = false;
+    for (int i = 0; i < 200 && !answering; ++i) {
+        answering = server.status().answering;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(answering);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));   // the word has come
+
+    server.stop();
+    client.join();
+    CHECK_EQ(answered.status, 503);
+    CHECK(parsed(answered)["error"].value("code", "") == "server_stopped");
+}
+
 TEST(a_client_that_never_finishes_holds_up_nothing) {
     if (!curl_here()) {
         return;
