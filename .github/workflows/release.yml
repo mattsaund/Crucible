@@ -1,15 +1,16 @@
-# The double-click installers.
+# The double-click installers, published.
 #
 # install.sh and install.ps1 compile from source, and that is the right default
 # for a program that also compiles its own compute backends -- but it costs a
-# toolchain, twenty minutes and a terminal. This workflow builds the other kind
-# on each of the three platforms: a disk image to drag into Applications, a
-# setup .exe, and an AppImage that runs where it lands. Each leaves an icon that
-# can be pinned to a dock or a taskbar, which is the whole point of them.
+# toolchain, twenty minutes and a terminal. The other kind is a disk image to
+# drag into Applications, a setup .exe, and an AppImage that runs where it
+# lands, each leaving an icon that can be pinned to a dock or a taskbar.
 #
-# Run it by pushing a tag (v0.1.0), or by hand from the Actions tab -- the
-# manual run uploads the artifacts and makes no release, which is how to check
-# the packaging without publishing anything.
+# build.yml builds and opens all three on every push. A tag (v0.1.0) publishes
+# the ones built for its commit: those of the run that passed on it already,
+# or, when there is none, those of the checks this run makes. They used to be
+# built here, for the first time, as the release went out. To build them
+# without publishing anything, push a branch, or run build.yml by hand.
 #
 # A tag also builds the prebuilt runtimes (runtimes.yml) as part of this run,
 # and the release goes public only once both are on it: the runtimes are put
@@ -22,209 +23,52 @@ name: installers
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
-# actions: read, for asking whether this commit has passed its checks already.
+# actions: read, for the run that passed on this commit and its installers.
 permissions:
   contents: write
   actions: read
 
 jobs:
-  # The checks, in this run rather than before it. A tag used to wait for CI on
-  # main to pass, half an hour, and only then could the installers' hour
-  # start; now the two run side by side and the release is published only if
-  # both pass. A commit that passed its checks on a branch already is not
-  # checked twice.
+  # The run that passed on this commit already, on a branch or on main, whose
+  # installers are still there: a run's files are kept for a while, not for
+  # ever. Its checks are not run twice, and its installers are the ones
+  # published.
   checked:
     name: Checked already
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
-      done: ${{ steps.look.outputs.done }}
+      run: ${{ steps.look.outputs.run }}
     steps:
       - id: look
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          passed="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --commit "$GITHUB_SHA" \
-                    --status success --json databaseId --jq 'length')"
-          echo "build runs that passed on $GITHUB_SHA: ${passed:-0}"
-          if [ "${passed:-0}" -gt 0 ]; then echo "done=true" >> "$GITHUB_OUTPUT"; else echo "done=false" >> "$GITHUB_OUTPUT"; fi
+          run=""
+          for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --commit "$GITHUB_SHA" \
+                        --status success --json databaseId --jq '.[].databaseId'); do
+            have="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
+                      --jq '[.artifacts[] | select(.expired | not) | .name
+                             | select(. == "Crucible-macOS" or . == "Crucible-Windows" or . == "Crucible-Linux")]
+                            | unique | length')"
+            echo "run $id passed on $GITHUB_SHA, with ${have:-0} of the three installers"
+            if [ "${have:-0}" = 3 ]; then run="$id"; break; fi
+          done
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
+  # The checks and the installers, in this run, when no run has passed on the
+  # commit yet: side by side with the runtimes, and the release is published
+  # only if both pass.
   checks:
     name: Checks
     needs: checked
-    if: startsWith(github.ref, 'refs/tags/v') && needs.checked.outputs.done != 'true'
+    if: needs.checked.outputs.run == ''
     uses: ./.github/workflows/build.yml
 
-  macos:
-    name: macOS disk image
-    runs-on: macos-latest
-    timeout-minutes: 90
-    env:
-      CMAKE_C_COMPILER_LAUNCHER: ccache
-      CMAKE_CXX_COMPILER_LAUNCHER: ccache
-    steps:
-      - uses: actions/checkout@v7
-
-      # A compiler cache, kept between runs: llama.cpp's half of the build is
-      # the same from one run to the next, and so are most of Crucible's own
-      # files. Not on Windows, where the Visual Studio generator, the one
-      # people build with, takes no compiler launcher.
-      - name: Compiler cache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ github.job }}-${{ runner.os }}
-          max-size: 1G
-
-      - name: Configure
-        run: >
-          cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCRUCIBLE_BACKEND_DL=ON
-          -DCRUCIBLE_BUILD_TESTS=OFF
-          -DCRUCIBLE_BUILD_TOOLS=OFF
-
-      - name: Build
-        run: cmake --build build --config Release --parallel 4
-
-      # The staged prefix is an ordinary install; the packaging scripts turn
-      # that layout into a bundle without moving anything inside it.
-      - name: Stage
-        run: cmake --install build --config Release --component crucible --prefix "$PWD/stage"
-
-      - name: Disk image
-        run: |
-          version="$(./stage/bin/crucible --version | awk 'NR==1 {print $NF}')"
-          bash packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
-
-      # Mount it and look: a .dmg that builds is not the same as one that opens,
-      # and the failure mode is a download nobody can use.
-      - name: The image opens and holds an application
-        run: |
-          hdiutil attach dist/Crucible-macOS.dmg -mountpoint /tmp/crucible-dmg -nobrowse
-          test -x /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible
-          test -f /tmp/crucible-dmg/Crucible.app/Contents/Info.plist
-          ls /tmp/crucible-dmg/Crucible.app/Contents/lib/crucible/
-          # Sealed, every library in it signed: what a bundle has to be for
-          # Gatekeeper to call it unidentified rather than damaged.
-          codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app
-          # And it starts, which a binary with a broken signature does not:
-          # Apple Silicon kills it before main.
-          /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible --version
-          hdiutil detach /tmp/crucible-dmg
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: Crucible-macOS
-          path: dist/Crucible-macOS.dmg
-
-  windows:
-    name: Windows setup
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Configure
-        run: >
-          cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCRUCIBLE_BACKEND_DL=ON
-          -DCRUCIBLE_BUILD_TESTS=OFF
-          -DCRUCIBLE_BUILD_TOOLS=OFF
-
-      - name: Build
-        run: cmake --build build --config Release --parallel 4
-
-      # --config matters here and nowhere else: the Visual Studio generator
-      # builds several configurations and an install that is not told which one
-      # to take goes looking for a Debug build that was never made.
-      - name: Stage
-        run: cmake --install build --config Release --component crucible --prefix "$PWD\stage"
-
-      # Inno Setup is on the Windows runner image already; installing it is the
-      # fallback rather than the plan, so a change in the image is a slower run
-      # and not a failed one.
-      - name: Inno Setup
-        shell: pwsh
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          if (-not (Test-Path $iscc)) { throw "no ISCC.exe at $iscc" }
-          $version = ((& .\stage\bin\crucible.exe --version) | Select-Object -First 1).Split(' ')[-1]
-          $numeric = $version.Split('-')[0]
-          & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" "/DNumericVersion=$numeric" `
-                  "/O$PWD\dist" packaging\windows\crucible.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: Crucible-Windows
-          path: dist/Crucible-Setup.exe
-
-  linux:
-    name: Linux AppImage
-    # An AppImage is only as portable as the glibc it was linked against, so it
-    # is built on the oldest runner still supported rather than the newest.
-    runs-on: ubuntu-22.04
-    timeout-minutes: 90
-    env:
-      CMAKE_C_COMPILER_LAUNCHER: ccache
-      CMAKE_CXX_COMPILER_LAUNCHER: ccache
-    steps:
-      - uses: actions/checkout@v7
-
-      # A compiler cache, kept between runs: llama.cpp's half of the build is
-      # the same from one run to the next, and so are most of Crucible's own
-      # files. Not on Windows, where the Visual Studio generator, the one
-      # people build with, takes no compiler launcher.
-      - name: Compiler cache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ github.job }}-${{ runner.os }}
-          max-size: 1G
-
-      # WebKitGTK is what the interface is drawn in; the rest is what the
-      # AppImage needs to carry.
-      - name: Window headers
-        run: >
-          sudo apt-get update && sudo apt-get install -y
-          libwebkit2gtk-4.1-dev libgtk-3-dev
-
-      - name: Configure
-        run: >
-          cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCRUCIBLE_BACKEND_DL=ON
-          -DCRUCIBLE_BUILD_TESTS=OFF
-          -DCRUCIBLE_BUILD_TOOLS=OFF
-
-      - name: Build
-        run: cmake --build build --parallel 4
-
-      - name: Stage
-        run: cmake --install build --component crucible --prefix "$PWD/stage"
-
-      - name: AppImage
-        run: bash packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"
-
-      # The runner has no display, so this is as far as the check goes: the file
-      # runs, finds its libraries, and prints its version.
-      - name: The AppImage runs
-        run: ./dist/Crucible-x86_64.AppImage --appimage-extract-and-run --version
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: Crucible-Linux
-          path: dist/Crucible-x86_64.AppImage
-
   # The compute backends, built by runtimes.yml inside this run so the release
-  # can wait for them. Only on a tag: a run by hand is a packaging check, and
-  # runtimes.yml can be run by hand on its own.
+  # can wait for them. runtimes.yml can be run by hand on its own as well.
   runtimes:
     name: Runtimes
-    if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/runtimes.yml
 
   # Whatever of them built, put on the release while it is still a draft --
@@ -250,23 +94,41 @@ jobs:
 
   release:
     name: Publish the release
-    needs: [checked, checks, macos, windows, linux, runtimes-attach]
+    needs: [checked, checks, runtimes-attach]
     # Pushing the tag is the decision to release, and the run is what decides
-    # whether it goes out: the checks have to pass (here, or on the commit
-    # before), the three installers too, and the runtimes have to be on the
-    # draft, whichever of them built. Anything less leaves the draft unseen.
+    # whether it goes out: the checks and the installers have to have passed,
+    # on the commit before or here, and the runtimes have to be on the draft,
+    # whichever of them built. Anything less leaves the draft unseen.
     if: >-
       startsWith(github.ref, 'refs/tags/v') && !cancelled()
       && needs.checked.result == 'success'
-      && (needs.checked.outputs.done == 'true' || needs.checks.result == 'success')
-      && needs.macos.result == 'success' && needs.windows.result == 'success'
-      && needs.linux.result == 'success' && needs.runtimes-attach.result == 'success'
+      && (needs.checked.outputs.run != '' || needs.checks.result == 'success')
+      && needs.runtimes-attach.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - name: The installers, from the run that passed on this commit
+        if: needs.checked.outputs.run != ''
+        uses: actions/download-artifact@v8
         with:
           pattern: Crucible-*
           path: artifacts
+          run-id: ${{ needs.checked.outputs.run }}
+          github-token: ${{ github.token }}
+
+      - name: The installers, from this run's checks
+        if: needs.checked.outputs.run == ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Crucible-*
+          path: artifacts
+
+      # All three, or nothing goes out.
+      - name: All three are here
+        run: |
+          ls -la artifacts/*
+          test -s artifacts/Crucible-macOS/Crucible-macOS.dmg
+          test -s artifacts/Crucible-Windows/Crucible-Setup.exe
+          test -s artifacts/Crucible-Linux/Crucible-x86_64.AppImage
 
       - uses: softprops/action-gh-release@v3
         with:

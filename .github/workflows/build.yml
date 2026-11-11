@@ -275,3 +275,188 @@ jobs:
             $link = Join-Path $where 'Crucible.lnk'
             if (-not (Test-Path $link)) { throw "no shortcut at $link" }
           }
+
+  # The double-click installers, built on every push and opened or run the
+  # way the platform would: a disk image to drag into Applications, a setup
+  # .exe, and an AppImage that runs where it lands. A release (release.yml)
+  # publishes the ones built here for its commit, rather than building them
+  # for the first time as it goes out, which is when a broken one used to be
+  # found.
+  dmg:
+    name: macOS disk image
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Kept by every branch's runs and main's, so a release's, on a
+      # tag, starts from main's.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          max-size: 1G
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      # The staged prefix is an ordinary install; the packaging scripts turn
+      # that layout into a bundle without moving anything inside it.
+      - name: Stage
+        run: cmake --install build --config Release --component crucible --prefix "$PWD/stage"
+
+      - name: Disk image
+        run: |
+          version="$(./stage/bin/crucible --version | awk 'NR==1 {print $NF}')"
+          bash packaging/macos/dmg.sh "$PWD/stage" "$PWD/dist/Crucible-macOS.dmg" "$version"
+
+      # Mount it and look: a .dmg that builds is not the same as one that opens,
+      # and the failure mode is a download nobody can use.
+      - name: The image opens and holds an application
+        run: |
+          hdiutil attach dist/Crucible-macOS.dmg -mountpoint /tmp/crucible-dmg -nobrowse
+          test -x /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible
+          test -f /tmp/crucible-dmg/Crucible.app/Contents/Info.plist
+          ls /tmp/crucible-dmg/Crucible.app/Contents/lib/crucible/
+          # Sealed, every library in it signed: what a bundle has to be for
+          # Gatekeeper to call it unidentified rather than damaged.
+          codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app
+          # And it starts, which a binary with a broken signature does not:
+          # Apple Silicon kills it before main.
+          /tmp/crucible-dmg/Crucible.app/Contents/MacOS/Crucible --version
+          hdiutil detach /tmp/crucible-dmg
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-macOS
+          path: dist/Crucible-macOS.dmg
+
+  setup:
+    name: Windows setup
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+    steps:
+      - uses: actions/checkout@v7
+
+      # As the Windows build and test job builds: sccache under Ninja, in
+      # Visual Studio's own environment, with the same compiler and the same
+      # Release flags the Visual Studio generator gives. Without the
+      # precompiled header, which no cache can keep a file built on, and
+      # which the tests are built without too, so what ships is built the way
+      # what was tested is.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          variant: sccache
+          max-size: 1G
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+          -DCRUCIBLE_PRECOMPILE_HEADERS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Stage
+        run: cmake --install build --component crucible --prefix "$PWD\stage"
+
+      # Inno Setup is on the Windows runner image already; installing it is the
+      # fallback rather than the plan, so a change in the image is a slower run
+      # and not a failed one.
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "no ISCC.exe at $iscc" }
+          $version = ((& .\stage\bin\crucible.exe --version) | Select-Object -First 1).Split(' ')[-1]
+          $numeric = $version.Split('-')[0]
+          & $iscc "/DStageDir=$PWD\stage" "/DVersion=$version" "/DNumericVersion=$numeric" `
+                  "/O$PWD\dist" packaging\windows\crucible.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-Windows
+          path: dist/Crucible-Setup.exe
+
+  appimage:
+    name: Linux AppImage
+    # An AppImage is only as portable as the glibc it was linked against, so it
+    # is built on the oldest runner still supported rather than the newest.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      # A compiler cache, kept between runs: llama.cpp's half of the build is
+      # the same from one run to the next, and so are most of Crucible's own
+      # files. Kept by every branch's runs and main's, so a release's, on a
+      # tag, starts from main's.
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}
+          max-size: 1G
+
+      # WebKitGTK is what the interface is drawn in; the rest is what the
+      # AppImage needs to carry.
+      - name: Window headers
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev libgtk-3-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRUCIBLE_BACKEND_DL=ON
+          -DCRUCIBLE_BUILD_TESTS=OFF
+          -DCRUCIBLE_BUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Stage
+        run: cmake --install build --component crucible --prefix "$PWD/stage"
+
+      - name: AppImage
+        run: bash packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"
+
+      # The runner has no display, so this is as far as the check goes: the file
+      # runs, finds its libraries, and prints its version.
+      - name: The AppImage runs
+        run: ./dist/Crucible-x86_64.AppImage --appimage-extract-and-run --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-Linux
+          path: dist/Crucible-x86_64.AppImage
