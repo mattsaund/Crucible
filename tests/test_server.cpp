@@ -1381,3 +1381,73 @@ TEST(the_engine_serves_a_real_model) {
     engine.stop();
     CHECK(!engine.server_status().listening);
 }
+
+TEST(crucible_closing_mid_answer_frees_the_model_only_once_the_request_is_done) {
+    // Only where a model is named, as above. A request answered by a model
+    // from the folder holds it with a lease, not the models' lock, and the
+    // engine's own thread freed every model as soon as it was told to stop,
+    // while stop() was still waiting for the server: the request went on
+    // reading from a context that was gone, and Crucible crashed as it
+    // closed. The server's thread is done with the model before it is freed.
+    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
+    if (named == nullptr || *named == '\0' || !curl_here()) {
+        return;
+    }
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    TempDir                     dir;
+    const ScopedDataHome        scoped(dir.path());
+    std::error_code             ec;
+    std::filesystem::create_directories(paths::data_dir(), ec);
+    std::filesystem::create_directory_symlink(runtimes, paths::runtimes_dir(), ec);
+    if (ec) {
+        std::printf("      skipped: the runtimes could not be linked in (%s)\n", ec.message().c_str());
+        return;
+    }
+
+    const std::filesystem::path file(named);
+    Config config;
+    config.models_dir     = file.parent_path().string();
+    config.defaults.n_ctx = 8192;
+    config.server.enabled = true;
+    config.server.port    = 0;
+    config.server.model   = file.string();
+    config.resolve_models();
+    AppState state;
+    Engine   engine(config, state, {});
+    engine.start();
+    const std::string base = "http://127.0.0.1:" + std::to_string(engine.server_status().port);
+
+    // Loaded first, so the request below is answered as soon as it comes.
+    const json hello{{"messages", json::array({json{{"role", "user"}, {"content", "Hello."}}})},
+                     {"max_tokens", 1}};
+    CHECK_EQ(post(base + "/v1/chat/completions", hello.dump()).status, 200);
+
+    // A long prompt and a long answer: still being read or written when
+    // Crucible closes.
+    std::string filler;
+    for (int i = 0; i < 1500; ++i) {
+        filler += "item" + std::to_string(i) + " ";
+    }
+    const json longer{{"messages", json::array({json{{"role", "user"}, {"content", "Count these: " + filler}}})},
+                      {"max_tokens", 2048}};
+    util::http::Response answered;
+    std::thread          asking([&] { answered = post(base + "/v1/chat/completions", longer.dump()); });
+    bool                 answering = false;
+    for (int i = 0; i < 400 && !answering; ++i) {
+        const serve::Status now = engine.server_status();
+        answering = now.answering && now.waiting.empty();
+        if (!answering) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+    CHECK(answering);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const auto began = std::chrono::steady_clock::now();
+    engine.stop();
+    asking.join();
+    const auto took = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - began);
+    CHECK(took.count() < 30);
+    CHECK(answered.status != 200);
+    CHECK(!engine.server_status().listening);
+}
