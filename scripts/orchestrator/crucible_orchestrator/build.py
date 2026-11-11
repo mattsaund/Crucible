@@ -400,7 +400,8 @@ def routed_on(task):
     examples taken away. gpt-oss-20b routed 30 and 28 either way. The needs
     alone are too little: "technical writing" by itself went to Mathematics.
     A task that names no needs keeps its detail, which is then all there is
-    to go on.
+    to go on. Since 1.0.0 the seats' worked questions are not shown beside a
+    task either (routing.ModelRouter).
     """
     needs = task.get("needs") or ""
     if not needs:
@@ -516,11 +517,12 @@ class Build:
         """Who should do `task`: the delegator's pick, or a seat made for it.
 
         A task's "needs" is what is routed on, with its title beside it (see
-        routed_on). When the pick was nobody in particular -- a fallback, or a
-        guess below the confidence floor -- and a model for new agents is
-        configured, a seat is made and the task pinned to it, so the next task
-        that needs the same thing finds it. A build sent to one seat is that
-        seat's, every task of it.
+        routed_on), against the seats' descriptions without their worked
+        questions (routing.ModelRouter). When the pick was nobody in
+        particular -- a fallback, or a guess below the confidence floor -- and
+        a model for new agents is configured, a seat is made and the task
+        pinned to it, so the next task that needs the same thing finds it. A
+        build sent to one seat is that seat's, every task of it.
         """
         if self.pinned():
             return routing.Decision(self.pinned(), 1.0, routing.PINNED, "the build was sent to it")
@@ -532,7 +534,7 @@ class Build:
         for expert in self.roster.experts:
             if needs and expert.get("name", "").strip().lower() == needs.strip().lower():
                 return routing.Decision(expert.get("id", ""), 1.0, routing.PINNED, "a seat named for it")
-        decision = cook.decide(self.core, self.params, work)
+        decision = cook.decide(self.core, self.params, work, tasks=True)
         unsure = (decision.source == routing.FALLBACK or not decision.expert
                   or decision.detail.startswith("undecided"))
         if unsure and needs and self.settings.get("can_make"):
@@ -570,7 +572,7 @@ class Build:
         # The delegator again, among those seats alone.
         narrowed = dict(self.params)
         narrowed["roster"] = [e for e in (self.params.get("roster") or []) if e.get("id") in wanted]
-        again = cook.decide(self.core, narrowed, work)
+        again = cook.decide(self.core, narrowed, work, tasks=True)
         expert = again.expert if again.expert in wanted else sorted(wanted)[0]
         return routing.Decision(expert, again.confidence, routing.PINNED,
                                 "a %s task, for %s" % (size, kind))

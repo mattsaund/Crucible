@@ -522,6 +522,27 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(build.routed_on({"needs": "N/A", "title": "N/A", "detail": "N/A"}),
                          routing.CONTENT_FREE_TASK)
 
+    def test_a_task_is_routed_as_a_task_and_the_plan_as_a_question(self):
+        # The delegator is shown a task without the seats' worked questions
+        # (routing.ModelRouter); the architect is picked the way a prompt is.
+        asked = []
+        routed = routing.route
+
+        def route(core, request):
+            asked.append((request["prompt"], bool(request.get("tasks"))))
+            return routed(core, request)
+        routing.route = route
+        try:
+            core = ScriptedCore([plan_text(), "DONE: a", "DONE: a", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"])
+            build.run(core, params(core))
+        finally:
+            routing.route = routed
+        self.assertEqual(sorted(prompt for prompt, task in asked if task),
+                         ["Python back end: Write todo.py", "technical writing: Write the README",
+                          "testing: Write the tests"])
+        self.assertEqual({prompt for prompt, task in asked if not task},
+                         {"Plan and oversee a software project: a todo CLI in Python with tests"})
+
     def test_a_handoff_inside_a_task_changes_who_holds_it(self):
         core = ScriptedCore([plan_text(), "HANDOFF: write the documentation for this", "DONE: wrote it",
                              "DONE: wrote it", "DONE: b", "DONE: b", "DONE: c", "DONE: c", "r"])

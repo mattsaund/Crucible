@@ -1452,15 +1452,18 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_not_to_the_delegator) {
     CHECK(here.find("MLX does not run on Windows") != std::string::npos);
 }
 
-TEST(a_folder_with_no_gguf_gets_the_delegator_one_and_seats_it) {
-    // A Mac's folder may hold MLX models only, and none of them can route.
-    // Beside the delegator's menu, Get one opens Models on a small GGUF, and
-    // once it is in the folder it is the delegator.
-    const std::string set = page().eval(R"JS(
-      (function () {
+namespace {
+
+/// Settings' General page with the calls it makes kept in window.__calls and
+/// answered with nothing much, a folder of `models` and the delegator
+/// `chosen`, on a machine with `cards`. Undone by delegator_page_restored.
+std::string delegator_page(const std::string& models, const std::string& chosen, const std::string& cards) {
+    return page().eval(R"JS(
+      (function (models, chosen, cards) {
         window.__calls = [];
         window.__kept = { call: call, render: render, models: state.models, config: state.config,
-                          view: state.view, page: state.settingsPage, lastView: state.lastView };
+                          view: state.view, page: state.settingsPage, lastView: state.lastView,
+                          devices: state.devices };
         render = function () {};
         call = function (method, params) {
           window.__calls.push([method, params]);
@@ -1470,12 +1473,33 @@ TEST(a_folder_with_no_gguf_gets_the_delegator_one_and_seats_it) {
           if (method === 'config') return Promise.resolve(state.config);
           return Promise.resolve({});
         };
-        state.config = Object.assign({}, state.config || {}, { router: { model: '' } });
-        state.models = { directory: '/m', display: '/m', models: [
-          { name: 'mlx-community/Qwen3-4B-4bit', path: '/m/mlx-community/Qwen3-4B-4bit', bytes: 2000, format: 'mlx' }] };
+        state.config = Object.assign({}, state.config || {}, { router: { model: chosen } });
+        state.models = { directory: '/m', display: '/m', models: models };
+        state.devices = { gpus: cards.map(function (bytes, i) {
+                            return { index: i, name: 'card', backend: 'CUDA', memory_total: bytes, memory_free: bytes }; }),
+                          support: { split: '', gpu_only: '', vram_only: '' } };
         state.settingsPage = 'general';
         return 'set';
-      })())JS");
+      }))JS" + std::string("(") + models + ", '" + chosen + "', " + cards + ")");
+}
+
+void delegator_page_restored() {
+    page().eval("(function (k) { call = k.call; render = k.render; state.models = k.models; state.config = k.config;"
+                " state.view = k.view; state.settingsPage = k.page; state.lastView = k.lastView;"
+                " state.devices = k.devices; delegatorWanted = null;"
+                " market().selected = ''; market().detail = null; market().query = ''; market().results = null; })"
+                "(window.__kept)");
+}
+
+}  // namespace
+
+TEST(a_folder_with_no_gguf_gets_the_delegator_one_and_seats_it) {
+    // A Mac's folder may hold MLX models only, and none of them can route.
+    // Beside the delegator's menu, Get one opens Models on a small GGUF, and
+    // once it is in the folder it is the delegator.
+    const std::string set = delegator_page(
+        "[{ name: 'mlx-community/Qwen3-4B-4bit', path: '/m/mlx-community/Qwen3-4B-4bit', bytes: 2000, format: 'mlx' }]",
+        "", "[]");
     CHECK_EQ(set, "set");
     const std::string drawn = page().eval("views.settings()");
     CHECK(drawn.find("Qwen3-4B-4bit (MLX, ") != std::string::npos);
@@ -1507,10 +1531,61 @@ TEST(a_folder_with_no_gguf_gets_the_delegator_one_and_seats_it) {
     CHECK(blocked.find("<span class=\"bad\">Permission denied</span>") != std::string::npos);
     CHECK(blocked.find("0 models") == std::string::npos);
 
-    page().eval("(function (k) { call = k.call; render = k.render; state.models = k.models; state.config = k.config;"
-                " state.view = k.view; state.settingsPage = k.page; state.lastView = k.lastView;"
-                " market().selected = ''; market().detail = null; market().query = ''; market().results = null; })"
-                "(window.__kept)");
+    // Cards that hold a better delegator get that one instead.
+    page().eval("state.models = { directory: '/m', display: '/m', models: [] };"
+                " state.devices.gpus = [{ index: 0, name: 'card', backend: 'Metal', memory_total: 11e9, memory_free: 9e9 }];"
+                " actions['delegator-get']()");
+    CHECK_EQ(page().eval("market().selected"), "unsloth/Qwen3-4B-Instruct-2507-GGUF");
+    delegator_page_restored();
+}
+
+TEST(a_weaker_delegator_is_offered_a_better_one_the_cards_hold) {
+    const char* const lfm = "{ name: 'LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-F16.gguf', path: '/m/l.gguf', bytes: 5e9, format: 'gguf' }";
+    const auto offered = [] {
+        const std::string drawn = page().eval("views.settings()");
+        return drawn.find("Qwen3 4B routes better") != std::string::npos
+            && drawn.find("data-act=\"delegator-get\"") != std::string::npos;
+    };
+    const auto seated = [] {
+        return page().eval("JSON.stringify(window.__calls.filter(function (c) { return c[0] === 'config.set'; })"
+                           ".map(function (c) { return c[1].router.model; }))");
+    };
+
+    // An LFM chosen beside cards of 40 GB: a couple of words and a button,
+    // which opens Models on Qwen3 4B and seats it once it is in the folder.
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-F16.gguf",
+                            "[12e9, 16e9, 12e9]"),
+             "set");
+    CHECK(offered());
+    page().eval("actions['delegator-get']()");
+    CHECK_EQ(page().eval("market().selected"), "unsloth/Qwen3-4B-Instruct-2507-GGUF");
+    page().eval("seatWantedDelegator()");
+    CHECK_EQ(seated(), "[]");
+    page().eval("state.models.models.push({ name: 'unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',"
+                " path: '/m/q.gguf', bytes: 2.5e9, format: 'gguf' }); seatWantedDelegator()");
+    CHECK_EQ(seated(), R"(["unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])");
+    delegator_page_restored();
+
+    // Not when the cards are too small for it (a quarter of them at most),
+    // nor beside any quantization of it, nor beside a model nobody measured.
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "LFM2.5-1.2B-Instruct-Q8_0.gguf", "[8e9]"), "set");
+    CHECK(!offered());
+    delegator_page_restored();
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf", "[24e9]"), "set");
+    CHECK(!offered());
+    delegator_page_restored();
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "gpt-oss-20b-MXFP4.gguf", "[24e9]"), "set");
+    CHECK(!offered());
+    delegator_page_restored();
+
+    // Another delegator chosen while it downloads is not overruled.
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "LFM2.5-1.2B-Instruct-Q8_0.gguf", "[12e9]"), "set");
+    CHECK(offered());
+    page().eval("actions['delegator-get'](); state.config.router.model = 'mine.gguf';"
+                " state.models.models.push({ name: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf', path: '/m/q.gguf',"
+                " bytes: 2.5e9, format: 'gguf' }); seatWantedDelegator()");
+    CHECK_EQ(seated(), "[]");
+    delegator_page_restored();
 }
 
 TEST(a_model_is_condensed_from_the_create_tab) {

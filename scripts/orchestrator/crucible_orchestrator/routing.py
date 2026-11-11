@@ -12,19 +12,20 @@ and does the arithmetic. Everything about *how* a route is chosen is here, so it
 can be changed and measured without rebuilding anything; everything about the
 weights stays where the weights are.
 
-Measured with crucible-routebench in 0.9.6 on an RTX 4070, with each order's
-prompt kept between routes and gpt-oss-20b given 12 of its 24 layers there:
-on Crucible's 54-prompt benchmark, 49/54 with LFM2.5-1.2B and 54/54 with
-gpt-oss-20b; on the five seats of tools/routes/five-seats.json, 48/50 and
-49/50; and on tools/routes/build-tasks.json, the tasks a build hands out,
-worded the way it words them, 19/31 and 30/31. LFM gives all six "CSS
-styling" tasks there to Writing, and still does with the seats shown in
-balanced orders: the lean comes with the task, not with where Programming is
-listed. The card matters to a close call: worded as 0.9.5 worded them, with
-their detail, gpt-oss routed 28 of these tasks on an RTX 3060 and 30 on the
-4070. See ModelRouter and Roster.orders for why three orders rather than one.
-LFM's 54-prompt score was 50 while its later labels were scored behind the
-ones before them, which a cache it cannot cut back used to leave in place.
+Measured with crucible-routebench in 1.0.0, with each order's prompt kept
+between routes, LFM2.5-1.2B and LFM2.5-2.6B on an RTX 4070 and gpt-oss-20b
+whole on an RTX 5060 Ti: on Crucible's 54-prompt benchmark, 49/54, 51/54 and
+52/54; on the five seats of tools/routes/five-seats.json, 48/50, 49/50 and
+50/50; and on tools/routes/build-tasks.json, the tasks a build hands out,
+worded the way it words them and routed the way it routes them, 27/31, 27/31
+and 30/31. Those were 19, 22 and 29 while a build's tasks were routed the way
+questions are: both LFMs gave the "CSS styling" tasks to Writing under every
+wording and order until the seats' worked questions stopped being shown beside
+them (see ModelRouter). The card matters to a close call: gpt-oss-20b given
+12 of its 24 layers on the 4070 routed all 54 of the benchmark in 0.9.6. See
+ModelRouter and Roster.orders for why three orders rather than one. LFM's
+54-prompt score was 50 while its later labels were scored behind the ones
+before them, which a cache it cannot cut back used to leave in place.
 """
 
 import math
@@ -46,6 +47,13 @@ PINNED = "pinned"
 # quarter, and 29 against 30 on an RTX 4070; LFM2.5-1.2B, 48 of the 54
 # against 49 on the 3060 and 50 against 49 on the 4070. A quarter stays.
 CALIBRATION = 0.25
+
+# And of the lean on a build's task, which is routed on the seats'
+# descriptions alone (see ModelRouter): a tenth. On tools/routes/
+# build-tasks.json it routed 27 of the 31 tasks with LFM2.5-1.2B, 27 with
+# LFM2.5-2.6B and 30 with gpt-oss-20b, against 25, 25 and 30 with a quarter
+# and 27, 26 and 30 with none (1.0.0).
+TASK_CALIBRATION = 0.1
 
 # What a question with no content looks like. Whatever the delegator answers to
 # these is not about a question, because there is none: it is its prior.
@@ -276,7 +284,7 @@ class ModelRouter:
     # the prompt it was rendered from. See prefix.
     _prefix = {}
 
-    def __init__(self, core, roster, delegator_path, calibration=CALIBRATION, method=""):
+    def __init__(self, core, roster, delegator_path, calibration=CALIBRATION, method="", tasks=False):
         self.core = core
         self.roster = roster
         self.path = delegator_path
@@ -286,18 +294,30 @@ class ModelRouter:
         # any of them at once, comma-separated: "single" scores the one order,
         # "thirds" turns it by thirds (Roster.orders), "blurbs" asks about
         # every seat in its description too (Roster.asked), "requests" names
-        # what is labeled a request (Roster.system_prompt), and "task-lean"
-        # measures the lean on a task as well (CONTENT_FREE_TASK).
+        # what is labeled a request (Roster.system_prompt), "task-lean"
+        # measures the lean on a task as well (CONTENT_FREE_TASK), and
+        # "worked" shows a build's task the worked questions too.
         methods = set((method or "").split(","))
         self.orders = roster.orders(1 if "single" in methods else 3, thirds="thirds" in methods)
         self.blurbs = "blurbs" in methods
         self.requests = "requests" in methods
         self.content_free = CONTENT_FREE + ((CONTENT_FREE_TASK,) if "task-lean" in methods else ())
+        # A build's tasks are routed on what each seat says it does, with no
+        # worked questions. Those are questions where a task is work to do
+        # ("CSS styling: Style the app"), and a small delegator goes by them
+        # far more than by the list above them (see conversation). Shown them,
+        # both LFMs gave the "CSS styling" tasks of tools/routes/
+        # build-tasks.json to Writing under every wording and order; shown
+        # the descriptions alone, where Programming's names HTML and CSS,
+        # LFM2.5-1.2B gave every one of them to Programming. LFM2.5-1.2B then
+        # routed 27 of the 31 tasks against 19, LFM2.5-2.6B 27 against 22, and
+        # gpt-oss-20b 30 against 29, at TASK_CALIBRATION (1.0.0).
+        self.worked = not tasks or "worked" in methods
 
     def shown(self, order):
         """The instructions and the worked examples, in `order`."""
         return (self.roster.system_prompt(order, self.requests),
-                tuple(self.roster.examples(order, self.blurbs)))
+                tuple(self.roster.examples(order, self.blurbs)) if self.worked else ())
 
     def conversation(self, question, order):
         # The worked examples as real turns: pasted into the system prompt
@@ -455,6 +475,15 @@ def let_go(core):
         pass
 
 
+def router_for(core, roster, ready, request):
+    """The delegator's router for a request. One with "tasks" set is a build's
+    task, routed on the seats' descriptions with a tenth of the lean taken
+    out (see ModelRouter); a "calibration" in the request is used either way."""
+    tasks = bool(request.get("tasks"))
+    calibration = float(request.get("calibration", TASK_CALIBRATION if tasks else CALIBRATION))
+    return ModelRouter(core, roster, ready.get("path", ""), calibration, request.get("method", ""), tasks)
+
+
 def route(core, request):
     """The whole decision, from a request the core sends: see `handle_route`."""
     roster = Roster(request.get("roster"))
@@ -472,10 +501,8 @@ def route(core, request):
     ready = core.call("delegator.ready") or {}
     try:
         if ready.get("available"):
-            calibration = float(request.get("calibration", CALIBRATION))
             try:
-                decision = ModelRouter(core, roster, ready.get("path", ""), calibration,
-                                       request.get("method", "")).route(prompt)
+                decision = router_for(core, roster, ready, request).route(prompt)
             except Exception as error:   # the delegator could not be had after all
                 decision = keyword_route(prompt, roster)
                 decision.detail = "delegator failed (" + str(error) + "), used keywords"
@@ -495,8 +522,7 @@ def explain(core, request):
     try:
         if not ready.get("available"):
             raise ValueError("there is no delegator to explain")
-        calibration = float(request.get("calibration", CALIBRATION))
-        router = ModelRouter(core, roster, ready.get("path", ""), calibration, request.get("method", ""))
+        router = router_for(core, roster, ready, request)
         order = router.orders[0]
         bias = router.bias(order)
         raw = router.score(request.get("prompt") or "", order, cancelable=False)
@@ -505,4 +531,4 @@ def explain(core, request):
     if not isinstance(raw, list):
         raise ValueError("the delegator could not score that prompt")
     return {"labels": router.labels, "raw": raw, "bias": bias,
-            "calibrated": [s - calibration * b for s, b in zip(raw, bias)]}
+            "calibrated": [s - router.calibration * b for s, b in zip(raw, bias)]}
