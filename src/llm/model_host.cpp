@@ -1708,6 +1708,7 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
         loaded->on_cards_.push_back(card.total());
     }
     if (role == Role::Delegator) {
+        router_loaded_ = params;
         // What routing kept the last time this delegator was loaded this way.
         router_key_ = context_key(params);
         if (kept_key_ == router_key_) {
@@ -1857,6 +1858,103 @@ void ModelHost::release_router() {
     }
     router_.reset();
     router_on_processor_ = false;
+}
+
+LoadedModel* ModelHost::router_for_serving(int n_ctx) {
+    if (!router_) {
+        return nullptr;
+    }
+    LoadedModel& router = *router_;
+    if (n_ctx <= router.context_size()) {
+        return &router;
+    }
+    if (router.serving_asked_ == n_ctx) {
+        return router.serving_ ? router.serving_.get() : &router;
+    }
+    release_router_serving();
+    router.serving_asked_ = n_ctx;
+
+    // The cache follows the layers, so each card the delegator is on is
+    // asked for its share of a longer one, beside the compute buffers a
+    // context of its own has, and the headroom every load leaves. One on the
+    // processor asks the machine's memory instead.
+    const ModelParams&               loaded = router_loaded_;
+    const ModelShape                 shape  = read_model_shape(loaded.path);
+    const std::vector<ComputeDevice> cards  = loaded.on_processor ? std::vector<ComputeDevice>{} : gpu_devices();
+    std::uint64_t                    held   = 0;
+    for (const ComputeDevice& card : cards) {
+        if (static_cast<std::size_t>(card.index) < router.on_cards_.size()) {
+            held += router.on_cards_[static_cast<std::size_t>(card.index)];
+        }
+    }
+    const auto fits = [&](int tokens) {
+        if (!shape.known) {
+            return true;   // nothing to judge by: the context's own allocation says
+        }
+        const std::uint64_t cache = shape.kv_bytes(tokens, shape.sliding_cells(tokens, loaded.n_batch,
+                                                                               loaded.window_cache))
+                                  + shape.state_bytes();
+        const std::uint64_t compute = shape.compute_bytes(loaded.n_batch);
+        if (held == 0) {
+            std::uint64_t used  = 0;
+            std::uint64_t total = 0;
+            return !util::system_memory(used, total) || memory_has_room(cache + compute, 0, 0, used, total);
+        }
+        for (const ComputeDevice& card : cards) {
+            const auto          index = static_cast<std::size_t>(card.index);
+            const std::uint64_t here  = index < router.on_cards_.size() ? router.on_cards_[index] : 0;
+            if (here == 0) {
+                continue;
+            }
+            const auto share = static_cast<std::uint64_t>(static_cast<double>(cache) * static_cast<double>(here)
+                                                          / static_cast<double>(held));
+            if (share + compute + kCardHeadroom > card.memory_free) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const int chosen = roomiest_context(router.context_size(), n_ctx, shape.trained, fits);
+    if (chosen <= router.context_size()) {
+        return &router;
+    }
+    ModelParams params = loaded;
+    params.n_ctx       = chosen;
+    params.sequences   = 1;
+    params.own_caches  = false;
+    llama_context* ctx = llama_init_from_model(router.model_, context_params_for(params));
+    if (ctx == nullptr) {
+        return &router;
+    }
+    router.serving_.reset(new LoadedModel(router.model_, ctx, router.path_));
+    LoadedModel& serving       = *router.serving_;
+    serving.owns_model_        = false;
+    serving.window_cache_      = params.window_cache;
+    serving.part_on_processor_ = router.part_on_processor_;
+    // What it holds is the delegator's to give back when it goes, which is
+    // what freeing the delegator for an expert's room is planned on.
+    const std::vector<CardNeed> holds = cards_of(ctx);
+    serving.on_cards_.resize(holds.size());
+    router.on_cards_.resize(std::max(router.on_cards_.size(), holds.size()));
+    for (std::size_t i = 0; i < holds.size(); ++i) {
+        serving.on_cards_[i] = holds[i].cache + holds[i].compute;
+        router.on_cards_[i] += serving.on_cards_[i];
+    }
+    note(std::filesystem::path(loaded.path).filename().string() + ": a context of " + std::to_string(chosen)
+         + " tokens of its own for the API server, beside routing's " + std::to_string(router.context_size()));
+    return &serving;
+}
+
+void ModelHost::release_router_serving() {
+    if (!router_ || !router_->serving_) {
+        return;
+    }
+    LoadedModel& router = *router_;
+    for (std::size_t i = 0; i < router.serving_->on_cards_.size() && i < router.on_cards_.size(); ++i) {
+        router.on_cards_[i] -= std::min(router.on_cards_[i], router.serving_->on_cards_[i]);
+    }
+    router.serving_.reset();
+    router.serving_asked_ = 0;
 }
 
 bool ModelHost::processor_may_hold(const ModelParams& params) const {

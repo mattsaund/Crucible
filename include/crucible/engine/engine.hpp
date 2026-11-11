@@ -774,6 +774,7 @@ private:
     public:
         explicit Served(Engine& engine) : engine_(engine) {}
         std::string   model() const override { return served_id(engine_.config()); }
+        std::string   embedder() const override { return embedder_id(engine_.config()); }
         serve::Answer answer(const serve::Ask& ask, const serve::Sink& sink) override {
             return engine_.serve_request(ask, sink);
         }
@@ -785,6 +786,17 @@ private:
     /// A request from the server, answered. On the server's own thread.
     serve::Answer serve_request(const serve::Ask& ask, const serve::Sink& sink);
 
+    /// An embeddings request, answered by the model it names: the one chosen
+    /// for embeddings, held as the served model is, or the model served.
+    serve::Answer serve_embeddings(const serve::Ask& ask, const serve::Sink& sink, const Config& config,
+                                   const CancelCallback& cancel);
+
+    /// The file embeddings come from when one is chosen apart from the model
+    /// served, and what the server calls it: that file's name, or the
+    /// served id when none is chosen.
+    static std::string embedder_file(const Config& config);
+    static std::string embedder_id(const Config& config);
+
     /// The seat a model the server serves is held under, and what the
     /// right-hand panel says has it. Capitalized, which no seat's id is.
     static constexpr const char* kServerSeat = "Server";
@@ -794,10 +806,12 @@ private:
     void configure_server(const Config& config);
 
     /// The file the server answers with, as `config` has it: the
-    /// delegator's, or the model it names. Empty when there is none.
+    /// delegator's, or the model it names. Empty when there is none, and for
+    /// a provider's model, which has no file here.
     static std::string served_file(const Config& config);
 
-    /// What the server calls it: that file's name.
+    /// What the server calls it: that file's name, or a provider's model's
+    /// own name.
     static std::string served_id(const Config& config);
 
     /// How the served model loads: as the seat that has the same file does,
@@ -805,13 +819,23 @@ private:
     /// `seat`, when given, is set to that seat, or to kServerSeat for none.
     static ModelParams served_params(const Config& config, ExpertId* seat = nullptr);
 
+    /// The same, for `file`: the served model's, or the embeddings model's.
+    static ModelParams file_params(const Config& config, const std::string& file, ExpertId* seat = nullptr);
+
+    /// A model from the folder, held for a request as a seat holds one:
+    /// loaded when it is not in memory, waited for when somebody else is
+    /// answering with it. Null, with `out` saying why, when it cannot be had.
+    HeldModel hold_served(const ModelParams& params, const ExpertId& holder, const serve::Sink& sink,
+                          const CancelCallback& cancel, serve::Answer& out);
+
     /// Whoever a request waits behind while the models' lock is taken, in
     /// the words Settings shows: "the chat", "the build", "loading".
     std::string serve_blocker() const;
 
     /// One request, answered by `model` with `params` for what the request
     /// left out. `local` is the same model when it is one on this machine,
-    /// which a text completion needs; null otherwise.
+    /// which answers a conversation in OpenAI's own shape, tools and all,
+    /// and a text completion; null otherwise.
     serve::Answer serve_with(ChatModel& model, LoadedModel* local, ModelParams params,
                              const serve::Ask& ask, const serve::Sink& sink, const CancelCallback& cancel);
 

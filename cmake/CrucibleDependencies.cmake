@@ -599,6 +599,60 @@ if(WIN32)
     target_link_libraries(crucible_httplib PUBLIC ws2_32)
 endif()
 
+# --- llama.cpp's chat templates: the API server's tools and JSON ---------------
+#
+# A request to the API server that offers tools has them written into the
+# prompt the way the model's own chat template writes them, which is Jinja,
+# and the calls the model makes are read back out of its answer in whatever
+# shape its family writes them: harmony's channels, Qwen's tags, LFM's lists
+# and a dozen more. A schema the answer is held to becomes a grammar the same
+# way. llama.cpp's `common` does all of it for llama-server -- the Jinja
+# engine, a parser per family and one worked out from the template for the
+# rest, JSON Schema to GBNF -- and builds only with LLAMA_BUILD_COMMON, which
+# is off here: the rest of `common` is argument parsing, downloads and
+# speculative decoding. So these pieces are compiled from this tree, about a
+# hundred seconds of compiler time, and src/llm/llama_common.cpp stands in for
+# the few functions they call from the files that would bring the rest along.
+set(_chat_dir "${llama_SOURCE_DIR}/common")
+if(EXISTS "${_chat_dir}/parsers/sources.cmake")
+    include("${_chat_dir}/parsers/sources.cmake")   # LLAMA_CHAT_PARSERS_SOURCES, one per family
+else()
+    file(GLOB LLAMA_CHAT_PARSERS_SOURCES "${_chat_dir}/parsers/*.cpp")
+endif()
+add_library(crucible_llama_chat STATIC
+    ${LLAMA_CHAT_PARSERS_SOURCES}
+    "${_chat_dir}/chat.cpp"
+    "${_chat_dir}/chat-auto-parser-generator.cpp"
+    "${_chat_dir}/chat-auto-parser-helpers.cpp"
+    "${_chat_dir}/chat-diff-analyzer.cpp"
+    "${_chat_dir}/chat-peg-parser.cpp"
+    "${_chat_dir}/peg-parser.cpp"
+    "${_chat_dir}/json.cpp"
+    "${_chat_dir}/json-schema.cpp"
+    "${_chat_dir}/json-schema-to-grammar.cpp"
+    "${_chat_dir}/trie.cpp"
+    "${_chat_dir}/unicode.cpp"
+    "${_chat_dir}/jinja/caps.cpp"
+    "${_chat_dir}/jinja/lexer.cpp"
+    "${_chat_dir}/jinja/parser.cpp"
+    "${_chat_dir}/jinja/runtime.cpp"
+    "${_chat_dir}/jinja/string.cpp"
+    "${_chat_dir}/jinja/value.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/llm/llama_common.cpp")
+target_include_directories(crucible_llama_chat SYSTEM PUBLIC "${_chat_dir}")
+# The same nlohmann/json as the rest of Crucible, rather than the copy in
+# llama.cpp's vendor folder: one version of its templates in the program.
+target_link_libraries(crucible_llama_chat PUBLIC llama PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
+set_target_properties(crucible_llama_chat PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+    # llama.cpp's own build sets these for everything under it, which this
+    # target is not: the parsers' templates outgrow an object file's sections.
+    target_compile_options(crucible_llama_chat PRIVATE /w /bigobj)
+    target_compile_definitions(crucible_llama_chat PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_compile_options(crucible_llama_chat PRIVATE -w)
+endif()
+
 # ---------------------------------------------------------------------------
 # Treat every dependency's headers as system headers, so Crucible can keep a
 # strict warning set without drowning in diagnostics from llama.cpp.

@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -15,6 +16,7 @@
 
 #include "crucible/config/config.hpp"
 #include "crucible/llm/chat_model.hpp"
+#include "crucible/llm/open_chat.hpp"
 
 // llama.cpp's token type, spelled out so this header does not drag llama.h in.
 using llama_token = std::int32_t;
@@ -22,6 +24,7 @@ using llama_token = std::int32_t;
 struct llama_model;
 struct llama_context;
 struct mtmd_context;
+struct common_chat_templates;
 
 namespace crucible {
 
@@ -48,6 +51,19 @@ std::size_t reusable_prefix(const std::vector<llama_token>& cached,
 /// than the window reaches, which also covers a chunked window: that reaches
 /// back to where its chunk began, never further.
 bool holds_window(std::int32_t oldest, std::size_t position, std::int32_t window);
+
+/// `cancel` asked inside a decode of `ctx` as well as between them, for as
+/// long as this lives. See loaded_model.cpp.
+class Aborting {
+public:
+    Aborting(llama_context* ctx, const CancelCallback& cancel);
+    ~Aborting();
+    Aborting(const Aborting&)            = delete;
+    Aborting& operator=(const Aborting&) = delete;
+
+private:
+    llama_context* ctx_;
+};
 
 }  // namespace detail
 
@@ -134,6 +150,23 @@ public:
                                     const CancelCallback& cancel,
                                     const std::string& prefix = {});
 
+    /// Answer a conversation in OpenAI's shape, for the API server: rendered
+    /// through the model's own chat template, tools and all, and its answer
+    /// read back as it comes into reasoning, content and tool calls, which
+    /// go to `sink` as llama-server streams them. A schema, or a tool call
+    /// the request requires, holds the answer to a grammar from the first
+    /// token; tools the model may call or not, from where a call starts.
+    /// See open_chat.hpp.
+    OpenChatResult open_chat(const OpenChat& request, const OpenChatSink& sink);
+
+    /// Each of `texts` as an embedding: the model's hidden state pooled over
+    /// the text the way the model says to -- an embedding model's file names
+    /// its pooling -- or averaged for a model that names none, and scaled to
+    /// unit length, as OpenAI's are. Read in a context of its own, made the
+    /// first time and kept with the model, so the conversation in the one it
+    /// answers with is not disturbed.
+    Embedded embed(const std::vector<std::string>& texts, const CancelCallback& cancel);
+
     /// How many tokens `text` becomes for this model.
     ///
     /// The only honest way to ask "will this conversation fit". A character
@@ -152,6 +185,10 @@ public:
     /// What it holds on each card, by ggml device index. See on_cards_.
     const std::vector<std::uint64_t>& on_cards() const { return on_cards_; }
 
+    /// The same weights in a context of their own, for the API server: see
+    /// ModelHost::router_for_serving. Null when none has been made.
+    LoadedModel* serving() const { return serving_.get(); }
+
 private:
     friend class ModelHost;
     friend class BatchChat;   // decodes many sequences of this context at once
@@ -165,10 +202,73 @@ private:
     /// compare against.
     ChatResult chat_with_pictures(const ChatRequest& request, const ChatSink& sink);
 
+    /// chat_with_pictures' first half, which open_chat shares: the pictures'
+    /// bytes, `blobs`, decoded and read through the projector into a context
+    /// started over, after the prompt `render(first)` gives -- a marker where
+    /// each picture from `first` on goes, a word about each one before it.
+    /// The oldest are left out until the prompt fits, never those of the
+    /// newest message that has any; `owners` says which message each came
+    /// with. Empty, or why they could not be read; `stats.canceled` when
+    /// `cancel` stopped it.
+    std::string read_pictures(const std::vector<std::string>& blobs, const std::vector<std::size_t>& owners,
+                              const std::function<std::string(std::size_t first)>& render,
+                              const ModelParams& params, const CancelCallback& cancel, GenerationStats& stats);
+
     /// The answer, sampled from whatever the context holds now: the second
     /// half of generate(), shared with chat_with_pictures.
     void sample(const ModelParams& params, const TokenCallback& on_token, const CancelCallback& cancel,
                 const std::string& grammar, GenerationStats& stats);
+
+    /// generate()'s first half: `prompt` read into the cache from where the
+    /// cache already holds it. False when there is nothing to sample from --
+    /// an empty prompt, a decode that failed, or `cancel` -- with `stats`
+    /// saying which.
+    bool read_prompt(const std::string& prompt, const ModelParams& params, const CancelCallback& cancel,
+                     GenerationStats& stats);
+
+    /// What open_chat holds an answer to, and how its pieces are handed on:
+    /// the parts of a chat template's plan that are about sampling.
+    struct Shaping {
+        /// GBNF, or empty for none. A lazy grammar holds the answer only from
+        /// a trigger on -- a pattern the answer so far matches, or a token --
+        /// for a model that may call a tool or may answer in words.
+        std::string              grammar;
+        bool                     lazy = false;
+        std::vector<std::string> patterns;
+        std::vector<llama_token> triggers;
+
+        /// What the prompt already wrote of what the grammar describes, the
+        /// template's opening of the reply: read by the grammar before the
+        /// first token is sampled.
+        std::vector<llama_token> prefill;
+
+        /// Where a thinking block opens and closes. A lazy grammar is set
+        /// aside inside one: a model weighing a call in its reasoning has not
+        /// made one. `thinking` when the prompt leaves the model inside one.
+        std::string              think_open;
+        std::vector<std::string> think_close;
+        bool                     thinking = false;
+
+        /// Special tokens written out as their text, the markers the parser
+        /// reads, where every other special token is written as nothing.
+        std::vector<llama_token> shown;
+
+        /// Each token's text as it comes, which may end partway through a
+        /// character. False ends the answer there.
+        std::function<bool(std::string_view piece, llama_token token)> on_piece;
+    };
+
+    /// sample(), for open_chat: held to the grammar as `shaping` says, each
+    /// piece handed on with its token. The grammar is applied first, before
+    /// any truncation, as build_sampler_chain puts it, but outside the chain
+    /// so that a lazy one can be set aside in a thinking block. Empty, or why
+    /// the answer ended early: the grammar left the model nothing to say.
+    std::string sample_shaped(const ModelParams& params, const Shaping& shaping, const CancelCallback& cancel,
+                              GenerationStats& stats);
+
+    /// The model's chat templates, Jinja, parsed once and kept: see
+    /// open_chat. Null, with why, when the model's will not parse.
+    const common_chat_templates* chat_templates(std::string& error);
 
     /// Reuse whatever of `tokens` the context already holds, and return how
     /// many tokens that turned out to be. Leaves the cache holding exactly that
@@ -243,6 +343,28 @@ private:
     /// tokens the model reads. Null for a model that reads text only.
     mtmd_context*  vision_ = nullptr;
     std::string    projector_;
+
+    /// The chat templates open_chat renders with, parsed the first time it
+    /// is asked: the template's Jinja and the parser worked out from it. A
+    /// shared_ptr for the deleter it carries, which only open_chat.cpp,
+    /// where the type is whole, can name.
+    std::shared_ptr<common_chat_templates> templates_;
+    std::string                            templates_error_;
+    bool                                   templates_tried_ = false;
+
+    /// The context embed() reads in, made the first time it is asked, and
+    /// how many tokens it reads at once.
+    llama_context* embedder_     = nullptr;
+    int            embedder_ctx_ = 0;
+
+    /// A second context on these weights, for the API server's
+    /// conversations, and the context it was asked to have. Freed before
+    /// the weights it shares. See ModelHost::router_for_serving.
+    std::unique_ptr<LoadedModel> serving_;
+    int                          serving_asked_ = 0;
+
+    /// False for a serving_ context, whose weights are its holder's.
+    bool owns_model_ = true;
 
     /// One caller at a time. A context is one conversation's worth of state
     /// on the card, and a build's agent and the chat may both be answered by

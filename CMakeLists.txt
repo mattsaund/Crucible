@@ -196,6 +196,7 @@ add_library(crucible_core STATIC
     src/app/relocate.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
+    src/llm/open_chat.cpp
     src/llm/batch_chat.cpp
     src/llm/remote_model.cpp
     src/llm/spend.cpp
@@ -244,7 +245,7 @@ target_include_directories(crucible_core PUBLIC
 
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
-    PRIVATE Threads::Threads crucible_miniz crucible_httplib)
+    PRIVATE Threads::Threads crucible_miniz crucible_httplib crucible_llama_chat)
 # llama-ext.h, llama.cpp's staging header: the only place it says what a load
 # would put on each card. See measured_need in src/llm/model_host.cpp.
 target_include_directories(crucible_core SYSTEM PRIVATE "${llama_SOURCE_DIR}/src")
