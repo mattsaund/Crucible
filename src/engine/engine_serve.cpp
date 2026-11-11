@@ -352,7 +352,12 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
     };
     const bool pictures = std::any_of(ask.messages.begin(), ask.messages.end(),
                                       [](const ChatMessage& message) { return !message.images.empty(); });
+    // What only a chat template can write: tools the model may call, the
+    // calls and results of a conversation, an answer held to a schema.
+    const bool offered  = !ask.tools.is_null() && ask.tool_choice != "none";
+    const bool templated = offered || has_tool_turns(ask.chat) || !ask.schema.empty();
     GenerationStats stats;
+    bool            answered = false;   ///< by the model's own template
 
     if (ask.raw) {
         // A text completion is the prompt as it is, with no template: only a
@@ -367,7 +372,8 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
             return too_long(asked);
         }
         sink.waiting("");
-        stats = local->generate(ask.prompt, params, [&sink](std::string_view text) { sink.answer(text); }, cancel);
+        stats    = local->generate(ask.prompt, params, [&sink](std::string_view text) { sink.answer(text); }, cancel);
+        answered = true;
     } else if (local != nullptr) {
         // OpenAI's shape, through the model's own template: the tools and the
         // calls in it written as the model was trained to read them, and the
@@ -401,17 +407,23 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
         if (result.too_long > 0) {
             return too_long(result.too_long);
         }
-        if (!result.error.empty()) {
+        // A template that cannot render a conversation of plain turns -- a
+        // Jinja this one cannot read, or one refusing a system message --
+        // still leaves the model the chat's own way of being asked, which
+        // is how every request was put to it before there were tools.
+        answered = !(result.untemplated && !templated);
+        if (answered && !result.error.empty()) {
             out.status = result.refused ? 400 : 500;
             out.error  = result.error;
         }
         stats = result.stats;
-    } else {
-        // A provider's model, or an MLX one, asked as the chat asks it: what
-        // only a chat template can write is refused rather than dropped, for
-        // an answer to a question it never saw is no answer.
-        const bool offered = !ask.tools.is_null() && ask.tool_choice != "none";
-        if (offered || has_tool_turns(ask.chat) || !ask.schema.empty()) {
+    }
+    if (!answered) {
+        // A provider's model, an MLX one, or one whose template would not
+        // render the conversation, asked as the chat asks it: what only a
+        // chat template can write is refused rather than dropped, for an
+        // answer to a question it never saw is no answer.
+        if (templated) {
             out.status = 400;
             out.error  = std::string(offered || has_tool_turns(ask.chat) ? "Tools need" : "A JSON response_format needs")
                        + " a GGUF model on this machine, and this server's is "

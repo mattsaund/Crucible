@@ -223,6 +223,7 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     std::string why;
     const common_chat_templates* templates = chat_templates(why);
     if (templates == nullptr) {
+        result.untemplated = true;
         return refused("This model's chat template could not be read: " + why);
     }
     const llama_vocab* vocab = llama_model_get_vocab(model_);
@@ -326,6 +327,7 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     if (blobs.empty()) {
         const std::string prompt = render(0);
         if (!session) {
+            result.untemplated = true;
             return refused(failed);
         }
         // Measured before it is read rather than cut to fit: a model that
@@ -351,6 +353,7 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         // Rendered once before the pictures are, so that a conversation the
         // template will not take is refused as one.
         if (render(0).empty() && !session) {
+            result.untemplated = true;
             return refused(failed);
         }
         if (sink.on_start) {

@@ -99,6 +99,12 @@ struct OpenChatResult {
     /// schema that is not one -- rather than a failure of the model's.
     bool refused = false;
 
+    /// Of those, the template could not render the conversation at all: one
+    /// the Jinja here cannot read, or one that refuses this conversation.
+    /// Nothing was read into the model. A conversation of plain turns can
+    /// still be put to it the way the chat puts one (LoadedModel::chat).
+    bool untemplated = false;
+
     /// The prompt, as this model reads it, is this many tokens and does not
     /// fit its context. Zero when it fits.
     int too_long = 0;
