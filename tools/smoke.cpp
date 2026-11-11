@@ -18,6 +18,13 @@
 // the reply, and exits non-zero when the build failed outright or the chat
 // turn did.
 //
+//   crucible-smoke --build-config <config.json> "a directive" ["a question"]
+//
+// The same build on the seats, the delegator and the model for new agents a
+// config names, so a copy of somebody's config builds as their machine
+// would. The plan is taken as it stands, with nobody at a window to confirm
+// it, and so is every write. It prints the seats the build made as well.
+//
 //   crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]
 //
 // With --bench it runs the model through the Bench the way the Bench tab
@@ -35,6 +42,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -50,31 +58,9 @@ using namespace crucible;
 
 namespace {
 
-/// A build of `directive` on `expert`, with `question` asked in the chat
-/// while it works when there is one. See the file comment.
-int smoke_build(const std::string& expert, const std::string& directive, const std::string& question) {
-    Config config;
-    config.routing.keep_delegator_loaded = false;
-    config.build.confirm_plan = false;
-    config.build.agents       = 3;
-    config.tools.auto_edits   = true;
-    std::string error;
-    for (const auto& [name, blurb] :
-         {std::pair<const char*, const char*>{"Programming", "Code, programs, scripts and tests"},
-          {"Writing", "Documentation, READMEs and prose"}}) {
-        Expert seat;
-        seat.name  = name;
-        seat.blurb = blurb;
-        if (!config.roster.add(seat, error)) {
-            std::printf("could not add %s: %s\n", name, error.c_str());
-            return 1;
-        }
-    }
-    for (const Expert& seat : config.roster.experts()) {
-        config.experts[seat.id].model = std::filesystem::absolute(expert).string();
-    }
-    config.resolve_models();
-
+/// A build of `directive` on what `config` names, with `question` asked in
+/// the chat while it works when there is one, given up on after `minutes`.
+int run_build(const Config& config, const std::string& directive, const std::string& question, int minutes) {
     const std::filesystem::path project = paths::data_dir() / "smoke-build";
     std::filesystem::remove_all(project);
     std::filesystem::create_directories(project);
@@ -106,7 +92,7 @@ int smoke_build(const std::string& expert, const std::string& directive, const s
         if (asked && chat_done && !engine.cooking()) {
             break;
         }
-        if (std::chrono::steady_clock::now() - started > std::chrono::minutes(30)) {
+        if (std::chrono::steady_clock::now() - started > std::chrono::minutes(minutes)) {
             std::printf("timed out\n");
             engine.cancel_cook();
             engine.stop();
@@ -118,9 +104,15 @@ int smoke_build(const std::string& expert, const std::string& directive, const s
     if (after.cook) {
         std::printf("build: %s -- %s\n", std::string(cook_state_name(after.cook->state)).c_str(),
                     after.cook->outcome.substr(0, 400).c_str());
+        // The seats it made, as its notes say them.
+        for (const CookStep& step : after.cook->steps) {
+            if (step.kind == "note" && step.summary.rfind("added ", 0) == 0) {
+                std::printf("  %s\n", step.summary.c_str());
+            }
+        }
         for (const CookTask& task : after.cook->tasks) {
-            std::printf("  task %d %-10s %s (%s)\n", task.index + 1, task.state.c_str(),
-                        task.title.c_str(), task.expert.c_str());
+            std::printf("  task %d %-10s %s (%s, for %s)\n", task.index + 1, task.state.c_str(),
+                        task.title.c_str(), task.expert.c_str(), task.needs.c_str());
         }
         failed = after.cook->state == CookState::Failed ? 1 : 0;
     }
@@ -131,6 +123,48 @@ int smoke_build(const std::string& expert, const std::string& directive, const s
     }
     engine.stop();
     return failed;
+}
+
+/// A build of `directive` on `expert`, with `question` asked in the chat
+/// while it works when there is one. See the file comment.
+int smoke_build(const std::string& expert, const std::string& directive, const std::string& question) {
+    Config config;
+    config.routing.keep_delegator_loaded = false;
+    config.build.confirm_plan = false;
+    config.build.agents       = 3;
+    config.tools.auto_edits   = true;
+    std::string error;
+    for (const auto& [name, blurb] :
+         {std::pair<const char*, const char*>{"Programming", "Code, programs, scripts and tests"},
+          {"Writing", "Documentation, READMEs and prose"}}) {
+        Expert seat;
+        seat.name  = name;
+        seat.blurb = blurb;
+        if (!config.roster.add(seat, error)) {
+            std::printf("could not add %s: %s\n", name, error.c_str());
+            return 1;
+        }
+    }
+    for (const Expert& seat : config.roster.experts()) {
+        config.experts[seat.id].model = std::filesystem::absolute(expert).string();
+    }
+    config.resolve_models();
+    return run_build(config, directive, question, 30);
+}
+
+/// A build of `directive` on the seats `file` names. See the file comment.
+int smoke_build_config(const std::filesystem::path& file, const std::string& directive,
+                       const std::string& question) {
+    std::vector<std::string> warnings;
+    Config config = load_config(file, warnings);
+    for (const std::string& warning : warnings) {
+        std::printf("config: %s\n", warning.c_str());
+    }
+    config.build.confirm_plan = false;   // nobody at a window to confirm it
+    config.tools.auto_edits   = true;
+    config.resolve_models();
+    // A whole machine's build, with as many agents and rounds as it has.
+    return run_build(config, directive, question, 240);
 }
 
 /// `model` through the Bench at `size`, on the benchmarks named in `only`
@@ -242,6 +276,9 @@ int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "--build") {
         return smoke_build(argv[2], argv[3], argc >= 5 ? argv[4] : "");
     }
+    if (argc >= 4 && std::string(argv[1]) == "--build-config") {
+        return smoke_build_config(argv[2], argv[3], argc >= 5 ? argv[4] : "");
+    }
     if (argc >= 3 && std::string(argv[1]) == "--bench") {
         return smoke_bench(argv[2], argc >= 4 ? argv[3] : "quick", argc >= 5 ? argv[4] : "",
                            argc >= 6 ? std::atof(argv[5]) : 0.0);
@@ -249,6 +286,7 @@ int main(int argc, char** argv) {
     if (argc < 4) {
         std::printf("usage: crucible-smoke <delegator.gguf or -> <expert.gguf> \"a question\"\n"
                     "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n"
+                    "       crucible-smoke --build-config <config.json> \"a directive\" [\"a question\"]\n"
                     "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n");
         return 2;
     }
