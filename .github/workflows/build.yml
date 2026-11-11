@@ -41,11 +41,11 @@ jobs:
       # A compiler cache, kept between runs: llama.cpp's half of the build is
       # the same from one run to the next, and so are most of Crucible's own
       # files. On Windows it is sccache under Ninja, since the Visual Studio
-      # generator takes no compiler launcher. The files that use the
-      # precompiled header are compiled every time all the same, so what it
-      # saves there is llama.cpp's four and a half minutes. The installers
-      # workflow and install.ps1 still build the way people do, under Visual
-      # Studio.
+      # generator takes no compiler launcher, and without the precompiled
+      # header, since no cache keeps a file built on one: with it, Crucible's
+      # own files were compiled every time. The installers workflow and
+      # install.ps1 still build the way people do, under Visual Studio with
+      # the header.
       - name: Compiler cache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -76,7 +76,7 @@ jobs:
         run: |
           extra=()
           if [ "$RUNNER_OS" = Windows ]; then
-            extra=(-G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+            extra=(-G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCRUCIBLE_PRECOMPILE_HEADERS=OFF
                    -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded)
           fi
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRUCIBLE_BACKEND_DL=ON -DCRUCIBLE_BUILD_TESTS=ON "${extra[@]}"

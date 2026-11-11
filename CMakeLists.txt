@@ -307,7 +307,11 @@ set(CRUCIBLE_PRECOMPILED
     "$<$<COMPILE_LANGUAGE:CXX>:<unordered_map$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<vector$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<nlohmann/json.hpp$<ANGLE-R>>")
-if(MSVC)
+# Off where a compiler cache keeps whole objects instead (Windows CI), since
+# no cache can keep a file built on a precompiled header: there the header
+# made Crucible's own files the one part compiled every time.
+option(CRUCIBLE_PRECOMPILE_HEADERS "Parse the common headers once a target, under MSVC" ON)
+if(MSVC AND CRUCIBLE_PRECOMPILE_HEADERS)
     target_precompile_headers(crucible_core PRIVATE ${CRUCIBLE_PRECOMPILED})
 endif()
 
@@ -498,7 +502,7 @@ if(CRUCIBLE_BUILD_TESTS)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         target_compile_options(crucible_tests PRIVATE ${_crucible_warnings})
     endif()
-    if(MSVC)
+    if(MSVC AND CRUCIBLE_PRECOMPILE_HEADERS)
         # Its own rather than crucible_core's: the tests are compiled with
         # definitions of their own, and a precompiled header has to match.
         target_precompile_headers(crucible_tests PRIVATE ${CRUCIBLE_PRECOMPILED})
