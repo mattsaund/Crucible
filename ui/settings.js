@@ -136,35 +136,71 @@ actions['ui-font'] = (e) => configure({ ui: { font: e.value.trim() } });
 
 actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value).model } });
 
-/// A delegator for a folder with no GGUF in it (a Mac's MLX models cannot
-/// route): the model Crucible's routing is measured with, opened in Models
-/// to download, and seated once it is in the folder unless another was
-/// chosen meanwhile.
-const DELEGATOR = { query: 'LFM2.5-1.2B-Instruct', repo: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF',
-                    file: 'LFM2.5-1.2B-Instruct-Q8_0.gguf' };
-let delegatorWanted = false;
+/// Delegators to fetch, the best first, with what each file costs. Measured
+/// with crucible-routebench in 1.0.0 on an RTX 4070, Qwen3 4B Instruct 2507
+/// at four bits, Apache-2.0 and the starter's 4B file, routed 54 of the 54
+/// benchmark questions, 50 of the 50 in tools/routes and 29 of its 31 build
+/// tasks, and decided 46 of 46 and 19 of 20 messages, in 120 to 200 ms a
+/// route. LFM2.5 1.2B got 49, 48, 27, 44 and 17 in 90 to 120 ms, LFM2.5 2.6B
+/// 51, 49, 27, 46 and 18, and gpt-oss-20b, five times the file, 52, 50, 30,
+/// 46 and 18. A machine is offered the best whose file is at most a quarter
+/// of its cards' memory (on a Mac, its GPU's share), so the experts keep the
+/// rest; with no card, the smallest. `known` reads a chosen file as that
+/// model in any quantization, or as one no better.
+const DELEGATORS = [
+  { name: 'Qwen3 4B', query: 'Qwen3-4B-Instruct-2507', repo: 'unsloth/Qwen3-4B-Instruct-2507-GGUF',
+    file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf', bytes: 2497281120, known: /qwen3-4b-instruct-2507/i },
+  { name: 'LFM2.5 1.2B', query: 'LFM2.5-1.2B-Instruct', repo: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF',
+    file: 'LFM2.5-1.2B-Instruct-Q8_0.gguf', bytes: 1246255456, known: /lfm2\.5-(1\.2|2\.6)b/i },
+];
+/// The one Get fetched, and the delegator chosen when it was asked for.
+let delegatorWanted = null;
+const delegatorChosen = () => (state.config && state.config.router && state.config.router.model) || '';
 
+/// The best delegator this machine's cards hold beside the experts.
+function delegatorFits() {
+  const cards = ((state.devices && state.devices.gpus) || []).reduce((sum, g) => sum + (g.memory_total || 0), 0);
+  return DELEGATORS.find((d) => d.bytes * 4 <= cards) || DELEGATORS[DELEGATORS.length - 1];
+}
+
+/// That one, when the delegator chosen is lower on the list. A model the
+/// list does not know is not judged.
+function delegatorBetter(chosen) {
+  const file = (chosen || '').split(/[\\/]/).pop();
+  const at = file ? DELEGATORS.findIndex((d) => d.known.test(file)) : -1;
+  const best = delegatorFits();
+  return at > DELEGATORS.indexOf(best) ? best : null;
+}
+
+/// The menu, with a way to fetch a delegator: one for a folder with no GGUF
+/// in it (a Mac's MLX models cannot route), and a better one than the one
+/// chosen when the cards hold it. Either opens Models on it, and it is
+/// seated once it is in the folder unless another was chosen meanwhile.
 function delegatorPicker(c) {
-  const select = modelSelect(c.router ? c.router.model : '', '',
-                             { id: 'router-model', 'data-change': 'router-model' }, true);
+  const chosen = c.router ? c.router.model : '';
+  const select = modelSelect(chosen, '', { id: 'router-model', 'data-change': 'router-model' }, true);
   const none = state.models && !state.models.problem
     && !state.models.models.some((m) => m.format !== 'mlx');
-  return none ? `<div class="row">${select}<button class="action" data-act="delegator-get">Get one</button></div>`
-              : select;
+  if (none) return `<div class="row">${select}<button class="action" data-act="delegator-get">Get one</button></div>`;
+  const better = delegatorBetter(chosen);
+  return better ? `<div class="row">${select}<span class="status">${escape(better.name)} routes better</span>
+      <button class="action" data-act="delegator-get">Get it</button></div>` : select;
 }
 actions['delegator-get'] = () => {
-  delegatorWanted = true;
-  marketShow(DELEGATOR.query, DELEGATOR.repo, DELEGATOR.file);
+  const wanted = delegatorFits();
+  delegatorWanted = { file: wanted.file, over: delegatorChosen() };
+  marketShow(wanted.query, wanted.repo, wanted.file);
 };
 function seatWantedDelegator() {
   if (!delegatorWanted || !state.models || !state.config) return;
-  if (state.config.router && state.config.router.model) {
-    delegatorWanted = false;
+  if (delegatorChosen() !== delegatorWanted.over) {
+    delegatorWanted = null;
     return;
   }
-  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === DELEGATOR.file);
+  const wanted = delegatorWanted.file;
+  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === wanted);
   if (!got) return;
-  delegatorWanted = false;
+  delegatorWanted = null;
   configure({ router: { model: got.name } });
 }
 afterDraw.push(seatWantedDelegator);
