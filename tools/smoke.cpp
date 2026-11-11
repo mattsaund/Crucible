@@ -118,7 +118,10 @@ int run_build(const Config& config, const std::string& directive, const std::str
     }
     if (!question.empty() && !after.turns.empty()) {
         const Turn& turn = after.turns.back();
-        std::printf("chat %s: %s\n", turn.failed ? "failed" : "reply", turn.reply.substr(0, 400).c_str());
+        // How much it wrote and how much of that was thinking: what the
+        // reasoning effort a chat turn is given changes.
+        std::printf("chat %s (%d tokens, %zu chars thought): %s\n", turn.failed ? "failed" : "reply",
+                    turn.output_tokens, turn.reasoning.size(), turn.reply.substr(0, 400).c_str());
         failed = failed || turn.failed || turn.reply.empty() ? 1 : 0;
     }
     engine.stop();
