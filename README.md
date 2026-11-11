@@ -217,8 +217,12 @@ Every model, local or not, gets the same tools in a trusted folder:
 - **Serve a model to other programs**, the way LM Studio does. Turn it on in
   Settings, Server, pick the delegator or any model here, and point any OpenAI
   client at the address it shows.
-- It answers on this machine only, or on your network when you say so. An
-  API key is optional.
+- It answers on this machine only, or on your network when you say so, over
+  IPv4 and IPv6. An API key is optional.
+- Tools, pictures, JSON answers and embeddings work as OpenAI's clients
+  expect. A provider's model can be served too, to other computers only with
+  a key.
+- No HTTPS. Put a reverse proxy in front for that.
 - Chats and builds keep working while it serves. A request waits its turn.
 - It listens only while it is on.
 

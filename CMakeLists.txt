@@ -7,7 +7,7 @@ project(crucible
 # A pre-release says so after the numbers ("-pre.1"). Crucible's update check
 # ranks it below the release with the same numbers, and the installers
 # workflow makes a tag with a dash a GitHub pre-release. Empty for a release.
-set(CRUCIBLE_VERSION_SUFFIX "-pre.1")
+set(CRUCIBLE_VERSION_SUFFIX "-pre.2")
 set(CRUCIBLE_VERSION "${PROJECT_VERSION}${CRUCIBLE_VERSION_SUFFIX}")
 
 # ---------------------------------------------------------------------------
@@ -196,6 +196,7 @@ add_library(crucible_core STATIC
     src/app/relocate.cpp
     src/llm/sampling.cpp
     src/llm/loaded_model.cpp
+    src/llm/open_chat.cpp
     src/llm/batch_chat.cpp
     src/llm/remote_model.cpp
     src/llm/spend.cpp
@@ -244,7 +245,7 @@ target_include_directories(crucible_core PUBLIC
 
 target_link_libraries(crucible_core
     PUBLIC  llama nlohmann_json::nlohmann_json
-    PRIVATE Threads::Threads crucible_miniz crucible_httplib)
+    PRIVATE Threads::Threads crucible_miniz crucible_httplib crucible_llama_chat)
 # llama-ext.h, llama.cpp's staging header: the only place it says what a load
 # would put on each card. See measured_need in src/llm/model_host.cpp.
 target_include_directories(crucible_core SYSTEM PRIVATE "${llama_SOURCE_DIR}/src")
@@ -307,7 +308,11 @@ set(CRUCIBLE_PRECOMPILED
     "$<$<COMPILE_LANGUAGE:CXX>:<unordered_map$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<vector$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<nlohmann/json.hpp$<ANGLE-R>>")
-if(MSVC)
+# Off where a compiler cache keeps whole objects instead (Windows CI), since
+# no cache can keep a file built on a precompiled header: there the header
+# made Crucible's own files the one part compiled every time.
+option(CRUCIBLE_PRECOMPILE_HEADERS "Parse the common headers once a target, under MSVC" ON)
+if(MSVC AND CRUCIBLE_PRECOMPILE_HEADERS)
     target_precompile_headers(crucible_core PRIVATE ${CRUCIBLE_PRECOMPILED})
 endif()
 
@@ -498,7 +503,7 @@ if(CRUCIBLE_BUILD_TESTS)
     if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         target_compile_options(crucible_tests PRIVATE ${_crucible_warnings})
     endif()
-    if(MSVC)
+    if(MSVC AND CRUCIBLE_PRECOMPILE_HEADERS)
         # Its own rather than crucible_core's: the tests are compiled with
         # definitions of their own, and a precompiled header has to match.
         target_precompile_headers(crucible_tests PRIVATE ${CRUCIBLE_PRECOMPILED})

@@ -63,13 +63,20 @@ public:
     /// `beside_mlx` says an MLX model is in use, as acquire_expert's does:
     /// the delegator has to fit beside it as an expert would, and `crowded`
     /// is set the same way when it does not.
+    ///
+    /// `idle_mlx`, given when an MLX model is loaded and nobody is using it,
+    /// lets that model go. It is in a process of its own, which this host can
+    /// neither see into nor stop, so the caller says how. Called when the
+    /// delegator would not fit beside it, once the experts nobody is using
+    /// have gone, as they go for it.
     LoadedModel* acquire_router(const ModelParams& params,
                                 const ProgressCallback& progress,
                                 const CancelCallback& cancel,
                                 std::string& error,
                                 const Keep& keep = {},
                                 bool* crowded = nullptr,
-                                bool beside_mlx = false);
+                                bool beside_mlx = false,
+                                const std::function<void()>& idle_mlx = {});
 
     /// Make `id`'s expert a loaded one. This is the JIT swap, and the cost
     /// the design accepts in exchange for experts far larger than RAM would
@@ -158,6 +165,20 @@ public:
     /// must have dropped whatever was holding the LoadedModel first. See
     /// Engine::release_router.
     void release_router();
+
+    /// The delegator with a context fit for a conversation, for the API
+    /// server: one of its own on the same weights, of up to `n_ctx` tokens
+    /// -- routing's is a few thousand, and keeps the prompts routing has
+    /// read, which a client's conversations would push out. Made the first
+    /// time it is asked and freed with the delegator; as large as the cards
+    /// hold beside what is on them now, never past what the model was
+    /// trained to read. The delegator itself when no larger context fits or
+    /// none is asked for, and null when it is not loaded.
+    LoadedModel* router_for_serving(int n_ctx);
+
+    /// Let go of that context, when the server no longer serves the
+    /// delegator.
+    void release_router_serving();
 
     /// The machine-wide GPU settings, used to re-plan every model's split
     /// against live video memory as it is loaded. See refresh_gpu_split.
@@ -276,6 +297,10 @@ private:
     /// The delegator as it was last asked for, loaded or not: what an
     /// expert's grown context leaves room for. See with_room.
     ModelParams                  router_asked_;
+
+    /// How the loaded delegator was loaded, placed on the cards: what its
+    /// serving context is made like. See router_for_serving.
+    ModelParams                  router_loaded_;
     /// Least recently used first: the one at the back was asked for last.
     std::vector<Resident>        experts_;
 

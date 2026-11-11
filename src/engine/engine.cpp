@@ -888,8 +888,16 @@ void Engine::load_router(const CancelCallback& cancel) {
     bool        crowded = false;
     // An MLX model somebody is using stays where it is, in its own process:
     // the delegator has to fit beside it, as a GGUF expert does (see
-    // load_gguf). One nobody is using is not asked about, as before.
-    const bool beside_mlx = mlx_.running() && leases_.held(mlx_.served().string());
+    // load_gguf). One nobody is using is stopped when the delegator needs
+    // its room, as an expert nobody is using is let go for it (see
+    // acquire_router). A lease is taken only under the models' lock, which
+    // is held here, so nobody takes it up meanwhile.
+    const bool mlx_loaded = mlx_.running();
+    const bool beside_mlx = mlx_loaded && leases_.held(mlx_.served().string());
+    std::function<void()> idle_mlx;
+    if (mlx_loaded && !beside_mlx) {
+        idle_mlx = [this] { stop_mlx(); };
+    }
     LoadedModel* model = host_->acquire_router(
         router,
         [this](float progress) {
@@ -906,7 +914,7 @@ void Engine::load_router(const CancelCallback& cancel) {
             return (cancel ? cancel() : cancel_.load(std::memory_order_relaxed))
                 || !running_.load(std::memory_order_relaxed);
         },
-        error, in_use(), &crowded, beside_mlx);
+        error, in_use(), &crowded, beside_mlx, idle_mlx);
 
     if (model == nullptr && crowded) {
         // Not a broken delegator: the experts a build is using, or an MLX
@@ -1129,16 +1137,24 @@ void Engine::do_apply_config(Config config) {
     // until it lets go, and the next seat to want it loads it the new way.
     //
     // The API server's model is not a seat's: it is what the server would
-    // load now, and nothing once the server is off.
-    const auto loaded_as = [](const Config& in, const ExpertId& id) {
-        return id != kServerSeat ? in.expert(id)
-             : in.server.enabled ? served_params(in) : ModelParams{};
+    // load now -- the model it serves, or the one it makes embeddings with --
+    // and nothing once the server is off.
+    const auto loaded_as = [](const Config& in, const ExpertId& id, const std::string& path) {
+        if (id != kServerSeat) {
+            return in.expert(id);
+        }
+        if (!in.server.enabled) {
+            return ModelParams{};
+        }
+        const std::string apart = embedder_file(in);
+        return !apart.empty() && apart == path ? file_params(in, apart) : served_params(in);
     };
     std::vector<std::string> stale;
     std::vector<ExpertId>    seats;
     for (const ModelHost::Held& held : host_->held()) {
-        const ModelParams now = loaded_as(current, held.id);
-        if (now.path.empty() || hardware || loads_differently(loaded_as(before, held.id), now)) {
+        const std::string path = held.model->path();
+        const ModelParams now  = loaded_as(current, held.id, path);
+        if (now.path.empty() || hardware || loads_differently(loaded_as(before, held.id, path), now)) {
             stale.push_back(held.model->path());
             seats.push_back(held.id);
         }
@@ -1171,6 +1187,11 @@ void Engine::do_apply_config(Config config) {
     }
     if (before.router.path != current.router.path) {
         router_failed_for_.clear();
+    }
+    // The delegator's context for the API server goes once the server no
+    // longer answers with the delegator.
+    if (!(current.server.enabled && current.server.model.empty() && current.server.provider.empty())) {
+        host_->release_router_serving();
     }
 
     state_.configure_seats(current);

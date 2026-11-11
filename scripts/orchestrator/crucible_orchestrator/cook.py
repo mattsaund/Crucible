@@ -287,14 +287,16 @@ class Seat:
             self.handle = ""
 
 
-def decide(core, params, work, pinned=""):
-    """The delegator's decision for `work`, policy applied: who should have it."""
+def decide(core, params, work, pinned="", tasks=False):
+    """The delegator's decision for `work`, policy applied: who should have it.
+    `tasks` says it is a build's task, worded as build.routed_on words one."""
     return routing.route(core, {
         "prompt": work,
         "pinned": pinned,
         "roster": params.get("roster"),
         "seats": params.get("seats"),
         "routing": params.get("routing"),
+        "tasks": tasks,
     })
 
 

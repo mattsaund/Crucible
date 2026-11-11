@@ -136,35 +136,71 @@ actions['ui-font'] = (e) => configure({ ui: { font: e.value.trim() } });
 
 actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value).model } });
 
-/// A delegator for a folder with no GGUF in it (a Mac's MLX models cannot
-/// route): the model Crucible's routing is measured with, opened in Models
-/// to download, and seated once it is in the folder unless another was
-/// chosen meanwhile.
-const DELEGATOR = { query: 'LFM2.5-1.2B-Instruct', repo: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF',
-                    file: 'LFM2.5-1.2B-Instruct-Q8_0.gguf' };
-let delegatorWanted = false;
+/// Delegators to fetch, the best first, with what each file costs. Measured
+/// with crucible-routebench in 1.0.0 on an RTX 4070, Qwen3 4B Instruct 2507
+/// at four bits, Apache-2.0 and the starter's 4B file, routed 54 of the 54
+/// benchmark questions, 50 of the 50 in tools/routes and 29 of its 31 build
+/// tasks, and decided 46 of 46 and 19 of 20 messages, in 120 to 200 ms a
+/// route. LFM2.5 1.2B got 49, 48, 27, 44 and 17 in 90 to 120 ms, LFM2.5 2.6B
+/// 51, 49, 27, 46 and 18, and gpt-oss-20b, five times the file, 52, 50, 30,
+/// 46 and 18. A machine is offered the best whose file is at most a quarter
+/// of its cards' memory (on a Mac, its GPU's share), so the experts keep the
+/// rest; with no card, the smallest. `known` reads a chosen file as that
+/// model in any quantization, or as one no better.
+const DELEGATORS = [
+  { name: 'Qwen3 4B', query: 'Qwen3-4B-Instruct-2507', repo: 'unsloth/Qwen3-4B-Instruct-2507-GGUF',
+    file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf', bytes: 2497281120, known: /qwen3-4b-instruct-2507/i },
+  { name: 'LFM2.5 1.2B', query: 'LFM2.5-1.2B-Instruct', repo: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF',
+    file: 'LFM2.5-1.2B-Instruct-Q8_0.gguf', bytes: 1246255456, known: /lfm2\.5-(1\.2|2\.6)b/i },
+];
+/// The one Get fetched, and the delegator chosen when it was asked for.
+let delegatorWanted = null;
+const delegatorChosen = () => (state.config && state.config.router && state.config.router.model) || '';
 
+/// The best delegator this machine's cards hold beside the experts.
+function delegatorFits() {
+  const cards = ((state.devices && state.devices.gpus) || []).reduce((sum, g) => sum + (g.memory_total || 0), 0);
+  return DELEGATORS.find((d) => d.bytes * 4 <= cards) || DELEGATORS[DELEGATORS.length - 1];
+}
+
+/// That one, when the delegator chosen is lower on the list. A model the
+/// list does not know is not judged.
+function delegatorBetter(chosen) {
+  const file = (chosen || '').split(/[\\/]/).pop();
+  const at = file ? DELEGATORS.findIndex((d) => d.known.test(file)) : -1;
+  const best = delegatorFits();
+  return at > DELEGATORS.indexOf(best) ? best : null;
+}
+
+/// The menu, with a way to fetch a delegator: one for a folder with no GGUF
+/// in it (a Mac's MLX models cannot route), and a better one than the one
+/// chosen when the cards hold it. Either opens Models on it, and it is
+/// seated once it is in the folder unless another was chosen meanwhile.
 function delegatorPicker(c) {
-  const select = modelSelect(c.router ? c.router.model : '', '',
-                             { id: 'router-model', 'data-change': 'router-model' }, true);
+  const chosen = c.router ? c.router.model : '';
+  const select = modelSelect(chosen, '', { id: 'router-model', 'data-change': 'router-model' }, true);
   const none = state.models && !state.models.problem
     && !state.models.models.some((m) => m.format !== 'mlx');
-  return none ? `<div class="row">${select}<button class="action" data-act="delegator-get">Get one</button></div>`
-              : select;
+  if (none) return `<div class="row">${select}<button class="action" data-act="delegator-get">Get one</button></div>`;
+  const better = delegatorBetter(chosen);
+  return better ? `<div class="row">${select}<span class="status">${escape(better.name)} routes better</span>
+      <button class="action" data-act="delegator-get">Get it</button></div>` : select;
 }
 actions['delegator-get'] = () => {
-  delegatorWanted = true;
-  marketShow(DELEGATOR.query, DELEGATOR.repo, DELEGATOR.file);
+  const wanted = delegatorFits();
+  delegatorWanted = { file: wanted.file, over: delegatorChosen() };
+  marketShow(wanted.query, wanted.repo, wanted.file);
 };
 function seatWantedDelegator() {
   if (!delegatorWanted || !state.models || !state.config) return;
-  if (state.config.router && state.config.router.model) {
-    delegatorWanted = false;
+  if (delegatorChosen() !== delegatorWanted.over) {
+    delegatorWanted = null;
     return;
   }
-  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === DELEGATOR.file);
+  const wanted = delegatorWanted.file;
+  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === wanted);
   if (!got) return;
-  delegatorWanted = false;
+  delegatorWanted = null;
   configure({ router: { model: got.name } });
 }
 afterDraw.push(seatWantedDelegator);
@@ -814,11 +850,16 @@ actions['worker-model'] = (e) => {
 function pageServer(c) {
   const conf = c.server || {};
   const s = state.snapshot.server || {};
+  // A provider's model is the person's credit: other computers are let at it
+  // only with a key, and without one the server stays on this machine.
+  const held = conf.provider && conf.network && !conf.api_key;
   return `<h1>Server</h1>
     ${setting('server.enabled', 'On', 'bool', serverLine(s, !!conf.enabled))}
     <div class="field"><label for="server-model">Model</label>${serverModelSelect(c)}</div>
+    <div class="field"><label for="server-embeddings">Embeddings</label>${serverEmbeddingsSelect(c)}</div>
     ${setting('server.port', 'Port', 'int', '')}
-    ${setting('server.network', 'Serve on the local network', 'bool', '')}
+    ${setting('server.network', 'Serve on the local network', 'bool',
+      held ? '<span class="tag">needs a key</span>' : '')}
     <div class="field"><label for="server-key">API key</label>
       <div class="row">
         <input id="server-key" type="password" data-path="server.api_key" data-change="set"
@@ -842,9 +883,11 @@ function serverLine(s, on) {
 }
 
 /// The delegator, the experts' models and the models folder: whatever on
-/// this machine can answer.
+/// this machine can answer. Then each provider's models, which spend the
+/// person's credit, and so reach other computers only with a key.
 function serverModelSelect(c) {
-  const chosen = at(c, 'server.model') || '';
+  const provider = at(c, 'server.provider') || '';
+  const chosen = provider ? `${provider}|${at(c, 'server.model') || ''}` : at(c, 'server.model') || '';
   const delegator = fileName(at(c, 'router.model'));
   const names = {};
   for (const e of state.snapshot.experts || []) names[e.id] = e.name;
@@ -868,23 +911,52 @@ function serverModelSelect(c) {
     html += `<optgroup label="Models folder">${files.map((m) =>
       option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
   }
-  if (chosen && !shown) html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+  for (const p of (state.providers ? state.providers.providers : [])) {
+    const offered = p.models.slice();
+    const named = provider === p.id ? at(c, 'server.model') || '' : '';
+    if (named && !offered.includes(named)) offered.unshift(named);
+    if (offered.length) {
+      html += `<optgroup label="${escape(p.name)} (others need a key)">${
+        offered.map((m) => option(`${p.id}|${m}`, m)).join('')}</optgroup>`;
+    }
+  }
+  if (chosen && !shown) html += option(chosen, `${fileName(splitModel(chosen).model)} (not in the models folder)`);
   return `<select id="server-model" data-change="server-model">${html}</select>`;
 }
 
+/// What /v1/embeddings answers with when a request names no model: the
+/// model served, or one from the folder, an embedding model as a rule.
+function serverEmbeddingsSelect(c) {
+  const chosen = at(c, 'server.embeddings') || '';
+  const files = (state.models ? state.models.models : []).filter((m) => m.format !== 'mlx');
+  const option = (value, label) =>
+    `<option value="${escape(value)}"${value === chosen ? ' selected' : ''}>${escape(label)}</option>`;
+  let html = option('', 'The model served');
+  if (files.length) {
+    html += `<optgroup label="Models folder">${files.map((m) =>
+      option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
+  }
+  if (chosen && !files.some((m) => m.name === chosen)) {
+    html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+  }
+  return `<select id="server-embeddings" data-change="server-embeddings">${html}</select>`;
+}
+
 /// Where other programs reach it: this machine, and the network when it
-/// serves there.
+/// serves there, each by IPv4 and by IPv6 where it listens on both.
 function serverAddresses(s) {
   const where = s.addresses || {};
-  const rows = [['This machine', where.local], ['Network', where.network]].filter(([, url]) => url);
+  const six = ' <span class="tag">IPv6</span>';
+  const rows = [['This machine', where.local], ['This machine' + six, where.local6], ['Network', where.network],
+                ['Network' + six, where.network6]].filter(([, url]) => url);
   if (!rows.length) return '';
   // What another computer is given: this machine's address on the network
   // and the port, plainly, as an app's host and port fields ask for them.
   // Shown with the network off too, marked so, to be read off before then.
-  const host = s.lan ? `${s.lan}:${s.port}` : '';
-  const reach = host ? `<div class="order-row">
+  const hosts = [s.lan ? `${s.lan}:${s.port}` : '', s.lan6 ? `[${s.lan6}]:${s.port}` : ''].filter(Boolean);
+  const reach = hosts.map((host) => `<div class="order-row">
         <span class="order-name">IP and port <code>${escape(host)}</code>${
-          s.network ? '' : ' <span class="tag">off</span>'}</span>${s.network ? serverCopy(host) : ''}</div>` : '';
+          s.network ? '' : ' <span class="tag">off</span>'}</span>${s.network ? serverCopy(host) : ''}</div>`).join('');
   return `<h2 style="margin-top:1.8rem">ADDRESSES</h2>
     <div class="field">${rows.map(([label, url]) => `<div class="order-row">
         <span class="order-name">${label} <code>${escape(url)}</code></span>${serverCopy(url)}</div>`).join('')}${reach}</div>`;
@@ -908,7 +980,8 @@ function serverRecent(s) {
 const serverCopy = (text) => `<button class="action" data-act="server-copy" data-text="${escape(text)}">${
   state.open.copied === text ? 'Copied' : 'Copy'}</button>`;
 
-actions['server-model'] = (e) => configure({ server: { model: e.value } });
+actions['server-model'] = (e) => configure({ server: splitModel(e.value) });
+actions['server-embeddings'] = (e) => configure({ server: { embeddings: e.value } });
 
 actions['server-copy'] = (button) => {
   const text = button.dataset.text || '';

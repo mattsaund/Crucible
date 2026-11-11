@@ -6,6 +6,39 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 1.0.0-pre.2 (2026-11-11)
+
+The second of three pre-releases before 1.0.0, marked as one on GitHub: the
+update check and the website stay on 0.9.9.
+
+- **The server takes tools, pictures, JSON and embeddings.** Tool calls go
+  through the model's own chat template and stream as OpenAI's do. Pictures
+  come as data: URLs, response_format holds an answer to JSON or to a schema,
+  and /v1/embeddings answers. It listens on IPv6 as well, the delegator
+  answers in a context of its own, as long as a client's conversation, and a
+  provider's model can be served, to other computers only with a key. HTTPS
+  is left to a reverse proxy in front of it, since it would mean carrying a
+  TLS library in every installer.
+- **A build sends its tasks to the right expert.** A task is routed on the
+  experts' descriptions, where their example questions pulled styling work
+  towards Writing. Of 31 test tasks, LFM2.5 1.2B now sends 27 where they
+  belong (19 before), LFM2.5 2.6B 27 (22) and gpt-oss 30 (29). Questions are
+  routed as before.
+- **A better delegator, suggested.** Where the cards hold it, Settings,
+  General suggests Qwen3 4B in place of LFM2.5, and Get one fetches it: it
+  routed all 54 of the nine-expert test and 29 of the 31 tasks, in a fifth of
+  a second.
+- **A made app reloads on Windows and macOS** as it does on Linux, with what
+  its storage held.
+- **Dedicated VRAM only** loads models mapped on Windows and macOS, as every
+  other load there: llama.cpp reads past the page cache only on Linux.
+- **The delegator makes room beside an MLX model nobody is using**, which is
+  stopped when the two would not fit, as an idle expert is let go.
+- **A card's own picture** may be up to a megabyte, so the mascots drawn for
+  cards show.
+- **Faster checks on Windows**: the build that runs the tests keeps a compiler
+  cache, four minutes where it was thirteen.
+
 ## 1.0.0-pre.1 (2026-11-10)
 
 The first of three pre-releases before 1.0.0. It is marked as a pre-release

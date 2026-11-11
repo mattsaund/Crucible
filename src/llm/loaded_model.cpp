@@ -120,6 +120,10 @@ LoadedModel::LoadedModel(llama_model* model, llama_context* ctx, std::string pat
     : model_(model), ctx_(ctx), path_(std::move(path)) {}
 
 LoadedModel::~LoadedModel() {
+    serving_.reset();   // its context reads these weights
+    if (embedder_ != nullptr) {
+        llama_free(embedder_);
+    }
 #if defined(CRUCIBLE_HAS_MTMD)
     if (vision_ != nullptr) {
         mtmd_free(vision_);
@@ -128,7 +132,7 @@ LoadedModel::~LoadedModel() {
     if (ctx_ != nullptr) {
         llama_free(ctx_);
     }
-    if (model_ != nullptr) {
+    if (model_ != nullptr && owns_model_) {
         llama_model_free(model_);
     }
 }
@@ -255,6 +259,22 @@ bool holds_window(std::int32_t oldest, std::size_t position, std::int32_t window
     const auto at = static_cast<std::int64_t>(position);
     return oldest >= 0 && oldest <= std::max<std::int64_t>(0, at - window);
 }
+
+// Stop asked inside a decode as well as between them. A batch of prompt is
+// one call, and on the processor one call of a large model's prompt is
+// seconds -- long enough that a Stop which only looks between batches reads
+// as a window that has stopped listening. The backends that run on the
+// processor poll this between the operations of a graph; on a card it is the
+// check between batches that does the work.
+Aborting::Aborting(llama_context* ctx, const CancelCallback& cancel) : ctx_(ctx) {
+    if (cancel) {
+        llama_set_abort_callback(
+            ctx_, [](void* data) { return (*static_cast<const CancelCallback*>(data))(); },
+            const_cast<CancelCallback*>(&cancel));
+    }
+}
+
+Aborting::~Aborting() { llama_set_abort_callback(ctx_, nullptr, nullptr); }
 
 }  // namespace detail
 
@@ -560,13 +580,22 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
                                       const std::string& grammar) {
     const std::lock_guard<std::recursive_mutex> lock(use_);
     GenerationStats stats;
+    const detail::Aborting aborting(ctx_, cancel);
+    if (read_prompt(prompt, params, cancel, stats)) {
+        sample(params, on_token, cancel, grammar, stats);
+    }
+    return stats;
+}
+
+bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& params, const CancelCallback& cancel,
+                              GenerationStats& stats) {
     const llama_vocab* vocab = llama_model_get_vocab(model_);
 
     std::vector<llama_token> tokens = tokenize(vocab, prompt, true);
     if (tokens.empty()) {
         llama_memory_clear(llama_get_memory(ctx_), true);
         forget();
-        return stats;
+        return false;
     }
 
     const int context_size = static_cast<int>(llama_n_ctx(ctx_));
@@ -584,23 +613,6 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
     const std::size_t reused = reuse_prefix(tokens);
     stats.prompt_reused = static_cast<int>(reused);
 
-    // Stop asked inside a decode as well as between them. A batch of prompt is
-    // one call, and on the processor one call of a large model's prompt is
-    // seconds -- long enough that a Stop which only looks between batches
-    // reads as a window that has stopped listening. The backends that run on
-    // the processor poll this between the operations of a graph; on a card it
-    // is the check between batches that does the work.
-    struct AbortGuard {
-        llama_context* ctx;
-        ~AbortGuard() { llama_set_abort_callback(ctx, nullptr, nullptr); }
-    } abort_guard{ctx_};
-    if (cancel) {
-        llama_set_abort_callback(
-            ctx_,
-            [](void* data) { return (*static_cast<const CancelCallback*>(data))(); },
-            const_cast<CancelCallback*>(&cancel));
-    }
-
     // --- prompt ingestion --------------------------------------------------
     const auto prompt_start = Clock::now();
     // No more than the context was made for. A model loaded before Batch was
@@ -614,7 +626,7 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
             stats.canceled = true;
             stats.prompt_ms = ms_since(prompt_start);
             forget();  // the cache holds part of a prompt nobody will finish
-            return stats;
+            return false;
         }
         const int count = static_cast<int>(
             std::min<std::size_t>(static_cast<std::size_t>(batch_size), tokens.size() - offset));
@@ -623,16 +635,14 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
             stats.canceled  = cancel && cancel();   // aborted from inside, by Stop
             stats.prompt_ms = ms_since(prompt_start);
             forget();
-            return stats;
+            return false;
         }
         cached_.insert(cached_.end(), tokens.begin() + static_cast<long>(offset),
                        tokens.begin() + static_cast<long>(offset) + count);
     }
     keep_checkpoint();
     stats.prompt_ms = ms_since(prompt_start);
-
-    sample(params, on_token, cancel, grammar, stats);
-    return stats;
+    return true;
 }
 
 void LoadedModel::sample(const ModelParams& params, const TokenCallback& on_token, const CancelCallback& cancel,
@@ -696,7 +706,6 @@ void LoadedModel::sample(const ModelParams& params, const TokenCallback& on_toke
 
 ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const ChatSink& sink) {
     ChatResult result;
-#if defined(CRUCIBLE_HAS_MTMD)
     // The pictures' bytes, in the order the conversation has them, and the
     // message each came with.
     std::vector<std::string> blobs;
@@ -710,6 +719,43 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
             }
         }
     }
+    // The conversation with a marker where each picture from `first` on
+    // goes, ahead of the words it came with -- the order every vision model
+    // reads best -- and the ones before it named and left out.
+#if defined(CRUCIBLE_HAS_MTMD)
+    const std::string marker = mtmd_default_marker();
+#else
+    const std::string marker;
+#endif
+    const auto render = [&](std::size_t first) {
+        std::vector<ChatMessage> marked = request.messages;
+        std::vector<std::string> markers(marked.size());
+        for (std::size_t i = 0; i < owners.size(); ++i) {
+            markers[owners[i]] += i >= first ? marker + "\n" : std::string("[a picture from earlier, left out]\n");
+        }
+        for (std::size_t m = 0; m < marked.size(); ++m) {
+            marked[m].content = markers[m] + marked[m].content;
+            marked[m].images.clear();
+        }
+        return format_chat(marked, /*add_assistant_prefix=*/true);
+    };
+    const detail::Aborting aborting(ctx_, sink.cancel);
+    result.error = read_pictures(blobs, owners, render, request.params, sink.cancel, result.stats);
+    if (!result.error.empty() || result.stats.canceled) {
+        return result;
+    }
+    sample(request.params, sink.on_text, sink.cancel, {}, result.stats);
+    // What the context now holds starts with pictures, which no later prompt
+    // of text can share: the next turn starts over too.
+    forget();
+    return result;
+}
+
+std::string LoadedModel::read_pictures(const std::vector<std::string>& blobs, const std::vector<std::size_t>& owners,
+                                       const std::function<std::string(std::size_t first)>& render,
+                                       const ModelParams& params, const CancelCallback& cancel,
+                                       GenerationStats& stats) {
+#if defined(CRUCIBLE_HAS_MTMD)
     std::vector<mtmd::bitmap_ptr> bitmaps;
     const mtmd_helper_init_opt options = mtmd_helper_init_opt_default();
     for (const std::string& blob : blobs) {
@@ -726,27 +772,14 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
             mtmd_helper_video_free(made.video_ctx);
         }
         if (made.bitmap == nullptr) {
-            result.error = "a picture could not be read: it is not a PNG, a JPEG or a GIF";
-            return result;
+            return "a picture could not be read: it is not a PNG, a JPEG or a GIF";
         }
         bitmaps.emplace_back(made.bitmap);
     }
 
-    // The conversation with a marker where each picture from `first` on
-    // goes, ahead of the words it came with -- the order every vision model
-    // reads best -- and the ones before it named and left out.
     const std::string marker = mtmd_default_marker();
     const auto tokenize_from = [&](std::size_t first, mtmd_input_chunks* into) {
-        std::vector<ChatMessage> marked = request.messages;
-        std::vector<std::string> markers(marked.size());
-        for (std::size_t i = 0; i < owners.size(); ++i) {
-            markers[owners[i]] += i >= first ? marker + "\n" : std::string("[a picture from earlier, left out]\n");
-        }
-        for (std::size_t m = 0; m < marked.size(); ++m) {
-            marked[m].content = markers[m] + marked[m].content;
-            marked[m].images.clear();
-        }
-        const std::string prompt = format_chat(marked, /*add_assistant_prefix=*/true);
+        const std::string prompt = render(first);
         const mtmd_input_text text{prompt.c_str(), prompt.size(), /*add_special=*/true, /*parse_special=*/true};
         std::vector<const mtmd_bitmap*> given;
         for (std::size_t i = first; i < bitmaps.size(); ++i) {
@@ -756,8 +789,7 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
     };
     mtmd::input_chunks_ptr chunks(mtmd_input_chunks_init());
     if (!tokenize_from(0, chunks.get())) {
-        result.error = "the pictures could not be read into the prompt";
-        return result;
+        return "the pictures could not be read into the prompt";
     }
 
     // Room for the reply as a text prompt leaves it (see generate). Each
@@ -786,14 +818,12 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
         if (first > 0) {
             chunks.reset(mtmd_input_chunks_init());
             if (!tokenize_from(first, chunks.get())) {
-                result.error = "the pictures could not be read into the prompt";
-                return result;
+                return "the pictures could not be read into the prompt";
             }
         }
     }
     if (mtmd_helper_get_n_tokens(chunks.get()) >= static_cast<std::size_t>(context)) {
-        result.error = "the pictures do not fit in this model's context of " + std::to_string(context) + " tokens";
-        return result;
+        return "the pictures do not fit in this model's context of " + std::to_string(context) + " tokens";
     }
 
     // Some models read a picture with attention both ways, Gemma 3 and 4
@@ -806,7 +836,7 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
     // fit in one. ModelHost holds a projector that takes pictures of any size
     // to that. One of a fixed size larger than it, Gemma 3's 256 tokens at a
     // Batch below that, is refused rather than misread.
-    int       batch_size = std::max(1, std::min(request.params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
+    int       batch_size = std::max(1, std::min(params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
     const int micro      = std::max(1, static_cast<int>(llama_n_ubatch(ctx_)));
     for (std::size_t i = 0; i < mtmd_input_chunks_size(chunks.get()); ++i) {
         const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks.get(), i);
@@ -816,12 +846,12 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
         }
         const std::size_t tokens = mtmd_input_chunk_get_n_tokens(chunk);
         if (tokens > static_cast<std::size_t>(micro)) {
-            result.error = "this model reads a picture whole, and this one is " + std::to_string(tokens)
-                         + " tokens where it reads " + std::to_string(micro) + " at once";
+            std::string why = "this model reads a picture whole, and this one is " + std::to_string(tokens)
+                            + " tokens where it reads " + std::to_string(micro) + " at once";
             if (tokens <= llama_context_default_params().n_ubatch) {
-                result.error += ". Raise \"Batch\" to " + std::to_string(tokens) + " or more";
+                why += ". Raise \"Batch\" to " + std::to_string(tokens) + " or more";
             }
-            return result;
+            return why;
         }
         batch_size = micro;
     }
@@ -830,38 +860,25 @@ ChatResult LoadedModel::chat_with_pictures(const ChatRequest& request, const Cha
     llama_memory_clear(llama_get_memory(ctx_), true);
     forget();
 
-    if (sink.cancel) {
-        llama_set_abort_callback(
-            ctx_, [](void* data) { return (*static_cast<const CancelCallback*>(data))(); },
-            const_cast<CancelCallback*>(&sink.cancel));
-    }
-    struct AbortGuard {
-        llama_context* ctx;
-        ~AbortGuard() { llama_set_abort_callback(ctx, nullptr, nullptr); }
-    } abort_guard{ctx_};
-
     const auto prompt_start = Clock::now();
-    result.stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks.get()));
+    stats.prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks.get()));
     llama_pos past = 0;
     if (mtmd_helper_eval_chunks(vision_, ctx_, chunks.get(), 0, 0, batch_size,
                                 /*logits_last=*/true, &past) != 0) {
-        result.stats.canceled = sink.cancel && sink.cancel();
-        if (!result.stats.canceled) {
-            result.error = "the model could not read the pictures";
-        }
-        return result;
+        stats.canceled = cancel && cancel();
+        return stats.canceled ? std::string() : std::string("the model could not read the pictures");
     }
-    result.stats.prompt_ms = ms_since(prompt_start);
-    sample(request.params, sink.on_text, sink.cancel, {}, result.stats);
-    // What the context now holds starts with pictures, which no later prompt
-    // of text can share: the next turn starts over too.
-    forget();
+    stats.prompt_ms = ms_since(prompt_start);
+    return {};
 #else
-    (void)request;
-    (void)sink;
-    result.error = "this build of Crucible cannot read pictures with a local model";
+    (void)blobs;
+    (void)owners;
+    (void)render;
+    (void)params;
+    (void)cancel;
+    (void)stats;
+    return "this build of Crucible cannot read pictures with a local model";
 #endif
-    return result;
 }
 
 }  // namespace crucible

@@ -16,7 +16,7 @@ ask.
 
 | project | version | license | what it does here |
 |---|---|---|---|
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b11846` | MIT | loads GGUF models and runs inference, and its GGUF converter (convert_hf_to_gguf.py, its conversion and gguf-py packages, the chat templates), compiled in for the fine-tuner to export with |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `b11846` | MIT | loads GGUF models and runs inference, and its GGUF converter (convert_hf_to_gguf.py, its conversion and gguf-py packages, the chat templates), compiled in for the fine-tuner to export with, and its chat templates' Jinja engine, tool-call parsers and JSON Schema to grammar converter (common/chat*, jinja, the parsers, peg-parser, json-schema-to-grammar), compiled in for the API server |
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | reads and writes the config file, and is the API's encoder |
 | [webview](https://github.com/webview/webview) | `0.12.0` | MIT | hosts the interface in the platform's own webview |
 | [miniz](https://github.com/richgel999/miniz) | `3.1.2` | MIT | opens the zip inside a `.docx`, `.xlsx`, `.pptx` or OpenDocument file attached to a prompt, and inflates a PDF's streams, and unpacks that converter |

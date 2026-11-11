@@ -60,7 +60,7 @@ struct ModelParams {
     /// the same way `tensor_split` is derived from the split mode. See
     /// gpu_policy.hpp.
     bool no_host   = false;  ///< no pinned host buffer for weights
-    bool direct_io = false;  ///< read straight to the device, not via the page cache
+    bool direct_io = false;  ///< read straight to the device, not via the page cache (Linux)
     bool vram_only = false;  ///< refuse the load rather than spill into system RAM
     bool gpu_only  = false;  ///< every layer on the GPU; no partial offload
 
@@ -299,9 +299,11 @@ struct GpuConfig {
     /// usually fail. It spills the excess into system RAM and carries on, and
     /// the model then runs perhaps twenty times slower with nothing on screen
     /// to say why -- which is a far worse outcome than being told it will not
-    /// fit. On, Crucible checks the free video memory first and says so, and the
-    /// weights are read straight to the card rather than through the operating
-    /// system's page cache, so they never occupy RAM on the way past either.
+    /// fit. On, Crucible checks the free video memory first and says so. On
+    /// Linux the weights are also read straight to the card rather than through
+    /// the operating system's page cache, so they never occupy RAM on the way
+    /// past either. macOS and Windows have no such read, and map them as they
+    /// map any model's. See kDirectIoReal in gpu_policy.hpp.
     bool vram_only = false;
 };
 
@@ -511,6 +513,17 @@ struct ServerConfig {
     /// What it serves: a model as a seat names one, a file in the models
     /// folder or a path, or empty for the delegator.
     std::string model;
+
+    /// The provider `model` is asked through, by Provider::id, or empty for
+    /// a model on this machine. Every request to one is spent from the
+    /// person's credit, so it is served to other computers only with a key
+    /// set: without one the server listens on this machine alone.
+    std::string provider;
+
+    /// What /v1/embeddings answers with when a request names no model: a
+    /// model as a seat names one -- an embedding model, as a rule -- or empty
+    /// for the model served.
+    std::string embeddings;
 
     int port = kDefaultPort;
 

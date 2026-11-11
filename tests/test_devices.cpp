@@ -7,6 +7,8 @@
 #include <cmath>
 #include <optional>
 
+#include "crucible/llm/model_host.hpp"
+
 // ---------------------------------------------------------------------------
 // GPU priority order
 //
@@ -1164,14 +1166,38 @@ TEST(vram_only_is_stamped_onto_every_model) {
 
     // The delegator as well as the experts: it is resident for the whole
     // session, so it is the last model that should be allowed to sit in RAM.
+    // Read past the page cache where that is what direct I/O does.
     CHECK(config.router.vram_only);
-    CHECK(config.router.direct_io);
+    CHECK_EQ(config.router.direct_io, kDirectIoReal);
     CHECK(config.router.no_host);
     CHECK(config.defaults.vram_only);
     for (const auto& [id, expert] : config.experts) {
         CHECK(expert.vram_only);
-        CHECK(expert.direct_io);
+        CHECK_EQ(expert.direct_io, kDirectIoReal);
     }
+}
+
+TEST(vram_only_asks_for_direct_io_only_where_it_reads_past_the_cache) {
+    // llama.cpp's direct I/O opens the file O_DIRECT on Linux, and buffered
+    // on macOS and Windows, where asking for it only turned the mapping off:
+    // the cache kept the file all the same, and a Mac held the weights twice.
+    // There a model is mapped. The refusal and the host buffer are the
+    // setting's on every system.
+    GpuConfig gpu;
+    gpu.vram_only = true;
+    for (const bool real : {true, false}) {
+        ModelParams params;
+        detail::stamp_memory(params, gpu, /*have_gpu=*/true, real);
+        CHECK(params.vram_only);
+        CHECK(params.no_host);
+        CHECK_EQ(params.direct_io, real);
+        CHECK(reading_for(params, {}, -1.0) == (real ? FileRead::Direct : FileRead::Mapped));
+    }
+#if defined(__linux__)
+    CHECK(kDirectIoReal);
+#else
+    CHECK(!kDirectIoReal);
+#endif
 }
 
 TEST(the_memory_policy_is_applied_even_in_auto_split_mode) {

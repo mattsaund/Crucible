@@ -417,7 +417,8 @@ TEST(a_cold_file_is_read_the_fastest_way_this_system_has) {
     params.on_processor = true;
     CHECK(reading_for(params, gpus, 0.0) != FileRead::Direct);
 
-    // Asked for, as "Dedicated VRAM only" asks, it is direct everywhere.
+    // Asked for, as "Dedicated VRAM only" asks where direct I/O is real, it
+    // is direct.
     params.on_processor = false;
     params.direct_io    = true;
     CHECK(reading_for(params, gpus, 0.9) == FileRead::Direct);
