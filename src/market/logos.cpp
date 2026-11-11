@@ -35,12 +35,14 @@ using json = nlohmann::json;
 constexpr const char* kSite = "https://huggingface.co/";
 
 /// The most a picture may be. The hub sends a logo 200 pixels square, a few
-/// kilobytes, and a card's own picture is most often some tens of them;
-/// nothing near this size is a logo.
-constexpr std::uint64_t kMostBytes = 256 * 1024;
+/// kilobytes, and a card's own picture is most often some tens of them, but
+/// a mascot drawn for a card runs to several hundred: a quarter of a megabyte
+/// left two of nine measured on their owners' logos instead.
+constexpr std::uint64_t kMostBytes = 1024 * 1024;
 
-/// The most the folder keeps, a thousand logos and more.
-constexpr std::uint64_t kMostKept = 8 * 1024 * 1024;
+/// The most the folder keeps, a thousand logos and more, and room for the
+/// larger pictures of cards beside them.
+constexpr std::uint64_t kMostKept = 32 * 1024 * 1024;
 
 /// How many repositories' owners are remembered.
 constexpr std::size_t kMostRemembered = 5000;
