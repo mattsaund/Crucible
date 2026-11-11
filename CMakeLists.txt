@@ -7,7 +7,7 @@ project(crucible
 # A pre-release says so after the numbers ("-pre.1"). Crucible's update check
 # ranks it below the release with the same numbers, and the installers
 # workflow makes a tag with a dash a GitHub pre-release. Empty for a release.
-set(CRUCIBLE_VERSION_SUFFIX "-pre.1")
+set(CRUCIBLE_VERSION_SUFFIX "-pre.2")
 set(CRUCIBLE_VERSION "${PROJECT_VERSION}${CRUCIBLE_VERSION_SUFFIX}")
 
 # ---------------------------------------------------------------------------
