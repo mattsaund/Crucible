@@ -52,6 +52,15 @@ std::size_t reusable_prefix(const std::vector<llama_token>& cached,
 /// back to where its chunk began, never further.
 bool holds_window(std::int32_t oldest, std::size_t position, std::int32_t window);
 
+/// Whether a chat template is OpenAI's Harmony, gpt-oss's: the test llama.cpp
+/// recognizes it by.
+bool is_harmony(std::string_view chat_template);
+
+/// A conversation in the Harmony format, as gpt-oss's own template writes one
+/// for a reply: an earlier answer on the final channel, ended with <|end|>.
+/// See LoadedModel::format_chat.
+std::string harmony_chat(const std::vector<ChatMessage>& messages, bool add_assistant_prefix);
+
 /// `cancel` asked inside a decode of `ctx` as well as between them, for as
 /// long as this lives. See loaded_model.cpp.
 class Aborting {

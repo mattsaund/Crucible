@@ -70,12 +70,14 @@
 #include "crucible/engine/state.hpp"
 #include "crucible/llm/loaded_model.hpp"
 #include "crucible/llm/model_host.hpp"
+#include "crucible/llm/response_filter.hpp"
 #include "crucible/routing/expert.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/runtime/backend.hpp"
 #include "crucible/tools/apps.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/subprocess.hpp"
+#include "crucible/util/text.hpp"
 
 using namespace crucible;
 
@@ -256,6 +258,83 @@ int smoke_host(const std::string& first_file, const std::string& second_file) {
 /// it had kept (tools/app_runner.cpp). What it found is printed, and its exit
 /// status is this one's. The program goes where a person's would, unless
 /// CRUCIBLE_APPS_DIR names somewhere else.
+/// A second turn, written back the way the chat writes it, against the way
+/// llama.cpp's own Harmony did: `count` conversations of a question and a
+/// second one, each second turn asked both ways with the same seed, and how
+/// many of each ended in a loop. For gpt-oss, which once wrote dots to the
+/// end of its context in a second turn, shown its earlier answer on no
+/// channel and ended with <|return|>. In 12 conversations on 2026-11-11
+/// neither way looped, and the second answers ran 476 tokens on average the
+/// template's way against 600.
+int smoke_turns(const std::string& file, int count) {
+    ModelParams params;
+    params.model = params.path = std::filesystem::absolute(file).string();
+    ModelHost   host(paths::log_file());
+    std::string error;
+    LoadedModel* model = host.acquire_expert("turns", params, {}, {}, error);
+    if (model == nullptr) {
+        std::printf("FAILED: %s did not load: %s\n", file.c_str(), error.c_str());
+        print_tail(paths::log_file(), 20);
+        return 1;
+    }
+    // llama.cpp's Harmony as it was used (llama-chat.cpp, LLM_CHAT_TEMPLATE_OPENAI_MOE).
+    const auto llama_cpps = [](const std::vector<ChatMessage>& chat) {
+        std::string out;
+        for (const ChatMessage& message : chat) {
+            out += "<|start|>" + message.role + "<|message|>" + message.content;
+            out += message.role == "assistant" ? "<|return|>" : "<|end|>";
+        }
+        return out + "<|start|>assistant";
+    };
+    struct Reply {
+        std::string answer;
+        int         tokens = 0;
+        bool        looped = false;
+    };
+    const auto reply = [&](const std::string& prompt, int seed) {
+        ModelParams asked = params;
+        asked.temperature = 0.7F;
+        asked.seed        = seed;
+        asked.max_tokens  = 4096;
+        ResponseFilter filter;
+        std::string    said;
+        Reply          out;
+        const auto     looping = [&said] {
+            return detail::ends_in_loop(said) || said.find(std::string(200, '.')) != std::string::npos;
+        };
+        const GenerationStats stats = model->generate(
+            prompt, asked,
+            [&](std::string_view chunk) {
+                said += chunk;
+                out.answer += filter.feed(chunk).answer;
+            },
+            looping);
+        out.answer += filter.flush().answer;
+        out.tokens = stats.output_tokens;
+        out.looped = looping();
+        return out;
+    };
+    int was_looped = 0;
+    int now_looped = 0;
+    for (int i = 0; i < count; ++i) {
+        std::vector<ChatMessage> chat = {{"system", "Reasoning: medium"},
+                                         {"user", "Plan the seating for 6 people at a round table, briefly."}};
+        const Reply first = reply(detail::harmony_chat(chat, true), 1000 + i);
+        chat.push_back({"assistant", first.answer});
+        chat.push_back({"user", "Now do the same for 8 people, and say who sits beside whom."});
+        const Reply was = reply(llama_cpps(chat), 2000 + i);
+        const Reply now = reply(detail::harmony_chat(chat, true), 2000 + i);
+        was_looped += was.looped ? 1 : 0;
+        now_looped += now.looped ? 1 : 0;
+        std::printf("%2d: first %d tokens; second, llama.cpp's way %d tokens%s, the template's way %d tokens%s\n", i + 1,
+                    first.tokens, was.tokens, was.looped ? " LOOPED" : "", now.tokens, now.looped ? " LOOPED" : "");
+        std::fflush(stdout);
+    }
+    std::printf("second turns that looped: llama.cpp's way %d of %d, the template's way %d of %d\n", was_looped, count,
+                now_looped, count);
+    return now_looped == 0 ? 0 : 1;
+}
+
 int smoke_app(int seconds) {
     const std::filesystem::path project = paths::data_dir() / "smoke-app";
     std::error_code ec;
@@ -540,6 +619,9 @@ int main(int argc, char** argv) {
     if (argc >= 3 && std::string(argv[1]) == "--host") {
         return smoke_host(argv[2], argc >= 4 ? argv[3] : argv[2]);
     }
+    if (argc >= 4 && std::string(argv[1]) == "--turns") {
+        return smoke_turns(argv[2], std::atoi(argv[3]));
+    }
     if (argc >= 2 && std::string(argv[1]) == "--app") {
         return smoke_app(argc >= 3 ? std::atoi(argv[2]) : 60);
     }
@@ -557,6 +639,7 @@ int main(int argc, char** argv) {
         std::printf("usage: crucible-smoke <delegator.gguf or -> <expert.gguf> \"a question\"\n"
                     "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n"
                     "       crucible-smoke --build-config <config.json> \"a directive\" [\"a question\"]\n"
+                    "       crucible-smoke --turns <model.gguf> <count>\n"
                     "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n"
                     "       crucible-smoke --runtime cpu\n"
                     "       crucible-smoke --host <first.gguf> [<second.gguf>]\n"
