@@ -12,9 +12,10 @@
 //
 // The built-in cases are questions for nine seats. tools/routes has five seats
 // of questions, and the tasks a build hands out, worded the way a build words
-// them for the delegator; each file says what it is. --method names a way of
-// routing to compare with the shipped one (ModelRouter in the orchestrator's
-// routing.py lists them), so trying one needs no change here.
+// them for the delegator and routed the way it routes them; each file says
+// what it is. --method names a way of routing to compare with the shipped one
+// (ModelRouter in the orchestrator's routing.py lists them), so trying one
+// needs no change here.
 //
 // --decide measures the delegator's other job instead: whether a message
 // typed into the box is answered or built (the orchestrator's intent.py),
@@ -153,15 +154,20 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    float       calibration = 0.25F;  // the orchestrator's own, routing.CALIBRATION
+    // Only with --calibration: otherwise the orchestrator takes out its own
+    // share of the lean, which is not the same for a build's tasks.
+    float       calibration = 0.0F;
     std::string explain;
     // --cases FILE: a roster and the prompts to route against it, as JSON --
     // {"roster": [{"id", "name", "tag", "blurb", "keywords", "examples"}...],
     //  "cases": [["expected id", "prompt"], ...]} -- for a roster other than
-    // the nine the built-in cases are written for. --method NAME is handed to
-    // the orchestrator's router, which is how a routing idea is measured
-    // against the shipped one without a rebuild.
+    // the nine the built-in cases are written for, with "tasks": true when
+    // the prompts are a build's tasks, to be routed the way a build routes
+    // them. --method NAME is handed to the orchestrator's router, which is
+    // how a routing idea is measured against the shipped one without a
+    // rebuild.
     std::string cases_file;
+    bool        tasks = false;
     std::string method;
     std::string decide_file;
 
@@ -238,6 +244,7 @@ int main(int argc, char** argv) {
             std::ifstream in(cases_file);
             in >> doc;
             experts = doc.at("roster");
+            tasks   = doc.value("tasks", false);
             for (const json& one : doc.at("cases")) {
                 cases.emplace_back(one.at(0).get<std::string>(), one.at(1).get<std::string>());
             }
@@ -299,8 +306,10 @@ int main(int argc, char** argv) {
             seats[expert.value("id", "")] = json{{"model", true}};
         }
         json out{{"prompt", prompt}, {"roster", experts}, {"seats", seats},
-                 {"routing", {{"min_confidence", 0.0}, {"default_expert", ""}}},
-                 {"calibration", calibration}};
+                 {"routing", {{"min_confidence", 0.0}, {"default_expert", ""}}}, {"tasks", tasks}};
+        if (calibrated) {
+            out["calibration"] = calibration;
+        }
         if (!method.empty()) {
             out["method"] = method;
         }
@@ -331,7 +340,10 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    std::printf("calibration %.2f\n\n", static_cast<double>(calibration));
+    if (calibrated) {
+        std::printf("calibration %.2f\n", static_cast<double>(calibration));
+    }
+    std::printf("%s\n\n", tasks ? "routed as a build's tasks" : "routed as questions");
     int    correct  = 0;
     double total_ms = 0.0;
 

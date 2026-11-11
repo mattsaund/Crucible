@@ -1,5 +1,6 @@
 {
-  "about": "build-tasks.json with Programming's worked questions taken away, so that it is asked about in its description instead (Roster.asked in routing.py).",
+  "about": "build-tasks.json with Programming's worked questions taken away, so that it is asked about in its description instead (Roster.asked in routing.py). A build has shown no seat's worked questions beside a task since 1.0.0, so routed as one (\"tasks\") these score as build-tasks.json does; with --method worked, which shows them, they still measure a seat without any.",
+  "tasks": true,
   "roster": [
     {"id": "programming", "name": "Programming", "tag": "PROG", "blurb": "Writing and running code: apps, websites, Python, JavaScript, HTML and CSS, shell, tests, builds, fixing errors.", "keywords": ["code", "programming", "app", "website", "python", "javascript"], "examples": []},
     {"id": "mathematics", "name": "Mathematics", "tag": "MATH", "blurb": "Algebra, calculus, statistics and proofs, worked step by step.", "keywords": ["math", "algebra", "calculus", "statistics", "proof"], "examples": ["How do I find the derivative of x^3 * ln(x) step by step?", "What is the probability of drawing two aces in a row from a standard deck?"]},
