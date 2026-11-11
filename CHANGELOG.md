@@ -28,6 +28,10 @@ update check and the website stay on 0.9.9.
   cut short that way now goes out as a failure rather than a whole answer.
 - **A build on an LFM2 model writes its files.** LFM2 writes its calls as
   `[WRITE(path=..., content=...)]`, which were taken for talk.
+- **gpt-oss reads its earlier answers the way its own template writes
+  them**, on the final channel, in a chat past its first turn. llama.cpp's
+  built-in format left them on no channel, ended with the token that ends a
+  reply being written.
 - **Two cards of the same model are two cards.** A second identical GPU was
   taken for the first seen twice and left out of every split.
 - **A Mac counts its cached files as available memory**, as Activity Monitor
