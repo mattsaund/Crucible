@@ -27,6 +27,7 @@
 #include <thread>
 
 #include "crucible/engine/engine.hpp"
+#include "crucible/llm/open_chat.hpp"
 #include "crucible/serve/server.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/http.hpp"
@@ -391,6 +392,37 @@ TEST(a_tool_call_streams_as_deltas_a_client_puts_back_together) {
     const Told told = told_by(events);
     CHECK_EQ(told.content, "Checking.");
     CHECK_EQ(told.finish, "tool_calls");
+}
+
+TEST(a_chat_template_that_will_not_write_a_conversation_says_why_in_its_own_words) {
+    // As llama.cpp's Jinja reports a template that refuses: the template
+    // quoted around the place it stopped, then the reason, which is all a
+    // client can use.
+    bool raised = false;
+    const std::string refusal =
+        "\n------------\nWhile executing CallExpression at line 1, column 191 in source:\n"
+        "...'system' else 0)) -%}{{- raise_exception('Conversation roles must alternate user...\n"
+        "                                           ^\n"
+        "Error: Jinja Exception: Conversation roles must alternate user/assistant/user/assistant/...";
+    CHECK_EQ(detail::template_said(refusal, &raised),
+             "Conversation roles must alternate user/assistant/user/assistant/...");
+    CHECK(raised);
+
+    // One that fails rather than refuses, and errors that are not a template's.
+    const std::string failure = "\n------------\nWhile executing FilterExpression at line 2, column 5 in source:\n"
+                                "{{ x | nope }}\n    ^\nError: Unknown filter 'nope'";
+    CHECK_EQ(detail::template_said(failure, &raised), "Unknown filter 'nope'");
+    CHECK(!raised);
+    CHECK(detail::template_said("JSON schema conversion failed").empty());
+    CHECK(detail::template_said("std::exception").empty());
+
+    // One that cannot be read says why, from llama.cpp's own reader: loading
+    // a model passes the reason on as only "std::exception".
+    const std::string unreadable = detail::why_unreadable("{% if %}<|im_start|>{{ messages }}<|im_end|>");
+    CHECK(!unreadable.empty());
+    CHECK(unreadable.find("std::exception") == std::string::npos);
+    CHECK(unreadable.find('\n') == std::string::npos);
+    CHECK(detail::why_unreadable("{% for message in messages %}{{ message['content'] }}{% endfor %}").empty());
 }
 
 TEST(a_required_call_comes_back_alone_without_the_words_said_before_it) {

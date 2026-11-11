@@ -1207,15 +1207,21 @@ echo "  and there is a download that needs no compiler at all"
 # The other kind of installer: a file you double-click. The one-line install
 # compiles from source, which is right for a program that also compiles its own
 # compute backends and wrong as the only way in -- it wants a toolchain, twenty
-# minutes and a terminal. These three are built by the installers workflow from
-# a build that already happened.
+# minutes and a terminal. These three are built and opened on every push, and a
+# tag publishes the ones built for its commit rather than building them again,
+# for the first time, as the release goes out.
 REL="$ROOT/.github/workflows/release.yml"
-check     "there is a workflow that builds them" \
-          test -f "$REL"
+BLD="$ROOT/.github/workflows/build.yml"
+check     "every push builds them" \
+          grep -q '^  setup:$' "$BLD"
 check     "a tag is what publishes them" \
           grep -q 'tags: \["v\*"\]' "$REL"
-check     "and it can be run by hand without publishing anything" \
-          grep -q 'workflow_dispatch' "$REL"
+check     "the ones built for its commit" \
+          grep -q 'run-id: ${{ needs.checked.outputs.run }}' "$REL"
+check     "and only while all three are still there to publish" \
+          grep -q 'select(. == "Crucible-macOS" or . == "Crucible-Windows" or . == "Crucible-Linux")' "$REL"
+check     "and they can be built by hand without publishing anything" \
+          grep -q 'workflow_dispatch' "$BLD"
 
 # macOS: a disk image with an application in it, and the bundle is
 # self-contained rather than the launcher install.sh writes -- there is no
@@ -1242,11 +1248,11 @@ check     "and checked as Gatekeeper will check it" \
 check     "the image says how to get past Gatekeeper, the way current macOS asks" \
           grep -q 'Privacy & Security' "$ROOT/packaging/macos/dmg.sh"
 check     "and the workflow opens the image rather than trusting it built" \
-          grep -q 'hdiutil attach' "$REL"
+          grep -q 'hdiutil attach' "$BLD"
 check     "verifies the signature on what it opened" \
-          grep -q 'codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app' "$REL"
+          grep -q 'codesign --verify --deep --strict --verbose=2 /tmp/crucible-dmg/Crucible.app' "$BLD"
 check     "and starts the program in it" \
-          grep -q 'Crucible.app/Contents/MacOS/Crucible --version' "$REL"
+          grep -q 'Crucible.app/Contents/MacOS/Crucible --version' "$BLD"
 
 # Windows: a setup .exe, per-user so there is no administrator prompt.
 check     "Windows builds a setup program" \
@@ -1406,8 +1412,10 @@ check     "and the release takes whatever built" \
 check     "on a draft, before anything is published" \
           awk '/^  runtimes-attach:/ { on = 1 } /^  release:/ { on = 0 } on && /draft: true/ { found = 1 }
                END { exit !found }' "$REL"
-check     "the release waits for the installers and the runtimes both" \
-          grep -q 'needs: \[checked, checks, macos, windows, linux, runtimes-attach\]' "$REL"
+check     "the release waits for the checks, the installers and the runtimes" \
+          grep -q 'needs: \[checked, checks, runtimes-attach\]' "$REL"
+check     "and publishes all three installers or nothing" \
+          grep -q 'test -s artifacts/Crucible-Windows/Crucible-Setup.exe' "$REL"
 check     "and is published only once the runtimes are on it" \
           grep -q "needs.runtimes-attach.result == 'success'" "$REL"
 # The checks run in the same run, and gate it: a tag is checked, built and

@@ -195,6 +195,65 @@ private:
 
 }  // namespace
 
+namespace detail {
+
+std::string template_said(std::string_view what, bool* raised) {
+    std::string_view said;
+    if (const auto at = what.rfind("\nError: ");
+        at != std::string_view::npos && what.find("While executing ") != std::string_view::npos) {
+        said = what.substr(at + 8);   // a run's error, after the source it quotes
+    } else if (what.rfind("\nError executing ", 0) == 0) {
+        const auto colon = what.find(": ");
+        said = colon == std::string_view::npos ? std::string_view() : what.substr(colon + 2);
+    } else if (what.rfind("parser: ", 0) == 0 || what.rfind("lexer: ", 0) == 0) {
+        said = what.substr(0, what.find('\n'));   // a reading's error, before the source it quotes
+        said.remove_prefix(said.find(": ") + 2);
+    } else {
+        return {};
+    }
+    constexpr std::string_view kRaised = "Jinja Exception: ";
+    if (raised != nullptr) {
+        *raised = said.rfind(kRaised, 0) == 0;
+    }
+    for (const std::string_view tag : {kRaised, std::string_view("Parser Error: ")}) {
+        if (said.rfind(tag, 0) == 0) {
+            said.remove_prefix(tag.size());
+        }
+    }
+    while (!said.empty() && std::isspace(static_cast<unsigned char>(said.front())) != 0) {
+        said.remove_prefix(1);
+    }
+    while (!said.empty() && std::isspace(static_cast<unsigned char>(said.back())) != 0) {
+        said.remove_suffix(1);
+    }
+    return std::string(said);
+}
+
+namespace {
+
+/// An exception's reason: in a template's own words where it is a
+/// template's, and nothing where it says only what type it is.
+std::string reason_of(const std::exception& e) {
+    std::string said = template_said(e.what());
+    if (said.empty() && std::string_view(e.what()) != "std::exception") {
+        said = e.what();
+    }
+    return said;
+}
+
+}  // namespace
+
+std::string why_unreadable(const std::string& source) {
+    try {
+        const common_chat_template read(source, "", "");
+    } catch (const std::exception& e) {
+        return reason_of(e);
+    }
+    return {};
+}
+
+}  // namespace detail
+
 const common_chat_templates* LoadedModel::chat_templates(std::string& error) {
     if (!templates_tried_) {
         templates_tried_ = true;
@@ -202,7 +261,14 @@ const common_chat_templates* LoadedModel::chat_templates(std::string& error) {
             common_chat_templates_ptr made = common_chat_templates_init(model_, "");
             templates_ = std::shared_ptr<common_chat_templates>(made.release(), common_chat_templates_free);
         } catch (const std::exception& e) {
-            templates_error_ = e.what();
+            // llama.cpp passes on what it caught as a bare std::exception,
+            // which says only that, so the template is read again here for
+            // the reason itself.
+            const char* source = llama_model_chat_template(model_, nullptr);
+            templates_error_   = source != nullptr ? detail::why_unreadable(source) : std::string();
+            if (templates_error_.empty()) {
+                templates_error_ = detail::reason_of(e);
+            }
         }
     }
     error = templates_error_;
@@ -224,7 +290,8 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     const common_chat_templates* templates = chat_templates(why);
     if (templates == nullptr) {
         result.untemplated = true;
-        return refused("This model's chat template could not be read: " + why);
+        return refused(why.empty() ? std::string("This model's chat template could not be read")
+                                   : "This model's chat template could not be read: " + why);
     }
     const llama_vocab* vocab = llama_model_get_vocab(model_);
 
@@ -316,7 +383,11 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
             session.emplace(templates, vocab, inputs);
             return session->prompt().str();
         } catch (const std::exception& e) {
-            failed = e.what();
+            bool              raised = false;
+            const std::string said   = detail::template_said(e.what(), &raised);
+            failed = said.empty() ? std::string(e.what())
+                   : std::string("This model's chat template ") + (raised ? "refused" : "failed on")
+                         + " this conversation: " + said;
             session.reset();
             return {};
         }
