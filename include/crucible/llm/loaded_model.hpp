@@ -259,10 +259,12 @@ private:
     };
 
     /// sample(), for open_chat: held to the grammar as `shaping` says, each
-    /// piece handed on with its token. The grammar is applied first, before
-    /// any truncation, as build_sampler_chain puts it, but outside the chain
-    /// so that a lazy one can be set aside in a thinking block. Empty, or why
-    /// the answer ended early: the grammar left the model nothing to say.
+    /// piece handed on with its token. The grammar is kept outside the chain,
+    /// so that a lazy one can be set aside in a thinking block, and asked of
+    /// the chain's pick; when it does not allow it, it goes first, before any
+    /// truncation, as build_sampler_chain puts it, and the chain picks again.
+    /// Empty, or why the answer ended early: the grammar left the model
+    /// nothing to say.
     std::string sample_shaped(const ModelParams& params, const Shaping& shaping, const CancelCallback& cancel,
                               GenerationStats& stats);
 

@@ -227,7 +227,10 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     // What the request asks, read as llama-server reads it.
     common_chat_templates_inputs inputs;
     try {
-        if (!request.tools.is_null()) {
+        // Tools the model may not call are not shown it: a small model shown
+        // a tool calls it, whatever it was told, and the call would come back
+        // as words.
+        if (!request.tools.is_null() && request.tool_choice != "none") {
             inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(request.tools.dump()));
         }
         inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(request.tool_choice);
@@ -520,30 +523,51 @@ std::string LoadedModel::sample_shaped(const ModelParams& params, const Shaping&
             ended = "the model gave nothing to sample from";
             break;
         }
-        for (int i = 0; i < n_vocab; ++i) {
-            candidates[static_cast<std::size_t>(i)] = llama_token_data{i, logits[i], 0.0F};
-        }
-        llama_token_data_array choice{candidates.data(), candidates.size(), -1, false};
-
-        // The grammar first, before anything truncates the candidates, so
-        // the only tokens it allows are never the ones thrown away -- but
-        // not inside a thinking block, for a grammar that waits for a call.
-        const bool held = grammar.sampler != nullptr && !(shaping.lazy && thinking);
-        if (held) {
-            llama_sampler_apply(grammar.sampler, &choice);
-            if (std::none_of(choice.data, choice.data + choice.size, [](const llama_token_data& one) {
-                    return one.logit != -std::numeric_limits<float>::infinity();
-                })) {
-                ended = "the answer's grammar left the model nothing it could say";
-                break;
+        constexpr float kBarred = -std::numeric_limits<float>::infinity();
+        const auto      fill    = [&] {
+            for (int i = 0; i < n_vocab; ++i) {
+                candidates[static_cast<std::size_t>(i)] = llama_token_data{i, logits[i], 0.0F};
             }
-        }
+            return llama_token_data_array{candidates.data(), candidates.size(), -1, false};
+        };
+        llama_token_data_array choice = fill();
         llama_sampler_apply(chain.sampler, &choice);
         if (choice.selected < 0 || static_cast<std::size_t>(choice.selected) >= choice.size) {
             ended = "the model's sampling chose nothing";
             break;
         }
-        const llama_token token = choice.data[choice.selected].id;
+        llama_token token = choice.data[choice.selected].id;
+
+        // Held to the grammar -- but not inside a thinking block, for a
+        // grammar that waits for a call. The chain's pick is asked of the
+        // grammar alone, and stands when it is allowed, as most are: the
+        // grammar read over every candidate of a vocabulary of 200,000 took
+        // most of the time a token takes, and JSON came at a third of the
+        // speed. One it does not allow and the grammar goes first after all,
+        // over every candidate before anything truncates them, so the only
+        // tokens it allows are never the ones thrown away -- the order
+        // build_sampler_chain puts it in -- and the chain picks again.
+        const bool held = grammar.sampler != nullptr && !(shaping.lazy && thinking);
+        if (held) {
+            llama_token_data       alone{token, 1.0F, 0.0F};
+            llama_token_data_array asked{&alone, 1, -1, false};
+            llama_sampler_apply(grammar.sampler, &asked);
+            if (alone.logit == kBarred) {
+                choice = fill();
+                llama_sampler_apply(grammar.sampler, &choice);
+                if (std::none_of(choice.data, choice.data + choice.size,
+                                 [](const llama_token_data& one) { return one.logit != kBarred; })) {
+                    ended = "the answer's grammar left the model nothing it could say";
+                    break;
+                }
+                llama_sampler_apply(chain.sampler, &choice);
+                if (choice.selected < 0 || static_cast<std::size_t>(choice.selected) >= choice.size) {
+                    ended = "the model's sampling chose nothing";
+                    break;
+                }
+                token = choice.data[choice.selected].id;
+            }
+        }
         if (llama_vocab_is_eog(vocab, token)) {
             break;
         }
