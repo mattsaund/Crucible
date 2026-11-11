@@ -3207,6 +3207,41 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
                   "<span class=\"part\">1.5 s</span>") != std::string::npos);
     CHECK(on.find("<span class=\"bad\">401</span>") != std::string::npos);
     CHECK(on.find("title=\"192.168.1.30\"") != std::string::npos);
+    // What /v1/embeddings answers with: the model served, unless one is chosen.
+    CHECK(on.find("id=\"server-embeddings\"") != std::string::npos);
+    CHECK(on.find("<option value=\"\" selected>The model served</option>") != std::string::npos);
+
+    // IPv6 beside IPv4 where it listens on both: each address, and the IP
+    // and port of each.
+    page().eval("(function () { var s = state.snapshot.server; s.ipv6 = true; s.lan6 = 'fd00::20';"
+                " s.addresses.local6 = 'http://[::1]:8338/v1'; s.addresses.network6 = 'http://[fd00::20]:8338/v1';"
+                " })()");
+    const std::string six = page().eval("views.settings()");
+    CHECK(six.find("This machine <span class=\"tag\">IPv6</span> <code>http://[::1]:8338/v1</code>")
+          != std::string::npos);
+    CHECK(six.find("Network <span class=\"tag\">IPv6</span> <code>http://[fd00::20]:8338/v1</code>")
+          != std::string::npos);
+    CHECK(six.find("IP and port <code>[fd00::20]:8338</code>") != std::string::npos);
+    page().eval("(function () { var s = state.snapshot.server; s.ipv6 = false; s.lan6 = '';"
+                " delete s.addresses.local6; delete s.addresses.network6; })()");
+
+    // A provider's model, offered with what it costs to serve it beyond this
+    // machine, and the network said to wait for a key when there is none.
+    page().eval("window.__providersWas = state.providers;"
+                "state.providers = { providers: [{ id: 'anthropic', name: 'Anthropic', models: ['claude-opus-5-5'],"
+                "  on_your_network: false }] };"
+                "state.config.server = { enabled: true, model: 'claude-opus-5-5', provider: 'anthropic', port: 8338,"
+                "  network: true, api_key: '' }");
+    CHECK_EQ(drawn("views.settings()"), "ok");
+    const std::string far = page().eval("views.settings()");
+    CHECK(far.find("<optgroup label=\"Anthropic (others need a key)\">"
+                   "<option value=\"anthropic|claude-opus-5-5\" selected>") != std::string::npos);
+    CHECK(far.find("<span class=\"tag\">needs a key</span>") != std::string::npos);
+    page().eval("state.config.server.api_key = 'sk-local'");
+    CHECK(page().eval("views.settings()").find("needs a key") == std::string::npos);
+    page().eval("state.providers = window.__providersWas;"
+                "state.config.server = { enabled: true, model: 'physics.gguf', port: 8338, network: true,"
+                "  api_key: 'sk-local' }");
 
     // Loading, and then a port somebody else has.
     page().eval("state.snapshot.server.waiting = 'loading'; state.snapshot.server.queued = 0");
