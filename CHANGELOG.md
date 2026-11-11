@@ -6,6 +6,43 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 1.0.0-pre.3 (2026-11-11)
+
+The last of three pre-releases before 1.0.0, marked as one on GitHub: the
+update check and the website stay on 0.9.9.
+
+- **The server speaks HTTPS when asked.** Settings, Server takes a
+  certificate and its key, or makes one for this machine and keeps it, so a
+  client told to trust it once goes on trusting it. Its SHA-256 is shown to
+  check it by, and the addresses say https://. Mbed TLS is compiled in, so
+  the installers carry nothing new, where pre.2 left HTTPS to a reverse proxy.
+- **A required tool call comes back alone.** When a request says a tool must
+  be called, the reply is the call with no content, as OpenAI sends it, where
+  LFM2 wrote words before it. A call that never comes gives the words back.
+- **A chat template that refuses a conversation says why.** A plain chat it
+  refuses is still answered, the chat's way. Tools or a JSON answer, which
+  need the template, are refused with the template's own reason rather than
+  its source.
+- **Closing Crucible while the server or Bench is answering is safe.** The
+  model was freed under them, which could crash on the way out, and an answer
+  cut short that way now goes out as a failure rather than a whole answer.
+- **A build on an LFM2 model writes its files.** LFM2 writes its calls as
+  `[WRITE(path=..., content=...)]`, which were taken for talk.
+- **Two cards of the same model are two cards.** A second identical GPU was
+  taken for the first seen twice and left out of every split.
+- **A Mac counts its cached files as available memory**, as Activity Monitor
+  does. A Mac up a while let models go, or refused them, that fit.
+- **A message about your code is not taken for a build.** "Change the port in
+  server.js", "Code in main.py crashes" and "Design of the landing page looks
+  off" are answered.
+- **A page previewed by its address cannot overwrite a project page's saved
+  data**, and More in Preview's Tune panel takes its click again.
+- **Every push builds and opens the three installers**, so a broken one is
+  found before a release rather than as it goes out, and a release publishes
+  those of its commit in minutes. CI also loads a real model, swaps it and
+  lets it go on Linux, macOS and Windows, and reloads a made app in its own
+  window there.
+
 ## 1.0.0-pre.2 (2026-11-11)
 
 The second of three pre-releases before 1.0.0, marked as one on GitHub: the
