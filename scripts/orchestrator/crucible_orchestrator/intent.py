@@ -127,13 +127,17 @@ def message_of(prompt, attachments=()):
 # in view, so what they score there flatters them.
 
 # A request for something to be made... Several of these are nouns as often
-# as verbs ("change the port", "the design is fine"), and are a request only
-# where they are not one: not right after a word that makes them a noun.
+# as verbs ("change the port", "code in main.py crashes"), and ask for
+# something only as verbs: with what is to be made after them ("port this
+# tool", "code me a game"), and not right after a word that makes them a noun.
+# "Her" is not among those words, since it is as often the one helped: "help
+# her code a website".
 _NOUN_BEFORE = "".join(r"(?<!\b%s )" % word for word in
-                       ("the", "a", "an", "this", "that", "its", "my", "your", "our", "their", "his", "her"))
+                       ("the", "a", "an", "this", "that", "its", "my", "your", "our", "their", "his"))
+_OBJECT_AFTER = r"(?=\s+(?:(?:me|us)\s+)?(?:a|an|the|this|that|these|those|it|my|our|your|their)\b)"
 _MAKE = (r"(?:build|make|create|develop|scaffold|set\s*up|implement|put\s+together|spin\s+up|"
          r"generate|write|convert|migrate|rewrite|"
-         + _NOUN_BEFORE + r"(?:code|program|design|turn|port))")
+         + _NOUN_BEFORE + r"(?:code|program|design|turn|port)" + _OBJECT_AFTER + ")")
 # ...that is a piece of software rather than a few lines of it. Not a file
 # named like one: "server.js" is a file, not a server to be made.
 _THING = (r"(?:apps?|application|website|site|web\s*page|landing\s+page|game|tool|cli|"
@@ -155,8 +159,11 @@ QUESTION = re.compile(r"^\s*(?:what|why|how|when|where|who|which|whose|is|are|wa
 # A request put as a question: "can you build me...".
 ASKED_TO = re.compile(r"^\s*(?:can|could|would|will)\s+you\b|^\s*please\b", re.I)
 # A change to what is there, in a folder that has something in it.
-CHANGE = re.compile(r"^\s*(?:now\s+|then\s+|also\s+)?(?:add|implement|support|port|migrate|"
-                    r"rewrite|refactor|convert|turn|split|redesign)\b", re.I)
+# "Port" and "turn" as verbs only, as above ("turn off the logging" one as
+# well): "Port 8080 in server.js, not 3000." asks for no change of its own.
+CHANGE = re.compile(r"^\s*(?:now\s+|then\s+|also\s+)?(?:(?:add|implement|support|migrate|"
+                    r"rewrite|refactor|convert|split|redesign)\b|(?:port|turn)(?:%s|(?=\s+(?:off|on)\b)))"
+                    % _OBJECT_AFTER, re.I)
 # What is too small to plan: a line, a name, a comment. "A line" and not
 # "line", which is in "command-line".
 SMALL = re.compile(r"\b(?:docstring|comment|typo|spelling|print|log\s+line|import|type\s+hint|"

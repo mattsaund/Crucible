@@ -69,6 +69,25 @@ class Keywords(unittest.TestCase):
         self.assertEqual(kind_of("Can you port the server to Go?"), intent.BUILD)
         self.assertEqual(kind_of("Build an api in server.js that lists users."), intent.BUILD)
 
+    def test_a_message_that_starts_with_the_noun_is_not_a_build(self):
+        # Terse reports drop the article, and the noun went back to being the
+        # verb: each of these was a build, of files nobody asked to change.
+        for text in ("Design of the landing page looks off on mobile.",
+                     "Code in main.py crashes when I open the settings page.",
+                     "Program crashes when the dashboard loads.",
+                     "Port number for the api is wrong, use 8080.",
+                     "Turn order in my game is broken.",
+                     "Port 8080 in server.js, not 3000."):
+            for files in (False, True):
+                self.assertEqual(kind_of(text, files=files), intent.ANSWER, (text, files))
+        # The verbs, with what they make after them, still ask for it. "Her"
+        # is the one helped as often as the owner.
+        for text in ("Code me a game.", "Program the bot to reply to mentions.",
+                     "Turn the CLI into a web app.", "Help her code a website."):
+            self.assertEqual(kind_of(text), intent.BUILD, text)
+        self.assertEqual(kind_of("Turn off the logging in server.py.", files=True), intent.BUILD)
+        self.assertEqual(kind_of("Fix her code."), intent.ANSWER)
+
     def test_what_was_attached_is_part_of_what_is_decided(self):
         self.assertEqual(intent.message_of("make this", ["sketch.png", "notes.md"]),
                          "make this\n\nAttached: sketch.png notes.md")
