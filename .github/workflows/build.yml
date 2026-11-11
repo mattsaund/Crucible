@@ -110,6 +110,26 @@ jobs:
       - name: Trainer tests
         run: python -m unittest discover -s scripts/trainer/tests -v
 
+      # The MLX delegator's helper (scripts/mlx). Its tests need MLX and are
+      # skipped without it, so on the Mac mlx-lm is installed first, which
+      # also says what MLX can do on the runner. The runner is a virtual
+      # machine, which may give MLX no GPU, and the helper then runs on the
+      # processor. What MLX did and what the tests said go on the run as
+      # notices, which anyone can read without signing in.
+      - name: MLX delegator tests
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            if python -m pip install --quiet mlx-lm; then
+              said="$(python -c "import mlx.core as mx; print('MLX', mx.__version__, 'runs on the GPU' if mx.metal.is_available() else 'runs on the processor, with no Metal device')" 2>&1 | tail -1)"
+            else
+              said="mlx-lm would not install here"
+            fi
+            echo "::notice title=MLX on this runner::$said"
+          fi
+          python -m unittest discover -s scripts/mlx/tests -v 2>&1 | tee mlx-tests.txt
+          echo "::notice title=MLX delegator tests on $RUNNER_OS::$(grep -E '^(Ran|OK|FAILED)' mlx-tests.txt | tr '\n' ' ')"
+
       # install.sh's own logic, under the bash each system really has. On a Mac
       # that is 3.2 at /bin/bash rather than whatever Homebrew put first on
       # PATH, and 3.2 is what people run the installer with.

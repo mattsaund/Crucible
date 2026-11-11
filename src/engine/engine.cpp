@@ -605,28 +605,36 @@ void Engine::stop_mlx() {
 
 void Engine::show_loaded() {
     const auto name = [](const std::string& path) { return std::filesystem::path(path).filename().string(); };
-    std::vector<LocalModel> models;
-    if (host_) {
-        if (const LoadedModel* router = host_->router(); router != nullptr) {
-            models.push_back({{}, name(router->path()), router->bytes(), true});
-        }
-        for (const ModelHost::Held& held : host_->held()) {
-            models.push_back({held.id, name(held.model->path()), held.model->bytes(), false});
-        }
-    }
-    if (mlx_seat_ && mlx_.running()) {
-        // A folder of weights in a process of its own: what it holds is
-        // about what the folder does.
-        const std::filesystem::path served = mlx_.served();
+    // A folder of weights in a process of its own holds about what the
+    // folder does.
+    const auto folder_bytes = [](const std::filesystem::path& folder) {
         std::uint64_t bytes = 0;
         std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(served, ec), end; !ec && it != end; it.increment(ec)) {
+        for (std::filesystem::recursive_directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
             std::error_code each;
             if (it->is_regular_file(each)) {
                 bytes += it->file_size(each);
             }
         }
-        models.push_back({*mlx_seat_, served.filename().string(), bytes, false});
+        return bytes;
+    };
+    std::vector<LocalModel> models;
+    if (host_) {
+        if (const LoadedModel* router = host_->router(); router != nullptr) {
+            models.push_back({{}, name(router->path()), router->bytes(), true});
+        }
+    }
+    if (const std::filesystem::path delegating = mlx_delegator_.served(); !delegating.empty()) {
+        models.push_back({{}, delegating.filename().string(), folder_bytes(delegating), true});
+    }
+    if (host_) {
+        for (const ModelHost::Held& held : host_->held()) {
+            models.push_back({held.id, name(held.model->path()), held.model->bytes(), false});
+        }
+    }
+    if (mlx_seat_ && mlx_.running()) {
+        const std::filesystem::path served = mlx_.served();
+        models.push_back({*mlx_seat_, served.filename().string(), folder_bytes(served), false});
     }
     state_.set_local_models(std::move(models));
 }
@@ -875,6 +883,7 @@ void Engine::run() {
         const std::lock_guard<std::mutex> host(host_mutex_);
         host_.reset();
         stop_mlx();
+        mlx_delegator_.stop();
     }
     orchestra_.stop();
 }
@@ -891,6 +900,12 @@ void Engine::load_router(const CancelCallback& cancel) {
     }
 
     state_.set_mood(Mood::Loading, "loading the delegator");
+    if (mlx::is_model_dir(router.path)) {
+        load_mlx_router(router, cancel);
+        return;
+    }
+    // One delegator at a time, so an MLX one set before goes for this.
+    mlx_delegator_.stop();
     state_.set_delegator_progress(0.0F);
     if (wake_) {
         wake_();
@@ -953,8 +968,67 @@ void Engine::load_router(const CancelCallback& cancel) {
     show_loaded();
 }
 
+void Engine::load_mlx_router(const ModelParams& router, const CancelCallback& cancel) {
+    // One delegator at a time, so a GGUF one set before goes for this.
+    host_->release_router();
+    // A spinner rather than a figure, since MLX does not say how far along a
+    // load is, as for an MLX expert.
+    state_.set_delegator_loading();
+    if (wake_) {
+        wake_();
+    }
+
+    // Room is made for it as for a GGUF delegator (see acquire_router). The
+    // experts nobody is using go first, then an MLX expert nobody is using,
+    // while the machine's memory has no room for it beside them. Its
+    // helper is out of the host's sight, but its weights are in the memory
+    // the host asks after, and on a Mac that is the one memory every model
+    // shares.
+    const auto crowded = [&] {
+        return (host_->expert_count() > 0 || mlx_.running()) && !host_->fits_beside(router, mlx_.running());
+    };
+    if (crowded()) {
+        host_->release_experts(in_use());
+        state_.set_resident(host_->loaded_expert());
+        if (crowded() && mlx_.running() && !leases_.held(mlx_.served().string())) {
+            stop_mlx();
+        }
+        show_loaded();
+    }
+    if (crowded()) {
+        // Not a broken delegator. The models in use leave it no room for now,
+        // and routing goes on keywords until they are let go.
+        state_.set_delegator_problem({});
+        state_.set_delegator_ready(true);
+        return;
+    }
+
+    std::string error;
+    const bool  loaded = mlx_delegator_.start(
+        router.path,
+        [this, &cancel] {
+            return (cancel ? cancel() : cancel_.load(std::memory_order_relaxed))
+                || !running_.load(std::memory_order_relaxed);
+        },
+        error);
+    if (!loaded) {
+        router_failed_for_ = error == "stopped" ? std::string() : router.path;
+        state_.set_delegator_problem(error == "stopped" ? std::string() : error);
+        state_.set_delegator_ready(true);
+        return;
+    }
+    router_failed_for_.clear();
+    state_.set_delegator_problem({});
+    state_.set_delegator_ready(true);
+    show_loaded();
+}
+
+bool Engine::delegator_here() const {
+    return host_->router() != nullptr || mlx_delegator_.serving(config().router.path);
+}
+
 void Engine::ensure_router(const CancelCallback& cancel) {
-    if (config().router.model.empty() || host_->router() != nullptr) {
+    if (config().router.model.empty() || delegator_here()) {
         return;  // keywords, which need nothing loaded, or already there
     }
     load_router(cancel);
@@ -965,6 +1039,9 @@ void Engine::ready_delegator() {
     if (router.model.empty()) {
         load_router();   // nothing to load; says so on the delegator's row
         return;
+    }
+    if (mlx_delegator_.serving(router.path)) {
+        return;  // in a process of its own, which has nowhere else to go
     }
     if (host_->router() != nullptr) {
         if (!host_->router_could_move(in_use())) {
@@ -1079,7 +1156,12 @@ void Engine::make_room_for(const ModelParams& expert, const std::function<void()
         // every prompt, seven seconds of delegator on a card wired for one
         // lane on top of the expert's own, where the two fit side by side.
         const std::lock_guard<std::mutex> host(host_mutex_);
-        if (!host_->needs_router_room(expert, in_use())) {
+        // An MLX delegator is a process the host cannot see into, so it is
+        // asked as an MLX model in use is, whether the expert fits beside it
+        // in the memory every model shares on a Mac.
+        const bool needed = mlx_delegator_.running() ? !host_->fits_beside(expert, true)
+                                                     : host_->needs_router_room(expert, in_use());
+        if (!needed) {
             return;
         }
     }
@@ -1093,6 +1175,7 @@ void Engine::release_router() {
     // The orchestrator keeps the delegator's measured lean itself, by file,
     // so freeing the model costs the next load nothing but the load.
     host_->release_router();
+    mlx_delegator_.stop();
     state_.set_delegator_ready(false);
     show_loaded();
 }
@@ -1192,8 +1275,9 @@ void Engine::do_apply_config(Config config) {
 
     // The delegator, likewise; a different one is loaded by the next prompt
     // that needs it.
-    if (host_->router() != nullptr
-        && (hardware || loads_differently(before.router, current.router))) {
+    // An MLX one is a process of its own, which only another model moves.
+    if ((host_->router() != nullptr && (hardware || loads_differently(before.router, current.router)))
+        || (mlx_delegator_.running() && !mlx_delegator_.serving(current.router.path))) {
         release_router();
         freed = true;
     }
@@ -1377,6 +1461,67 @@ CancelCallback Engine::cancel_for(const nlohmann::json& params) const {
     };
 }
 
+nlohmann::json Engine::serve_mlx_delegator(const std::string& method, const nlohmann::json& params,
+                                           const CancelCallback& cancel) {
+    using json = nlohmann::json;
+    const auto conversation = [&params](std::vector<ChatMessage> messages) {
+        for (const json& one : params.value("messages", json::array())) {
+            messages.push_back({one.value("role", "user"), one.value("content", "")});
+        }
+        return messages;
+    };
+    std::string error;
+    if (method == "delegator.format") {
+        std::string text = mlx_delegator_.format(conversation({}), error);
+        if (!error.empty()) {
+            throw std::runtime_error(error);
+        }
+        return json{{"text", std::move(text)}};
+    }
+    if (method == "delegator.score") {
+        std::vector<std::string> labels;
+        for (const json& one : params.value("labels", json::array())) {
+            labels.push_back(one.is_string() ? one.get<std::string>() : std::string());
+        }
+        // Cut to the delegator's context as a GGUF's prompt is, so the two
+        // read the same part of a prompt too long for it.
+        const bool cancelable = params.value("cancelable", true);
+        const std::vector<float> scores =
+            mlx_delegator_.score(params.value("prompt", ""), labels, params.value("prefix", ""),
+                                 config().router.n_ctx, cancelable ? cancel : CancelCallback{});
+        json out = json::array();
+        for (const float score : scores) {
+            out.push_back(score <= kUnscored ? json(nullptr) : json(score));
+        }
+        return json{{"scores", out}, {"canceled", cancelable && cancel()}};
+    }
+    // delegator.generate, written as a GGUF delegator writes it. A reasoning
+    // model is asked for little thinking and given room for it, and its
+    // thinking is left out of the answer.
+    const bool effort = mlx_delegator_.takes_effort();
+    std::vector<ChatMessage> start;
+    if (effort) {
+        start.push_back({"system", "Reasoning: low"});
+    }
+    const std::string prompt = mlx_delegator_.format(conversation(std::move(start)), error);
+    if (!error.empty()) {
+        throw std::runtime_error(error);
+    }
+    int max_tokens = params.value("max_tokens", 64);
+    if (effort) {
+        max_tokens = std::max(max_tokens, 512);
+    }
+    const std::string written =
+        mlx_delegator_.generate(prompt, max_tokens, params.value("temperature", 0.2F), cancel, error);
+    if (!error.empty() && !(cancel && cancel())) {
+        throw std::runtime_error(error);
+    }
+    ResponseFilter filter;
+    std::string    reply = filter.feed(written).answer;
+    reply += filter.flush().answer;
+    return json{{"text", reply}};
+}
+
 nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& params) {
     using json = nlohmann::json;
     const bool           building = params.value("context", std::string()) == "build";
@@ -1411,7 +1556,7 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         if (!spare) {
             ensure_router(cancel);
         }
-        const bool loaded = host_->router() != nullptr;
+        const bool loaded = delegator_here();
         // A route has begun: see routes_open_. Closed by delegator.done.
         routes_open_.fetch_add(1);
         routes_touched_ms_.store(now_ms());
@@ -1439,6 +1584,9 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
         const std::lock_guard<std::mutex> host(host_mutex_);
         if (said("load", true)) {
             ensure_router(cancel);   // freed since delegator.ready by somebody who could not wait
+        }
+        if (mlx_delegator_.running()) {
+            return serve_mlx_delegator(method, params, cancel);
         }
         LoadedModel* model = host_->router();
         if (model == nullptr) {
@@ -1468,6 +1616,9 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     if (method == "delegator.format" || method == "delegator.score") {
         const std::lock_guard<std::mutex> host(host_mutex_);
         ensure_router(cancel);   // freed since delegator.ready by somebody who could not wait
+        if (mlx_delegator_.running()) {
+            return serve_mlx_delegator(method, params, cancel);
+        }
         LoadedModel* model = host_->router();
         if (model == nullptr) {
             throw std::runtime_error("the delegator is not loaded");

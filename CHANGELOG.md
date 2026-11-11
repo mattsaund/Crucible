@@ -6,6 +6,22 @@ them to the release. Running Crucible checks for a newer tag once a day and says
 so in **Settings → About**; updating is the same one-line installer that put it
 there, and it keeps your config, models and history.
 
+## 1.0.0-pre.4 (2026-11-11)
+
+A fourth pre-release before 1.0.0, marked as one on GitHub: the update check
+and the website stay on 0.9.9.
+
+- **An MLX model can be the delegator on a Mac.** It routes each message to
+  an expert and decides whether to answer or build, as a GGUF does. The
+  delegator scores rather than writes, and MLX's server only writes, so an
+  MLX delegator runs in a helper of its own on mlx-lm, which weighs each
+  expert's name after the prompt and keeps the instructions read between
+  questions. Its memory is made room for as an MLX expert's is, and the
+  delegator's menu offers MLX models wherever MLX runs.
+- **CI runs MLX on a Mac.** The helper's tests run against a small real
+  model there, where MLX has the GPU, and crucible-routebench can measure an
+  MLX delegator beside the same model as a GGUF.
+
 ## 1.0.0-pre.3 (2026-11-11)
 
 The last of three pre-releases before 1.0.0, marked as one on GitHub: the

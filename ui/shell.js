@@ -92,23 +92,22 @@ function modelSelect(selected, provider, extra, localOnly) {
       title ? ` title="${escape(title)}"` : ''}>${escape(label)}</option>`;
 
   let html = option('', '(none)');
-  // The delegator scores every seat with llama.cpp, so it has to be a GGUF;
-  // an MLX model can answer, not route. An MLX model is listed all the same,
-  // and so is one this machine cannot run: it is plain that it was found,
-  // and a Mac's folder of MLX models does not read as an empty one.
+  // An MLX model is offered wherever MLX runs, the delegator's menu included,
+  // since it routes in a helper of its own (src/llm/mlx_delegator.hpp). One
+  // this machine cannot run is listed all the same, so it is plain that it
+  // was found, and a Mac's folder of MLX models does not read as an empty one.
   const mlxWhy = state.models ? state.models.mlx_unavailable || '' : '';
   if (files.length) {
     html += `<optgroup label="Models folder">${files.map((m) => {
       if (m.format !== 'mlx') return option(m.name, `${m.name} (${bytes(m.bytes)})`);
-      const why = localOnly ? 'cannot route' : mlxWhy ? 'cannot run here' : '';
+      const why = mlxWhy ? 'cannot run here' : '';
       const usable = !why || m.name === chosen;
       return `<option value="${escape(m.name)}"${m.name === chosen ? ' selected' : ''}${usable ? '' : ' disabled'}
-          title="${escape(localOnly ? 'The delegator needs a GGUF'
-                                    : mlxWhy || 'An MLX model, answered by MLX on this machine')}">${
+          title="${escape(mlxWhy || 'An MLX model, answered by MLX on this machine')}">${
           escape(`${m.name} (MLX, ${bytes(m.bytes)})${why ? `, ${why}` : ''}`)}</option>`;
     }).join('')}</optgroup>`;
   }
-  // `localOnly` is for the delegator, which has to be a file here.
+  // `localOnly` is for the delegator, which has to be a model on this machine.
   for (const p of (state.providers && !localOnly ? state.providers.providers : [])) {
     const offered = p.models.slice();
     if (provider === p.id && selected && !offered.includes(selected)) offered.unshift(selected);

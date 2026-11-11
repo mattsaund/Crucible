@@ -89,6 +89,33 @@ private:
     bool        had_ = false;
 };
 
+/// tests/scripted_delegator.py as the MLX delegator's helper, for as long as
+/// this lives. See mlx_delegator.hpp.
+class ScopedMlxStandIn {
+public:
+    ScopedMlxStandIn() {
+        if (const char* now = std::getenv("CRUCIBLE_MLX_DELEGATOR"); now != nullptr) {
+            previous_ = now;
+            had_      = true;
+        }
+        set_env("CRUCIBLE_MLX_DELEGATOR",
+                (std::filesystem::path(CRUCIBLE_SOURCE_DIR) / "tests" / "scripted_delegator.py").string());
+    }
+    ~ScopedMlxStandIn() {
+        if (had_) {
+            set_env("CRUCIBLE_MLX_DELEGATOR", previous_);
+        } else {
+            unset_env("CRUCIBLE_MLX_DELEGATOR");
+        }
+    }
+    ScopedMlxStandIn(const ScopedMlxStandIn&)            = delete;
+    ScopedMlxStandIn& operator=(const ScopedMlxStandIn&) = delete;
+
+private:
+    std::string previous_;
+    bool        had_ = false;
+};
+
 /// scripted_provider.py, running for as long as this lives.
 class ScriptedServer {
 public:
@@ -1102,6 +1129,58 @@ TEST(a_pinned_turn_goes_to_its_expert_and_an_attachment_steers_the_route) {
     // Nothing attached, nothing matched: the first seat with a model.
     const Turn fallback = rig.ask("What does this say?");
     CHECK(fallback.route && fallback.route->expert == "programming");
+}
+
+TEST(an_mlx_delegator_routes_the_turn_from_a_helper_of_its_own) {
+    // The delegator is an MLX folder. Its helper is started for the first
+    // prompt and asked to format and score as a GGUF delegator is, and its
+    // scores decide. The stand-in (tests/scripted_delegator.py) likes Writing
+    // best, where the words alone would say Programming, and likes answering.
+    TempDir models;
+    const std::filesystem::path folder = models.path() / "Tiny-MLX";
+    write_file(folder / "config.json", "{}");
+    write_file(folder / "model.safetensors", "weights");
+    write_file(folder / "scripted.json",
+               json{{"scores", {{"Writing", -0.1}, {"Answer", -0.1}}}, {"otherwise", -6.0}}.dump());
+    const ScopedMlxStandIn stand_in;
+    Rig rig(script({reply("A loop repeats a block.")}),
+            [&folder](Config& config) { config.router.model = folder.string(); });
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    const Turn turn = rig.ask("How do I write a python loop?");
+    CHECK(turn.build.empty());
+    CHECK_EQ(turn.reply, std::string("A loop repeats a block."));
+    CHECK(turn.route && turn.route->expert == "writing");
+    CHECK(turn.route && turn.route->source == RouteSource::Model);
+
+    bool formatted = false;
+    bool scored    = false;
+    std::ifstream requests(folder / "requests.jsonl");
+    for (std::string line; std::getline(requests, line);) {
+        const json one = json::parse(line);
+        formatted = formatted || one.value("method", "") == "format";
+        scored    = scored || (one.value("method", "") == "score" && !one.value("prefix", "").empty());
+    }
+    CHECK(formatted);
+    CHECK(scored);
+
+    // In memory as the delegator, and gone once the delegator is set to none.
+    const auto delegating = [&rig] {
+        const Snapshot now = rig.snapshot();
+        return std::any_of(now.local_models.begin(), now.local_models.end(),
+                           [](const LocalModel& m) { return m.delegator && m.file == "Tiny-MLX"; });
+    };
+    CHECK(delegating());
+    Config changed = rig.engine().config();
+    changed.router.model.clear();
+    rig.engine().apply_config(changed);
+    const auto asked_at = std::chrono::steady_clock::now();
+    while (delegating() && std::chrono::steady_clock::now() - asked_at < std::chrono::seconds(10)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(!delegating());
 }
 
 TEST(a_turn_with_no_model_to_answer_says_so) {
