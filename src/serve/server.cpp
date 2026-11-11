@@ -818,6 +818,12 @@ struct Job {
     Answer      answer;
     std::string waiting;
 
+    /// When a call is required, the reply is the call alone, as OpenAI
+    /// sends it: words the model says around it are held, and dropped once
+    /// a call comes. A call that never comes (cut short, say) gives them back.
+    std::string held;
+    bool        called = false;
+
     /// Set when nobody wants the rest: the client went, the server is
     /// stopping, a stop sequence was met. Read between tokens.
     std::atomic<bool> dropped{false};
@@ -829,7 +835,11 @@ struct Job {
         {
             const std::lock_guard<std::mutex> lock(mutex);
             started = true;
-            if (!pieces.empty() && !pieces.back().is_call && pieces.back().reasoning == reasoning) {
+            if (!reasoning && ask.tool_choice == "required") {
+                if (!called) {
+                    held += text;
+                }
+            } else if (!pieces.empty() && !pieces.back().is_call && pieces.back().reasoning == reasoning) {
                 pieces.back().text += text;
             } else {
                 Piece piece;
@@ -845,10 +855,28 @@ struct Job {
         {
             const std::lock_guard<std::mutex> lock(mutex);
             started = true;
+            called  = true;
+            held.clear();
             Piece piece;
             piece.is_call = true;
             piece.call    = call;
             pieces.push_back(std::move(piece));
+        }
+        moved.notify_all();
+    }
+
+    /// The model is through: its answer, after any words still held.
+    void finish(Answer&& given) {
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (!held.empty()) {
+                Piece piece;
+                piece.text = std::move(held);
+                pieces.push_back(std::move(piece));
+                held.clear();
+            }
+            answer = std::move(given);
+            done   = true;
         }
         moved.notify_all();
     }
@@ -1031,12 +1059,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                 answer.error  = "the model failed";
                 answer.status = 500;
             }
-            {
-                const std::lock_guard<std::mutex> lock(job->mutex);
-                job->answer = std::move(answer);
-                job->done   = true;
-            }
-            job->moved.notify_all();
+            job->finish(std::move(answer));
             {
                 const std::lock_guard<std::mutex> lock(mutex);
                 current.reset();

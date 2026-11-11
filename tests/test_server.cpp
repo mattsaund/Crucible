@@ -268,6 +268,11 @@ public:
         }
         const std::string name = ask.tools[0]["function"]["name"].get<std::string>();
         sink.answer("Checking.");
+        if (ask.chat.is_array() && !ask.chat.empty() && ask.chat.back().value("content", "") == "Cut short") {
+            out.completion_tokens = 2;   // the limit came before the call
+            out.hit_limit         = true;
+            return out;
+        }
         sink.call(serve::CallPiece{0, "call_abc", name, ""});
         for (const char* piece : {"{\"city\":", " \"Pa", "ris\"}"}) {
             sink.call(serve::CallPiece{0, "", "", piece});
@@ -386,6 +391,44 @@ TEST(a_tool_call_streams_as_deltas_a_client_puts_back_together) {
     const Told told = told_by(events);
     CHECK_EQ(told.content, "Checking.");
     CHECK_EQ(told.finish, "tool_calls");
+}
+
+TEST(a_required_call_comes_back_alone_without_the_words_said_before_it) {
+    if (!curl_here()) {
+        return;
+    }
+    Calling running;
+    json body = chat("Weather?", {{"tools", json::array({weather_tool()})}, {"tool_choice", "required"}});
+    body.erase("model");
+
+    // Whole: the call, and content null, as OpenAI sends a required call.
+    const json reply   = parsed(post(running.url("/v1/chat/completions"), body.dump()));
+    const json message = reply["choices"][0]["message"];
+    CHECK(message.contains("content") && message["content"].is_null());
+    CHECK(message["tool_calls"].size() == 1);
+    CHECK(reply["choices"][0].value("finish_reason", "") == "tool_calls");
+
+    // Streamed: the call's deltas, and no words.
+    body["stream"] = true;
+    const Events events = stream(running.url("/v1/chat/completions"), body);
+    CHECK(events.done);
+    CHECK(calls_of(events).size() == 1);
+    const Told told = told_by(events);
+    CHECK_EQ(told.content, "");
+    CHECK_EQ(told.finish, "tool_calls");
+
+    // A call that never came (the limit met first): the words are all there
+    // is, so they come back, whole and streamed.
+    body = chat("Cut short", {{"tools", json::array({weather_tool()})}, {"tool_choice", "required"}});
+    body.erase("model");
+    const json cut = parsed(post(running.url("/v1/chat/completions"), body.dump()));
+    CHECK(cut["choices"][0]["message"].value("content", "") == "Checking.");
+    CHECK(!cut["choices"][0]["message"].contains("tool_calls"));
+    CHECK(cut["choices"][0].value("finish_reason", "") == "length");
+    body["stream"] = true;
+    const Told cut_told = told_by(stream(running.url("/v1/chat/completions"), body));
+    CHECK_EQ(cut_told.content, "Checking.");
+    CHECK_EQ(cut_told.finish, "length");
 }
 
 TEST(a_named_tool_choice_offers_that_tool_alone_and_requires_it) {
