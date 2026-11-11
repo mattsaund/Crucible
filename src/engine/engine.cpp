@@ -888,8 +888,16 @@ void Engine::load_router(const CancelCallback& cancel) {
     bool        crowded = false;
     // An MLX model somebody is using stays where it is, in its own process:
     // the delegator has to fit beside it, as a GGUF expert does (see
-    // load_gguf). One nobody is using is not asked about, as before.
-    const bool beside_mlx = mlx_.running() && leases_.held(mlx_.served().string());
+    // load_gguf). One nobody is using is stopped when the delegator needs
+    // its room, as an expert nobody is using is let go for it (see
+    // acquire_router). A lease is taken only under the models' lock, which
+    // is held here, so nobody takes it up meanwhile.
+    const bool mlx_loaded = mlx_.running();
+    const bool beside_mlx = mlx_loaded && leases_.held(mlx_.served().string());
+    std::function<void()> idle_mlx;
+    if (mlx_loaded && !beside_mlx) {
+        idle_mlx = [this] { stop_mlx(); };
+    }
     LoadedModel* model = host_->acquire_router(
         router,
         [this](float progress) {
@@ -906,7 +914,7 @@ void Engine::load_router(const CancelCallback& cancel) {
             return (cancel ? cancel() : cancel_.load(std::memory_order_relaxed))
                 || !running_.load(std::memory_order_relaxed);
         },
-        error, in_use(), &crowded, beside_mlx);
+        error, in_use(), &crowded, beside_mlx, idle_mlx);
 
     if (model == nullptr && crowded) {
         // Not a broken delegator: the experts a build is using, or an MLX

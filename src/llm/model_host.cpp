@@ -1765,7 +1765,8 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
                                        std::string& error,
                                        const Keep& keep,
                                        bool* crowded,
-                                       bool beside_mlx) {
+                                       bool beside_mlx,
+                                       const std::function<void()>& idle_mlx) {
     if (crowded != nullptr) {
         *crowded = false;
     }
@@ -1808,17 +1809,32 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
     }
     // Where models live in the machine's memory, that is where the room is
     // made: on a Mac, as well as on its GPU's share of the memory.
+    //
+    // An MLX model nobody is using goes the same way, once those experts
+    // have and the delegator still has no room: it was loaded beside one
+    // whether the two fit or not. Its process is out of this host's sight,
+    // but not out of the cards' figure or the machine's, which are what is
+    // asked, and on a Mac the two share the one memory.
     const ModelParams planned = placed_delegator(params);
     const bool        system  = in_system_memory(gpu_devices());
-    while (!experts_.empty()
-           && (!vram_shortfall(planned.path, planned, 0, {}).empty() || (system && !memory_holds(params)))) {
-        if (!free_one(keep)) {
-            if (crowded != nullptr) {
-                *crowded = true;
-            }
-            error = "the experts in use leave no room for the delegator";
-            return nullptr;
+    const auto        no_room = [&] {
+        return !vram_shortfall(planned.path, planned, 0, {}).empty() || (system && !memory_holds(params));
+    };
+    std::function<void()> unused_mlx = idle_mlx;
+    while ((!experts_.empty() || unused_mlx) && no_room()) {
+        if (free_one(keep)) {
+            continue;
         }
+        if (unused_mlx) {
+            unused_mlx();
+            unused_mlx = nullptr;
+            continue;
+        }
+        if (crowded != nullptr) {
+            *crowded = true;
+        }
+        error = "the experts in use leave no room for the delegator";
+        return nullptr;
     }
 
     // An MLX model in use is in a process of its own, where this host can

@@ -638,6 +638,53 @@ TEST(the_delegator_waits_for_an_mlx_model_in_use_that_leaves_it_no_room) {
     llama_log_set(nullptr, nullptr);
 }
 
+TEST(an_mlx_model_nobody_is_using_is_let_go_when_the_delegator_needs_its_room) {
+    // Beside an MLX model nobody was using, the delegator was loaded whether
+    // the two fit or not. It is asked now, as it is beside experts nobody is
+    // using, and the MLX model is let go when the delegator needs its room:
+    // here the letting go is a count rather than a server stopped. One the
+    // delegator fits beside is left where it is.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());   // no runtimes, so nothing loads
+    const std::filesystem::path file = temp.path() / "big.gguf";
+    write_test_gguf(file, /*layers=*/32, /*embd=*/4096, /*heads=*/32,
+                    /*kv_heads=*/{8}, /*key_len=*/128, /*vocab=*/32000);
+    ModelParams params;
+    params.model = file.string();
+    params.path  = file.string();
+    params.n_ctx = 1 << 30;   // 128 TiB of cache, as above
+
+    {
+        const StderrKept kept;
+        ModelHost host(temp.path() / "llama.log");
+        std::string error;
+        bool crowded = false;
+        int  let_go  = 0;
+        const std::function<void()> stop = [&let_go] { ++let_go; };
+
+        // No room beside it: let go, once, and the load is tried, failing
+        // for want of a runtime, which is not a crowd.
+        CHECK(host.acquire_router(params, {}, {}, error, {}, &crowded, /*beside_mlx=*/false, stop) == nullptr);
+        CHECK_EQ(let_go, 1);
+        CHECK(!crowded);
+        CHECK(host.router() == nullptr);
+
+        // A delegator of a few megabytes has room beside it, on a machine
+        // with that much to spare, and leaves it be.
+        ModelParams small = params;
+        small.n_ctx       = 256;
+        std::uint64_t used  = 0;
+        std::uint64_t total = 0;
+        if (util::system_memory(used, total)
+            && memory_has_room(ModelHost::estimate_bytes(small), 0, 0, used, total)) {
+            CHECK(host.acquire_router(small, {}, {}, error, {}, &crowded, /*beside_mlx=*/false, stop) == nullptr);
+            CHECK_EQ(let_go, 1);
+            CHECK(!crowded);
+        }
+    }
+    llama_log_set(nullptr, nullptr);
+}
+
 // ---------------------------------------------------------------------------
 // The verbs beyond the folder
 // ---------------------------------------------------------------------------

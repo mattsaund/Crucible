@@ -63,13 +63,20 @@ public:
     /// `beside_mlx` says an MLX model is in use, as acquire_expert's does:
     /// the delegator has to fit beside it as an expert would, and `crowded`
     /// is set the same way when it does not.
+    ///
+    /// `idle_mlx`, given when an MLX model is loaded and nobody is using it,
+    /// lets that model go. It is in a process of its own, which this host can
+    /// neither see into nor stop, so the caller says how. Called when the
+    /// delegator would not fit beside it, once the experts nobody is using
+    /// have gone, as they go for it.
     LoadedModel* acquire_router(const ModelParams& params,
                                 const ProgressCallback& progress,
                                 const CancelCallback& cancel,
                                 std::string& error,
                                 const Keep& keep = {},
                                 bool* crowded = nullptr,
-                                bool beside_mlx = false);
+                                bool beside_mlx = false,
+                                const std::function<void()>& idle_mlx = {});
 
     /// Make `id`'s expert a loaded one. This is the JIT swap, and the cost
     /// the design accepts in exchange for experts far larger than RAM would
