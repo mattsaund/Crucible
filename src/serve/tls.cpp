@@ -64,7 +64,7 @@ constexpr std::size_t kMostNames = 64;
 #if defined(_WIN32)
 // Mbed TLS's lock on Windows: a slim reader/writer lock, held exclusively.
 // threading_alt.h keeps it as the one pointer it is, so that the headers do
-// not need windows.h; that the two agree is checked here.
+// not need windows.h. That the two agree is checked here.
 static_assert(sizeof(SRWLOCK) == sizeof(mbedtls_threading_mutex_t), "threading_alt.h no longer fits an SRWLOCK");
 
 SRWLOCK* srw(mbedtls_threading_mutex_t* mutex) {
@@ -285,8 +285,8 @@ bool reachable(const sockaddr* address, std::array<unsigned char, 16>& bytes, st
     if (address == nullptr) {
         return false;
     }
-    // Copied out rather than cast: a sockaddr is aligned for its family
-    // alone, which is less than what the longer kinds ask for.
+    // Copied out rather than cast, since a pointer to a sockaddr promises
+    // only a sockaddr's alignment, which is less than the longer kinds need.
     if (address->sa_family == AF_INET) {
         sockaddr_in four{};
         std::memcpy(&four, address, sizeof(four));
@@ -453,11 +453,11 @@ bool make(const Names& names, int days, Pem& out, std::string& error) {
     }
     std::vector<mbedtls_x509_san_list> list(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        list[i]                               = mbedtls_x509_san_list{};
-        list[i].node.type                     = entries[i].first;
+        list[i]                                = mbedtls_x509_san_list{};
+        list[i].node.type                      = entries[i].first;
         list[i].node.san.unstructured_name.p   = const_cast<unsigned char*>(entries[i].second.first);
         list[i].node.san.unstructured_name.len = entries[i].second.second;
-        list[i].next                          = i + 1 < entries.size() ? &list[i + 1] : nullptr;
+        list[i].next                           = i + 1 < entries.size() ? &list[i + 1] : nullptr;
     }
 
     // A serial no other certificate has: random, and positive, as RFC 5280

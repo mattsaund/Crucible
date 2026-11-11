@@ -116,8 +116,10 @@ set_target_properties(crucible_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The release archive rather than the repository, as for miniz: it carries
 # the files Mbed TLS's own build would otherwise generate with Python, and
 # the framework its repository keeps as a submodule. Its libraries only: no
-# programs, no tests, no install rules, and warnings that stay warnings,
-# since a compiler newer than theirs would otherwise stop the build.
+# programs, no tests, no headers to install, and warnings that stay warnings,
+# since a compiler newer than theirs would otherwise stop the build. The
+# libraries' own install rules are in no component of Crucible's, so the
+# installers, which install `crucible` alone, carry none of it.
 #
 # Here, before llama.cpp, while BUILD_SHARED_LIBS is still off: two of its
 # libraries leave the choice to that, and would otherwise come out as files
