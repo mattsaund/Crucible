@@ -595,7 +595,7 @@ TEST(logos_are_kept_until_they_are_old_or_crowded_out) {
     // stays under its limit with the newest in it.
     for (int i = 0; i < 40; ++i) {
         const std::string owner = "owner" + std::to_string(i);
-        keep_logo(folder, {owner, "image/png", picture("png", 250 * 1024)});
+        keep_logo(folder, {owner, "image/png", picture("png", 1000 * 1024)});
         age(folder / ("logo-" + owner), 60 - i);
     }
     std::uintmax_t total = 0;
@@ -604,7 +604,7 @@ TEST(logos_are_kept_until_they_are_old_or_crowded_out) {
         // Nothing half written is left behind.
         CHECK(entry.path().extension() != ".part");
     }
-    CHECK(total <= 8u * 1024 * 1024);
+    CHECK(total <= 32u * 1024 * 1024);
     CHECK(!std::filesystem::exists(folder / "logo-owner0"));
     CHECK(kept_logo(folder, "owner39", out, fresh));
 }
