@@ -53,6 +53,9 @@ constexpr const char* kLeftOut = "[a picture from earlier, left out]";
 /// How many texts embed() reads in one decode, each a sequence of its own.
 constexpr int kEmbedAtOnce = 32;
 
+/// The longest text embed() reads, in tokens. See embed.
+constexpr int kEmbedLongest = 8192;
+
 /// A token's text. A special token is its text when `special`, and nothing
 /// otherwise, as the chat's own sampling writes one.
 std::string piece_of(const llama_vocab* vocab, llama_token token, bool special) {
@@ -665,8 +668,12 @@ Embedded LoadedModel::embed(const std::vector<std::string>& texts, const CancelC
         out.tokens += static_cast<int>(read.size());
         tokens.push_back(std::move(read));
     }
+    // About what OpenAI's own embedding models read, however long a chat
+    // model was trained to read: a text is read whole in one batch, and a
+    // batch of a hundred thousand tokens is gigabytes of buffers on the card
+    // for one embedding.
     const int trained = llama_model_n_ctx_train(model_);
-    const int most    = trained > 0 ? trained : 8192;
+    const int most    = std::min(trained > 0 ? trained : kEmbedLongest, kEmbedLongest);
     if (static_cast<int>(longest) > most) {
         out.too_long = static_cast<int>(longest);
         out.error    = "This model reads " + std::to_string(most) + " tokens at once, and an input is "
