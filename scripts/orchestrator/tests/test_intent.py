@@ -56,6 +56,19 @@ class Keywords(unittest.TestCase):
         self.assertEqual(kind_of("Add a docstring to the period function.", files=True), intent.ANSWER)
         self.assertEqual(kind_of("Fix the typo in the README.", files=True), intent.ANSWER)
 
+    def test_a_noun_that_is_also_a_verb_and_a_file_named_like_software_are_not_a_build(self):
+        # The delegator's one costly miss with gpt-oss: "port ... server" read
+        # as software to be ported.
+        self.assertEqual(kind_of("Change the port in server.js from 3000 to 8080."), intent.ANSWER)
+        self.assertEqual(kind_of("Change the port in server.js from 3000 to 8080.", files=True),
+                         intent.ANSWER)
+        self.assertEqual(kind_of("Fix the design of my page title in app.py."), intent.ANSWER)
+        # The verbs still ask for software, and a file is still where one goes.
+        self.assertEqual(kind_of("Port this tool to Rust."), intent.BUILD)
+        self.assertEqual(kind_of("Design a landing page for my bakery."), intent.BUILD)
+        self.assertEqual(kind_of("Can you port the server to Go?"), intent.BUILD)
+        self.assertEqual(kind_of("Build an api in server.js that lists users."), intent.BUILD)
+
     def test_what_was_attached_is_part_of_what_is_decided(self):
         self.assertEqual(intent.message_of("make this", ["sketch.png", "notes.md"]),
                          "make this\n\nAttached: sketch.png notes.md")

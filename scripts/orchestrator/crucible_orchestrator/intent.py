@@ -126,15 +126,21 @@ def message_of(prompt, attachments=()):
 # to an answer, which is the cheaper mistake. Written with the measured cases
 # in view, so what they score there flatters them.
 
-# A request for something to be made...
-_MAKE = (r"(?:build|make|create|develop|code|program|write|generate|scaffold|set\s*up|"
-         r"implement|design|put\s+together|spin\s+up|turn|convert|port|migrate|rewrite)")
-# ...that is a piece of software rather than a few lines of it.
+# A request for something to be made... Several of these are nouns as often
+# as verbs ("change the port", "the design is fine"), and are a request only
+# where they are not one: not right after a word that makes them a noun.
+_NOUN_BEFORE = "".join(r"(?<!\b%s )" % word for word in
+                       ("the", "a", "an", "this", "that", "its", "my", "your", "our", "their", "his", "her"))
+_MAKE = (r"(?:build|make|create|develop|scaffold|set\s*up|implement|put\s+together|spin\s+up|"
+         r"generate|write|convert|migrate|rewrite|"
+         + _NOUN_BEFORE + r"(?:code|program|design|turn|port))")
+# ...that is a piece of software rather than a few lines of it. Not a file
+# named like one: "server.js" is a file, not a server to be made.
 _THING = (r"(?:apps?|application|website|site|web\s*page|landing\s+page|game|tool|cli|"
           r"command[- ]line|api|server|back\s*end|front\s*end|extension|plug-?in|add-?on|bot|"
           r"dashboard|tracker|editor|program|project|package|library|service|interface|ui|"
           r"timer|calculator|organizer|planner|clone|platform|portfolio|blog|store|shop|"
-          r"screen|page)")
+          r"screen|page)(?!\.\w)")
 
 MAKE_THING = re.compile(r"\b%s\b.{0,80}?\b%s\b" % (_MAKE, _THING), re.I | re.S)
 WANT_THING = re.compile(r"\b(?:i\s+need|i\s+want|i'd\s+like|give\s+me)\b.{0,60}?\b%s\b" % _THING,
