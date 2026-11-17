@@ -2006,6 +2006,81 @@ constexpr const char* kAlwaysThinking =
 
 }  // namespace
 
+TEST(an_answer_asked_the_chats_way_starts_at_its_first_word_after_its_thinking) {
+    // A provider's model, asked the way the chat asks one, thinks on a
+    // channel of its own and puts a blank line or two before its answer, as
+    // a model on this machine does after its thinking block: the content
+    // starts at its first word, whole and streamed, however the pieces
+    // fall, and the thinking is apart. No model is loaded: the provider is
+    // tests/scripted_provider.py.
+    if (!curl_here()) {
+        return;
+    }
+    std::string python;
+    if (const char* chosen = std::getenv("CRUCIBLE_PYTHON"); chosen != nullptr && *chosen != '\0') {
+        python = chosen;
+    }
+    for (const char* name : {"python3", "python"}) {
+        if (python.empty() && util::on_path(name)) {
+            python = name;
+        }
+    }
+    if (python.empty()) {
+        std::printf("      skipped: no Python for the scripted provider\n");
+        return;
+    }
+    TempDir              dir;
+    const ScopedDataHome scoped(dir.path() / "data");
+    const json           reply{{"reasoning", "Thinking it over."}, {"content", "\n\nParis"}};
+    json                 pieces = reply;
+    pieces["pieces"]            = 4;
+    write_text(dir.path() / "script.json", json{{"replies", json::array({reply, pieces})}}.dump());
+    util::Subprocess          provider;
+    util::Subprocess::Streams streams;
+    streams.input  = true;
+    streams.errors = dir.path() / "provider.log";
+    std::string error;
+    std::string port;
+    const std::filesystem::path source = std::filesystem::path(CRUCIBLE_SOURCE_DIR) / "tests" / "scripted_provider.py";
+    CHECK(provider.start({python, "-u", source.string(), (dir.path() / "script.json").string(),
+                          (dir.path() / "requests.jsonl").string()},
+                         {}, {}, error, streams));
+    CHECK(provider.read_line(port));
+    port = format::trim(port);
+    CHECK(!port.empty());
+    if (port.empty()) {
+        return;
+    }
+
+    Config   config;
+    Provider scripted;
+    scripted.id       = "scripted";
+    scripted.name     = "Scripted";
+    scripted.kind     = "openai";
+    scripted.base_url = "http://127.0.0.1:" + port + "/v1";
+    config.providers.push_back(scripted);
+    config.server.enabled  = true;
+    config.server.port     = 0;
+    config.server.provider = "scripted";
+    config.server.model    = "scripted-model";
+    AppState state;
+    Engine   engine(config, state, {});
+    engine.start();
+    const std::string chats = "http://127.0.0.1:" + std::to_string(engine.server_status().port) + "/v1/chat/completions";
+    json asked{{"messages", json::array({json{{"role", "user"}, {"content", "The capital of France?"}}})}};
+
+    const json message = message_of(answered(chats, asked));
+    CHECK_EQ(message.value("content", ""), "Paris");
+    CHECK_EQ(message.value("reasoning_content", ""), "Thinking it over.");
+    asked["stream"] = true;
+    const Told told = told_by(stream(chats, asked));   // the answer in four pieces, the first of them blank
+    CHECK_EQ(told.content, "Paris");
+    CHECK_EQ(told.reasoning, "Thinking it over.");
+    engine.stop();
+    provider.close_input();
+    provider.wait();
+}
+
 TEST(a_chat_template_that_will_not_write_a_conversation_still_answers_it_and_refuses_tools_in_its_words) {
     // Only where a model is named. Copies of it with a template that refuses
     // two user turns in a row, and with one llama.cpp cannot read: a plain
