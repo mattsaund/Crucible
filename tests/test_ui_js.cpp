@@ -1458,6 +1458,38 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_to_the_delegator_where_mlx_runs) {
     CHECK(routing_here.find("cannot run here") != std::string::npos);
 }
 
+TEST(a_seat_on_a_providers_model_shows_it_before_the_providers_are_read) {
+    // Settings opens before its read of the providers lands, and a provider
+    // can be gone from the list a seat was given from. The seat's menu still
+    // shows its model, by whose it is, rather than "(none)".
+    const char* const with =
+        "(function (providers, names) { var p = state.providers, c = state.config.providers;"
+        " state.providers = providers; state.config.providers = names;"
+        " var out = modelSelect('claude-opus-5-5', 'anthropic', { 'aria-label': 'Model' });"
+        " state.providers = p; state.config.providers = c; return out; })";
+    const std::string saved = "[{ id: 'anthropic', name: 'Anthropic', kind: 'anthropic' }]";
+    for (const std::string& providers : {std::string("null"), std::string("{ providers: [], known: [] }")}) {
+        CHECK_EQ(drawn(std::string(with) + "(" + providers + ", " + saved + ")"), "ok");
+        const std::string unread = page().eval(std::string(with) + "(" + providers + ", " + saved + ")");
+        CHECK(unread.find("<option value=\"anthropic|claude-opus-5-5\" selected>claude-opus-5-5  (Anthropic)</option>")
+              != std::string::npos);
+    }
+    // A provider the config has no name for is called by its id.
+    CHECK(page().eval(std::string(with) + "(null, [])").find(">claude-opus-5-5  (anthropic)</option>")
+          != std::string::npos);
+    // Listed, it is offered once, under its provider.
+    const std::string listed = page().eval(
+        std::string(with) + "({ providers: [{ id: 'anthropic', name: 'Anthropic', models: ['claude-opus-5-5'],"
+                            " on_your_network: false }], known: [] }, " + saved + ")");
+    int offered = 0;
+    for (std::size_t at = listed.find("value=\"anthropic|claude-opus-5-5\""); at != std::string::npos;
+         at = listed.find("value=\"anthropic|claude-opus-5-5\"", at + 1)) {
+        ++offered;
+    }
+    CHECK_EQ(offered, 1);
+    CHECK(listed.find("claude-opus-5-5  (Anthropic)") == std::string::npos);
+}
+
 namespace {
 
 /// Settings' General page with the calls it makes kept in window.__calls and
@@ -1574,6 +1606,34 @@ TEST(a_weaker_delegator_is_offered_a_better_one_the_cards_hold) {
     page().eval("state.models.models.push({ name: 'unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',"
                 " path: '/m/q.gguf', bytes: 2.5e9, format: 'gguf' }); seatWantedDelegator()");
     CHECK_EQ(seated(), R"(["unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])");
+    delegator_page_restored();
+
+    // Fetched in another quantization than the one offered, it is seated all
+    // the same.
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-F16.gguf",
+                            "[12e9, 16e9, 12e9]"),
+             "set");
+    page().eval("actions['delegator-get']()");
+    CHECK_EQ(page().eval("market().selected"), "unsloth/Qwen3-4B-Instruct-2507-GGUF");
+    page().eval("state.models.models.push({ name: 'unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q8_0.gguf',"
+                " path: '/m/q8.gguf', bytes: 4.3e9, format: 'gguf' }); seatWantedDelegator()");
+    CHECK_EQ(seated(), R"(["unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q8_0.gguf"])");
+    delegator_page_restored();
+
+    // One the folder holds already, from anybody's upload, is seated at once
+    // and nothing is fetched. Not an MLX copy beside it, since what the list
+    // offers is a GGUF.
+    const char* const mlx = "{ name: 'mlx-community/Qwen3-4B-Instruct-2507-4bit', path: '/m/mlx', bytes: 2.3e9, format: 'mlx' }";
+    const char* const bartowski = "{ name: 'bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',"
+                                  " path: '/m/b.gguf', bytes: 2.5e9, format: 'gguf' }";
+    CHECK_EQ(delegator_page(std::string("[") + lfm + ", " + mlx + ", " + bartowski + "]",
+                            "LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-F16.gguf", "[12e9, 16e9, 12e9]"),
+             "set");
+    CHECK(offered());
+    page().eval("actions['delegator-get']()");
+    CHECK_EQ(seated(), R"(["bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])");
+    CHECK(page().eval("state.view") != "models");
+    CHECK_EQ(page().eval("market().selected"), "");
     delegator_page_restored();
 
     // Not when the cards are too small for it (a quarter of them at most),
@@ -1724,6 +1784,12 @@ TEST(a_model_moved_into_a_subfolder_is_shown_as_itself_not_as_missing) {
     CHECK(moved.find("value=\"Huggingface/GGUF/gpt-oss-20b.gguf\" selected") != std::string::npos);
     CHECK(moved.find("not in the models folder") == std::string::npos);
     CHECK(gone.find("not in the models folder") != std::string::npos);
+    // Before the folder has been read, nothing is said to be missing from it.
+    const std::string unread = page().eval(
+        "(function () { var m = state.models; state.models = null;"
+        "  var out = modelSelect('gone.gguf', '', {}); state.models = m; return out; })()");
+    CHECK(unread.find("value=\"gone.gguf\" selected>gone.gguf</option>") != std::string::npos);
+    CHECK(unread.find("not in the models folder") == std::string::npos);
 }
 
 TEST(a_load_that_does_not_say_how_far_along_it_is_turns_rather_than_counts) {
@@ -3080,6 +3146,13 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
         "tunedDocument('<!doctype html><header>H</header><script>mine()<\\/script>', state.preview.kept)");
     CHECK(headless.rfind("<!doctype html><script>", 0) == 0);
     CHECK(headless.find("what: 'hello'") < headless.find("<header>"));
+    // Nor is a "<head>" once the body has begun, in a script's string say, as
+    // with_script_first has it: they go after the doctype, and the script is
+    // left as it was.
+    const std::string late = page().eval(
+        "tunedDocument('<!doctype html><body><script>var t = \"<head>\";<\\/script></body>', '{}')");
+    CHECK(late.rfind("<!doctype html><script>", 0) == 0);
+    CHECK(late.find("<script>var t = \"<head>\";</script>") != std::string::npos);
 
     // The frame run: what the page puts in its storage comes back, after the
     // word that it has started.
@@ -3182,6 +3255,141 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
                 " Object.assign(state.preview, { page: 'index.html', shown: null, kept: '{}', storing: false }),"
                 " Object.keys(previewData).forEach(function (k) { delete previewData[k]; }),"
                 " delete window.cruciblePageStorage)");
+}
+
+namespace {
+
+/// The page with what it asks for kept in window.__asked, preview.page and
+/// preview.candidates waiting in window.__pending by method and path until a
+/// test answers them, and everything else refused, as it is with no window
+/// under the page. window.__open(root) pushes a snapshot with that project
+/// open and nothing else the page acts on. Undone by held_calls_restored.
+std::string held_calls() {
+    return page().eval(R"JS(
+      (function () {
+        window.__was = { call: call, render: render, snapshot: state.snapshot, view: state.view,
+                         pane: state.chatPane, error: state.error, history: state.history,
+                         preview: Object.assign({}, state.preview) };
+        window.__asked = [];
+        window.__pending = {};
+        render = function () {};
+        call = function (method, params) {
+          __asked.push(method + ' ' + JSON.stringify(params || {}));
+          if (method === 'preview.page' || method === 'preview.candidates') {
+            return new Promise(function (done, fail) {
+              __pending[method + ' ' + ((params && params.path) || '')] = { done: done, fail: fail };
+            });
+          }
+          if (method === 'preview.kept') return Promise.resolve({});
+          return Promise.reject(new Error('no window'));
+        };
+        window.__open = function (root) {
+          window.crucibleSnapshot(Object.assign({}, __was.snapshot, { turns: [], cook: null,
+            project: { open: true, root: root, display: root, name: root.split('/').pop() } }));
+        };
+        state.view = 'chat';
+        state.chatPane = 'chat';
+        Object.assign(state.preview, previewBlank());
+        return 'set';
+      })())JS");
+}
+
+void held_calls_restored() {
+    page().eval("(function (w) { call = w.call; render = w.render; state.snapshot = w.snapshot; state.view = w.view;"
+                " state.chatPane = w.pane; state.error = w.error; state.history = w.history;"
+                " Object.assign(state.preview, previewBlank(), w.preview); })(window.__was)");
+}
+
+}  // namespace
+
+TEST(a_page_still_being_read_when_another_project_opens_is_not_drawn_in_it) {
+    // A page of one project asked for, and another project opened from the
+    // right-hand panel before it arrives: it is dropped when it does, and
+    // the new project's preview starts as empty as the window's first.
+    CHECK_EQ(held_calls(), "set");
+    page().eval("__open('/work/a'); loadPreview('index.html');"
+                "Object.assign(state.preview, { url: 'http://localhost:3000', stale: true, error: 'old',"
+                "  making: { name: 'A', busy: true, can: true }, made: { name: 'A', where: 'here', launch: '/a' } });"
+                "'asked'");
+    CHECK_EQ(page().eval("String(state.preview.loading)"), "true");
+    page().eval("__open('/work/b');"
+                "__pending['preview.page index.html'].done({ inlined: ['a.css'], skipped: [],"
+                "  html: '<html><body><p>A page</p></body></html>' }); 'landed'");
+    CHECK_EQ(page().eval("String(state.preview.html === '')"), "true");
+    // Whatever of the old project's was there: none of it differs from blank.
+    CHECK_EQ(page().eval("(function () { var blank = previewBlank(); return Object.keys(blank).filter(function (k) {"
+                         " return JSON.stringify(state.preview[k]) !== JSON.stringify(blank[k]); }).join(); })()"),
+             "");
+    CHECK_EQ(drawn("previewView()"), "ok");
+    const std::string shown = page().eval("previewView()");
+    CHECK(shown.find("<iframe") == std::string::npos);
+    CHECK(shown.find("Reading...") == std::string::npos);
+    CHECK(shown.find("A page") == std::string::npos);
+
+    // The pages of the old project, listed after the new one was opened, are
+    // not offered in it, and nothing of theirs is read; nor is its failure.
+    page().eval("enterPreview(); __open('/work/c');"
+                "__pending['preview.candidates '].done({ pages: ['b.html'] }); 'listed'");
+    CHECK_EQ(page().eval("String(state.preview.pages)"), "null");
+    CHECK_EQ(page().eval("String(__asked.some(function (a) { return a.indexOf('b.html') >= 0; }))"), "false");
+    page().eval("enterPreview(); __open('/work/d');"
+                "__pending['preview.candidates '].fail(new Error('c is gone')); 'failed'");
+    CHECK_EQ(page().eval("state.preview.error"), "");
+    held_calls_restored();
+}
+
+TEST(no_page_chosen_while_one_is_read_stops_the_reading_and_an_old_failure_says_nothing) {
+    CHECK_EQ(held_calls(), "set");
+    // A page shown, with a stylesheet put inside it.
+    page().eval("loadPreview('first.html');"
+                "__pending['preview.page first.html'].done({ inlined: ['a.css'], skipped: [], html: '<p>first</p>' });"
+                "'shown'");
+    CHECK(page().eval("previewView()").find("1 file inlined") != std::string::npos);
+
+    // Another asked for, and then "Choose a page" before it came: nothing is
+    // being read any more, and what the first page had is not said of none.
+    page().eval("loadPreview('slow.html'); loadPreview(''); 'chosen'");
+    CHECK_EQ(page().eval("String(state.preview.loading)"), "false");
+    const std::string none = page().eval("previewView()");
+    CHECK(none.find("Reading...") == std::string::npos);
+    CHECK(none.find("inlined") == std::string::npos);
+    page().eval("__pending['preview.page slow.html'].done({ inlined: [], skipped: [], html: '<p>slow</p>' }); 'landed'");
+    CHECK_EQ(page().eval("state.preview.html + '|' + state.preview.loading"), "|false");
+
+    // A page that fails after another was asked for says nothing over it,
+    // and leaves it reading until it comes.
+    page().eval("loadPreview('bad.html'); loadPreview('good.html');"
+                "__pending['preview.page bad.html'].fail(new Error('bad.html is gone')); 'failed'");
+    CHECK_EQ(page().eval("state.preview.error + '|' + state.preview.loading"), "|true");
+    CHECK(page().eval("previewView()").find("Reading...") != std::string::npos);
+    page().eval("__pending['preview.page good.html'].done({ inlined: [], skipped: [], html: '<p>good</p>' }); 'landed'");
+    CHECK_EQ(page().eval("state.preview.html + '|' + state.preview.loading + '|' + state.preview.error"),
+             "<p>good</p>|false|");
+    held_calls_restored();
+}
+
+TEST(history_reads_the_list_again_when_a_project_is_opened_beside_it) {
+    // History shows one project's list, and the panel beside it opens
+    // another: the list is read again for that one, and the old one's is not
+    // there to click on meanwhile.
+    CHECK_EQ(held_calls(), "set");
+    page().eval("state.view = 'models'; __open('/work/a'); state.view = 'history'; state.open.cook = null;"
+                "state.history = { cooks: [], sessions: [{ id: 'a1', title: 'about A', when: 'today', turns: 3 }] };"
+                "'shown'");
+    CHECK(page().eval("views.history()").find("about A") != std::string::npos);
+    const std::string meanwhile = page().eval(
+        "__asked = [];"
+        "call = function (method) { __asked.push(method); return method !== 'history'"
+        "  ? Promise.reject(new Error('no window'))"
+        "  : Promise.resolve({ cooks: [], sessions: [{ id: 'b1', title: 'about B', when: 'today', turns: 1 }] }); };"
+        "__open('/work/b'); views.history()");
+    CHECK(meanwhile.find("Reading...") != std::string::npos);
+    CHECK(meanwhile.find("about A") == std::string::npos);
+    CHECK_EQ(page().eval("String(__asked.filter(function (m) { return m === 'history'; }).length)"), "1");
+    const std::string listed = page().eval("views.history()");
+    CHECK(listed.find("about B") != std::string::npos);
+    CHECK(listed.find("about A") == std::string::npos);
+    held_calls_restored();
 }
 
 TEST(about_offers_crucibles_own_source_as_a_project) {
@@ -3338,6 +3546,25 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(far.find("<span class=\"tag\">needs a key</span>") != std::string::npos);
     page().eval("state.config.server.api_key = 'sk-local'");
     CHECK(page().eval("views.settings()").find("needs a key") == std::string::npos);
+    // Before the providers are read, and once its provider is gone, it is
+    // still the provider's model, not a file missing from the folder.
+    for (const char* providers : {"null", "{ providers: [], known: [] }"}) {
+        page().eval(std::string("state.providers = ") + providers);
+        CHECK_EQ(drawn("serverModelSelect(state.config)"), "ok");
+        const std::string unread = page().eval("serverModelSelect(state.config)");
+        CHECK(unread.find("not in the models folder") == std::string::npos);
+        CHECK(unread.find("<option value=\"anthropic|claude-opus-5-5\" selected>claude-opus-5-5 (anthropic)</option>")
+              != std::string::npos);
+    }
+    // Nor is a file said to be missing from a folder not read yet.
+    page().eval("window.__modelsWasServer = state.models; state.models = null;"
+                "state.config.server = { enabled: true, model: 'other.gguf', embeddings: 'nomic.gguf', port: 8338,"
+                "  network: false, api_key: '' }");
+    const std::string folder = page().eval("serverModelSelect(state.config) + serverEmbeddingsSelect(state.config)");
+    CHECK(folder.find("not in the models folder") == std::string::npos);
+    CHECK(folder.find("<option value=\"other.gguf\" selected>other.gguf</option>") != std::string::npos);
+    CHECK(folder.find("<option value=\"nomic.gguf\" selected>nomic.gguf</option>") != std::string::npos);
+    page().eval("state.models = window.__modelsWasServer");
     page().eval("state.providers = window.__providersWas;"
                 "state.config.server = { enabled: true, model: 'physics.gguf', port: 8338, network: true,"
                 "  api_key: 'sk-local' }");

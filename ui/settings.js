@@ -175,8 +175,9 @@ function delegatorBetter(chosen) {
 /// The menu, with a way to fetch a delegator. That is one for a folder with
 /// nothing in it that can route here (a GGUF, or an MLX model where MLX
 /// runs), or a better one than the one chosen when the cards hold it. Either
-/// opens Models on it, and it is seated once it is in the folder unless
-/// another was chosen meanwhile.
+/// is seated at once when the folder holds it, and otherwise opens Models on
+/// it, to be seated once it is in the folder unless another was chosen
+/// meanwhile.
 function delegatorPicker(c) {
   const chosen = c.router ? c.router.model : '';
   const select = modelSelect(chosen, '', { id: 'router-model', 'data-change': 'router-model' }, true);
@@ -188,9 +189,20 @@ function delegatorPicker(c) {
   return better ? `<div class="row">${select}<span class="status">${escape(better.name)} routes better</span>
       <button class="action" data-act="delegator-get">Get it</button></div>` : select;
 }
+/// The model in the folder that is `wanted`: its own file, else any file
+/// `known` reads as it (another quantization, or another person's upload).
+/// Never an MLX copy, whose name can match too, since the list's are GGUF.
+function delegatorInFolder(wanted) {
+  const files = (state.models ? state.models.models : []).filter((m) => m.format !== 'mlx');
+  return files.find((m) => fileName(m.name) === wanted.file)
+      || files.find((m) => wanted.known.test(fileName(m.name))) || null;
+}
 actions['delegator-get'] = () => {
   const wanted = delegatorFits();
-  delegatorWanted = { file: wanted.file, over: delegatorChosen() };
+  // One the folder holds already is seated as it is, not fetched again.
+  const here = delegatorInFolder(wanted);
+  if (here) return configure({ router: { model: here.name } });
+  delegatorWanted = { wanted, over: delegatorChosen() };
   marketShow(wanted.query, wanted.repo, wanted.file);
 };
 function seatWantedDelegator() {
@@ -199,8 +211,7 @@ function seatWantedDelegator() {
     delegatorWanted = null;
     return;
   }
-  const wanted = delegatorWanted.file;
-  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === wanted);
+  const got = delegatorInFolder(delegatorWanted.wanted);
   if (!got) return;
   delegatorWanted = null;
   configure({ router: { model: got.name } });
@@ -942,7 +953,14 @@ function serverModelSelect(c) {
         offered.map((m) => option(`${p.id}|${m}`, m)).join('')}</optgroup>`;
     }
   }
-  if (chosen && !shown) html += option(chosen, `${fileName(splitModel(chosen).model)} (not in the models folder)`);
+  // A provider's model while the providers are still being read, or once its
+  // provider is gone, is no file: it is said by whose it is. A file is said
+  // to be missing only once the folder has been read.
+  if (chosen && !shown) {
+    const model = splitModel(chosen).model;
+    html += option(chosen, provider ? `${model} (${providerName(provider)})`
+                         : state.models ? `${fileName(model)} (not in the models folder)` : fileName(model));
+  }
   return `<select id="server-model" data-change="server-model">${html}</select>`;
 }
 
@@ -959,7 +977,7 @@ function serverEmbeddingsSelect(c) {
       option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
   }
   if (chosen && !files.some((m) => m.name === chosen)) {
-    html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+    html += option(chosen, state.models ? `${fileName(chosen)} (not in the models folder)` : fileName(chosen));
   }
   return `<select id="server-embeddings" data-change="server-embeddings">${html}</select>`;
 }

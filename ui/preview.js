@@ -16,9 +16,14 @@
 // The script below is put into the page for the picking and the live
 // changes, and nothing it is sent is anything but a style value.
 
-state.preview = { pages: null, page: '', url: '', html: '', inlined: [], skipped: [], picking: false,
-                  picked: null, changes: [], error: '', loading: false, stale: false,
-                  making: null, made: null, shown: null, kept: '{}', storing: false };
+/// The preview with nothing in it: as the window opens, and as another
+/// project is opened (see the end of this file).
+function previewBlank() {
+  return { pages: null, page: '', url: '', html: '', inlined: [], skipped: [], picking: false,
+           picked: null, changes: [], error: '', loading: false, stale: false,
+           making: null, made: null, shown: null, kept: '{}', storing: false };
+}
+state.preview = previewBlank();
 
 /// What pages in the preview have saved, by project and page: with
 /// window.crucible.save, and in localStorage and sessionStorage. Held here
@@ -189,8 +194,13 @@ function tunedDocument(html, kept) {
   // The data calls first of all, so the page's own scripts find them; the
   // picker last, once there is a page to pick from. Just inside the head, not
   // a <header>, and after the doctype of a page with no head, which would be
-  // drawn in quirks mode with anything before its doctype.
-  const head = /<head(\s[^>]*)?>/i.exec(html) || /<!doctype[^>]*>/i.exec(html);
+  // drawn in quirks mode with anything before its doctype. Only before the
+  // body, as an app's page has them (with_script_first in
+  // tools/page_storage.hpp): a "<head>" after it, in a script's string say,
+  // is no head.
+  const body = html.search(/<body[\s>]/i);
+  const top = body < 0 ? html : html.slice(0, body);
+  const head = /<head(\s[^>]*)?>/i.exec(top) || /<!doctype[^>]*>/i.exec(top);
   let out = head ? html.slice(0, head.index + head[0].length) + data + html.slice(head.index + head[0].length)
                  : data + html;
   const at = out.lastIndexOf('</body>');
@@ -404,12 +414,18 @@ async function loadPreview(page) {
   p.shown = shown;
   p.storing = false;
   p.html = '';
+  p.inlined = [];
+  p.skipped = [];
   p.picked = null;
   p.changes = [];
   p.picking = false;
   p.error = '';
   p.stale = false;
-  if (!page) return render();
+  // No page: nothing is being read, whatever was asked for before this.
+  if (!page) {
+    p.loading = false;
+    return render();
+  }
   p.loading = true;
   render();
   try {
@@ -428,6 +444,8 @@ async function loadPreview(page) {
     p.inlined = got.inlined || [];
     p.skipped = got.skipped || [];
   } catch (error) {
+    // The same when it failed: the page shown now says how its own load went.
+    if (p.shown !== shown) return;
     p.error = error.message;
   }
   p.loading = false;
@@ -606,13 +624,34 @@ window.addEventListener('message', (event) => {
   if (event.data && typeof event.data === 'object') previewMessage(event.data);
 });
 
-/// What the preview fetches when its pane opens: the pages there are.
+/// The folder of the project open now, or '' with none.
+const previewRoot = () => (state.snapshot.project || {}).root || '';
+
+/// What the preview fetches when its pane opens: the pages there are. A list
+/// that lands after another project was opened is the old one's, and is not
+/// offered in the new one.
 function enterPreview() {
-  if ((state.snapshot.project || {}).open) {
-    call('preview.candidates').then((got) => {
-      state.preview.pages = got.pages || [];
-      if (!state.preview.page && state.preview.pages.length) loadPreview(state.preview.pages[0]);
-      render();
-    }).catch((error) => { state.preview.error = error.message; render(); });
-  }
+  if (!(state.snapshot.project || {}).open) return;
+  const root = previewRoot();
+  call('preview.candidates').then((got) => {
+    if (previewRoot() !== root) return;
+    state.preview.pages = got.pages || [];
+    if (!state.preview.page && state.preview.pages.length) loadPreview(state.preview.pages[0]);
+    render();
+  }).catch((error) => {
+    if (previewRoot() === root) state.preview.error = error.message;
+    render();
+  });
 }
+
+/// Opening another project empties the preview, as it is when the window
+/// opens: nothing of the old project is drawn in the new one. A page of the
+/// old one still being read is then not the page shown, and is dropped when
+/// it lands (see loadPreview).
+let previewProject = '';
+onSnapshot.push(() => {
+  const root = previewRoot();
+  if (root === previewProject) return;
+  previewProject = root;
+  Object.assign(state.preview, previewBlank());
+});
