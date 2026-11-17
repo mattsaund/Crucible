@@ -428,6 +428,11 @@ check_eq  "every install invocation is scoped" \
 # the runtimes outside the component; the path is passed at startup instead.
 check_not "GGML_BACKEND_DIR is not set" \
           grep -q "^ *set(GGML_BACKEND_DIR" "$HERE/../cmake/CrucibleDependencies.cmake"
+# llama.cpp's libraries are installed for their binaries alone. mtmd carries
+# a private header list too, and a rule with nowhere to put it warned at
+# every configure.
+check     "llama.cpp's header lists, public and private, are not installed" \
+          grep -qF 'PROPERTIES PUBLIC_HEADER "" PRIVATE_HEADER ""' "$HERE/../CMakeLists.txt"
 
 echo
 echo "  the bar stays on one row"
