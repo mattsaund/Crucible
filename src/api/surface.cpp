@@ -350,7 +350,7 @@ json Surface::state_json_of(const Snapshot& frame, bool with_turns) {
     if (update::newer_than_this(newer)) {
         out["update"] = json{{"latest", newer.latest},
                              {"page", newer.page.empty() ? update::releases_url() : newer.page},
-                             {"command", std::string(update::update_command())},
+                             {"command", update::update_command(newer.latest)},
                              {"installable", !update::asset_for(update::install_here()).empty()}};
     }
     return out;

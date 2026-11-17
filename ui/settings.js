@@ -21,11 +21,13 @@ const SETTINGS_PAGES = [
 /// `kind` is how it is drawn and how its value is read back: bool, int,
 /// float, string, text (several lines), secret, choice (with `extra` as the
 /// list of [value, label] pairs) or slider (with `extra` as {min, max, step}).
+/// A bool's `extra.change` names the action that saves it, for one that does
+/// more than save.
 function setting(path, label, kind, hint, extra) {
   const value = at(state.config, path);
   const id = 'f-' + path.replace(/\./g, '-');
   const note = hint ? `<div class="hint">${hint}</div>` : '';
-  const bind = { id, 'data-path': path, 'data-change': 'set' };
+  const bind = { id, 'data-path': path, 'data-change': (kind === 'bool' && extra && extra.change) || 'set' };
 
   if (kind === 'bool') {
     return `<div class="field"><label class="check"><input type="checkbox"${
@@ -1124,6 +1126,7 @@ function pageAbout() {
         <button class="action" data-act="update-check">${
         state.open.checking ? 'Asking...' : 'Check now'}</button></div></div>
     ${setting('ui.check_updates', 'Check for new versions', 'bool', 'Daily, from GitHub.')}
+    ${setting('ui.prereleases', 'Pre-releases', 'bool', '', { change: 'update-channel' })}
     ${selfView()}
     <h2 style="margin-top:1.8rem">WHAT LEAVES THIS MACHINE</h2>
     <p class="lede">The version check, web searches, model searches and downloads, first-start
@@ -1173,6 +1176,14 @@ actions['update-check'] = () => guard(async () => {
   try { await call('update.check'); state.about = await call('about'); }
   finally { state.open.checking = false; }
 });
+
+/// The Pre-releases box. What the last check found was the newest of the
+/// other kind, so it is asked again at once, unless checking is off.
+actions['update-channel'] = async (element) => {
+  await configure(patchOf(element.dataset.path, valueOf(element)));
+  if (at(state.config, 'ui.check_updates')) return actions['update-check']();
+  return guard(async () => { state.about = await call('about'); });
+};
 
 // --- the view ------------------------------------------------------------------------------------------------
 

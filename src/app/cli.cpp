@@ -91,7 +91,7 @@ Options parse_arguments(int argc, char** argv) {
             update::State state;
             if (update::read_cache(state) && update::newer_than_this(state)) {
                 std::cout << "  " << state.latest << " is available. Update with:\n"
-                          << "  " << update::update_command() << "\n";
+                          << "  " << update::update_command(state.latest) << "\n";
             }
             options.should_exit = true;
             return options;

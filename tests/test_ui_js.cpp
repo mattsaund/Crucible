@@ -710,6 +710,57 @@ TEST(a_newer_version_is_one_button_away_where_it_can_be_installed) {
     CHECK(going.find("data-act=\"update-install\" disabled") != std::string::npos);
 }
 
+TEST(the_pre_releases_box_sits_by_the_version_check_and_asks_again_when_ticked) {
+    // Beside "Check for new versions", off as the configuration has it.
+    const std::string about = page().eval("(state.settingsPage = 'about', views.settings())");
+    const std::size_t check = about.find("Check for new versions");
+    const std::size_t box   = about.find("data-path=\"ui.prereleases\"");
+    CHECK(check != std::string::npos);
+    CHECK(box != std::string::npos && box > check);
+    CHECK(about.find("data-change=\"update-channel\"") != std::string::npos);
+    CHECK(about.find("> Pre-releases</label>") != std::string::npos);
+    CHECK(about.find("data-change=\"update-channel\" checked") == std::string::npos);
+    CHECK_EQ(drawn("(state.settingsPage = 'about', views.settings())"), "ok");
+
+    // Ticked: saved, and asked again at once, since what the last check found
+    // was the newest release and not the newest of everything.
+    const auto tick = [](bool checks, bool on) {
+        page().eval(R"JS(
+          (function (checks, on) {
+            window.__calls = [];
+            window.__kept = { call: call, render: render, config: state.config, about: state.about };
+            render = function () {};
+            call = function (method, params) {
+              window.__calls.push([method, params]);
+              if (method === 'config') {
+                return Promise.resolve(Object.assign({}, window.__kept.config,
+                                                     { ui: { check_updates: checks, prereleases: on } }));
+              }
+              if (method === 'about') return Promise.resolve(window.__kept.about);
+              return Promise.resolve({});
+            };
+            actions['update-channel']({ type: 'checkbox', checked: on, dataset: { path: 'ui.prereleases' },
+                                        getAttribute: function () { return null; } });
+          }))JS" + std::string("(") + (checks ? "true" : "false") + ", " + (on ? "true" : "false") + ")");
+        // Read in an evaluation of its own: the calls after the first are
+        // made as the promises before them settle, once the one above ends.
+        return page().eval("window.__calls.map(function (c) { return c[0]; }).join(',') + ' '"
+                           " + JSON.stringify(window.__calls[0][1])");
+    };
+    const auto restore = [] {
+        page().eval("(function (k) { call = k.call; render = k.render; state.config = k.config; state.about = k.about; })"
+                    "(window.__kept)");
+    };
+    CHECK_EQ(tick(true, true), std::string(R"(config.set,config,update.check,about {"ui":{"prereleases":true}})"));
+    // Drawn ticked once the configuration says so.
+    CHECK(page().eval("views.settings()").find("data-change=\"update-channel\" checked") != std::string::npos);
+    restore();
+    // Checking turned off: nothing is asked of GitHub, and the page is read
+    // again, which knows the last answer is no longer this box's.
+    CHECK_EQ(tick(false, false), std::string(R"(config.set,config,about {"ui":{"prereleases":false}})"));
+    restore();
+}
+
 TEST(an_unlabeled_block_is_colored_in_the_language_its_code_is_in) {
     // What gpt-oss sent for "a quick python script": the shebang above the
     // fence, and a fence that names no language. Both drew as gray text.

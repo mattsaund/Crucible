@@ -71,6 +71,100 @@ bool pre_release(std::string_view text) {
     return text.find('-') != std::string_view::npos;
 }
 
+/// The pre-release part of a version: "pre.4" of "1.0.0-pre.4". What follows
+/// a `+` is build metadata, which says nothing about which is newer.
+std::string_view suffix_of(std::string_view text) {
+    const std::size_t dash = text.find('-');
+    if (dash == std::string_view::npos) {
+        return {};
+    }
+    const std::string_view suffix = text.substr(dash + 1);
+    return suffix.substr(0, suffix.find('+'));
+}
+
+bool all_digits(std::string_view text) {
+    return !text.empty() && std::all_of(text.begin(), text.end(), [](char c) {
+        return std::isdigit(static_cast<unsigned char>(c)) != 0;
+    });
+}
+
+/// Two pre-release suffixes, part by dotted part, as semantic versioning
+/// orders them: numbers by value, words by their letters, a number before a
+/// word, and the one that runs out first is the older. Without this every
+/// pre-release of a version was the same as every other, and pre.4 was never
+/// offered to a pre.3.
+int compare_suffixes(std::string_view a, std::string_view b) {
+    for (;;) {
+        const std::size_t a_end = a.find('.');
+        const std::size_t b_end = b.find('.');
+        std::string_view left  = a.substr(0, a_end);
+        std::string_view right = b.substr(0, b_end);
+        const bool left_number  = all_digits(left);
+        const bool right_number = all_digits(right);
+        int order = 0;
+        if (left_number && right_number) {
+            // By value, without reading it into an int a long one would overflow.
+            left.remove_prefix(std::min(left.find_first_not_of('0'), left.size() - 1));
+            right.remove_prefix(std::min(right.find_first_not_of('0'), right.size() - 1));
+            order = left.size() != right.size() ? (left.size() < right.size() ? -1 : 1)
+                                                : left.compare(right);
+        } else if (left_number != right_number) {
+            order = left_number ? -1 : 1;
+        } else {
+            order = left.compare(right);
+        }
+        if (order != 0) {
+            return order < 0 ? -1 : 1;
+        }
+        const bool left_more  = a_end != std::string_view::npos;
+        const bool right_more = b_end != std::string_view::npos;
+        if (!left_more || !right_more) {
+            return left_more == right_more ? 0 : (left_more ? 1 : -1);
+        }
+        a.remove_prefix(a_end + 1);
+        b.remove_prefix(b_end + 1);
+    }
+}
+
+/// The release a reply is about: the reply itself, from /releases/latest, or
+/// from a list, the newest that is published. Drafts are left out, though
+/// GitHub shows them only to the repository's own people: an update offered
+/// from one would be a page nobody else can open.
+const json* release_in(const json& parsed) {
+    if (parsed.is_object()) {
+        return &parsed;
+    }
+    if (!parsed.is_array()) {
+        return nullptr;
+    }
+    const json* newest = nullptr;
+    for (const json& one : parsed) {
+        if (!one.is_object() || one.value("draft", false)) {
+            continue;
+        }
+        const auto tag = one.find("tag_name");
+        if (tag == one.end() || !tag->is_string() || tag->get_ref<const std::string&>().empty()) {
+            continue;
+        }
+        // The first of equals wins: GitHub lists the newest made first.
+        if (newest == nullptr
+            || compare(tag->get_ref<const std::string&>(), (*newest)["tag_name"].get_ref<const std::string&>()) > 0) {
+            newest = &one;
+        }
+    }
+    return newest;
+}
+
+/// Whether `tag` can go into a command as it is: letters, digits, dots,
+/// dashes and underscores, as every tag of Crucible's is, and no dash first,
+/// where a script would read it as an option.
+bool plain_tag(std::string_view tag) {
+    return !tag.empty() && tag.size() <= 64 && tag.front() != '-'
+        && std::all_of(tag.begin(), tag.end(), [](char c) {
+               return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '.' || c == '-' || c == '_';
+           });
+}
+
 std::int64_t now_seconds() {
     using namespace std::chrono;
     return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
@@ -93,34 +187,43 @@ int compare(std::string_view a, std::string_view b) {
             return l < r ? -1 : 1;
         }
     }
-    // Same numbers. A pre-release of a version is older than the version.
+    // Same numbers. A pre-release of a version is older than the version, and
+    // two pre-releases of it are as old as their suffixes say.
     const bool lp = pre_release(a);
     const bool rp = pre_release(b);
+    if (lp && rp) {
+        return compare_suffixes(suffix_of(a), suffix_of(b));
+    }
     if (lp == rp) {
         return 0;
     }
     return lp ? -1 : 1;
 }
 
-std::string releases_url() {
+std::string releases_url(bool prereleases) {
+    // GitHub's latest is never a pre-release, so with them it is the list,
+    // newest made first. Ten of them: the newest version is among the last
+    // few made, and every release in the list comes with its notes and its
+    // files, about 20 KB each.
     return std::string("https://api.github.com/repos/") + kRepository
-         + "/releases/latest";
+         + (prereleases ? "/releases?per_page=10" : "/releases/latest");
 }
 
 bool parse_latest(std::string_view body, std::string& version, std::string& page) {
     const json parsed = json::parse(body, nullptr, /*allow_exceptions=*/false);
-    if (!parsed.is_object()) {
+    const json* release = release_in(parsed);
+    if (release == nullptr) {
         return false;
     }
-    const auto tag = parsed.find("tag_name");
-    if (tag == parsed.end() || !tag->is_string()) {
+    const auto tag = release->find("tag_name");
+    if (tag == release->end() || !tag->is_string()) {
         return false;  // a rate-limit note, an error, or a repo with no releases
     }
     version = tag->get<std::string>();
     if (version.empty()) {
         return false;
     }
-    if (const auto url = parsed.find("html_url"); url != parsed.end() && url->is_string()) {
+    if (const auto url = release->find("html_url"); url != release->end() && url->is_string()) {
         page = url->get<std::string>();
     } else {
         page = std::string("https://github.com/") + kRepository + "/releases";
@@ -141,9 +244,10 @@ bool read_cache(State& state) {
     if (!parsed.is_object()) {
         return false;
     }
-    state.latest     = parsed.value("latest", "");
-    state.page       = parsed.value("page", "");
-    state.checked_at = parsed.value("checked_at", std::int64_t{0});
+    state.latest      = parsed.value("latest", "");
+    state.page        = parsed.value("page", "");
+    state.checked_at  = parsed.value("checked_at", std::int64_t{0});
+    state.prereleases = parsed.value("prereleases", false);   // older files asked for releases alone
     return true;
 }
 
@@ -158,6 +262,7 @@ bool write_cache(const State& state) {
         {"latest", state.latest},
         {"page", state.page},
         {"checked_at", state.checked_at},
+        {"prereleases", state.prereleases},
     };
     out << doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     return out.good();
@@ -173,21 +278,50 @@ bool due(const State& state, std::int64_t now, std::int64_t every) {
     return now - state.checked_at >= every;
 }
 
+State for_channel(State state, bool prereleases) {
+    if (state.prereleases == prereleases) {
+        return state;
+    }
+    // Never checked, as far as this box is concerned, so it is due at once:
+    // ticking it asks straight away rather than a day later.
+    State none;
+    none.prereleases = prereleases;
+    return none;
+}
+
+bool will_ask(const State& cached, bool prereleases, bool now, std::int64_t when) {
+    return now || due(for_channel(cached, prereleases), when);
+}
+
 bool newer_than_this(const State& state) {
     return !state.latest.empty() && compare(state.latest, current()) > 0;
 }
 
-std::string_view update_command() {
+std::string update_command(std::string_view tag) {
+    const std::string raw = std::string("https://raw.githubusercontent.com/") + kRepository + "/";
+    if (!plain_tag(tag)) {
 #if defined(_WIN32)
-    return "irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex";
+        return "irm " + raw + "main/install.ps1 | iex";
 #else
-    return "curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh | bash";
+        return "curl -fsSL " + raw + "main/install.sh | bash";
+#endif
+    }
+    // That release's own installer, told to build that release. Main's would
+    // build main, which can be ahead of the newest release (main was a
+    // pre-release while the newest release was 0.9.9) or behind the newest
+    // pre-release somebody asked for.
+    const std::string at(tag);
+#if defined(_WIN32)
+    // iex hands the script no options, so it is made a script block first.
+    return "& ([scriptblock]::Create((irm " + raw + at + "/install.ps1))) -Branch " + at;
+#else
+    return "curl -fsSL " + raw + at + "/install.sh | bash -s -- --branch " + at;
 #endif
 }
 
-bool fetch(std::string& body, std::string& error) {
+bool fetch(std::string& body, std::string& error, bool prereleases) {
     util::http::Request request;
-    request.url             = releases_url();
+    request.url             = releases_url(prereleases);
     request.headers         = {{"Accept", "application/vnd.github+json"}};
     request.timeout_seconds = 10;
 
@@ -200,16 +334,17 @@ bool fetch(std::string& body, std::string& error) {
     return true;
 }
 
-State refresh(bool allowed_to_ask) {
-    State state;
-    read_cache(state);
-    if (!allowed_to_ask || !due(state, now_seconds())) {
+State refresh(bool prereleases, bool now) {
+    State cached;
+    read_cache(cached);
+    State state = for_channel(cached, prereleases);
+    if (!will_ask(cached, prereleases, now, now_seconds())) {
         return state;
     }
 
     std::string body;
     std::string error;
-    if (!fetch(body, error)) {
+    if (!fetch(body, error, prereleases)) {
         // A failed check is not news. Remember that it was tried, so a machine
         // with no network does not spawn a check on every start.
         state.checked_at = now_seconds();
@@ -315,10 +450,13 @@ std::string asset_for(Install install) {
 
 bool find_asset(std::string_view body, std::string_view asset, std::string& url, std::uint64_t& bytes) {
     const json parsed = json::parse(body, nullptr, /*allow_exceptions=*/false);
-    if (!parsed.is_object() || !parsed.contains("assets") || !parsed["assets"].is_array()) {
+    // The same release parse_latest reads, so what is downloaded is the
+    // version that was offered.
+    const json* release = release_in(parsed);
+    if (release == nullptr || !release->contains("assets") || !(*release)["assets"].is_array()) {
         return false;
     }
-    for (const json& one : parsed["assets"]) {
+    for (const json& one : (*release)["assets"]) {
         if (one.is_object() && one.value("name", std::string()) == asset) {
             url   = one.value("browser_download_url", std::string());
             bytes = one.value("size", std::uint64_t{0});
@@ -381,10 +519,13 @@ Installer::~Installer() {
     }
 }
 
-bool Installer::start(std::function<void()> launched, std::string& error) {
+bool Installer::start(bool prereleases, std::function<void()> launched, std::string& error) {
     const Install install = install_here();
     if (asset_for(install).empty() || target_of(install).empty()) {
-        error = "this Crucible was built from source. Update it with: " + std::string(update_command());
+        State found;
+        read_cache(found);
+        error = "this Crucible was built from source. Update it with: "
+              + update_command(for_channel(found, prereleases).latest);
         return false;
     }
     const std::lock_guard<std::mutex> lock(mutex_);
@@ -397,7 +538,7 @@ bool Installer::start(std::function<void()> launched, std::string& error) {
     }
     progress_ = Progress{};
     progress_.phase = Phase::Asking;
-    worker_ = std::thread([this, launched = std::move(launched)] { run(launched); });
+    worker_ = std::thread([this, prereleases, launched = std::move(launched)] { run(prereleases, launched); });
     return true;
 }
 
@@ -418,14 +559,28 @@ void Installer::set(Phase phase, std::string error) {
     progress_.error = std::move(error);
 }
 
-void Installer::run(std::function<void()> launched) {
+void Installer::run(bool prereleases, std::function<void()> launched) {
     const Install install = install_here();
     const std::string asset = asset_for(install);
 
     std::string body;
     std::string error;
-    if (!fetch(body, error)) {
+    if (!fetch(body, error, prereleases)) {
         set(Phase::Failed, error);
+        return;
+    }
+    // Asked again rather than taken from the check, which can be a day old
+    // or made with the box the other way: never this version again, and
+    // never an older one, which is what a pre-release with the box cleared
+    // would otherwise be handed.
+    std::string version;
+    std::string page;
+    if (!parse_latest(body, version, page)) {
+        set(Phase::Failed, "GitHub's answer named no release");
+        return;
+    }
+    if (compare(version, current()) <= 0) {
+        set(Phase::Failed, "no release is newer than this one");
         return;
     }
     std::string   url;

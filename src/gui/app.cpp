@@ -183,6 +183,7 @@ void App::absorb_finished_build() {
 }
 
 void App::update_config(const std::function<void(Config&)>& change) {
+    const bool prereleases = config_.ui.prereleases;
     change(config_);
     config_.resolve_models();
     state_.configure_seats(config_);
@@ -191,6 +192,10 @@ void App::update_config(const std::function<void(Config&)>& change) {
     }
     engine_->apply_config(config_);
     refresh_prices();
+    // What the last check found was the newest of the other kind.
+    if (config_.ui.prereleases != prereleases) {
+        begin_update_check();
+    }
 }
 
 void App::refresh_prices() {
@@ -796,8 +801,11 @@ std::string App::keep(const std::string& recipe_id) {
 
 void App::begin_update_check() {
     // The cache first, and always: it is a file read, it is what the last check
-    // found, and it is what the window shows until a new answer arrives.
-    update::read_cache(update_);
+    // found, and it is what the window shows until a new answer arrives. Read
+    // as nothing when it was found with the Pre-releases box the other way.
+    update::State cached;
+    update::read_cache(cached);
+    update_ = update::for_channel(std::move(cached), config_.ui.prereleases);
 
     if (!config_.ui.check_updates || update_checking_ != nullptr) {
         return;
@@ -810,8 +818,9 @@ void App::begin_update_check() {
     // In the pool rather than on a thread of its own left to finish whenever:
     // the pool is joined before this object goes away, and a detached thread
     // that woke up afterwards would be calling into one that had.
-    workers_.post([this, check]() {
-        update::State state = update::refresh(/*allowed_to_ask=*/true);
+    // The box read here, not on the worker: the configuration is this thread's.
+    workers_.post([this, check, prereleases = config_.ui.prereleases]() {
+        update::State state = update::refresh(prereleases);
         {
             const std::lock_guard<std::mutex> lock(check->mutex);
             check->state = std::move(state);
@@ -829,20 +838,28 @@ void App::collect_update_check() {
     if (check == nullptr) {
         return;
     }
+    update::State found;
     {
         const std::lock_guard<std::mutex> lock(check->mutex);
         if (!check->done) {
             return;
         }
-        update_ = check->state;
+        found = check->state;
     }
     update_checking_.reset();
+    // Asked before the box changed: the newest of the other kind, so asked
+    // again for this one.
+    if (found.prereleases != config_.ui.prereleases) {
+        begin_update_check();
+        return;
+    }
+    update_ = std::move(found);
 
     // Said once, when the answer comes back. The gear carries a dot from then
     // on, and this is the line that says what the dot means.
     if (update_available()) {
         say("Crucible " + update_.latest + " is available. To update: "
-            + std::string(update::update_command()));
+            + update::update_command(update_.latest));
     }
 }
 

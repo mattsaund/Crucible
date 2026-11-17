@@ -1356,6 +1356,51 @@ check     "and the README says how to update" \
 check     "the changelog has an entry for the version being shipped" \
           grep -q "^## $VERSION" "$ROOT/CHANGELOG.md"
 
+echo "  a release's tag can be built"
+# Crucible's update hands an install built from source the one-line install
+# with --branch and the tag the check found: main can be ahead of the newest
+# release (a pre-release), or behind the newest pre-release somebody ticked
+# the box for. A fresh clone and an earlier one both have to take a tag.
+# A repository of three commits: v1.0.0-pre.4, then main, then v1.0.0-pre.5.
+tagged_git() {
+    git -c user.name=crucible -c user.email=tests@example.invalid -c commit.gpgsign=false \
+        -c tag.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+ORIGIN="$TMP/origin"
+mkdir -p "$ORIGIN"
+tagged_git -C "$ORIGIN" init -q
+tagged_git -C "$ORIGIN" checkout -q -b main
+tagged_git -C "$ORIGIN" commit -q --allow-empty -m "pre.4"
+tagged_git -C "$ORIGIN" tag -a v1.0.0-pre.4 -m "1.0.0-pre.4"
+pre4="$(git -C "$ORIGIN" rev-parse HEAD)"
+tagged_git -C "$ORIGIN" commit -q --allow-empty -m "after it"
+tip="$(git -C "$ORIGIN" rev-parse HEAD)"
+tagged_git -C "$ORIGIN" checkout -q -b later
+tagged_git -C "$ORIGIN" commit -q --allow-empty -m "pre.5"
+tagged_git -C "$ORIGIN" tag -a v1.0.0-pre.5 -m "1.0.0-pre.5"
+pre5="$(git -C "$ORIGIN" rev-parse HEAD)"
+tagged_git -C "$ORIGIN" checkout -q main
+# Three commits, or every comparison below is of nothing with nothing.
+three_commits() { [ ${#pre4} -ge 40 ] && [ ${#tip} -ge 40 ] && [ ${#pre5} -ge 40 ] && [ "$pre4" != "$tip" ]; }
+check     "the repository for it has its three commits" three_commits
+# file://, since a plain path is cloned whole and --depth ignored.
+( git_clone_with_progress "file://$ORIGIN" "$TMP/fresh" "v1.0.0-pre.4" ) >/dev/null 2>&1
+check_eq  "a fresh install clones the tag it is given" \
+          "$(git -C "$TMP/fresh" rev-parse HEAD 2>/dev/null)" "$pre4"
+git clone -q --depth 1 --branch main "file://$ORIGIN" "$TMP/earlier" >/dev/null 2>&1
+check_eq  "an earlier install starts on main" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$tip"
+check     "and is moved to an older release's tag" update_clone "$TMP/earlier" "v1.0.0-pre.4"
+check_eq  "which is what it then builds" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$pre4"
+check     "or to a newer one main has not reached" update_clone "$TMP/earlier" "v1.0.0-pre.5"
+check_eq  "the same way" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$pre5"
+check     "and back to main" update_clone "$TMP/earlier" "main"
+check_eq  "at main's newest" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$tip"
+check_not "a tag that is not there fails rather than building what was" \
+          update_clone "$TMP/earlier" "v9.9.9"
+check     "install.sh takes --branch" grep -qF -- '--branch)    BRANCH=' "$ROOT/install.sh"
+check     "and install.ps1 -Branch, for the same clone and fetch" \
+          grep -qF -- "'--branch', \$Branch" "$ROOT/install.ps1"
+
 echo "  a runtime can arrive already built"
 # Compiling a backend on the machine that runs it is right and slow, and for
 # CUDA it needs a multi-gigabyte toolkit first -- which is the part that stops

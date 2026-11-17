@@ -407,6 +407,7 @@ TEST(saving_then_loading_round_trips_every_setting) {
     original.defaults.n_gpu_layers = 42;
     original.defaults.split_mode  = "row";
     original.ui.check_updates     = false;
+    original.ui.prereleases       = true;
     original.tools.auto_edits     = true;
     original.experts["physics"].model = "phys.gguf";
     original.experts["biology"].model = "bio.gguf";
@@ -426,6 +427,9 @@ TEST(saving_then_loading_round_trips_every_setting) {
     CHECK_EQ(reloaded.defaults.n_gpu_layers, 42);
     CHECK_EQ(reloaded.defaults.split_mode, std::string("row"));
     CHECK(!reloaded.ui.check_updates);
+    // Off unless asked for, and kept once it is.
+    CHECK(!Config{}.ui.prereleases);
+    CHECK(reloaded.ui.prereleases);
     // A safety switch that silently forgets itself is worse than not having
     // one: the user turns auto mode on, restarts, and is asked about every
     // edit again -- or, the other way round, believes it is off when it is not.

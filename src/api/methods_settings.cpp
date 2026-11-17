@@ -215,6 +215,7 @@ Reply devices(const json&, const Scene&) {
 Reply about(const json&, const Scene& scene) {
     update::State newer;
     update::read_cache(newer);
+    newer = update::for_channel(std::move(newer), scene.config.ui.prereleases);
 
     // Named, not a temporary in the loop header: `entries` hands back a
     // reference into the store, and a store that had already gone would be a
@@ -230,7 +231,7 @@ Reply about(const json&, const Scene& scene) {
         {"update", json{{"latest", newer.latest},
                         {"available", update::newer_than_this(newer)},
                         {"page", newer.page.empty() ? update::releases_url() : newer.page},
-                        {"command", std::string(update::update_command())},
+                        {"command", update::update_command(newer.latest)},
                         {"installable", !update::asset_for(update::install_here()).empty()},
                         {"checked_at", newer.checked_at},
                         {"checks", scene.config.ui.check_updates}}},
@@ -247,13 +248,15 @@ Reply about(const json&, const Scene& scene) {
     });
 }
 
-/// Ask now, rather than waiting for the daily check.
-Reply update_check(const json&, const Scene&) {
-    const update::State newer = update::refresh(/*allowed_to_ask=*/true);
+/// Ask now, rather than waiting for the daily check. Now, even when the last
+/// check was an hour ago: it asked only once that day had passed, and a
+/// release out since the morning's check read "Up to date".
+Reply update_check(const json&, const Scene& scene) {
+    const update::State newer = update::refresh(scene.config.ui.prereleases, /*now=*/true);
     return good(json{{"latest", newer.latest},
                      {"available", update::newer_than_this(newer)},
                      {"page", newer.page.empty() ? update::releases_url() : newer.page},
-                     {"command", std::string(update::update_command())},
+                     {"command", update::update_command(newer.latest)},
                      {"checked_at", newer.checked_at}});
 }
 
@@ -377,7 +380,7 @@ Reply update_install(const json&, Host& host) {
         return bad("this Crucible cannot update itself");
     }
     std::string error;
-    if (!installer->start([&host] { host.quit(); }, error)) {
+    if (!installer->start(host.config().ui.prereleases, [&host] { host.quit(); }, error)) {
         return bad(error);
     }
     return good();
