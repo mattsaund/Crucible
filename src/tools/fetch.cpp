@@ -11,6 +11,9 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
 #include <system_error>
 #include <thread>
 
@@ -53,19 +56,85 @@ const std::vector<std::string>& browser_places() {
     return places;
 }
 
+/// A profile folder for one run of the browser, removed when the run ends.
+///
+/// A profile of its own, so a run never touches the person's browser, and
+/// one for each run rather than one for all. Chrome locks the folder it is
+/// given, and a second Chrome pointed at a locked one aborts at once, having
+/// drawn nothing ("Failed to create a ProcessSingleton for your profile
+/// directory", exit 21; Chrome 157 on Linux, 2026-11-17). With one shared
+/// folder, two renders at once (two agents of a build, or two runs of the
+/// tests on one machine) failed one of them.
+class OwnProfile {
+public:
+    explicit OwnProfile(const std::string& kind) {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        std::random_device seed;
+        for (int attempt = 0; !ec && attempt < 8; ++attempt) {
+            const std::filesystem::path dir = base / (kind + "-" + std::to_string(seed()));
+            if (std::filesystem::create_directory(dir, ec) && !ec) {
+                dir_ = dir;
+                return;
+            }
+            ec.clear();
+        }
+    }
+    ~OwnProfile() {
+        // Tried a few times: the browser's helper processes can outlive it by
+        // a moment, holding a file open (Windows will not delete one) or
+        // writing a last one into the folder.
+        for (int attempt = 0; !dir_.empty() && attempt < 10; ++attempt) {
+            std::error_code ec;
+            std::filesystem::remove_all(dir_, ec);
+            if (!ec) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    OwnProfile(const OwnProfile&)            = delete;
+    OwnProfile& operator=(const OwnProfile&) = delete;
+
+    const std::filesystem::path& dir() const { return dir_; }
+
+private:
+    std::filesystem::path dir_;
+};
+
+/// The last thing the browser said was wrong, from its log: what a run that
+/// drew nothing says about why. Chrome's own prefix, the process and the
+/// source line, is left off.
+std::string browser_complaint(const std::filesystem::path& log) {
+    std::ifstream in(log, std::ios::binary);
+    std::string line;
+    std::string last;
+    while (std::getline(in, line)) {
+        if (line.find(":ERROR:") == std::string::npos && line.find(":FATAL:") == std::string::npos) {
+            continue;
+        }
+        const std::size_t close = line.find("] ");
+        last = close == std::string::npos ? line : line.substr(close + 2);
+    }
+    while (!last.empty() && (last.back() == '\r' || last.back() == ' ')) {
+        last.pop_back();
+    }
+    return last.size() > 300 ? last.substr(0, 300) : last;
+}
+
 /// Run the browser headless and keep the DOM it prints.
 std::string browser_dom(const std::string& browser, std::string_view url, int timeout_seconds,
                         std::string& error) {
     util::Subprocess child;
-    // A profile of its own, so a run never touches the person's browser and
-    // never waits on a lock it holds.
-    const std::filesystem::path profile = std::filesystem::temp_directory_path() / "crucible-browser";
-    std::error_code ec;
-    std::filesystem::create_directories(profile, ec);
+    const OwnProfile profile("crucible-browser");
+    if (profile.dir().empty()) {
+        error = "there is no temporary folder for the browser";
+        return {};
+    }
     const std::vector<std::string> argv{
         browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
         "--disable-extensions", "--hide-scrollbars", "--mute-audio",
-        "--user-data-dir=" + profile.string(),
+        "--user-data-dir=" + profile.dir().string(),
         "--virtual-time-budget=6000", "--timeout=" + std::to_string(timeout_seconds * 1000),
         "--dump-dom", std::string(url)};
     if (!child.start(argv, {}, {}, error)) {
@@ -130,15 +199,17 @@ std::string render(const std::string& page, const std::filesystem::path& out, in
     std::error_code ec;
     std::filesystem::create_directories(out.parent_path(), ec);
     std::filesystem::remove(out, ec);
-    const std::filesystem::path profile = std::filesystem::temp_directory_path() / "crucible-render";
-    std::filesystem::create_directories(profile, ec);
+    const OwnProfile profile("crucible-render");
+    if (profile.dir().empty()) {
+        return "there is no temporary folder for the browser";
+    }
     std::string ext = out.extension().string();
     for (char& c : ext) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     std::vector<std::string> argv{browser, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
                                   "--disable-extensions", "--hide-scrollbars", "--mute-audio",
-                                  "--user-data-dir=" + profile.string(), "--virtual-time-budget=4000"};
+                                  "--user-data-dir=" + profile.dir().string(), "--virtual-time-budget=4000"};
     if (ext == ".pdf") {
         argv.push_back("--no-pdf-header-footer");
         argv.push_back("--print-to-pdf=" + out.string());
@@ -150,7 +221,11 @@ std::string render(const std::string& page, const std::filesystem::path& out, in
 
     util::Subprocess child;
     std::string error;
-    if (!child.start(argv, {}, {}, error)) {
+    // What the browser says goes to a file nobody has to read while it runs,
+    // and is read for the reason when it draws nothing.
+    util::Subprocess::Streams streams;
+    streams.errors = profile.dir() / "browser.log";
+    if (!child.start(argv, {}, {}, error, streams)) {
         return "the browser would not start: " + error;
     }
     // Done when the file is there and has stopped growing -- not when the
@@ -181,7 +256,8 @@ std::string render(const std::string& page, const std::filesystem::path& out, in
     child.terminate();
     child.wait();
     if (!std::filesystem::exists(out, ec) || std::filesystem::file_size(out, ec) == 0) {
-        return "the browser drew nothing" + std::string(still < 0 ? "" : " in time");
+        const std::string why = browser_complaint(streams.errors);
+        return "the browser drew nothing" + std::string(still < 0 ? "" : " in time") + (why.empty() ? "" : ": " + why);
     }
     return {};
 }
