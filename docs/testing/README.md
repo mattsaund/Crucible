@@ -55,19 +55,21 @@ needs more nudging.
    aside, start Crucible. It fetches its Python, the runtimes, the kit
    (gh, Node, a headless browser, RapidOCR), and a model when there is none.
    Nothing to click.
-2. **Build.** In the chat box: *I need a budgeting software that gives me
-   charts of my gross and net revenue.* It becomes a build (the turn says
-   build, not an expert's name). Reply *go* to the plan.
-   - The agents are listed under the experts in the side menu.
-   - The status line and the working agent are orange.
+2. **Ask for it.** In the chat box: *I need a budgeting software that gives
+   me charts of my gross and net revenue.* The expert it is routed to works on
+   it in the turn, reading, writing and running, until the app is there.
+   - Each action shows above the reply, with its diff or its output.
+   - When the next step wants another expert (a README for Writing, say),
+     the turn says who takes over, and that expert carries on.
+   - The status line is orange while it works.
    - The bottom right shows the model in memory (and the provider's cost,
      with a key).
 3. **Use it.** Preview: type two numbers, press Save, see two bar charts.
 4. **Change a color.** *Change the color from red to blue* (whatever color it
-   came out). One task, no plan question; the preview updates.
+   came out). It is made, and the preview updates.
 5. **Move a button.** *Move the Save button farther away from the side.*
-   Then ask a question about it (*what does app.js do?*): it is answered as
-   a chat turn, and knows the files the build wrote.
+   Then ask a question about it (*what does app.js do?*): it is answered, and
+   knows the files the turns before it wrote.
 6. **Ship it.** Make it an app. Open it from the applications menu, type
    numbers, Save, close it, open it again: the numbers are still there.
 7. **Tune by eye.** Preview, Pick an element, change padding or color,
@@ -118,7 +120,7 @@ Note what failed and how long each step took.
    sampled size of the same model skips that step.
 2. **Edit.** Open a project, then Code above the chat. Open two files,
    change one (the tab and the tree mark it), Ctrl+S. Ctrl+P finds a file by a few letters;
-   Ctrl+Shift+F searches the project. While an agent writes a file that is
+   Ctrl+Shift+F searches the project. While an expert writes a file that is
    open and changed, the editor says so and keeps your text.
 
 ## Before a release: the server
@@ -152,8 +154,8 @@ on a data folder the way the last release left it:
 
 | what | where |
 |---|---|
-| a build, step by step | `~/.local/share/crucible/projects/<project>/cooks/*.json` |
-| what a failed EDIT tried | that step's `detail` |
+| a conversation, turn by turn | `~/.local/share/crucible/projects/<project>/sessions/*.json` |
+| what a failed EDIT tried | its action above the reply, opened |
 | logs | `~/.local/share/crucible/crucible.log`, `crash.log` |
 | chats' folders | `~/.crucible/Scratchpad` |
 | settings | `~/.config/crucible/config.json` |
@@ -162,10 +164,9 @@ on a data folder the way the last release left it:
 
 ```sh
 build/bin/crucible-smoke - model.gguf "a question"
-build/bin/crucible-smoke --build model.gguf "a directive" "a question asked while it builds"
 ```
 
-Exits non-zero when the turn or the build failed.
+Exits non-zero when the turn failed.
 
 ## Releasing
 
