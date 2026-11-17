@@ -65,12 +65,24 @@ RECENT = 8
 # How many lines the account of what was done carries.
 ACCOUNT_LINES = 12
 
-# How many actions pass before the loop asks, out of sight, what the next step
-# is, and lets the delegator choose who takes it. A small model may never hand
-# off, and then a long prompt is one expert doing everything, which is the
-# thing the roster is for. The answer is usually the seat already there, which
-# costs one short round and no reload.
+# When the loop asks, out of sight, what the next step is, and lets the
+# delegator choose who takes it: once a piece of work is finished, which is an
+# action that changed a file the prompt had not changed before, and every
+# CHECKPOINT_EVERY actions whatever they did. An expert may never hand off by
+# itself (flint, asked for a page and then a README explaining it, wrote both
+# without a word), and then a prompt is one expert doing everything, which is
+# the thing the roster is for. The answer is usually the seat already there,
+# which costs one short round and no reload.
 CHECKPOINT_EVERY = 6
+
+# How sure the delegator must be to give the next step to another expert at a
+# checkpoint. Above the routing floor, so a coin flip does not swap a 36 GB
+# model for another; a handoff the expert asked for needs only the floor.
+SWITCH_AT = 0.75
+
+# Actions after a takeover before a checkpoint may move the work again, so two
+# experts do not pass a step back and forth.
+SETTLE = 2
 
 # How many replies in a row may nearly call a tool and not, before the words
 # are taken as the answer.
@@ -495,7 +507,8 @@ class Turn:
 
     def hand_off(self, work, explicit):
         """Route the next step, `work`, and seat the expert that wins when it
-        is somebody else. The new expert's name, or "" when the step stays."""
+        is somebody else: at a checkpoint only when the delegator is sure of
+        it. The new expert's name, or "" when the step stays."""
         params = self.params
         try:
             decision = routing.route(self.core, {
@@ -514,7 +527,8 @@ class Turn:
             return ""
         if (not decision.expert or decision.expert == self.expert
                 or decision.source == routing.FALLBACK
-                or (decision.source == routing.KEYWORD and not explicit)):
+                or (decision.source == routing.KEYWORD and not explicit)
+                or (not explicit and decision.confidence < SWITCH_AT)):
             return ""
         return self.reseat(decision, work)
 
@@ -555,7 +569,10 @@ class Turn:
             return ""
         messages = [dict(m) for m in shown]
         messages[-1]["content"] = messages[-1]["content"] + "\n\n" + NEXT_STEP
-        system = system_prompt(self.params, self.seat, tools=False)
+        # One line is wanted, so a reasoning model is asked to think little
+        # about it, whatever the prompt itself was given.
+        quick = dict(self.params, effort="low") if self.params.get("effort") else self.params
+        system = system_prompt(quick, self.seat, tools=False)
         if account:
             system += "\n\n" + account
         self.mood("thinking", self.name + " is choosing the next step")
@@ -584,6 +601,8 @@ class Turn:
         cycles = steps.Cycles()
         searched = []
         actions = since_checkpoint = nudges = loops = cycle_strikes = 0
+        since_switch = SETTLE   # actions since another expert took over
+        touched = set()         # the files this prompt has changed
         failed = ""            # what the last action said when it failed, until it is answered
         canceled = hit_limit = False
         output_tokens = 0
@@ -670,6 +689,8 @@ class Turn:
                     continue
                 before = self.name
                 taken = self.hand_off(work or params.get("prompt", ""), explicit=True)
+                if taken:
+                    since_switch = 0
                 log.append({"role": "user", "content": (TAKES_OVER.format(before, work) if taken
                                                         else CARRY_ON.format(work)).strip()})
                 since_checkpoint = 0
@@ -751,6 +772,10 @@ class Turn:
                 continue
             ok = bool(result.get("ok", True))
             failed = "" if ok else steps.line(result.get("summary") or result.get("output") or steps.spoken(call), 200)
+            since_switch += 1
+            # A piece of work finished: a file this prompt had not changed yet.
+            new_work = bool(set(result.get("changed") or []) - touched)
+            touched.update(result.get("changed") or [])
             done.append({"summary": result.get("summary") or steps.spoken(call),
                          "ok": ok, "changed": result.get("changed") or []})
             repeats.ran(call, result, len(log) - 1)
@@ -764,13 +789,15 @@ class Turn:
                 log[-1]["content"] += "\n\n" + CYCLING
 
             # --- who has the next step -------------------------------------------
-            if since_checkpoint >= CHECKPOINT_EVERY and actions < limit and self.could_switch(explicit=False):
+            due = new_work or since_checkpoint >= CHECKPOINT_EVERY
+            if due and since_switch >= SETTLE and actions < limit and self.could_switch(explicit=False):
                 since_checkpoint = 0
                 before = self.name
                 at, now_shown = window(log)
                 work = self.checkpoint(now_shown, running_account(done) if at > 0 else "")
                 if work:
                     self.aside = TAKES_OVER.format(before, work)
+                    since_switch = 0
                     cycles.clear()
 
         # --- the end of the turn ------------------------------------------------

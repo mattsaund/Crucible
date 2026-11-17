@@ -527,6 +527,60 @@ class Loop(unittest.TestCase):
         self.assertEqual(core.loads, 1)
         self.assertEqual(core.reply, "Read them all.")
 
+    def routed(self, decisions, rounds, **extra):
+        """A turn with the delegator's decisions scripted, and writes that
+        say which file they changed."""
+        def route(core, request):
+            return decisions.pop(0)
+        core = ScriptedCore(rounds, auto_edits=True)
+        original = core.call
+
+        def call(method, params=None):
+            out = original(method, params)
+            if method == "turn.tool" and params["call"]["kind"] in ("write", "edit"):
+                out = dict(out, changed=[params["call"]["argument"]])
+            return out
+        core.call = call
+        before = chat.routing.route
+        chat.routing.route = route
+        try:
+            run(core, **extra)
+        finally:
+            chat.routing.route = before
+        return core
+
+    def test_a_finished_piece_of_work_lets_the_delegator_give_the_next_one_to_another_expert(self):
+        Decision, MODEL = chat.routing.Decision, chat.routing.MODEL
+        core = self.routed([Decision("programming", 0.61, MODEL), Decision("writing", 0.9, MODEL)],
+                           [said("WRITE: index.html\n```\n<p>leaves</p>\n```"),
+                            said("HANDOFF: write a README explaining the haiku's imagery"),
+                            said("WRITE: README.md\n```\n# Imagery\n```"), said("A page, and a README about it.")])
+        # Asked right after the page was written, not six actions later.
+        self.assertEqual(len(core.quiet), 1)
+        self.assertEqual(core.routes, ["programming", "writing"])
+        self.assertIn("Writing takes over: write a README explaining the haiku's imagery", core.actions)
+        self.assertEqual(core.ran, [("write", "index.html"), ("write", "README.md")])
+        self.assertEqual(core.reply, "A page, and a README about it.")
+
+    def test_a_checkpoint_the_delegator_is_unsure_of_keeps_the_expert(self):
+        Decision, MODEL = chat.routing.Decision, chat.routing.MODEL
+        core = self.routed([Decision("programming", 0.9, MODEL), Decision("writing", 0.6, MODEL)],
+                           [said("WRITE: a.py\n```\nx\n```"), said("HANDOFF: write the docs"),
+                            said("Done.")])
+        self.assertEqual(core.routes, ["programming"])
+        self.assertEqual(core.loads, 1)
+
+    def test_an_edit_and_test_loop_on_one_file_is_not_asked_its_next_step_each_time(self):
+        Decision, MODEL = chat.routing.Decision, chat.routing.MODEL
+        rounds = [said("WRITE: a.py\n```\nx\n```"), said("HANDOFF: test it"),
+                  said("RUN: pytest"), said("EDIT: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"),
+                  said("RUN: pytest"), said("EDIT: a.py\n<<<<<<< SEARCH\ny\n=======\nz\n>>>>>>> REPLACE"),
+                  said("It passes.")]
+        core = self.routed([Decision("programming", 0.9, MODEL)] * 2, rounds)
+        # Once, for the new file; the edits to it are the same piece of work.
+        self.assertEqual(len(core.quiet), 1)
+        self.assertEqual(core.reply, "It passes.")
+
     def test_without_a_delegator_there_is_no_checkpoint(self):
         rounds = [said("READ: f%d.txt" % i) for i in range(chat.CHECKPOINT_EVERY + 1)] + [said("Read.")]
         core = run(ScriptedCore(rounds))

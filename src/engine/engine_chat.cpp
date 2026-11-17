@@ -271,6 +271,11 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         if (chat->workshop.enabled) {
             chat->params.n_ctx_most = std::max(chat->params.n_ctx, kWorkContext);
         }
+        // A turn changing hands lets go of the model it had first. Held, that
+        // model is in use, and the next expert's load waits for the room it
+        // takes up until the turn ends, which it never would: flint, on all
+        // three cards, kept GPT OSS from loading for half an hour.
+        chat->held = HeldModel{};
         std::string error;
         // Held for the whole turn: the lease is what keeps a build's thread
         // from freeing this model while the turn is answering with it.
