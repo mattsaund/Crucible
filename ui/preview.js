@@ -262,7 +262,7 @@ function previewView() {
   const project = state.snapshot.project || {};
   if (!project.open) return '<div class="empty"><div class="empty-label">No project open.</div></div>';
   const pages = p.pages || [];
-  // A file in the project, or an address: a server the build started with
+  // A file in the project, or an address: a server an expert started with
   // START, or one running anyway. A page by address runs as itself and
   // cannot be picked at, since nothing of ours is inside it.
   const picker = `<div class="row preview-bar">
@@ -295,7 +295,7 @@ function previewView() {
 }
 
 /// Under the bar: the name the app will have while it is being made, what
-/// was made and how to open it, or that a build has changed the page since
+/// was made and how to open it, or that an expert has changed the page since
 /// it was shown.
 function appStrip() {
   const p = state.preview;
@@ -321,7 +321,7 @@ function appStrip() {
   }
   if (p.stale) {
     return `<div class="row app-strip">
-        <span class="status">Changed by the build.</span>
+        <span class="status">Changed since.</span>
         <button class="action" data-act="preview-reload">Show it now</button>
       </div>`;
   }
@@ -502,25 +502,17 @@ actions['tune-reset'] = () => {
   render();
 };
 
-/// The changes, made in the source. As a build of one task when nothing is
-/// building -- the person stays where they are, looking at the page, and it
-/// reloads with the change made; the build is a turn of the conversation
-/// like any other -- and as a chat prompt beside a build that is running,
-/// answered in the conversation, which is where it goes to.
+/// The changes, made in the source: a prompt like any other, a turn of the
+/// conversation. The person stays where they are, looking at the page, and
+/// it reloads once the expert has written the change (see panes.js).
 actions['tune-apply'] = () => guard(async () => {
   const prompt = tunePrompt();
-  if (!prompt) return;
-  const building = state.snapshot.cook && state.snapshot.cook.running;
-  if (building) {
-    await call('submit', { prompt, expert: routeTarget() });
-    state.follow = true;
-  } else {
-    await call('build.start', { directive: prompt, attachments: [], expert: routeTarget() });
-  }
+  if (!prompt || state.snapshot.busy) return;
+  await call('submit', { prompt, expert: routeTarget() });
+  state.follow = true;
   state.preview.changes = [];
   tellFrame({ crucible: 'reset' });
-  if (building) setPane('chat');
-  else render();
+  render();
 });
 
 /// Make the page a program: first the name it will have, then the program.

@@ -10,7 +10,7 @@
 const SETTINGS_PAGES = [
   ['general', 'General'], ['experts', 'Experts'], ['providers', 'Providers'],
   ['generation', 'Generation'], ['hardware', 'Hardware'], ['runtimes', 'Runtimes'],
-  ['training', 'Training'], ['tools', 'Tools'], ['build', 'Build'], ['server', 'Server'],
+  ['training', 'Training'], ['tools', 'Tools'], ['server', 'Server'],
   ['about', 'About'],
 ];
 
@@ -807,44 +807,6 @@ actions['process-stop'] = (button) => guard(async () => {
   state.processes = (await call('processes')).processes;
 });
 
-// --- Build ---------------------------------------------------------------------------------------
-
-function pageBuild(c) {
-  const roster = state.snapshot.experts || [];
-  const seated = roster.filter((e) => e.phase !== 'unconfigured');
-  return `<h1>Build</h1>
-    <h2>WHO PLANS IT</h2>
-    <div class="field">
-      <select data-change="set" data-path="build.architect" aria-label="Architect">
-        <option value=""${!at(c, 'build.architect') ? ' selected' : ''}>The delegator picks</option>
-        ${seated.map((e) => `<option value="${escape(e.id)}"${at(c, 'build.architect') === e.id ? ' selected' : ''}>${
-          escape(e.name)}${e.provider ? ` (${escape(e.provider)})` : ''}</option>`).join('')}
-      </select>
-      <div class="hint">Writes the plan.</div></div>
-    ${setting('build.confirm_plan', 'Show me the plan before it starts', 'bool', '')}
-
-    <h2 style="margin-top:1.8rem">NEW AGENTS</h2>
-    <div class="field"><label for="worker-model">Model for a seat a build makes</label>
-      ${modelSelect(at(c, 'build.worker_model') || '', at(c, 'build.worker_provider') || '',
-        { id: 'worker-model', 'data-change': 'worker-model' })}
-      <div class="hint">For tasks no expert fits.</div></div>
-
-    <h2 style="margin-top:1.8rem">THE RUN</h2>
-    ${setting('build.split', 'Frontier models for the large tasks, local ones for the small', 'bool',
-      'Saves provider tokens.')}
-    ${setting('build.agents', 'Agents at once', 'slider',
-      'A model on this machine takes one at a time.',
-      { min: 1, max: 8, step: 1 })}
-    ${setting('build.auto_commit', 'Commit after each task', 'bool', 'Starts a repository when there is none.')}
-    ${setting('build.rounds_per_task', 'Rounds per task', 'slider', 'Before the build moves on without it.',
-      { min: 4, max: 200, step: 1 })}`;
-}
-
-actions['worker-model'] = (e) => {
-  const chosen = splitModel(e.value);
-  configure({ build: { worker_model: chosen.model, worker_provider: chosen.provider } });
-};
-
 // --- Server --------------------------------------------------------------------------------------------
 
 /// A model on this machine, offered to other programs at an address in
@@ -1182,7 +1144,7 @@ views.settings = () => {
   const page = !c ? '<p class="lede">Reading...</p>' : ({
     general: pageGeneral, experts: pageExperts, providers: pageProviders,
     generation: pageGeneration, hardware: pageHardware, runtimes: pageRuntimes,
-    training: pageTraining, tools: pageTools, build: pageBuild, server: pageServer, about: pageAbout,
+    training: pageTraining, tools: pageTools, server: pageServer, about: pageAbout,
   }[state.settingsPage] || pageGeneral)(c);
   return sideView() + `<div class="settings">
       <div class="settings-nav">${SETTINGS_PAGES.map(([id, label]) =>
