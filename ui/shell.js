@@ -118,11 +118,24 @@ function modelSelect(selected, provider, extra, localOnly) {
   }
   // A file the seat names that is not in the folder -- set before there was
   // one folder, or since moved. Still offered, so the dropdown shows what is
-  // configured rather than quietly showing "(none)".
+  // configured rather than quietly showing "(none)". Said to be missing only
+  // once the folder has been read.
   if (selected && !provider && !known.has(selected) && !moved) {
-    html += option(selected, `${fileName(selected)}  (not in the models folder)`);
+    html += option(selected, state.models ? `${fileName(selected)}  (not in the models folder)` : fileName(selected));
   }
+  // The same for a provider's model while the providers are still being
+  // read, or once its provider is gone, said by whose it is.
+  const listed = state.providers && state.providers.providers.some((p) => p.id === provider);
+  if (selected && provider && !listed) html += option(chosen, `${selected}  (${providerName(provider)})`);
   return `<select${attrs(extra)}>${html}</select>`;
+}
+
+/// What a provider is called on screen: as listed, else as the config has
+/// it, else by its id, for one the config no longer has.
+function providerName(id) {
+  const listed = (state.providers ? state.providers.providers : []).find((p) => p.id === id);
+  const saved = ((state.config && state.config.providers) || []).find((p) => p.id === id);
+  return (listed && listed.name) || (saved && saved.name) || id;
 }
 
 function splitModel(value) {

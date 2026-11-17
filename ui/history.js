@@ -55,3 +55,15 @@ actions['history-session'] = (e) => guard(async () => {
   await call('history.open', { id: e.dataset.id });
   enter('chat');
 });
+
+/// The right-hand panel beside History opens projects too, and the list is
+/// then the old project's, whose conversations would open in the new one. It
+/// is read again for the project open now, and until then is not shown.
+let historyRoot = '';
+onSnapshot.push(() => {
+  const project = state.snapshot.project || {};
+  if ((project.root || '') === historyRoot) return;
+  historyRoot = project.root || '';
+  state.history = null;
+  if (state.view === 'history' && project.open) need('history', 'history', true);
+});
