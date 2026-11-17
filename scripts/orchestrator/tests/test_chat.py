@@ -551,6 +551,36 @@ class Loop(unittest.TestCase):
         self.assertEqual(core.ran, [("write", "index.html")])
         self.assertEqual(core.reply, "Made it.")
 
+    def test_an_answer_straight_after_a_failed_action_is_asked_to_face_it(self):
+        core = ScriptedCore([said("WRITE: /index.html\n```\nx\n```"), said("I made the page."),
+                             said("WRITE: index.html\n```\nx\n```"), said("Made index.html.")],
+                            auto_edits=True)
+        original = core.call
+
+        def call(method, params=None):
+            out = original(method, params)
+            if method == "turn.tool" and params["call"]["argument"].startswith("/"):
+                out = dict(out, ok=False, summary="/index.html is outside the project")
+            return out
+        core.call = call
+        run(core)
+        self.assertEqual(core.sent[2][-1]["content"],
+                         chat.FAILED_LAST.format("/index.html is outside the project"))
+        self.assertEqual(core.ran, [("write", "/index.html"), ("write", "index.html")])
+        self.assertEqual(core.reply, "Made index.html.")
+        # Only once: an answer after the nudge is the answer.
+        once = ScriptedCore([said("RUN: make test"), said("Two tests fail."), said("They fail on the date.")])
+        original_once = once.call
+
+        def failing(method, params=None):
+            out = original_once(method, params)
+            if method == "turn.tool":
+                out = dict(out, ok=False, summary="make test: 2 failed")
+            return out
+        once.call = failing
+        run(once)
+        self.assertEqual(once.reply, "They fail on the date.")
+
     def test_a_reply_that_repeats_itself_is_stopped_and_asked_once_more(self):
         core = run(ScriptedCore([said("again again again", looped=True), said("Plainly, once.")]))
         self.assertTrue(core.systems[1].endswith(chat.REPEATED_ITSELF))

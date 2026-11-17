@@ -579,7 +579,7 @@ TEST(a_turn_writes_when_the_person_says_yes) {
 TEST(a_turn_writes_without_asking_when_auto_is_on_and_an_edit_that_cannot_apply_is_not_asked) {
     Rig rig(script({reply("WRITE: out.txt\n```\nhello\n```"),
                     reply("EDIT: out.txt\n<<<<<<< SEARCH\nnot in it\n=======\nbye\n>>>>>>> REPLACE"),
-                    reply("Done.")}),
+                    reply("Done."), reply("It says hello. The edit did not apply.")}),
             [](Config& config) { config.tools.auto_edits = true; });
     if (!rig.ready()) {
         skipped();
@@ -591,12 +591,14 @@ TEST(a_turn_writes_without_asking_when_auto_is_on_and_an_edit_that_cannot_apply_
     CHECK(!asked);
     CHECK_EQ(read_file(rig.project() / "out.txt"), std::string("hello\n"));
     CHECK_EQ(turn.actions.size(), std::size_t{2});
-    CHECK_EQ(turn.reply, std::string("Done."));
+    // An answer straight after the edit that failed is asked once to face it.
+    CHECK(has(text_of(rig.requests().at(3)["messages"].back()), "That last action failed"));
+    CHECK_EQ(turn.reply, std::string("It says hello. The edit did not apply."));
 }
 
 TEST(an_edit_that_would_not_apply_is_run_rather_than_asked_about) {
     Rig rig(script({reply("EDIT: notes.txt\n<<<<<<< SEARCH\nnot in it\n=======\nbye\n>>>>>>> REPLACE"),
-                    reply("Could not.")}));
+                    reply("Could not."), reply("The line was not in notes.txt, so nothing changed.")}));
     if (!rig.ready()) {
         skipped();
         return;
@@ -608,7 +610,7 @@ TEST(an_edit_that_would_not_apply_is_run_rather_than_asked_about) {
     CHECK(!asked);
     CHECK_EQ(read_file(rig.project() / "notes.txt"), std::string("one line\n"));
     CHECK_EQ(turn.actions.size(), std::size_t{1});
-    CHECK_EQ(turn.reply, std::string("Could not."));
+    CHECK_EQ(turn.reply, std::string("The line was not in notes.txt, so nothing changed."));
 }
 
 TEST(a_turn_out_of_actions_answers_from_what_it_has_with_no_tools_offered) {
@@ -658,6 +660,9 @@ TEST(a_turn_works_past_a_dozen_actions_until_it_answers) {
     if (!rig.ready()) {
         skipped();
         return;
+    }
+    for (int i = 0; i < 20; ++i) {
+        write_file(rig.project() / ("f" + std::to_string(i) + ".txt"), "line " + std::to_string(i) + "\n");
     }
     const Turn turn = rig.ask("Read them all.");
     CHECK_EQ(turn.actions.size(), std::size_t{20});

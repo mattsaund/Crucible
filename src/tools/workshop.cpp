@@ -492,6 +492,22 @@ ToolResult failure(std::string message) {
     return result;
 }
 
+/// Why `path` cannot be used, and how to write it so it can when it was
+/// written from the top of the disk: "/index.html" is how a small model writes
+/// a file at the top of the project. Told only that it was outside the
+/// project, LFM2.5 said it had made the file anyway.
+std::string outside(const std::string& path) {
+    std::string said = path + " is outside the project";
+    if (!path.empty() && (path.front() == '/' || path.front() == '\\')) {
+        const std::size_t from = path.find_first_not_of("/\\");
+        if (from != std::string::npos) {
+            said += ". Paths are relative to the project: write " + path.substr(from) + ", not " + path;
+        }
+    }
+    return said;
+}
+
+
 /// Run `argv` in `cwd` and keep what it printed, with a deadline and a Stop
 /// (util::run). `timed_out` and `stopped` say which of the two ended it.
 struct Captured {
@@ -588,7 +604,7 @@ ToolResult do_list(const ToolCall& call, const WorkshopSettings& settings) {
     const std::optional<std::filesystem::path> dir =
         resolve_argument(settings.root, target, target);
     if (!dir) {
-        return failure(target + " is outside the project");
+        return failure(outside(target));
     }
 
     std::error_code ec;
@@ -728,7 +744,7 @@ ToolResult do_read(const ToolCall& call, const WorkshopSettings& settings) {
     const std::optional<std::filesystem::path> file =
         resolve_argument(settings.root, target, target);
     if (!file) {
-        return failure(target + " is outside the project");
+        return failure(outside(target));
     }
     std::error_code ec;
     if (std::filesystem::is_directory(*file, ec)) {
@@ -798,7 +814,7 @@ ToolResult do_write(const ToolCall& call, const WorkshopSettings& settings) {
     const std::optional<std::filesystem::path> file =
         resolve_in_root(settings.root, call.argument);
     if (!file) {
-        return failure(call.argument + " is outside the project");
+        return failure(outside(call.argument));
     }
     if (call.content.empty()) {
         // Refused rather than obeyed. A WRITE whose body did not parse looks
@@ -1066,7 +1082,7 @@ ToolResult do_render(const ToolCall& call, const WorkshopSettings& settings) {
     }
     const std::optional<std::filesystem::path> out = resolve_in_root(settings.root, to);
     if (!out) {
-        return failure(to + " is outside the project");
+        return failure(outside(to));
     }
     // A page of the project, or one on the web when the web is switched on.
     std::string page;

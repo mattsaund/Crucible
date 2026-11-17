@@ -151,6 +151,11 @@ CARRY_ON = "\n\nNobody else fits the next step better than you. Carry on with it
 # Said to an expert whose prompt was sent to it by name.
 PINNED_ON = "\n\nThis request was sent to you by name, so it stays with you. Carry on."
 
+# An answer straight after an action that failed. LFM2.5, refused a write to
+# "/index.html", answered that it had made the page, with nothing written.
+FAILED_LAST = ("That last action failed: {}. If what was asked still needs it, fix it and carry "
+               "on. Otherwise answer, and say what failed.")
+
 # A reply that went round in a loop and was stopped.
 REPEATED_ITSELF = ("\n\nYour last reply started repeating itself and was stopped. Write it "
                    "again, plainly and once.")
@@ -579,6 +584,7 @@ class Turn:
         cycles = steps.Cycles()
         searched = []
         actions = since_checkpoint = nudges = loops = cycle_strikes = 0
+        failed = ""            # what the last action said when it failed, until it is answered
         canceled = hit_limit = False
         output_tokens = 0
         shown = ""
@@ -682,6 +688,15 @@ class Turn:
             acting = kind in PROJECT_VERBS
             query = "" if acting else parsed.get("search") or ""
             if not acting and not query:
+                # An answer straight after a failed action is asked once to
+                # face the failure, and goes off the screen meanwhile: it may
+                # be saying the work was done when it was not.
+                if workshop and failed:
+                    log.append({"role": "assistant", "content": answer})
+                    log.append({"role": "user", "content": FAILED_LAST.format(failed)})
+                    failed = ""
+                    self.show(reply=earlier)
+                    continue
                 # A reply that nearly called a tool and did not is told what
                 # was wrong with it, a couple of times. Anything else is the
                 # answer, which is the ordinary way a prompt ends.
@@ -734,8 +749,10 @@ class Turn:
             if result is None:
                 done.append({"summary": "declined: " + steps.spoken(call), "ok": False})
                 continue
+            ok = bool(result.get("ok", True))
+            failed = "" if ok else steps.line(result.get("summary") or result.get("output") or steps.spoken(call), 200)
             done.append({"summary": result.get("summary") or steps.spoken(call),
-                         "ok": bool(result.get("ok", True)), "changed": result.get("changed") or []})
+                         "ok": ok, "changed": result.get("changed") or []})
             repeats.ran(call, result, len(log) - 1)
             if cycles.add(call, bool(result.get("changed"))):
                 cycle_strikes += 1
