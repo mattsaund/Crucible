@@ -2,10 +2,10 @@
 //
 // Making a project's page into a program a person opens like any other.
 //
-// What Crucible builds for somebody who wants "a budgeting app" is a page --
-// see the build loop's APP_GUIDE -- and the last step of asking for one is
-// using it without Crucible: from Applications on a Mac, the Start menu on
-// Windows, the application launcher on Linux. This is that step.
+// What an expert makes for somebody who wants "a budgeting app" is usually a
+// page, and the last step of asking for one is using it without Crucible:
+// from Applications on a Mac, the Start menu on Windows, the application
+// launcher on Linux. This is that step.
 //
 // The program is a copy of crucible-app (tools/app_runner.cpp) beside the
 // page, bundled into one file with everything it references put inside it,

@@ -142,30 +142,6 @@ TEST(a_repository_can_be_started_committed_to_and_read_back) {
     CHECK(!tools::git::commit(dir.path(), "  ", none).empty());
 }
 
-TEST(a_commit_of_named_paths_leaves_the_others_alone) {
-    // Two agents side by side: the one that finished commits its file and
-    // not the one the other is halfway through writing.
-    if (!tools::git::available()) {
-        std::printf("      (no git on PATH; skipped)\n");
-        return;
-    }
-    TempDir dir;
-    CHECK(tools::git::init(dir.path()).empty());
-    write(dir.path() / "done.py", "print('done')\n");
-    write(dir.path() / "halfway.py", "def unfinished(\n");
-    std::string summary;
-    CHECK(tools::git::commit(dir.path(), "Finish done.py", summary, {"done.py", "never-made.py"}).empty());
-    CHECK(summary.rfind("committed ", 0) == 0);
-    const tools::git::Status after = tools::git::status(dir.path());
-    CHECK_EQ(after.changes.size(), std::size_t{1});
-    CHECK_EQ(after.changes[0].path, std::string("halfway.py"));
-
-    // Named paths that are not there at all commit nothing, and say so.
-    std::string nothing;
-    CHECK(tools::git::commit(dir.path(), "Nothing", nothing, {"never-made.py"}).empty());
-    CHECK_EQ(nothing, std::string("nothing to commit"));
-}
-
 // ---------------------------------------------------------------------------
 // The preview
 // ---------------------------------------------------------------------------

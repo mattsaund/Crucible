@@ -7,10 +7,9 @@
 // GitHub from a terminal -- and nothing of either is linked in. Crucible
 // starts them in the project root and reads what they print.
 //
-// Three callers share this. The workshop's GIT and GH verbs hand an expert's
-// line to the program as arguments; the build loop commits after each task;
-// and the window's Source panel asks for the status, the diff and the log
-// and makes commits and pushes of its own. What is shared is how the program
+// Two callers share this. The workshop's GIT and GH verbs hand an expert's
+// line to the program as arguments, and the window's Source panel asks for
+// the status, the diff and the log and makes commits and pushes of its own. What is shared is how the program
 // is found and run, how long it may take, and what a refusal looks like.
 //
 // What this does not do is confine git. `git -C /elsewhere` and `git clone
@@ -98,23 +97,15 @@ struct Commit {
 
 std::vector<Commit> log(const std::filesystem::path& root, int limit = 30);
 
-/// Stage everything and commit it -- or, when `paths` names some, those and
-/// nothing else. Returns a one-line account of what was committed
-/// ("committed 3f2a1c7 Add the parser (3 files changed)") in `summary` and empty on
-/// success, or the reason it could not.
+/// Stage everything and commit it. Returns a one-line account of what was
+/// committed ("committed 3f2a1c7 Add the parser (3 files changed)") in
+/// `summary` and empty on success, or the reason it could not.
 ///
-/// The paths are for a build whose agents work side by side: the files one
-/// agent finished are committed without the ones another is halfway through.
-/// A path that is neither on disk nor tracked is skipped rather than failing
-/// the commit -- an agent's account of what it touched can name a file it
-/// meant to make and did not.
-///
-/// A repository with no identity set cannot commit, and the first commit of a
-/// build on a fresh machine is exactly where that bites: it is committed as
+/// A repository with no identity set cannot commit, and the first commit on
+/// a fresh machine is exactly where that bites: it is committed as
 /// "Crucible <crucible@localhost>" then, and the summary says so, rather than
 /// failing with git's lecture about who you are.
-std::string commit(const std::filesystem::path& root, std::string_view message,
-                   std::string& summary, const std::vector<std::string>& paths = {});
+std::string commit(const std::filesystem::path& root, std::string_view message, std::string& summary);
 
 /// Push the current branch, setting its upstream when it has none. Returns
 /// what git said on failure, or empty.

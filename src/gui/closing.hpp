@@ -2,7 +2,7 @@
 //
 // Closing the window over work that is not saved.
 //
-// The Build tab's code pane holds what is typed in it until it is saved, and
+// The chat's code pane holds what is typed in it until it is saved, and
 // only the page knows about it. Closing the window used to drop it without a
 // word. So the platform's close is caught here before it happens, and the
 // window decides (window.cpp): with nothing unsaved it closes at once, as it

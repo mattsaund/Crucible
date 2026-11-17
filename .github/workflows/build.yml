@@ -101,7 +101,7 @@ jobs:
         # Verbose, so the log ends with the slowest cases (tests/harness.hpp).
         run: ctest --test-dir build -C ${{ runner.os == 'Windows' && 'RelWithDebInfo' || 'Release' }} --output-on-failure -V
 
-      # The orchestrator's own tests: routing and the cook loop, in Python.
+      # The orchestrator's own tests: routing and the loop a prompt is worked in, in Python.
       - name: Orchestrator tests
         run: python -m unittest discover -s scripts/orchestrator/tests -v
 
