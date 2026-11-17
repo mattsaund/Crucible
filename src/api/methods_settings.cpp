@@ -406,6 +406,17 @@ Reply fonts(const json&, const Scene&) {
     return good(json(util::installed_font_families()));
 }
 
+/// Crucible's own HTTPS certificate made anew, with a new key: Settings,
+/// Server's New beside the certificate it shows.
+Reply server_certificate_new(const json&, Host& host) {
+    Engine* engine = host.engine();
+    if (engine == nullptr) {
+        return no_engine();
+    }
+    const std::string error = engine->new_certificate();
+    return error.empty() ? good() : bad(error);
+}
+
 void settings_methods(std::vector<Method>& table) {
     table.push_back({"config",       nullptr, config});
     table.push_back({"config.set",   nullptr, config_set});
@@ -421,6 +432,7 @@ void settings_methods(std::vector<Method>& table) {
     table.push_back({"update.check", update_check, nullptr});
     table.push_back({"prefs",        prefs, nullptr});
     table.push_back({"prefs.set",    prefs_set, nullptr});
+    table.push_back({"server.certificate.new", nullptr, server_certificate_new});
 }
 
 }  // namespace crucible::api

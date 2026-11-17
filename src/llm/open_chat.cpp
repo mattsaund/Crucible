@@ -116,9 +116,23 @@ class Handing {
 public:
     explicit Handing(const OpenChatSink& sink) : sink_(sink) { shown_.role = "assistant"; }
 
+    /// A thinking block has closed, though none of it may have been read as
+    /// reasoning: an empty one, or one the prompt closed (see
+    /// LoadedModel::open_chat).
+    void thought() { thought_ = true; }
+
     /// The answer so far is `now`: what is new of it goes to the sink.
     /// `last` once nothing more is coming.
     void update(common_chat_msg now, bool last) {
+        // The content from its first word when it follows a thinking block:
+        // a model puts a line or two between its thinking and its answer,
+        // and a client shows the content as it comes, blank lines first.
+        // Settled before any of it goes out, and taken off every reading
+        // after alike, so each is still the one before and more.
+        trimming_ = trimming_ || (shown_.content.empty() && (thought_ || !now.reasoning_content.empty()));
+        if (trimming_) {
+            now.content.erase(0, std::min(now.content.find_first_not_of(" \t\r\n"), now.content.size()));
+        }
         now.set_tool_call_ids(ids_, new_call_id);
         std::vector<common_chat_msg_diff> diffs;
         try {
@@ -191,6 +205,8 @@ private:
     common_chat_msg          shown_;
     std::vector<std::string> ids_;     ///< each call's id, by its place in the answer
     std::set<std::size_t>    said_;    ///< the calls whose id and name have gone out
+    bool                     thought_  = false;
+    bool                     trimming_ = false;   ///< the content's leading blanks are not the answer
 };
 
 }  // namespace
@@ -250,6 +266,16 @@ std::string why_unreadable(const std::string& source) {
         return reason_of(e);
     }
     return {};
+}
+
+bool inside_thinking(const std::string& opening, const std::string& open, const std::vector<std::string>& closes) {
+    const std::size_t at = open.empty() ? std::string::npos : opening.rfind(open);
+    if (at == std::string::npos) {
+        return false;
+    }
+    return std::none_of(closes.begin(), closes.end(), [&](const std::string& close) {
+        return !close.empty() && opening.find(close, at + open.size()) != std::string::npos;
+    });
 }
 
 }  // namespace detail
@@ -315,6 +341,9 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     inputs.json_schema      = request.schema;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
     if (request.effort == "none") {
+        // Read by a template that can leave its thinking out (Qwen3's writes
+        // an empty block). One that opens a block whatever it is told is shut
+        // below instead: see `closing`.
         inputs.enable_thinking = false;
     } else if (!request.effort.empty()) {
         // The template's own variable, which gpt-oss's writes into its
@@ -360,6 +389,13 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     // all of them.
     std::optional<common_chat_session> session;
     std::string                        failed;
+    // A thinking block the template opens at the start of the reply though
+    // none was asked for, closed with its own end tag after the prompt:
+    // LFM2.5's template opens one whatever enable_thinking says. Shut as a
+    // template that reads the flag shuts it, so the model answers at once
+    // rather than thinking where nobody asked it to. Empty when there is
+    // nothing to close.
+    std::string closing;
     const auto render = [&](std::size_t first) -> std::string {
         nlohmann::json messages = request.messages;
         std::size_t    picture  = 0;
@@ -381,7 +417,13 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
             inputs.messages = common_chat_msgs_parse_oaicompat(
                 common_json::parse(messages.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
             session.emplace(templates, vocab, inputs);
-            return session->prompt().str();
+            closing.clear();
+            if (request.effort == "none" && !session->thinking_end_tags().empty()
+                && detail::inside_thinking(session->generation_prompt(), session->thinking_start_tag(),
+                                           session->thinking_end_tags())) {
+                closing = session->thinking_end_tags().front();
+            }
+            return session->prompt().str() + closing;
         } catch (const std::exception& e) {
             bool              raised = false;
             const std::string said   = detail::template_said(e.what(), &raised);
@@ -469,7 +511,9 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         }
         shaping.shown.assign(sampling.preserved_tokens.begin(), sampling.preserved_tokens.end());
     }
-    const std::string& opening = session->generation_prompt();
+    // The reply as far as the prompt wrote it: the template's opening, and
+    // the end of the thinking block it opened when that was closed for it.
+    const std::string opening = session->generation_prompt() + closing;
     if (!shaping.grammar.empty() && !shaping.lazy) {
         // A grammar from the first token describes the reply from its
         // opening, which the template has already written: the grammar reads
@@ -486,18 +530,8 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     }
     shaping.think_open  = session->thinking_start_tag();
     shaping.think_close = session->thinking_end_tags();
-    if (!shaping.think_open.empty()) {
-        // The opening may leave the model inside its thinking already.
-        const std::size_t open = opening.rfind(shaping.think_open);
-        if (open != std::string::npos) {
-            shaping.thinking = std::none_of(shaping.think_close.begin(), shaping.think_close.end(),
-                                            [&](const std::string& close) {
-                                                return !close.empty()
-                                                    && opening.find(close, open + shaping.think_open.size())
-                                                           != std::string::npos;
-                                            });
-        }
-    }
+    // The opening may leave the model inside its thinking already.
+    shaping.thinking = detail::inside_thinking(opening, shaping.think_open, shaping.think_close);
 
     // The answer, read as it comes. A piece is read once it ends on a whole
     // character; the template's own stops end the answer before them.
@@ -505,6 +539,18 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     const std::vector<std::string> stops = session->additional_stops();
     common_chat_input              pending;
     std::string                    said;   ///< all of the answer, as the model wrote it
+    if (!closing.empty()) {
+        // The parser reads the reply from the template's opening, which
+        // leaves the block open: the end the prompt gave it is read first,
+        // as though the model had written it.
+        handing.thought();
+        try {
+            handing.update(session->feed(common_chat_input_tokenize(vocab, closing)), false);
+        } catch (const std::exception&) {
+            // Read with what the model writes next.
+        }
+    }
+    bool ended_thinking = false;   ///< a thinking block of the model's own has closed
     shaping.on_piece = [&](std::string_view piece, llama_token token) {
         pending.append(std::string(piece), token);
         if (!whole_characters(pending.text)) {
@@ -513,6 +559,12 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         bool              more   = true;
         const std::size_t before = said.size();
         said += pending.text;
+        for (const std::string& close : shaping.think_close) {
+            if (!ended_thinking && arrived(said, pending.text.size(), close)) {
+                ended_thinking = true;
+                handing.thought();   // an empty block's end too, which leaves no reasoning
+            }
+        }
         std::size_t first = std::string::npos;
         for (const std::string& stop : stops) {
             if (!stop.empty()) {

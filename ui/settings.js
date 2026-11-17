@@ -877,19 +877,21 @@ function pageServer(c) {
 
 /// HTTPS: a certificate and key of the person's, or none for one Crucible
 /// makes for this machine and keeps. A client is given its file to trust, or
-/// checks it by its SHA-256, which are shown once it serves with it.
+/// checks it by its SHA-256, which are shown once it serves with it. Its own
+/// can be made anew, with a new key, as the API key can.
 function serverCertificate(conf, s) {
   const file = (path, id, label, placeholder) => `<div class="field"><label for="${id}">${label}</label>
       <div class="row">
         <input id="${id}" data-path="${path}" data-change="set" spellcheck="false" autocomplete="off"
                placeholder="${placeholder}" value="${escape(at(state.config, path) || '')}">
         <button class="action" data-act="server-pick" data-path="${path}">Browse</button></div></div>`;
-  const row = (label, text) => `<div class="order-row">
-        <span class="order-name">${label} <code class="wrap">${escape(text)}</code></span>${serverCopy(text)}</div>`;
+  const row = (label, text, more = '') => `<div class="order-row">
+        <span class="order-name">${label} <code class="wrap">${escape(text)}</code></span>${more}${serverCopy(text)}</div>`;
   const serving = s.https && s.fingerprint;
+  const renew = s.own_certificate ? '<button class="action" data-act="server-certificate-new">New</button>' : '';
   return `${file('server.certificate', 'server-certificate', 'Certificate', 'Self-signed')}
     ${conf.certificate ? file('server.certificate_key', 'server-certificate-key', 'Key', 'Same file') : ''}
-    ${serving ? `<div class="field">${row('SHA-256', s.fingerprint)}${
+    ${serving ? `<div class="field">${row('SHA-256', s.fingerprint, renew)}${
       s.own_certificate && s.certificate ? row('File', s.certificate) : ''}</div>` : ''}`;
 }
 
@@ -1045,6 +1047,16 @@ actions['server-key-new'] = async () => {
   crypto.getRandomValues(random);
   const key = 'sk-crucible-' + Array.from(random, (b) => b.toString(16).padStart(2, '0')).join('');
   await configure({ server: { api_key: key } });
+};
+
+/// Crucible's own certificate made anew, with a new key, and served at once.
+/// A client given the old one stops trusting the server, so that is asked
+/// first. The new SHA-256 comes with the next snapshot.
+actions['server-certificate-new'] = async () => {
+  const sure = await confirmIt({ title: 'Make a new certificate?', body: 'Clients given the old one stop trusting it.',
+                                 yes: 'New certificate', no: 'Keep' });
+  if (!sure) return;
+  await guard(() => call('server.certificate.new'));
 };
 
 // --- About -----------------------------------------------------------------------------------------------

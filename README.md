@@ -224,6 +224,8 @@ Every model, local or not, gets the same tools in a trusted folder:
   a key.
 - HTTPS when you turn it on, with your own certificate or one Crucible makes
   for this machine and keeps. Settings shows its SHA-256 to check it by.
+  A certificate renewed in place is served as soon as it changes, and
+  Crucible's own follows the machine to a new network.
 - Chats and builds keep working while it serves. A request waits its turn.
 - It listens only while it is on.
 

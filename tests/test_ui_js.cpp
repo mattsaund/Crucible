@@ -3370,14 +3370,29 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(secure.find("SHA-256 <code class=\"wrap\">AB:CD:EF</code>") != std::string::npos);
     CHECK(secure.find("File <code class=\"wrap\">/home/x/.local/share/crucible/https/certificate.pem</code>")
           != std::string::npos);
+    // Crucible's own can be made anew, as the API key can: asked first, since
+    // a client given the old one stops trusting the server.
+    CHECK(secure.find("data-act=\"server-certificate-new\">New</button>") != std::string::npos);
+    const char* const renewing =
+        "(function (sure) { var was = [confirmIt, call], asked = [];"
+        " confirmIt = function () { return Promise.resolve(sure); };"
+        " call = function (method) { asked.push(method); return Promise.resolve({}); };"
+        " window.__renewed = asked; window.__renewWas = was;"
+        " actions['server-certificate-new'](); return 'asked'; })";
+    CHECK_EQ(page().eval(std::string(renewing) + "(false)"), "asked");
+    CHECK_EQ(page().eval("confirmIt = window.__renewWas[0]; call = window.__renewWas[1]; window.__renewed.join()"), "");
+    CHECK_EQ(page().eval(std::string(renewing) + "(true)"), "asked");
+    CHECK_EQ(page().eval("confirmIt = window.__renewWas[0]; call = window.__renewWas[1]; window.__renewed.join()"),
+             "server.certificate.new");
     // The person's own certificate: its key named beside it, and no file of
-    // Crucible's to give out.
+    // Crucible's to give out or make anew.
     page().eval("state.config.server.certificate = '/etc/ssl/server.crt';"
                 "state.snapshot.server.own_certificate = false");
     const std::string theirs = page().eval("views.settings()");
     CHECK(theirs.find("value=\"/etc/ssl/server.crt\"") != std::string::npos);
     CHECK(theirs.find("placeholder=\"Same file\"") != std::string::npos);
     CHECK(theirs.find("File <code") == std::string::npos);
+    CHECK(theirs.find("server-certificate-new") == std::string::npos);
     // One that will not serve says why, where the server says it is on.
     page().eval("var s = state.snapshot.server; s.listening = false; s.https = false; s.fingerprint = '';"
                 "s.error = 'The key does not match the certificate'; s.addresses = {}");

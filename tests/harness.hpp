@@ -90,13 +90,26 @@ inline void report_failure(const char* file, int line, const std::string& messag
     }
 }
 
-inline int run_all() {
+/// Every case, or only those named in `only`: CI runs a case that needs a
+/// model on its own, once a runtime is in place to load one with. A name no
+/// case has is a failure, so that a case renamed is not quietly skipped.
+inline int run_all(const std::vector<std::string>& only = {}) {
     int failed_cases = 0;
+    for (const std::string& name : only) {
+        if (std::none_of(registry().begin(), registry().end(),
+                         [&name](const TestCase& test) { return test.name == name; })) {
+            std::cout << "  no case is called " << name << std::endl;
+            ++failed_cases;
+        }
+    }
     // How long each case took, for the slowest list at the end: a suite that
     // took half a minute on every machine took twenty on the Mac runner, for
     // a release and a half before anybody could say which cases did it.
     std::vector<std::pair<double, std::string>> took;
     for (const TestCase& test : registry()) {
+        if (!only.empty() && std::find(only.begin(), only.end(), test.name) == only.end()) {
+            continue;
+        }
         const int before = failure_count();
         const auto began = std::chrono::steady_clock::now();
         current_test() = test.name;
@@ -130,7 +143,7 @@ inline int run_all() {
     }
 
     std::cout << "\n"
-              << registry().size() << " cases, " << failed_cases << " failed, "
+              << took.size() << " cases, " << failed_cases << " failed, "
               << failure_count() << " assertions failed\n";
     return failed_cases == 0 ? 0 : 1;
 }

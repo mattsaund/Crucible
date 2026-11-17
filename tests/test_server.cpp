@@ -11,18 +11,22 @@
 // conversation, a JSON response_format, pictures, embeddings, a key wrong and
 // right, an open server, a body too large or too deep, a model that is not
 // the one served, stop sequences, a port already taken, IPv4 and IPv6, and
-// HTTPS with a certificate made here or brought, kept and checked. Where
-// CRUCIBLE_TEST_MODEL names a small GGUF, requests go through the engine to
-// that model as well, tools and JSON and embeddings with them.
+// HTTPS with a certificate made here or brought, kept, checked and renewed.
+// Where CRUCIBLE_TEST_MODEL names a small GGUF, requests go through the
+// engine to that model as well, tools and JSON and embeddings with them, and
+// to copies of it whose chat templates the server has to work around.
 #include "test_helpers.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -1274,6 +1278,55 @@ TEST(a_providers_model_reaches_other_computers_only_with_a_key) {
     engine.stop();
 }
 
+TEST(a_settings_save_as_crucible_closes_never_starts_the_server_again) {
+    // A save landing at the moment Crucible closed could see the engine
+    // still running and start the server after it had been stopped, with
+    // the models freed: a request then reached a host that was gone. Once
+    // closing has begun a save does nothing to the server at all.
+    TempDir              dir;
+    const ScopedDataHome scoped(dir.path());
+    Config               config;
+    config.server.enabled = true;
+    config.server.port    = 0;
+    {
+        AppState state;
+        Engine   engine(config, state, {});
+        engine.start();
+        CHECK(engine.server_status().listening);
+        engine.stop();
+        Config moved = config;
+        moved.server.port = 18338;
+        engine.apply_config(moved);
+        CHECK(!engine.server_status().listening);
+        CHECK(engine.server_status().port != 18338);   // not even the port it would listen on
+    }
+
+    // And saves from another thread, as fast as they come, while it stops:
+    // when stop() has returned the server is off, and stays off.
+    for (int round = 0; round < 20; ++round) {
+        AppState state;
+        Engine   engine(config, state, {});
+        engine.start();
+        std::atomic<bool> saving{true};
+        std::thread       saver([&] {
+            while (saving.load()) {
+                engine.apply_config(config);
+            }
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        engine.stop();
+        const bool stopped = !engine.server_status().listening;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        saving = false;
+        saver.join();
+        CHECK(stopped);
+        CHECK(!engine.server_status().listening);
+        if (!stopped || engine.server_status().listening) {
+            break;
+        }
+    }
+}
+
 // --- HTTPS -----------------------------------------------------------------------
 
 namespace {
@@ -1534,6 +1587,164 @@ TEST(the_certificate_crucible_makes_is_kept_and_used_again) {
     CHECK(serve::tls::expires(replaced.pem.certificate) > now + std::time_t{serve::tls::kRenewDays} * 86400);
 }
 
+TEST(crucibles_own_certificate_is_made_again_for_this_machine_with_the_key_it_had) {
+    // Made the day the machine had another address, which it no longer has,
+    // and none of the names it is reached by now: when it is next used it is
+    // made again for the machine as it is, still naming the old address, and
+    // signed with the same key. A client that pins the key, or trusts the old
+    // certificate by its key, goes on trusting it. Its SHA-256 is new, as a
+    // certificate's must be with new names in it.
+    TempDir         dir;
+    serve::tls::Pem old;
+    std::string     error;
+    CHECK(serve::tls::make({{"localhost"}, {"127.0.0.1", "192.0.2.77"}}, 400, old, error));
+    CHECK(!serve::tls::names_all(old.certificate, serve::tls::reached_by()));   // ::1 at least is not in it
+    write_text(dir.path() / "certificate.pem", old.certificate);
+    write_text(dir.path() / "key.pem", old.key);
+
+    serve::tls::Identity remade;
+    CHECK(serve::tls::own(dir.path(), false, remade, error));
+    CHECK(remade.fingerprint != serve::tls::fingerprint(old.certificate));
+    CHECK(serve::tls::names_all(remade.pem.certificate, serve::tls::reached_by()));
+    CHECK(serve::tls::serves_here(remade.pem.certificate));
+    CHECK(holds(remade.names, "192.0.2.77"));
+    serve::tls::Pem out;
+    CHECK_EQ(serve::tls::prepare({remade.pem.certificate, old.key}, out), "");   // the key it had
+
+    // Serving here now, it is kept as it is.
+    serve::tls::Identity again;
+    CHECK(serve::tls::own(dir.path(), false, again, error));
+    CHECK_EQ(again.fingerprint, remade.fingerprint);
+
+    // Asked for anew, it has a new key with it.
+    serve::tls::Identity renewed;
+    CHECK(serve::tls::own(dir.path(), true, renewed, error));
+    CHECK_EQ(serve::tls::prepare({renewed.pem.certificate, old.key}, out), "The key does not match the certificate");
+}
+
+TEST(an_ipv6_address_the_machine_is_letting_go_is_neither_named_nor_shown) {
+    // Linux says in /proc/net/if_inet6 which of its IPv6 addresses are
+    // temporary (flag 01) or deprecated (20): made for a day or two, for its
+    // own connections out. A certificate kept for months names neither, and
+    // the page shows a lasting address beside them, so neither a client
+    // given the address nor the certificate is out of date by tomorrow.
+    const std::string listed = "20010db8000000000000000000000001 02 40 00 00     eth0\n"
+                               "20010db8000000001234567890abcdef 02 40 00 01     eth0\n"
+                               "20010db800000000aaaabbbbccccdddd 02 40 00 21     eth0\n"
+                               "20010db8000000000000000000000002 02 40 00 20     eth0\n"
+                               "fe800000000000000000000000000001 02 40 20 80     eth0\n"
+                               "00000000000000000000000000000001 01 80 10 80       lo\n"
+                               "not an address\n";
+    CHECK(serve::tls::detail::passing_in(listed)
+          == std::vector<std::string>({"2001:db8::1234:5678:90ab:cdef", "2001:db8::aaaa:bbbb:cccc:dddd", "2001:db8::2"}));
+
+    // What the machine is reached by is among what a certificate for it
+    // names, and first, where a certificate has no room for every address.
+    const serve::tls::Names here    = serve::tls::this_machine();
+    const serve::tls::Names reached = serve::tls::reached_by();
+    CHECK(holds(reached.dns, "localhost"));
+    CHECK(holds(reached.ip, "127.0.0.1"));
+    for (std::size_t i = 0; i < reached.dns.size(); ++i) {
+        CHECK(i < here.dns.size() && here.dns[i] == reached.dns[i]);
+    }
+    for (std::size_t i = 0; i < reached.ip.size(); ++i) {
+        CHECK(i < here.ip.size() && here.ip[i] == reached.ip[i]);
+    }
+}
+
+namespace {
+
+/// Whether `ready` comes true within `limit`, asked every 50 ms.
+template <typename Ready>
+bool within(std::chrono::seconds limit, const Ready& ready) {
+    const auto until = std::chrono::steady_clock::now() + limit;
+    while (!ready()) {
+        if (std::chrono::steady_clock::now() > until) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return true;
+}
+
+}  // namespace
+
+TEST(a_certificate_renewed_in_place_is_served_without_the_listener_going) {
+    // A certificate of the person's whose files are replaced, as a renewed
+    // Let's Encrypt one's are: read again within a few seconds and served
+    // from then on by the same listener, on the same port, without HTTPS or
+    // the server turned off and on. Halfway there, a certificate whose key
+    // has not come yet, it is not taken, and the old one goes on serving.
+    if (!curl_here()) {
+        return;
+    }
+    TempDir                 dir;
+    const serve::tls::Names here{{"localhost"}, {"127.0.0.1", "::1"}};
+    serve::tls::Pem         first;
+    serve::tls::Pem         second;
+    std::string             error;
+    CHECK(serve::tls::make(here, 30, first, error));
+    CHECK(serve::tls::make(here, 30, second, error));
+    write_text(dir.path() / "first.crt", first.certificate);
+    write_text(dir.path() / "second.crt", second.certificate);
+    write_text(dir.path() / "server.crt", first.certificate);
+    write_text(dir.path() / "server.key", first.key);
+    const Secure secure(dir.path() / "own", dir.path() / "server.crt", dir.path() / "server.key");
+    CHECK_EQ(secure.error, "");
+    const serve::Status before = secure.server.status();
+    CHECK_EQ(before.fingerprint, serve::tls::fingerprint(first.certificate));
+
+    write_text(dir.path() / "server.crt", second.certificate);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));   // a look at it, and more
+    CHECK_EQ(secure.server.status().fingerprint, serve::tls::fingerprint(first.certificate));
+    CHECK_EQ(curl_trusting((dir.path() / "first.crt").string(), secure.url("/v1/models")).status, 0);
+
+    write_text(dir.path() / "server.key", second.key);
+    CHECK(within(std::chrono::seconds(10), [&] {
+        return secure.server.status().fingerprint == serve::tls::fingerprint(second.certificate);
+    }));
+    const serve::Status after = secure.server.status();
+    CHECK(after.listening);
+    CHECK_EQ(after.port, before.port);
+    CHECK_EQ(curl_trusting((dir.path() / "second.crt").string(), secure.url("/v1/models")).status, 0);
+    CHECK(curl_trusting((dir.path() / "first.crt").string(), secure.url("/v1/models")).status != 0);
+}
+
+TEST(crucibles_own_certificate_made_anew_is_served_at_once_without_the_listener_going) {
+    // Settings, Server's New: a new key and a certificate for this machine,
+    // served from the moment it is made, on the same port.
+    if (!curl_here()) {
+        return;
+    }
+    TempDir dir;
+    Secure  secure(dir.path() / "https");
+    CHECK_EQ(secure.error, "");
+    const serve::Status before = secure.server.status();
+    CHECK(before.own_certificate);
+    std::string old_key;
+    {
+        std::ifstream in(dir.path() / "https" / "key.pem", std::ios::binary);
+        old_key.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+
+    CHECK_EQ(secure.server.new_certificate(dir.path() / "https"), "");
+    CHECK(within(std::chrono::seconds(10),
+                 [&] { return secure.server.status().fingerprint != before.fingerprint; }));
+    const serve::Status after = secure.server.status();
+    CHECK(after.listening);
+    CHECK(after.own_certificate);
+    CHECK_EQ(after.port, before.port);
+    CHECK_EQ(curl_trusting(after.certificate, secure.url("/v1/models")).status, 0);
+    std::string certificate;
+    {
+        std::ifstream in(after.certificate, std::ios::binary);
+        certificate.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    CHECK_EQ(serve::tls::fingerprint(certificate), after.fingerprint);
+    serve::tls::Pem out;
+    CHECK_EQ(serve::tls::prepare({certificate, old_key}, out), "The key does not match the certificate");
+}
+
 TEST(the_engine_keeps_its_certificate_with_its_data) {
     TempDir              dir;
     const ScopedDataHome scoped(dir.path());
@@ -1560,104 +1771,445 @@ TEST(the_engine_keeps_its_certificate_with_its_data) {
     engine.stop();
 }
 
-TEST(the_engine_serves_a_real_model) {
-    // Only where a model is named: CRUCIBLE_TEST_MODEL, a small GGUF, with a
-    // runtime installed that loads it. The same requests, answered by the
-    // engine from the model held as a seat holds one.
+// --- a real model ----------------------------------------------------------------
+//
+// Only where CRUCIBLE_TEST_MODEL names a small GGUF, with a runtime installed
+// that loads it: CI's real-model step names a tiny one. Each case keeps the
+// engine's log and spending in a data folder of its own, with the runtimes of
+// whoever runs it.
+
+namespace {
+
+/// The model named for the cases below, whole, or empty when none is named
+/// or there is no curl to ask with.
+std::filesystem::path test_model() {
     const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
     if (named == nullptr || *named == '\0' || !curl_here()) {
-        return;
+        return {};
     }
-    // The engine keeps its log and its spending in a folder of its own here,
-    // with the runtimes of whoever runs this.
-    const std::filesystem::path runtimes = paths::runtimes_dir();
-    TempDir                     dir;
-    const ScopedDataHome        scoped(dir.path());
-    std::error_code             ec;
+    return std::filesystem::absolute(named);
+}
+
+/// `runtimes`, the runtimes of whoever runs this, brought into the data
+/// folder a case has made its own: linked, or copied where this user cannot
+/// make a link, as on a Windows without developer mode. False, and said, when
+/// neither can be done.
+bool bring_runtimes(const std::filesystem::path& runtimes) {
+    std::error_code ec;
     std::filesystem::create_directories(paths::data_dir(), ec);
     std::filesystem::create_directory_symlink(runtimes, paths::runtimes_dir(), ec);
     if (ec) {
-        std::printf("      skipped: the runtimes could not be linked in (%s)\n", ec.message().c_str());
+        ec.clear();
+        std::filesystem::copy(runtimes, paths::runtimes_dir(), std::filesystem::copy_options::recursive, ec);
+    }
+    if (ec) {
+        std::printf("      skipped: the runtimes could not be brought in (%s)\n", ec.message().c_str());
+        return false;
+    }
+    return true;
+}
+
+/// What a request to a real model came to: its status, and its body as an
+/// object, empty when it was not one. A request that failed is a failed
+/// check where one is expected to work, said with what came back, and the
+/// checks after it then look at nothing rather than throw.
+struct Reply {
+    int  status = 0;
+    json body   = json::object();
+};
+
+Reply ask(const std::string& url, const json& body) {
+    const util::http::Response response = post(url, body.dump());
+    Reply reply;
+    reply.status = response.status;
+    const json read = parsed(response);
+    if (read.is_object()) {
+        reply.body = read;
+    }
+    return reply;
+}
+
+Reply answered(const std::string& url, const json& body) {
+    Reply reply = ask(url, body);
+    CHECK_EQ(reply.status, 200);
+    if (reply.status != 200) {
+        std::printf("      %s said %d: %s\n", url.c_str(), reply.status, reply.body.dump().substr(0, 400).c_str());
+    }
+    return reply;
+}
+
+/// The message of a chat completion, or an empty object.
+json message_of(const Reply& reply) {
+    const json choices = reply.body.value("choices", json::array());
+    if (!choices.is_array() || choices.empty() || !choices[0].is_object()) {
+        return json::object();
+    }
+    const json message = choices[0].value("message", json::object());
+    return message.is_object() ? message : json::object();
+}
+
+std::string finish_of(const Reply& reply) {
+    const json choices = reply.body.value("choices", json::array());
+    if (!choices.is_array() || choices.empty() || !choices[0].is_object() || !choices[0].contains("finish_reason")
+        || !choices[0]["finish_reason"].is_string()) {
+        return {};
+    }
+    return choices[0]["finish_reason"].get<std::string>();
+}
+
+/// Why a request was refused, as the server said it.
+std::string refusal_of(const Reply& reply) {
+    const json error = reply.body.value("error", json::object());
+    return error.is_object() ? error.value("message", std::string()) : std::string();
+}
+
+/// `text` with none of a thinking model's markers in it, and starting with
+/// its first word: an answer as OpenAI's clients read one.
+bool clean(const std::string& text) {
+    for (const char* marker : {"<think>", "</think>", "<|channel|>", "<|message|>"}) {
+        if (text.find(marker) != std::string::npos) {
+            return false;
+        }
+    }
+    return text.empty() || std::isspace(static_cast<unsigned char>(text.front())) == 0;
+}
+
+/// An engine answering from `file` on a free port, in a data folder of its
+/// own with `runtimes` in it, for as long as this lives.
+struct Serving {
+    TempDir                 dir;
+    ScopedDataHome          scoped{dir.path()};
+    AppState                state;
+    std::unique_ptr<Engine> engine;
+    std::string             base;   ///< "http://127.0.0.1:<port>"
+    bool                    ready = false;
+
+    Serving(const std::filesystem::path& runtimes, const std::filesystem::path& file, int n_ctx = 2048) {
+        if (!bring_runtimes(runtimes)) {
+            return;
+        }
+        Config config;
+        config.models_dir     = file.parent_path().string();
+        config.defaults.n_ctx = n_ctx;
+        config.server.enabled = true;
+        config.server.port    = 0;
+        config.server.model   = file.string();
+        config.resolve_models();
+        engine = std::make_unique<Engine>(config, state, std::function<void()>{});
+        engine->start();
+        ready = engine->server_status().listening;
+        CHECK(ready);
+        base = "http://127.0.0.1:" + std::to_string(engine->server_status().port);
+    }
+    ~Serving() {
+        if (engine) {
+            engine->stop();
+        }
+    }
+    Serving(const Serving&)            = delete;
+    Serving& operator=(const Serving&) = delete;
+};
+
+/// A copy of the GGUF at `from`, written to `to` with `chat_template` for its
+/// chat template: every other key and every tensor as they were. Made as a
+/// GGUF of its own from the keys and the tensors read, since writing out the
+/// one read with its tensors' data crashes.
+bool with_template(const std::filesystem::path& from, const std::filesystem::path& to,
+                   const std::string& chat_template, std::string& error) {
+    ggml_context*    data = nullptr;
+    gguf_init_params params{};
+    params.no_alloc = false;
+    params.ctx      = &data;
+    gguf_context* read = gguf_init_from_file(from.string().c_str(), params);
+    if (read == nullptr) {
+        error = "could not read " + from.string();
+        return false;
+    }
+    gguf_context* made = gguf_init_empty();
+    gguf_set_kv(made, read);
+    gguf_set_val_str(made, "tokenizer.chat_template", chat_template.c_str());
+    for (std::int64_t i = 0; i < gguf_get_n_tensors(read); ++i) {
+        gguf_add_tensor(made, ggml_get_tensor(data, gguf_get_tensor_name(read, i)));
+    }
+    const bool written = gguf_write_to_file(made, to.string().c_str(), /*only_meta=*/false);
+    gguf_free(made);
+    gguf_free(read);
+    ggml_free(data);
+    if (!written) {
+        error = "could not write " + to.string();
+    }
+    return written;
+}
+
+/// Larger than any model a copy is made of here: each case below copies the
+/// model named once for each template it tries.
+constexpr std::uintmax_t kLargestCopied = std::uintmax_t{2} << 30;
+
+/// The model named, when one is and it is small enough to copy, and the
+/// runtimes to load it with, read before a case makes a data folder its own.
+std::filesystem::path model_to_copy() {
+    const std::filesystem::path model = test_model();
+    if (model.empty()) {
+        return {};
+    }
+    std::error_code      ec;
+    const std::uintmax_t size = std::filesystem::file_size(model, ec);
+    if (ec || size > kLargestCopied) {
+        std::printf("      skipped: %s is %s to copy\n", model.string().c_str(), ec ? "not there" : "too large");
+        return {};
+    }
+    return model;
+}
+
+/// ChatML that refuses two user turns in a row, as the templates that insist
+/// on turns taken in order do.
+constexpr const char* kRefusing =
+    "{%- set ns = namespace(last='') -%}"
+    "{%- for message in messages -%}"
+    "{%- if message['role'] == 'user' and ns.last == 'user' -%}"
+    "{{- raise_exception('Two user turns in a row, which this template does not take') -}}"
+    "{%- endif -%}"
+    "{%- set ns.last = message['role'] -%}"
+    "{{- '<|im_start|>' + message['role'] + '\\n' -}}"
+    "{%- if message['content'] -%}{{- message['content'] -}}{%- endif -%}"
+    "{{- '<|im_end|>\\n' -}}"
+    "{%- endfor -%}"
+    "{%- if add_generation_prompt -%}{{- '<|im_start|>assistant\\n' -}}{%- endif -%}";
+
+/// One llama.cpp cannot read.
+constexpr const char* kUnreadable = "{% if %}<|im_start|>{{ messages }}<|im_end|>";
+
+/// One shaped as LFM2.5's: the tools listed in the system message, and every
+/// reply opened with a thinking block, whatever it is told.
+constexpr const char* kAlwaysThinking =
+    "{{- bos_token -}}"
+    "{%- set ns = namespace(system='') -%}"
+    "{%- if messages and messages[0]['role'] == 'system' -%}"
+    "{%- set ns.system = messages[0]['content'] -%}"
+    "{%- set messages = messages[1:] -%}"
+    "{%- endif -%}"
+    "{%- if tools -%}"
+    "{%- set ns.system = ns.system + 'List of tools: [' -%}"
+    "{%- for tool in tools -%}"
+    "{%- set ns.system = ns.system + (tool | tojson) -%}"
+    "{%- if not loop.last -%}{%- set ns.system = ns.system + ', ' -%}{%- endif -%}"
+    "{%- endfor -%}"
+    "{%- set ns.system = ns.system + ']' -%}"
+    "{%- endif -%}"
+    "{%- if ns.system -%}{{- '<|im_start|>system\\n' + ns.system + '<|im_end|>\\n' -}}{%- endif -%}"
+    "{%- for message in messages -%}"
+    "{{- '<|im_start|>' + message['role'] + '\\n' -}}"
+    "{%- if message['content'] -%}{{- message['content'] -}}{%- endif -%}"
+    "{{- '<|im_end|>\\n' -}}"
+    "{%- endfor -%}"
+    "{%- if add_generation_prompt -%}{{- '<|im_start|>assistant\\n<think>' -}}{%- endif -%}";
+
+}  // namespace
+
+TEST(a_chat_template_that_will_not_write_a_conversation_still_answers_it_and_refuses_tools_in_its_words) {
+    // Only where a model is named. Copies of it with a template that refuses
+    // two user turns in a row, and with one llama.cpp cannot read: a plain
+    // chat either will not write is answered all the same, the chat's way,
+    // as every request was before there were tools. Tools and a JSON
+    // answer, which only the template can write, are refused, saying why in
+    // the template's own words.
+    const std::filesystem::path model = model_to_copy();
+    if (model.empty()) {
         return;
     }
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    TempDir                     copies;
+    const json two_turns = json::array({json{{"role", "user"}, {"content", "Hello."}},
+                                        json{{"role", "user"}, {"content", "Say one word."}}});
+    struct Kind {
+        const char* name;
+        const char* chat_template;
+        const char* said;   ///< what its refusal says
+    };
+    for (const Kind& kind : {Kind{"refusing.gguf", kRefusing, "refused this conversation: Two user turns in a row"},
+                             Kind{"unreadable.gguf", kUnreadable, "chat template could not be read: "}}) {
+        const std::filesystem::path file = copies.path() / kind.name;
+        std::string                 error;
+        CHECK(with_template(model, file, kind.chat_template, error));
+        if (!error.empty()) {
+            std::printf("      %s\n", error.c_str());
+            return;
+        }
+        {
+            const Serving serving(runtimes, file);
+            if (!serving.ready) {
+                return;
+            }
+            const std::string url = serving.base + "/v1/chat/completions";
+            const json        plain{{"messages", two_turns}, {"temperature", 0}, {"max_tokens", 16}};
+            const Reply       chatted = answered(url, plain);
+            CHECK(chatted.body.value("object", "") == "chat.completion");
+            std::printf("      %s, answered the chat's way: %s\n", kind.name,
+                        message_of(chatted).value("content", "").c_str());
 
-    const std::filesystem::path file(named);
-    Config config;
-    config.models_dir       = file.parent_path().string();
-    config.defaults.n_ctx   = 2048;
-    config.server.enabled   = true;
-    config.server.port      = 0;
-    config.server.model     = file.string();
-    config.resolve_models();
-    AppState state;
-    Engine   engine(config, state, {});
-    engine.start();
-    const int port = engine.server_status().port;
-    CHECK(engine.server_status().listening);
-    const std::string base = "http://127.0.0.1:" + std::to_string(port);
-    const std::string id   = file.filename().string();
+            json tools     = plain;
+            tools["tools"] = json::array({weather_tool()});
+            json shaped               = plain;
+            shaped["response_format"] = {{"type", "json_object"}};
+            for (const json& body : {tools, shaped}) {
+                const Reply refused = ask(url, body);
+                CHECK_EQ(refused.status, 400);
+                const std::string why = refusal_of(refused);
+                CHECK(why.find(kind.said) != std::string::npos);
+                CHECK(why.find("std::exception") == std::string::npos);
+                std::printf("      refused: %s\n", why.c_str());
+            }
+        }
+        std::error_code ec;
+        std::filesystem::remove(file, ec);   // one copy at a time
+    }
+}
+
+TEST(a_reply_its_template_opens_with_thinking_is_answered_at_once_when_none_is_asked) {
+    // Only where a model is named. A copy of it with a template shaped as
+    // LFM2.5's, which opens every reply with a thinking block whatever it is
+    // told: asked to think not at all, the block is shut before the model
+    // writes, and what it writes is the answer, from its first word, whole
+    // and streamed. Before, everything it wrote was read as thinking.
+    const std::filesystem::path model = model_to_copy();
+    if (model.empty()) {
+        return;
+    }
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    TempDir                     copies;
+    const std::filesystem::path file = copies.path() / "thinking.gguf";
+    std::string                 error;
+    CHECK(with_template(model, file, kAlwaysThinking, error));
+    if (!error.empty()) {
+        std::printf("      %s\n", error.c_str());
+        return;
+    }
+    const Serving serving(runtimes, file);
+    if (!serving.ready) {
+        return;
+    }
+    const std::string url = serving.base + "/v1/chat/completions";
+    json asked{{"messages", json::array({json{{"role", "user"}, {"content", "Hello."}}})},
+               {"temperature", 0},
+               {"max_tokens", 16},
+               {"reasoning_effort", "none"}};
+    const Reply       reply   = answered(url, asked);
+    const json        message = message_of(reply);
+    const std::string content = message.value("content", "");
+    CHECK(message.value("reasoning_content", "").empty());
+    CHECK(clean(content));
+    CHECK(reply.body.value("usage", json::object()).value("completion_tokens", 0) == 0 || !content.empty());
+    std::printf("      answered at once: %s\n", content.c_str());
+
+    asked["stream"] = true;
+    const Told told = told_by(stream(url, asked));
+    CHECK(told.reasoning.empty());
+    CHECK(clean(told.content));
+    CHECK_EQ(told.content, content);
+}
+
+TEST(the_engine_serves_a_real_model) {
+    // Only where a model is named. The same requests, answered by the engine
+    // from the model held as a seat holds one. A model that thinks is asked
+    // not to, which a template that can be told so is told, and has tokens
+    // enough to think in where it cannot be: the answer is looked for in the
+    // content, which has nothing of the thinking in it.
+    const std::filesystem::path model = test_model();
+    if (model.empty()) {
+        return;
+    }
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const Serving               serving(runtimes, model);
+    if (!serving.ready) {
+        return;
+    }
+    Engine&           engine = *serving.engine;
+    const std::string base   = serving.base;
+    const std::string chats  = base + "/v1/chat/completions";
+    const std::string id     = model.filename().string();
 
     const json listed = parsed(get(base + "/v1/models"));
-    CHECK(listed["data"].size() == 1);
-    CHECK(listed["data"][0].value("id", "") == id);
+    const json data   = listed.is_object() ? listed.value("data", json::array()) : json::array();
+    CHECK(data.size() == 1);
+    CHECK(data.size() == 1 && data[0].is_object() && data[0].value("id", "") == id);
 
     const json question{{"model", id},
                         {"messages", json::array({json{{"role", "user"},
                                                        {"content", "What is the capital of France? One word."}}})},
                         {"temperature", 0},
-                        {"max_tokens", 24}};
-    const util::http::Response answered = post(base + "/v1/chat/completions", question.dump());
-    CHECK_EQ(answered.status, 200);
-    const json body = parsed(answered);
-    const std::string content = body["choices"][0]["message"].value("content", "");
+                        {"max_tokens", 512},
+                        {"reasoning_effort", "none"}};
+    const Reply       answer  = answered(chats, question);
+    const json        message = message_of(answer);
+    const std::string content = message.value("content", "");
     CHECK(content.find("Paris") != std::string::npos);
-    CHECK(body["usage"].value("prompt_tokens", 0) > 0);
-    CHECK(body["usage"].value("completion_tokens", 0) > 0);
-    std::printf("      answered: %s\n", content.c_str());
+    CHECK(clean(content));
+    CHECK_EQ(finish_of(answer), "stop");
+    CHECK(answer.body.value("usage", json::object()).value("prompt_tokens", 0) > 0);
+    CHECK(answer.body.value("usage", json::object()).value("completion_tokens", 0) > 0);
+    std::printf("      answered: %s (thought: %s)\n", content.c_str(),
+                message.value("reasoning_content", "").substr(0, 80).c_str());
 
-    json streamed = question;
+    // Left to think as it will: its thinking apart, and its answer after it
+    // from the first word, not from the blank line a model puts between.
+    json free_to_think = question;
+    free_to_think.erase("reasoning_effort");
+    free_to_think["max_tokens"] = 2048;
+    const Reply       pondered = answered(chats, free_to_think);
+    const json        mulled   = message_of(pondered);
+    const std::string reasoned = mulled.value("content", "");
+    CHECK(reasoned.find("Paris") != std::string::npos);
+    CHECK(clean(reasoned));
+    CHECK_EQ(finish_of(pondered), "stop");
+    std::printf("      thought %zu characters, then answered: %s\n",
+                mulled.value("reasoning_content", "").size(), reasoned.c_str());
+
+    json streamed      = question;
     streamed["stream"] = true;
-    const Told told    = told_by(stream(base + "/v1/chat/completions", streamed));
+    const Told told    = told_by(stream(chats, streamed));
     CHECK(told.content.find("Paris") != std::string::npos);
-    CHECK(!told.finish.empty());
+    CHECK(clean(told.content));
+    CHECK_EQ(told.finish, "stop");
 
-    json other = question;
+    json other     = question;
     other["model"] = "gpt-4o";
-    CHECK_EQ(post(base + "/v1/chat/completions", other.dump()).status, 404);
+    CHECK_EQ(post(chats, other.dump()).status, 404);
 
     // A tool, written into the prompt by the model's own template and its
     // call read back out of the answer.
-    json weather = json{{"model", id},
-                        {"messages", json::array({json{{"role", "user"},
-                                                       {"content", "What is the weather in Paris? Use the tool."}}})},
-                        {"tools", json::array({weather_tool()})},
-                        {"temperature", 0},
-                        {"max_tokens", 128}};
-    const json called = parsed(post(base + "/v1/chat/completions", weather.dump()));
-    const json calls  = called["choices"][0]["message"].value("tool_calls", json::array());
-    CHECK(!calls.empty());
-    if (!calls.empty()) {
-        CHECK(calls[0]["function"].value("name", "") == "get_weather");
-        const json arguments = json::parse(calls[0]["function"].value("arguments", ""), nullptr, false);
+    const json weather{{"model", id},
+                       {"messages", json::array({json{{"role", "user"},
+                                                      {"content", "What is the weather in Paris? Use the tool."}}})},
+                       {"tools", json::array({weather_tool()})},
+                       {"temperature", 0},
+                       {"max_tokens", 512},
+                       {"reasoning_effort", "none"}};
+    const Reply called = answered(chats, weather);
+    const json  calls  = message_of(called).value("tool_calls", json::array());
+    CHECK(calls.is_array() && !calls.empty());
+    if (calls.is_array() && !calls.empty() && calls[0].is_object()) {
+        const json function = calls[0].value("function", json::object());
+        CHECK(function.value("name", "") == "get_weather");
+        const json arguments = json::parse(function.value("arguments", ""), nullptr, false);
         CHECK(arguments.is_object() && arguments.contains("city"));
-        std::printf("      called: %s\n", calls[0]["function"].dump().c_str());
+        std::printf("      called: %s\n", function.dump().c_str());
     }
-    CHECK(called["choices"][0].value("finish_reason", "") == "tool_calls");
+    CHECK_EQ(finish_of(called), "tool_calls");
 
     // JSON, held to by a grammar.
-    json cat = question;
+    json cat                      = question;
     cat["messages"][0]["content"] = "Describe a cat with a name and an age, as JSON.";
     cat["response_format"]        = {{"type", "json_object"}};
-    cat["max_tokens"]             = 96;
-    const std::string described =
-        parsed(post(base + "/v1/chat/completions", cat.dump()))["choices"][0]["message"].value("content", "");
+    const std::string described   = message_of(answered(chats, cat)).value("content", "");
     CHECK(json::parse(described, nullptr, false).is_object());
     std::printf("      as JSON: %s\n", described.c_str());
 
     // Embeddings, from the model served.
-    const json embedded = parsed(post(base + "/v1/embeddings", json{{"input", json::array({"a cat", "a dog"})}}.dump()));
-    CHECK(embedded["data"].size() == 2);
-    CHECK(!embedded["data"][0]["embedding"].empty());
+    const Reply embedded = answered(base + "/v1/embeddings", json{{"input", json::array({"a cat", "a dog"})}});
+    const json  vectors  = embedded.body.value("data", json::array());
+    CHECK(vectors.is_array() && vectors.size() == 2);
+    CHECK(vectors.is_array() && !vectors.empty() && vectors[0].is_object()
+          && !vectors[0].value("embedding", json::array()).empty());
 
     // Held while it answered and let go after: the next seat may have it.
     CHECK(engine.server_status().recent.size() >= 3);
@@ -1665,7 +2217,8 @@ TEST(the_engine_serves_a_real_model) {
     // The same file as the delegator, which routes in a context of 1024
     // tokens and is served in one of its own as long as a model from the
     // folder would have: a conversation longer than routing's is answered.
-    config.router.model  = file.string();
+    Config config        = engine.config();
+    config.router.model  = model.string();
     config.router.n_ctx  = 1024;
     config.server.model  = "";
     config.resolve_models();
@@ -1679,12 +2232,14 @@ TEST(the_engine_serves_a_real_model) {
                                                 json{{"role", "assistant"}, {"content", "Noted."}},
                                                 json{{"role", "user"}, {"content", "The secret word? One word."}}})},
                       {"temperature", 0},
-                      {"max_tokens", 8}};
-    const json kept = parsed(post(base + "/v1/chat/completions", longer.dump()));
-    CHECK(kept["usage"].value("prompt_tokens", 0) > 1024);
-    CHECK(kept["choices"][0]["message"].value("content", "").find("PELICAN") != std::string::npos);
-    std::printf("      the delegator, %d tokens in: %s\n", kept["usage"].value("prompt_tokens", 0),
-                kept["choices"][0]["message"].value("content", "").c_str());
+                      {"max_tokens", 64},
+                      {"reasoning_effort", "none"}};
+    const Reply       kept   = answered(chats, longer);
+    const std::string secret = message_of(kept).value("content", "");
+    const int         read   = kept.body.value("usage", json::object()).value("prompt_tokens", 0);
+    CHECK(read > 1024);
+    CHECK(secret.find("PELICAN") != std::string::npos);
+    std::printf("      the delegator, %d tokens in: %s\n", read, secret.c_str());
     engine.stop();
     CHECK(!engine.server_status().listening);
 }
@@ -1696,22 +2251,17 @@ TEST(crucible_closing_mid_answer_frees_the_model_only_once_the_request_is_done) 
     // while stop() was still waiting for the server: the request went on
     // reading from a context that was gone, and Crucible crashed as it
     // closed. The server's thread is done with the model before it is freed.
-    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
-    if (named == nullptr || *named == '\0' || !curl_here()) {
+    const std::filesystem::path file = test_model();
+    if (file.empty()) {
         return;
     }
     const std::filesystem::path runtimes = paths::runtimes_dir();
     TempDir                     dir;
     const ScopedDataHome        scoped(dir.path());
-    std::error_code             ec;
-    std::filesystem::create_directories(paths::data_dir(), ec);
-    std::filesystem::create_directory_symlink(runtimes, paths::runtimes_dir(), ec);
-    if (ec) {
-        std::printf("      skipped: the runtimes could not be linked in (%s)\n", ec.message().c_str());
+    if (!bring_runtimes(runtimes)) {
         return;
     }
 
-    const std::filesystem::path file(named);
     Config config;
     config.models_dir     = file.parent_path().string();
     config.defaults.n_ctx = 8192;

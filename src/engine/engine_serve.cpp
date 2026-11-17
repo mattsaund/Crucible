@@ -137,9 +137,15 @@ ModelParams Engine::served_params(const Config& config, ExpertId* seat) {
 
 serve::Status Engine::server_status() const { return server_->status(); }
 
+std::string Engine::new_certificate() { return server_->new_certificate(paths::https_dir()); }
+
 void Engine::configure_server(const Config& config) {
+    const std::lock_guard<std::mutex> closing(server_mutex_);
+    if (!running_.load(std::memory_order_relaxed)) {
+        return;   // closing, or not started: stop() and run() see to the server
+    }
     serve::Settings settings;
-    settings.enabled = config.server.enabled && running_.load(std::memory_order_relaxed);
+    settings.enabled = config.server.enabled;
     settings.port    = config.server.port;
     // A provider's model is the person's credit spent with every request:
     // other computers are let at it only with a key, and without one the

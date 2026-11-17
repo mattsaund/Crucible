@@ -136,6 +136,11 @@ std::string template_said(std::string_view what, bool* raised = nullptr);
 /// can be, and when what stops it says nothing.
 std::string why_unreadable(const std::string& source);
 
+/// Whether `opening`, the start of a reply as the prompt writes it, leaves
+/// the model inside a thinking block: the block's start tag `open` in it,
+/// and none of the tags in `closes` after it.
+bool inside_thinking(const std::string& opening, const std::string& open, const std::vector<std::string>& closes);
+
 }  // namespace detail
 
 }  // namespace crucible

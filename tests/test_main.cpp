@@ -106,7 +106,7 @@ LONG WINAPI report_crash(EXCEPTION_POINTERS* info) {
 }  // namespace
 #endif
 
-int main() {
+int main(int argc, char** argv) {
 #if defined(_WIN32)
     // Room for the report to run in even when what ran out was the stack --
     // which a 1 MB Windows stack meets long before an 8 MB Linux one does.
@@ -115,5 +115,6 @@ int main() {
     ::SetUnhandledExceptionFilter(report_crash);
 #endif
     std::cout << "Crucible core tests\n\n";
-    return harness::run_all();
+    // Cases named on the command line run alone. See harness::run_all.
+    return harness::run_all(std::vector<std::string>(argv + 1, argv + argc));
 }
