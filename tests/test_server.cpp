@@ -432,6 +432,20 @@ TEST(a_chat_template_that_will_not_write_a_conversation_says_why_in_its_own_word
     CHECK(detail::why_unreadable("{% for message in messages %}{{ message['content'] }}{% endfor %}").empty());
 }
 
+TEST(a_reply_its_prompt_leaves_inside_a_thinking_block_is_known_by_its_opening) {
+    // What decides whether "none" has a block to shut: LFM2.5's opening ends
+    // inside one whatever it is told, Qwen3's told not to think writes it
+    // shut, and gpt-oss's and LFM2.5 Instruct's open none.
+    const std::vector<std::string> closes{"</think>"};
+    CHECK(detail::inside_thinking("<|im_start|>assistant\n<think>", "<think>", closes));
+    CHECK(!detail::inside_thinking("<|im_start|>assistant\n<think>\n\n</think>\n\n", "<think>", closes));
+    CHECK(!detail::inside_thinking("<|im_start|>assistant\n", "<think>", closes));
+    CHECK(!detail::inside_thinking("<|start|>assistant", "", {}));
+    // The last block is the one that counts.
+    CHECK(detail::inside_thinking("<think>a</think>b<think>", "<think>", closes));
+    CHECK(!detail::inside_thinking("<think>a</think>b<think></think>", "<think>", closes));
+}
+
 TEST(a_required_call_comes_back_alone_without_the_words_said_before_it) {
     if (!curl_here()) {
         return;
