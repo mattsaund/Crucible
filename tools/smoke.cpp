@@ -25,6 +25,13 @@
 // would. The plan is taken as it stands, with nobody at a window to confirm
 // it, and so is every write. It prints the seats the build made as well.
 //
+//   crucible-smoke --ask-config <config.json> "a prompt" [minutes]
+//
+// One prompt in a fresh project on the seats and the delegator a config names,
+// worked in the one loop as that machine would, experts handing the next step
+// to each other included. Every write is allowed. It prints each action as it
+// happens, the reply and the files left.
+//
 //   crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]
 //
 // With --bench it runs the model through the Bench the way the Bench tab
@@ -48,6 +55,7 @@
 // --self-test, which reloads it in its own window: see smoke_app.
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -612,12 +620,82 @@ int smoke_bench(const std::string& model, const std::string& size, const std::st
 
 }  // namespace
 
+/// `prompt` asked once in a fresh project, on the seats, the delegator and the
+/// settings a config names: the one loop as somebody's machine works it,
+/// experts handing the next step to each other included. It prints the route,
+/// every action (a takeover among them), the reply and the files left, and
+/// exits non-zero when the turn failed.
+int smoke_ask_config(const std::filesystem::path& file, const std::string& prompt, int minutes) {
+    std::vector<std::string> warnings;
+    Config config = load_config(file, warnings);
+    for (const std::string& warning : warnings) {
+        std::printf("config: %s\n", warning.c_str());
+    }
+    config.tools.auto_edits = true;   // nobody at a window to allow a write
+    config.resolve_models();
+
+    const std::filesystem::path project = paths::data_dir() / "smoke-ask";
+    std::filesystem::remove_all(project);
+    std::filesystem::create_directories(project);
+
+    AppState state;
+    state.configure_seats(config);
+    Engine engine(config, state, [] {});
+    engine.set_project(project, paths::data_dir() / "smoke-ask-history");
+    engine.start();
+    engine.submit(prompt);
+
+    const auto started = std::chrono::steady_clock::now();
+    std::size_t said = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const Snapshot now = state.snapshot();
+        // Each action as it happens, so a long prompt can be followed.
+        if (!now.turns.empty()) {
+            const Turn& turn = now.turns.back();
+            for (; said < turn.actions.size(); ++said) {
+                const double at = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+                std::printf("%6.0fs action: %s\n", at, turn.actions[said].summary.c_str());
+                std::fflush(stdout);
+            }
+        }
+        if (!now.turns.empty() && !now.turns.back().streaming && !engine.is_busy()) {
+            break;
+        }
+        if (std::chrono::steady_clock::now() - started > std::chrono::minutes(minutes)) {
+            std::printf("timed out\n");
+            engine.stop();
+            return 1;
+        }
+    }
+    const Snapshot after = state.snapshot();
+    const Turn& turn = after.turns.back();
+    if (turn.route) {
+        std::printf("route: %s (%s, %.2f) %s\n", turn.route->expert.c_str(),
+                    std::string(route_source_name(turn.route->source)).c_str(),
+                    static_cast<double>(turn.route->confidence), turn.route->detail.c_str());
+    }
+    std::printf("%s (%d tokens): %s\n", turn.failed ? "failed" : "reply", turn.output_tokens, turn.reply.c_str());
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(project, ec)) {
+        if (entry.is_regular_file(ec)) {
+            std::printf("file: %s (%ju bytes)\n", std::filesystem::relative(entry.path(), project).string().c_str(),
+                        static_cast<std::uintmax_t>(entry.file_size(ec)));
+        }
+    }
+    engine.stop();
+    return turn.failed || turn.reply.empty() ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     if (argc >= 3 && std::string(argv[1]) == "--runtime") {
         return smoke_runtime(argv[2]);
     }
     if (argc >= 3 && std::string(argv[1]) == "--host") {
         return smoke_host(argv[2], argc >= 4 ? argv[3] : argv[2]);
+    }
+    if (argc >= 4 && std::string(argv[1]) == "--ask-config") {
+        return smoke_ask_config(argv[2], argv[3], argc >= 5 ? std::atoi(argv[4]) : 30);
     }
     if (argc >= 4 && std::string(argv[1]) == "--turns") {
         return smoke_turns(argv[2], std::atoi(argv[3]));
@@ -640,6 +718,7 @@ int main(int argc, char** argv) {
                     "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n"
                     "       crucible-smoke --build-config <config.json> \"a directive\" [\"a question\"]\n"
                     "       crucible-smoke --turns <model.gguf> <count>\n"
+                    "       crucible-smoke --ask-config <config.json> \"a prompt\" [minutes]\n"
                     "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n"
                     "       crucible-smoke --runtime cpu\n"
                     "       crucible-smoke --host <first.gguf> [<second.gguf>]\n"
