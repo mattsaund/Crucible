@@ -28,6 +28,10 @@
 .PARAMETER Prefix
     Where to install. Defaults to %LOCALAPPDATA%\Programs\Crucible.
 
+.PARAMETER Branch
+    The branch or release tag to build, as git clone --branch takes it.
+    Defaults to main. Crucible's own update names a tag here.
+
 .PARAMETER Source
     A checkout to build instead of fetching one.
 

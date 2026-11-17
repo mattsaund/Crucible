@@ -1347,6 +1347,31 @@ TEST(render_draws_a_page_into_a_pdf_and_a_picture) {
     CHECK(result.changed == std::vector<std::string>{"shot.png"});
     CHECK(!result.pictures.empty());
 
+    // Several at once, as agents of a build or runs of these tests on one
+    // machine draw: each browser has a profile of its own. They shared one,
+    // and a browser that met another's lock on it aborted, having drawn
+    // nothing ("the browser drew nothing"). Three at once lost one of them
+    // in 10 of 10 tries with the shared folder; two in 9 of 10.
+    const std::vector<std::string> outputs{"many/one.pdf", "many/two.png at 640x360", "many/three.png at 320x200"};
+    std::vector<tools::ToolResult> drawn(outputs.size());
+    std::vector<std::thread> drawing;
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+        drawing.emplace_back([&, i] {
+            tools::ToolCall again = call;
+            again.argument = "report.html to " + outputs[i];
+            drawn[i] = tools::run_tool(again, settings, {}, {});
+        });
+    }
+    for (std::thread& one : drawing) {
+        one.join();
+    }
+    for (const tools::ToolResult& one : drawn) {
+        CHECK(one.ok);
+        if (!one.ok) {
+            std::printf("      %s\n", one.output.c_str());
+        }
+    }
+
     // Where it goes and what it is are checked before the browser starts.
     call.argument = "report.html to ../away.pdf";
     CHECK(!tools::run_tool(call, settings, {}, {}).ok);

@@ -6,6 +6,7 @@ import concurrent.futures
 import hashlib
 import os
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -42,6 +43,185 @@ class Items(unittest.TestCase):
     def test_a_larger_size_keeps_the_smaller_ones_items(self):
         b = bench.BY_ID["gsm8k"]
         self.assertTrue(set(bench.pick(b, "quick")) <= set(bench.pick(b, "standard")))
+
+
+# What each size asks of each benchmark: the first 16 hex digits of the
+# SHA-256 of its indices, joined by commas. Taken from bench.py as it was
+# before the rows came in windows (e799491). The board compares runs by these
+# items, so how their rows are fetched must never change which they are.
+ITEMS = {
+    ("mmlu_pro", "quick"): "3d9afedc7d36d653", ("mmlu_pro", "standard"): "d937513bf0eb36a2",
+    ("arc", "quick"): "a9423635037aa1d5", ("arc", "standard"): "aab44aabd4c50655",
+    ("gsm8k", "quick"): "38d09b0857d1ab30", ("gsm8k", "standard"): "9c3b76731999c013",
+    ("math500", "quick"): "7e68a4b1e3a2fc4b", ("math500", "standard"): "5c70e9c5aaa1a26a",
+    ("humaneval", "quick"): "cd6bc7a751b3fe03", ("humaneval", "standard"): "44e446f2919206b9",
+    ("mbpp", "quick"): "5c880c8c874f033b", ("mbpp", "standard"): "6f258f85cb41cd36",
+    ("ifeval", "quick"): "417226e4935db973", ("ifeval", "standard"): "21c32f6883deed9a",
+    ("hellaswag", "quick"): "b136e7d736159a8b", ("hellaswag", "standard"): "cdea0138e0ba639f",
+    ("truthfulqa", "quick"): "bcda0278e66c9602", ("truthfulqa", "standard"): "cadda2f514ccacb9",
+}
+
+TOTALS = {b["dataset"]: b["total"] for b in bench.BENCHMARKS}
+
+
+class DatasetCore:
+    """What fetching asks of the core, from several threads at once: pages of
+    rows that each say which dataset and row they are, the pages on disk, and
+    the datasets server's refusals and failures."""
+
+    def __init__(self, kept=None, refuse=0, error=None, status=None, stop_after=None):
+        self.lock = threading.Lock()
+        self.kept = kept or {}        # dataset: [(offset, length)], as bench.cached lists them
+        self.refuse = refuse          # asks refused (HTTP 429) before any is answered
+        self.error = error            # every ask fails with this, and `status`
+        self.status = status
+        self.stop_after = stop_after  # Stop pressed after this many asks
+        self.asks = 0
+        self.refused = 0
+        self.answered = []            # (dataset, offset, length)
+
+    def call(self, method, params=None):
+        params = params or {}
+        if method == "bench.stopped":
+            with self.lock:
+                return {"stopped": self.stop_after is not None and self.asks >= self.stop_after}
+        if method == "bench.cached":
+            return {"ranges": [list(r) for r in self.kept.get(params["dataset"], [])]}
+        if method == "bench.rows":
+            with self.lock:
+                self.asks += 1
+                if self.stop_after is not None and self.asks > self.stop_after:
+                    return {"error": "stopped", "status": 0}   # what the core says once stopped
+                if self.error:
+                    return {"error": self.error, "status": self.status}
+                if self.refused < self.refuse:
+                    self.refused += 1
+                    return {"error": "%s: HTTP 429" % params["dataset"], "status": 429}
+                self.answered.append((params["dataset"], params["offset"], params["length"]))
+            end = min(params["offset"] + params["length"], TOTALS[params["dataset"]])
+            return {"rows": [{"row_idx": i, "row": {"dataset": params["dataset"], "i": i}}
+                             for i in range(params["offset"], end)]}
+        raise AssertionError("unexpected call: %s" % method)
+
+
+def _whole_pages(core, b, indices):
+    """How the rows were fetched before: every page of a hundred an index
+    falls in, one at a time. What the windows must bring the same rows as."""
+    rows = {}
+    for page in sorted({i // 100 * 100 for i in indices}):
+        got = core.call("bench.rows", {"dataset": b["dataset"], "config": b["config"], "split": b["split"],
+                                       "offset": page, "length": 100})
+        for n, item in enumerate(got.get("rows") or []):
+            rows[item.get("row_idx", page + n)] = item.get("row") or {}
+    return rows
+
+
+class Fetching(unittest.TestCase):
+    def test_the_items_each_size_asks_have_not_changed(self):
+        for b in bench.BENCHMARKS:
+            for size in ("quick", "standard"):
+                items = ",".join(str(i) for i in bench.pick(b, size))
+                self.assertEqual(hashlib.sha256(items.encode()).hexdigest()[:16], ITEMS[(b["id"], size)],
+                                 (b["id"], size))
+
+    def test_windows_bring_the_rows_whole_pages_did(self):
+        for size in ("quick", "standard"):
+            core = DatasetCore()
+            rows_of, errors = bench.fetch_all(core, bench.BENCHMARKS, size)
+            self.assertEqual(errors, {})
+            for b in bench.BENCHMARKS:
+                indices = bench.pick(b, size)
+                before = _whole_pages(DatasetCore(), b, indices)
+                for i in indices:
+                    self.assertEqual(rows_of[b["id"]][i], before[i])
+                    self.assertEqual(rows_of[b["id"]][i], {"dataset": b["dataset"], "i": i})
+
+    def test_a_quick_run_asks_fewer_and_smaller_requests(self):
+        windows = pages = rows = 0
+        for b in bench.BENCHMARKS:
+            indices = bench.pick(b, "quick")
+            planned = bench.plan(indices)
+            covered = [i for offset, length, _ in planned for i in indices if offset <= i < offset + length]
+            self.assertEqual(sorted(covered), indices)   # each item once
+            self.assertEqual(sum(items for _, _, items in planned), len(indices))
+            self.assertTrue(all(1 <= length <= bench.PAGE for _, length, _ in planned))
+            self.assertTrue(all(offset in indices for offset, _, _ in planned))
+            windows += len(planned)
+            pages += len({i // 100 for i in indices})
+            rows += sum(length for _, length, _ in planned)
+        self.assertEqual((windows, pages), (116, 138))
+        self.assertLess(rows, 138 * 100 // 2)
+
+    def test_pages_on_disk_are_read_back_whichever_run_kept_them(self):
+        # As an older Crucible left them: whole pages, from a Standard run.
+        kept = {b["dataset"]: sorted({(i // 100 * 100, 100) for i in bench.pick(b, "standard")})
+                for b in bench.BENCHMARKS}
+        core = DatasetCore(kept=kept)
+        rows_of, errors = bench.fetch_all(core, bench.BENCHMARKS, "quick")
+        self.assertEqual(errors, {})
+        for dataset, offset, length in core.answered:
+            self.assertIn((offset, length), kept[dataset])   # nothing new was asked for
+        for b in bench.BENCHMARKS:
+            for i in bench.pick(b, "quick"):
+                self.assertEqual(rows_of[b["id"]][i]["i"], i)
+        # And a Quick run's windows, for a Standard run: its items among them
+        # are read back, and the rest asked for in windows of their own.
+        b = bench.BY_ID["mmlu_pro"]
+        quick = [(offset, length) for offset, length, _ in bench.plan(bench.pick(b, "quick"))]
+        planned = bench.plan(bench.pick(b, "standard"), quick)
+        reread = [(offset, length) for offset, length, _ in planned if (offset, length) in quick]
+        self.assertEqual(len(reread), len(quick))
+        # The Quick items, and any other that falls inside one of its windows.
+        self.assertGreaterEqual(sum(items for offset, length, items in planned if (offset, length) in quick), 50)
+        self.assertEqual(sum(items for _, _, items in planned), 200)
+        self.assertLess(len(planned) - len(reread), len(bench.plan(bench.pick(b, "standard"))))
+
+    def test_the_count_of_items_in_hand_moves_up_to_all_of_them(self):
+        heard = []
+        bench.fetch_all(DatasetCore(), bench.BENCHMARKS, "quick", lambda done, of: heard.append((done, of)))
+        self.assertEqual(heard[0], (0, 450))
+        self.assertEqual(heard[-1], (450, 450))
+        self.assertEqual([done for done, _ in heard], sorted(done for done, _ in heard))
+
+    def test_a_refusal_is_waited_out_and_every_row_still_arrives(self):
+        core = DatasetCore(refuse=6)
+        with mock.patch.object(bench, "REFUSED_WAIT", 0.05):
+            rows_of, errors = bench.fetch_all(core, bench.BENCHMARKS, "quick")
+        self.assertEqual(errors, {})
+        self.assertEqual(core.refused, 6)
+        for b in bench.BENCHMARKS:
+            for i in bench.pick(b, "quick"):
+                self.assertEqual(rows_of[b["id"]][i]["i"], i)
+
+    def test_a_server_that_keeps_refusing_is_given_up_on_without_asking_on(self):
+        core = DatasetCore(refuse=10 ** 6)
+        with mock.patch.object(bench, "REFUSED_WAIT", 0.01), mock.patch.object(bench, "REFUSED_TRIES", 3):
+            rows_of, errors = bench.fetch_all(core, bench.BENCHMARKS, "quick")
+        self.assertEqual(sorted(errors), sorted(b["id"] for b in bench.BENCHMARKS))
+        self.assertTrue(all("HTTP 429" in why for why in errors.values()))
+        # The ones out when the refusals began, and one try after each wait:
+        # not one for each of the 116 requests.
+        self.assertLessEqual(core.asks, bench.FETCH_AT_ONCE + 3 + 1)
+
+    def test_a_dataset_the_server_will_not_give_is_not_waited_on(self):
+        waits = []
+
+        def pause(core, seconds):
+            waits.append(seconds)
+            return True
+        core = DatasetCore(error="HTTP 404: no such dataset", status=404)
+        with mock.patch.object(bench, "_pause", pause):
+            rows_of, errors = bench.fetch_all(core, [bench.BY_ID["arc"]], "quick")
+        self.assertEqual(errors, {"arc": "HTTP 404: no such dataset"})
+        self.assertEqual(waits, [])
+        self.assertLessEqual(core.asks, bench.FETCH_AT_ONCE)
+
+    def test_a_stop_ends_the_fetch(self):
+        core = DatasetCore(stop_after=5)
+        with mock.patch.object(bench, "FETCH_WAITS", (0.01, 0.01)):
+            rows_of, errors = bench.fetch_all(core, bench.BENCHMARKS, "quick")
+        self.assertLessEqual(core.asks, 5 + bench.FETCH_AT_ONCE)
+        self.assertLess(sum(len(rows) for rows in rows_of.values()), 450)
 
 
 class Scores(unittest.TestCase):
@@ -166,7 +346,14 @@ class FakeCore:
     `at_once` of the items queued at a time, in the order queued."""
 
     def __init__(self, stop_after=None, load_error=None, rows_error=None, rows_fail=0, fits=None, cut=False,
-                 looped=False, at_once=1, fail_after=None, answer_error=None):
+                 looped=False, at_once=1, fail_after=None, answer_error=None, kept=None, refuse=0,
+                 rows_status=None):
+        self.lock = threading.Lock()   # rows are asked from several threads
+        self.kept = kept or {}         # dataset: the pages on disk, as bench.cached lists them
+        self.refuse = refuse           # how many asks for rows are refused (HTTP 429) first
+        self.refused = 0
+        self.rows_status = rows_status # the status rows_error comes with
+        self.asked = []                # (dataset, offset, length) of every ask for rows that was answered
         self.published = []
         self.saved = []
         self.chats = 0
@@ -211,12 +398,22 @@ class FakeCore:
                     "params": 1000000, "quant": "Q4_K_M"}
         if method == "bench.hash":
             return {"sha256": "ab" * 32}
+        if method == "bench.cached":
+            return {"ranges": [list(r) for r in self.kept.get(params["dataset"], [])]}
         if method == "bench.rows":
-            self.rows_asked += 1
-            if self.rows_error:
-                return {"error": self.rows_error}
-            if self.rows_asked <= self.rows_fail:
-                return {"error": "HTTP 503: busy"}
+            with self.lock:
+                self.rows_asked += 1
+                if self.rows_error:
+                    failed = {"error": self.rows_error}
+                    if self.rows_status is not None:
+                        failed["status"] = self.rows_status
+                    return failed
+                if self.rows_asked <= self.rows_fail:
+                    return {"error": "HTTP 503: busy", "status": 503}
+                if self.refused < self.refuse:
+                    self.refused += 1
+                    return {"error": "%s: HTTP 429 Too Many Requests" % params["dataset"], "status": 429}
+                self.asked.append((params["dataset"], params["offset"], params["length"]))
             offset = params["offset"]
             # ARC's fields, and GSM8K's, whose every answer the model gets wrong.
             return {"rows": [{"row_idx": i, "row": {
@@ -346,7 +543,8 @@ class Running(unittest.TestCase):
 
     def test_rows_that_cannot_be_fetched(self):
         core = FakeCore(rows_error="no network")
-        with mock.patch.object(bench, "FETCH_WAITS", (0, 0)):
+        # One request at a time, so the count below is the same every run.
+        with mock.patch.object(bench, "FETCH_WAITS", (0, 0)), mock.patch.object(bench, "FETCH_AT_ONCE", 1):
             self.run_arc(core)
         self.assertEqual(core.chats, 0)
         self.assertEqual(core.saved[-1]["benchmarks"], {})
@@ -369,6 +567,8 @@ class Running(unittest.TestCase):
         loading = [i for i, run in enumerate(core.published) if run["models"][0]["state"] == "loading"]
         self.assertTrue(fetching and loading)
         self.assertLess(max(fetching), min(loading))
+        # Said from the start as a count of the items with their rows.
+        self.assertEqual(core.published[fetching[0]]["fetching"], {"done": 0, "of": 50})
 
 
     def test_every_reply_has_room_to_think(self):

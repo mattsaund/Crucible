@@ -664,7 +664,10 @@ if(CRUCIBLE_BACKEND_DL)
             # These targets carry a PUBLIC_HEADER list for people who install
             # llama.cpp as a library. Crucible only wants the binary, so clear
             # it rather than scatter llama.cpp's headers through the prefix.
-            set_target_properties(${_lib} PROPERTIES PUBLIC_HEADER "")
+            # mtmd also has a PRIVATE_HEADER (its debug header), which a rule
+            # without a place for it warns about at every configure. Cleared
+            # for the same reason.
+            set_target_properties(${_lib} PROPERTIES PUBLIC_HEADER "" PRIVATE_HEADER "")
             # COMPONENT is repeated per artifact kind on purpose. Everything
             # after LIBRARY/RUNTIME applies to that kind alone, so a single
             # trailing COMPONENT would attach to RUNTIME and leave the LIBRARY

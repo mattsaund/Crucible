@@ -490,6 +490,11 @@ struct UiConfig {
     /// month ago. See app/update.hpp.
     bool check_updates = true;
 
+    /// Offer pre-releases and betas too: the check, and Update now, take the
+    /// newest of everything published rather than the newest release. Off
+    /// unless somebody asks for what is not finished.
+    bool prereleases = false;
+
     /// Where Crucible's own source is, when it is not where the running
     /// program was built from: a checkout somebody pointed it at, so that
     /// Crucible can be built on like any other project. See self_source.hpp.

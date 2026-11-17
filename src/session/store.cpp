@@ -117,6 +117,7 @@ json turn_to_json(const Turn& turn) {
     json entry{
         {"prompt", turn.prompt},
         {"reply", turn.reply},
+        {"prompt_tokens", turn.prompt_tokens},
         {"output_tokens", turn.output_tokens},
         {"tokens_per_second", turn.tokens_per_second},
         {"load_ms", turn.load_ms},
@@ -158,6 +159,9 @@ Turn turn_from_json(const json& entry) {
     turn.reply             = entry.value("reply", "");
     turn.reasoning         = entry.value("reasoning", "");
     turn.build             = entry.value("build", "");
+    // Absent from chats saved before it was kept, which read as none: the
+    // line under such a reply says nothing of what went in, as it did.
+    turn.prompt_tokens     = entry.value("prompt_tokens", 0);
     turn.output_tokens     = entry.value("output_tokens", 0);
     turn.tokens_per_second = entry.value("tokens_per_second", 0.0);
     turn.load_ms           = entry.value("load_ms", 0L);

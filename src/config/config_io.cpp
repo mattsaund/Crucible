@@ -338,6 +338,7 @@ json config_to_json(const Config& config) {
         }},
         {"ui", json{
             {"check_updates",  config.ui.check_updates},
+            {"prereleases",    config.ui.prereleases},
             {"source_dir",     config.ui.source_dir},
             {"font",           config.ui.font},
         }},
@@ -474,6 +475,7 @@ void write_default_config(const std::filesystem::path& file) {
         }},
         {"ui", json{
             {"check_updates",  defaults.ui.check_updates},
+            {"prereleases",    defaults.ui.prereleases},
             {"source_dir",     defaults.ui.source_dir},
             {"font",           defaults.ui.font},
         }},
@@ -686,6 +688,7 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
     // passed over rather than warned about, and the next save drops them.
     if (const auto ui = doc.find("ui"); ui != doc.end() && ui->is_object()) {
         read_field(*ui, "check_updates", config.ui.check_updates, "ui", warnings);
+        read_field(*ui, "prereleases", config.ui.prereleases, "ui", warnings);
         read_field(*ui, "source_dir", config.ui.source_dir, "ui", warnings);
         read_field(*ui, "font", config.ui.font, "ui", warnings);
     }
