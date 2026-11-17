@@ -6,7 +6,7 @@ again until the request is done. What is here keeps that loop honest about
 itself: whether a call is one it has already made with nothing changed since,
 whether it changes anything at all, what a RUN that only printed lines of a
 file should have been, and what to tell a model whose reply nearly called a
-tool and did not. It was the cook's, and is the one loop's now.
+tool and did not.
 """
 
 import os
@@ -37,7 +37,8 @@ def clip(text, limit):
 
 def line(text, limit):
     """`text` as one line of at most `limit` characters, for a step's summary:
-    the journal draws a step on a line, and a line break in it is a space there."""
+    the transcript draws an action on a line, and a line break in it is a space
+    there."""
     return clip(" ".join((text or "").split()), limit)
 
 
@@ -66,18 +67,18 @@ def nudge_for(parsed):
 
 # --- the same call again -------------------------------------------------------
 #
-# A chat turn does not run a call it has already made: the answer would be the
-# one it already has, so the model is told that and to use it (the engine's turn
-# loop). A cook or a build shows the model only its last few exchanges, so here
-# a call is a repeat while the earlier one's result is still among them and
-# nothing has changed since: the same verb given the same thing, or the same
-# lines of the same file however they were read. Asked to make a header blue
-# without being told which file, gpt-oss read the page with `sed -n` and
-# grepped it for color names until its rounds ran out.
+# A prompt does not run a call it has already made: the answer would be the
+# one it already has, so the model is told that and to use it. The loop shows
+# the model only its last few exchanges, so a call is a repeat while the
+# earlier one's result is still among them and nothing has changed since: the
+# same verb given the same thing, or the same lines of the same file however
+# they were read. Asked to make a header blue without being told which file,
+# gpt-oss read the page with `sed -n` and grepped it for color names until its
+# rounds ran out.
 #
 # The first repeat is not run, and is answered with REPEAT_NUDGE. The next one
-# in the same piece of work ends the piece, or the task. A change to a file
-# starts the count again.
+# has the loop answer from what it has. A change to a file starts the count
+# again.
 
 REPEAT_NUDGE = ("You already did exactly that, and its result is above: nothing has changed "
                 "since. Use it, and take a different step. Another repeat ends this {}.")
@@ -280,7 +281,8 @@ def signature(call, root=""):
 
 
 def spoken(call):
-    """A call as the journal names it: the verb, and what it was given."""
+    """A call as the account of what was done names it: the verb, and what it
+    was given."""
     return call.get("kind", "").upper() + ": " + line(call.get("argument") or "", 80)
 
 

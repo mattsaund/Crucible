@@ -254,14 +254,12 @@ def system_prompt(params, seat, tools=True):
         # Only when the tool is switched on. An expert told it can search when
         # it cannot will offer to, which is worse than not having the tool.
         text += params.get("search_tools", "")
-    # The same tools a cook gets, in an ordinary chat turn. There used to be a
-    # line here: cooking could change the project and chatting could only talk
-    # about it. That was never a distinction anybody asked for -- "fix the typo
-    # in README" is a sentence, not a goal worth starting a cook for, and the
-    # answer to it is the edit. What separates the two is how long they run
-    # and how they end, not what they may touch. The permission is the folder,
-    # answered once, in the terms it is about: with none trusted, there are no
-    # tools to list.
+    # Every tool the folder allows, in every turn. There used to be a line
+    # here: a cook could change the project and a chat could only talk about
+    # it. That was never a distinction anybody asked for -- "fix the typo in
+    # README" is a sentence, and the answer to it is the edit. The permission
+    # is the folder, answered once, in the terms it is about: with none
+    # trusted, there are no tools to list.
     return text + seat.get("tools", "")
 
 

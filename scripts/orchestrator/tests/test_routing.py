@@ -281,7 +281,7 @@ class Delegator(unittest.TestCase):
         self.assertAlmostEqual(out.confidence, expected, places=6)
 
     def test_a_delegator_lost_halfway_routes_on_keywords_and_is_let_go(self):
-        # Freed between two calls by a build taking a seat, it failed the
+        # Freed between two calls by an expert taking its room, it failed the
         # route outright. The route carries on by keywords now, and closes
         # what it opened either way.
         class Lost(FakeCore):
@@ -338,7 +338,7 @@ class Delegator(unittest.TestCase):
         core = FakeCore(scores)
         routing.route(core, request("why is the sky blue", method="thirds,blurbs,requests,task-lean"))
         # Started from the first, the third and the fifth seat; the lean
-        # measured on four content-free prompts in each order, the task among
+        # measured on four content-free prompts in each order, the step among
         # them; then the question in each.
         self.assertEqual(sorted(set(firsts)), ["Biology", "Mathematics", "Physics"])
         self.assertEqual(core.calls.count("delegator.score"), 3 * 4 + 3)
@@ -356,16 +356,16 @@ class Delegator(unittest.TestCase):
         self.assertTrue(plain.formatted[-1][0]["content"].startswith("You label a question"))
         self.assertNotIn({"role": "user", "content": "Code in many languages"}, plain.formatted[-1])
 
-    def test_a_builds_task_is_routed_on_the_descriptions_alone(self):
-        # The worked questions are questions, and a build's task is work: a
-        # small delegator shown them sent CSS styling to Writing.
+    def test_a_step_handed_on_is_routed_on_the_descriptions_alone(self):
+        # The worked questions are questions, and the next step of a prompt is
+        # work: a small delegator shown them sent CSS styling to Writing.
         core = FakeCore(lambda q, labels: [0.0] * len(labels))
         routing.route(core, request("CSS styling: Style the app", tasks=True))
         self.assertTrue(core.formatted)
         for messages in core.formatted:
             self.assertEqual([m["role"] for m in messages], ["system", "user"])
             self.assertIn("PROG  Programming: Code in many languages", messages[0]["content"])
-        # A question is still shown them, and "worked" shows them to a task
+        # A question is still shown them, and "worked" shows them to a step
         # again, for crucible-routebench to compare.
         for asked in ({}, {"tasks": True, "method": "worked"}):
             routing.ModelRouter._prefix.clear()
@@ -373,17 +373,17 @@ class Delegator(unittest.TestCase):
             routing.route(core, request("CSS styling: Style the app", **asked))
             self.assertIn({"role": "assistant", "content": "Programming"}, core.formatted[-1])
 
-    def test_a_builds_task_has_a_tenth_of_the_lean_taken_out(self):
+    def test_a_step_handed_on_has_a_tenth_of_the_lean_taken_out(self):
         def scores(question, labels):
             if question in routing.CONTENT_FREE:
                 return [8.0 if label == "Mathematics" else 0.0 for label in labels]
             return [2.0 if label == "Mathematics" else 1.0 if label == "Physics" else 0.0 for label in labels]
-        # 2 - 0.8 against 1 for a task; 2 - 2 against 1 for a question.
+        # 2 - 0.8 against 1 for a step; 2 - 2 against 1 for a question.
         self.assertEqual(routing.TASK_CALIBRATION, 0.1)
         self.assertEqual(routing.route(FakeCore(scores), request("a task", tasks=True)).expert, "mathematics")
         routing.ModelRouter._bias.clear()
         self.assertEqual(routing.route(FakeCore(scores), request("a question")).expert, "physics")
-        # A calibration asked for is the one used, task or not.
+        # A calibration asked for is the one used, step or not.
         routing.ModelRouter._bias.clear()
         out = routing.route(FakeCore(scores), request("a task", tasks=True, calibration=0.25))
         self.assertEqual(out.expert, "physics")

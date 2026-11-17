@@ -861,13 +861,12 @@ namespace {
 /// The request in flight, so that it can be stopped from another thread.
 /// The requests in flight, so Stop reaches the ones it means.
 ///
-/// Several at once: a build's agents ask their providers side by side, and a
-/// chat turn may be asking another while they do. Each request is entered
-/// with the cancel switch of whoever made it, and interrupt() aborts the ones
-/// whose switch is now on -- Stop in the chat does not cut an agent off
-/// halfway through a file, and stopping a build leaves the chat alone. A
-/// request entered with no switch is aborted by any interrupt, which is what
-/// shutting down wants.
+/// Several at once: a chat turn asks its provider while the API server asks
+/// another. Each request is entered with the cancel switch of whoever made
+/// it, and interrupt() aborts the ones whose switch is now on -- Stop in the
+/// chat does not cut off what the server is answering. A request entered
+/// with no switch is aborted by any interrupt, which is what shutting down
+/// wants.
 struct Flight {
     struct Entry {
         http::Stream*  stream = nullptr;
@@ -951,10 +950,11 @@ std::string listed(const std::vector<std::string>& names) {
 
 /// One model at one provider.
 ///
-/// Asked from more than one thread at a time -- a build's agents share a
-/// provider's model -- so what it learns as it goes, the facts and the
-/// quirks, is kept under a lock and copied out for each request. A request
-/// itself holds no lock: two agents asking Claude at once is the point.
+/// Asked from more than one thread at a time -- the chat and the API server
+/// share a provider's model -- so what it learns as it goes, the facts and
+/// the quirks, is kept under a lock and copied out for each request. A
+/// request itself holds no lock: two callers asking Claude at once is the
+/// point.
 ///
 /// Except for a server on this machine, which answers one request at a time
 /// and is asked one at a time: two requests to MLX's server at once is two
@@ -1400,8 +1400,8 @@ std::string fingerprint(const std::vector<Provider>& providers) {
 // Hub
 // ---------------------------------------------------------------------------
 
-/// Under one lock, because the build's agents and the chat ask for models
-/// from their own threads.
+/// Under one lock, because the chat and the API server ask for models from
+/// their own threads.
 ///
 /// A client is never destroyed while Crucible runs, only retired: adopt()
 /// is a settings change, and an agent may be halfway through a request on

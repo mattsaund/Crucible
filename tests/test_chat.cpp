@@ -237,7 +237,7 @@ public:
 
         engine_ = std::make_unique<Engine>(config, state_, [this] { woken(); });
         if (with_project) {
-            engine_->set_project(project_, dir_.path() / "history");
+            engine_->set_project(project_);
         }
         engine_->start();
     }

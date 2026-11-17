@@ -18,9 +18,9 @@
 // template (see LoadedModel::open_chat). A provider's model and an MLX one
 // are asked as the chat asks them: text and pictures.
 //
-// The chat and a build go on all the while. A request waits for whoever has
-// the model, and says what it waits for; nothing the app is doing waits on a
-// request longer than the model takes to answer it.
+// The chat goes on all the while. A request waits for whoever has the model,
+// and says what it waits for; nothing the app is doing waits on a request
+// longer than the model takes to answer it.
 #include "crucible/engine/engine.hpp"
 
 #include <algorithm>
@@ -160,9 +160,6 @@ std::string Engine::serve_blocker() const {
     if (benching()) {
         return "the benchmark";
     }
-    if (cooking()) {
-        return "the build";
-    }
     if (is_busy()) {
         return "the chat";
     }
@@ -246,7 +243,7 @@ serve::Answer Engine::serve_request(const serve::Ask& ask, const serve::Sink& si
         if (host_->router() == nullptr) {
             sink.waiting("loading");
             ensure_router(cancel);
-            if (!is_busy() && !cooking()) {
+            if (!is_busy()) {
                 state_.set_mood(Mood::Idle);   // load_router left it saying it was loading
             }
         }
@@ -327,7 +324,7 @@ Engine::HeldModel Engine::hold_served(const ModelParams& params, const ExpertId&
                                                     : name + " did not load" + (error.empty() ? std::string() : ": " + error);
         return held;
     }
-    if (!is_busy() && !cooking() && !resident) {
+    if (!is_busy() && !resident) {
         state_.set_mood(Mood::Idle);   // the load said so on the status line, and is over
     }
     // Somebody else holding it is somebody answering with it: the model takes
@@ -562,7 +559,7 @@ serve::Answer Engine::serve_embeddings(const serve::Ask& ask, const serve::Sink&
         if (host_->router() == nullptr) {
             sink.waiting("loading");
             ensure_router(cancel);
-            if (!is_busy() && !cooking()) {
+            if (!is_busy()) {
                 state_.set_mood(Mood::Idle);
             }
         }

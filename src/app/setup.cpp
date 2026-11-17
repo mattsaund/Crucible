@@ -100,7 +100,7 @@ void Setup::start() {
     if (!lab::python::installed()) {
         if (const std::optional<lab::python::Build> build = lab::python::build_here()) {
             items.push_back({"python", "Python " + build->version, Item::State::Waiting,
-                             "routing and cooks run on it", -1.0F, build->bytes});
+                             "routing and the chat run on it", -1.0F, build->bytes});
         }
     }
     // One look at the runtimes folder for all of them: this runs before the

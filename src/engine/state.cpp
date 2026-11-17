@@ -41,7 +41,6 @@ Snapshot AppState::snapshot() const {
     copy.mood     = mood_;
     copy.status   = status_;
     copy.roster   = roster_;
-    copy.cook     = cook_;
     copy.bench    = bench_;
     copy.pending_edit = pending_edit_;
     copy.context_used = context_used_;
@@ -182,11 +181,6 @@ void AppState::set_linked(std::optional<ExpertId> id) {
     }
 }
 
-void AppState::set_cook(std::shared_ptr<const Cook> cook) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    cook_ = std::move(cook);
-}
-
 void AppState::set_bench(std::shared_ptr<const nlohmann::json> bench) {
     const std::lock_guard<std::mutex> lock(mutex_);
     bench_ = std::move(bench);
@@ -288,25 +282,6 @@ void AppState::add_action(std::size_t turn, TurnAction action) {
     if (turn < turns_.size()) {
         writable(turn).actions.push_back(std::move(action));
     }
-}
-
-void AppState::set_build(std::size_t turn, std::string id) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    if (turn < turns_.size()) {
-        writable(turn).build = std::move(id);
-    }
-}
-
-std::optional<std::size_t> AppState::turn_of_build(const std::string& id) const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    // Looked for rather than remembered: a turn before it can be deleted
-    // while the build runs, and its place moves with it.
-    for (std::size_t i = turns_.size(); !id.empty() && i-- > 0;) {
-        if (turns_[i]->build == id) {
-            return i;
-        }
-    }
-    return std::nullopt;
 }
 
 void AppState::finish_turn(std::size_t turn, const GenerationStats& stats, long load_ms) {

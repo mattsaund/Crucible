@@ -20,7 +20,6 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "crucible/config/config.hpp"
-#include "crucible/cook/journal.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/routing/router.hpp"
 #include "crucible/routing/expert.hpp"
@@ -121,13 +120,6 @@ struct Turn {
     /// and none of the code. It is kept now, for the life of the turn.
     std::vector<TurnAction> actions;
     std::optional<RouteDecision> route;
-
-    /// The build this message became, by its journal's id, or empty for a
-    /// turn that was answered. The journal is the turn's body while the
-    /// build runs and after (the window reads it from the project's cooks).
-    /// `reply` is what the build left, what was built and which files, set
-    /// when it ends so the turns after it know what is there.
-    std::string            build;
     bool                   streaming = false;
     bool                   canceled = false;
     bool                   failed    = false;
@@ -304,15 +296,6 @@ struct Snapshot {
     /// The edit waiting on an answer, or nothing. See PendingEdit.
     std::shared_ptr<const PendingEdit> pending_edit;
 
-    /// The cook in progress, or nothing.
-    ///
-    /// A shared pointer for the same reason the roster is one: it grows to
-    /// hundreds of steps over an hour, and copying that into every frame to
-    /// draw the last twenty of them would be the most expensive thing on the
-    /// screen. The engine publishes a new one after each step; the renderer
-    /// reads whichever it was handed.
-    std::shared_ptr<const Cook> cook;
-
     /// The benchmark run in progress or just ended, as the orchestrator
     /// publishes it: which models, which benchmarks, how far, how well. JSON
     /// as it comes, since nothing on this side reads it but the page.
@@ -361,12 +344,6 @@ public:
 
     /// Record something this turn did. See Turn::actions.
     void add_action(std::size_t turn, TurnAction action);
-
-    /// Say that `turn` became the build `id`. See Turn::build.
-    void set_build(std::size_t turn, std::string id);
-
-    /// The turn that became the build `id`, when one did and is still there.
-    std::optional<std::size_t> turn_of_build(const std::string& id) const;
 
     /// The expert work is flowing to, or nothing between turns.
     void set_linked(std::optional<ExpertId> id);
@@ -436,9 +413,6 @@ public:
     void set_busy(bool busy);
     bool busy() const;
 
-    /// Publish the cook in progress, or nothing when one ends.
-    void set_cook(std::shared_ptr<const Cook> cook);
-
     /// Publish a benchmark run's progress.
     void set_bench(std::shared_ptr<const nlohmann::json> bench);
 
@@ -474,7 +448,6 @@ private:
     std::uint64_t                        turn_clock_ = 0;
     std::vector<std::string>             notices_;
     bool                                 busy_ = false;
-    std::shared_ptr<const Cook>          cook_;
     std::shared_ptr<const nlohmann::json> bench_;
     std::shared_ptr<const PendingEdit>   pending_edit_;
     int                                  context_used_ = 0;

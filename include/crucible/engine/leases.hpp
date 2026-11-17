@@ -5,14 +5,14 @@
 // One local model at a time was the whole memory argument of the engine: an
 // expert is freed before the next is loaded, so the peak is the larger of
 // the two and never their sum. That holds as long as one thing at a time
-// wants a model. A build's agents and the chat want them together -- one
-// agent on a local coder while another waits on Claude, the chat asking a
-// question while the build works -- and freeing the model one of them is
-// halfway through a sentence with is not a memory policy, it is a crash.
+// wants a model. The chat, the API server and a benchmark run can want them
+// together -- the server answering another program while the chat answers a
+// question -- and freeing the model one of them is halfway through a sentence
+// with is not a memory policy, it is a crash.
 //
-// So a model in use is leased: a lease is taken when a seat takes the model
-// and dropped when the seat lets it go, and the host frees only what nobody
-// holds a lease on. When a model is wanted that will not fit beside the ones
+// So a model in use is leased: a lease is taken when somebody takes the model
+// and dropped when they let it go, and the host frees only what nobody holds
+// a lease on. When a model is wanted that will not fit beside the ones
 // leased, the asker waits for a lease to end rather than pushing a model out
 // from under somebody. With nothing leased, nothing changes: the next model
 // still frees the last one first.

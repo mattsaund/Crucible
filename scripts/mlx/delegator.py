@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """An MLX model as Crucible's delegator.
 
-The delegator routes each message to an expert and decides whether it is
-answered or built. It does that by scoring rather than writing. Every
+The delegator routes each message to an expert, and the next step of a
+prompt when it is handed on. It does that by scoring rather than writing. Every
 expert's name is weighed as the text that follows the prompt, and the most
 likely one wins (LoadedModel::score_labels in src/llm/loaded_model.cpp). A
 chat API only generates, and gives no probabilities for text it is handed,
@@ -51,8 +51,8 @@ from collections import OrderedDict
 PROTOCOL = sys.stdout
 
 # How many instruction prefixes are kept read, as the core's scorer keeps
-# them (kKeptPrompts). A route asks with three orders of the roster, and a
-# build's tasks and the answer-or-build question have prompts of their own.
+# them (kKeptPrompts). A route asks with three orders of the roster, and the
+# next step of a prompt is routed in three more of its own.
 KEPT_PREFIXES = 6
 
 # How many tokens are read at once. A long prompt read whole asks for its

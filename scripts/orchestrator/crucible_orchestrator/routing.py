@@ -16,12 +16,12 @@ Measured with crucible-routebench in 1.0.0, with each order's prompt kept
 between routes, LFM2.5-1.2B and LFM2.5-2.6B on an RTX 4070 and gpt-oss-20b
 whole on an RTX 5060 Ti: on Crucible's 54-prompt benchmark, 49/54, 51/54 and
 52/54; on the five seats of tools/routes/five-seats.json, 48/50, 49/50 and
-50/50; and on tools/routes/build-tasks.json, the tasks a build hands out,
-worded the way it words them and routed the way it routes them, 27/31, 27/31
-and 30/31. Those were 19, 22 and 29 while a build's tasks were routed the way
-questions are: both LFMs gave the "CSS styling" tasks to Writing under every
-wording and order until the seats' worked questions stopped being shown beside
-them (see ModelRouter). The card matters to a close call: gpt-oss-20b given
+50/50; and on tools/routes/steps.json, steps of work of the kind a prompt
+hands on to another expert, routed the way a handoff routes them, 27/31, 27/31
+and 30/31. Those were 19, 22 and 29 while a step was routed the way a question
+is: both LFMs gave the "CSS styling" steps to Writing under every wording and
+order until the seats' worked questions stopped being shown beside them (see
+ModelRouter). The card matters to a close call: gpt-oss-20b given
 12 of its 24 layers on the 4070 routed all 54 of the benchmark in 0.9.6. See
 ModelRouter and Roster.orders for why three orders rather than one. LFM's
 54-prompt score was 50 while its later labels were scored behind the ones
@@ -42,15 +42,15 @@ PINNED = "pinned"
 # examples per subject the benchmark no longer separates 0, 0.25 and 0.5 --
 # all score 50/54 -- and a quarter is the one that held up best with one.
 # Whether a tenth does better depends on the card more than on the
-# delegator. Measured again in 0.9.6, with build tasks worded as 0.9.5 worded
-# them, gpt-oss-20b routed all 31 with it on an RTX 3060 against 28 with a
+# delegator. Measured again in 0.9.6, on the steps of tools/routes/steps.json,
+# gpt-oss-20b routed all 31 with it on an RTX 3060 against 28 with a
 # quarter, and 29 against 30 on an RTX 4070; LFM2.5-1.2B, 48 of the 54
 # against 49 on the 3060 and 50 against 49 on the 4070. A quarter stays.
 CALIBRATION = 0.25
 
-# And of the lean on a build's task, which is routed on the seats'
-# descriptions alone (see ModelRouter): a tenth. On tools/routes/
-# build-tasks.json it routed 27 of the 31 tasks with LFM2.5-1.2B, 27 with
+# And of the lean on the next step of a prompt, which is routed on the seats'
+# descriptions alone (see ModelRouter): a tenth. On tools/routes/steps.json
+# it routed 27 of the 31 steps with LFM2.5-1.2B, 27 with
 # LFM2.5-2.6B and 30 with gpt-oss-20b, against 25, 25 and 30 with a quarter
 # and 27, 26 and 30 with none (1.0.0).
 TASK_CALIBRATION = 0.1
@@ -59,11 +59,11 @@ TASK_CALIBRATION = 0.1
 # these is not about a question, because there is none: it is its prior.
 CONTENT_FREE = ("N/A", "", "...")
 
-# And a build's task with no content, its needs and title joined the way
-# build.routed_on joins them, for crucible-routebench's "task-lean". A task
-# is not a question, and the lean measured on questions need not be the one
-# a delegator has on tasks. Measured in 0.9.6, it changed none of LFM2.5-1.2B's
-# scores.
+# And a step with no content, worded as the steps of tools/routes/steps.json
+# are (what it needs, then what it is), for crucible-routebench's "task-lean".
+# A step of work is not a question, and the lean measured on questions need
+# not be the one a delegator has on steps. Measured in 0.9.6, it changed none
+# of LFM2.5-1.2B's scores.
 CONTENT_FREE_TASK = "N/A: N/A"
 
 
@@ -119,11 +119,11 @@ class Roster:
 
         Those three are not even on three seats: the first is shown last twice
         and the second never. LFM leans away from the seat shown last (on one
-        CSS task Programming's score fell by 3.6 in log-probability from first
+        CSS step Programming's score fell by 3.6 in log-probability from first
         to last) and gpt-oss towards it. `thirds`, for crucible-routebench's
         "thirds", turns the list a third of the way round each time instead,
         which shows three seats each first, between and last once. LFM scored
-        50/54 and 48/50 with it, and 20/31 on the build tasks with and without
+        50/54 and 48/50 with it, and 20/31 on the steps with and without
         Programming's examples, against 49, 48, 19 and 18. But gpt-oss sent two
         physics questions on the five seats to Chemistry with it, whatever the
         calibration from none to a half (48/50 against 49/50), so it is not the
@@ -147,9 +147,9 @@ class Roster:
         # for the subject's name, which is what is scored; the tag stays beside
         # it, where reading the list as a labeled menu is worth 6 points.
         # `requests`, for crucible-routebench's "requests", names what is
-        # labeled a request: a build's tasks are work to do, not questions.
-        # With it LFM routed 20 of the 31 build tasks against 19, but 17
-        # against 18 without Programming's examples (0.9.6).
+        # labeled a request: a step handed on is work to do, not a question.
+        # With it LFM routed 20 of the 31 steps against 19, but 17 against 18
+        # without Programming's examples (0.9.6).
         prompt = ("You label a %s with the one subject it belongs to.\n"
                   "Reply with only the subject's name.\n\n") % ("request" if requests else "question")
         for i in order if order is not None else range(len(self.experts)):
@@ -175,11 +175,11 @@ class Roster:
         about in its description first, examples or not. A small delegator
         goes by the worked turns far more than by the list above them (see
         ModelRouter.conversation), the examples a delegator writes are
-        questions where a build's tasks are work, and a description such as
+        questions where a step handed on is work, and a description such as
         Programming's names the work: HTML and CSS, shell, tests. With it LFM
-        routed 19 of the 31 build tasks with Programming's examples and 19
-        without them, against 19 and 18 (0.9.6), and every "CSS styling" task
-        still went to Writing.
+        routed 19 of the 31 steps with Programming's examples and 19 without
+        them, against 19 and 18 (0.9.6), and every "CSS styling" step still
+        went to Writing.
         """
         asked = [[q for q in e.get("examples") or [] if q] for e in self.experts]
         if blurbs:
@@ -295,23 +295,24 @@ class ModelRouter:
         # "thirds" turns it by thirds (Roster.orders), "blurbs" asks about
         # every seat in its description too (Roster.asked), "requests" names
         # what is labeled a request (Roster.system_prompt), "task-lean"
-        # measures the lean on a task as well (CONTENT_FREE_TASK), and
-        # "worked" shows a build's task the worked questions too.
+        # measures the lean on a step as well (CONTENT_FREE_TASK), and
+        # "worked" shows a step the worked questions too.
         methods = set((method or "").split(","))
         self.orders = roster.orders(1 if "single" in methods else 3, thirds="thirds" in methods)
         self.blurbs = "blurbs" in methods
         self.requests = "requests" in methods
         self.content_free = CONTENT_FREE + ((CONTENT_FREE_TASK,) if "task-lean" in methods else ())
-        # A build's tasks are routed on what each seat says it does, with no
-        # worked questions. Those are questions where a task is work to do
-        # ("CSS styling: Style the app"), and a small delegator goes by them
-        # far more than by the list above them (see conversation). Shown them,
-        # both LFMs gave the "CSS styling" tasks of tools/routes/
-        # build-tasks.json to Writing under every wording and order; shown
-        # the descriptions alone, where Programming's names HTML and CSS,
-        # LFM2.5-1.2B gave every one of them to Programming. LFM2.5-1.2B then
-        # routed 27 of the 31 tasks against 19, LFM2.5-2.6B 27 against 22, and
-        # gpt-oss-20b 30 against 29, at TASK_CALIBRATION (1.0.0).
+        # The next step of a prompt, handed on to whoever fits it, is routed
+        # on what each seat says it does, with no worked questions. Those are
+        # questions where a step is work to do ("CSS styling: Style the app"),
+        # and a small delegator goes by them far more than by the list above
+        # them (see conversation). Shown them, both LFMs gave the "CSS
+        # styling" steps of tools/routes/steps.json to Writing under every
+        # wording and order; shown the descriptions alone, where Programming's
+        # names HTML and CSS, LFM2.5-1.2B gave every one of them to
+        # Programming. LFM2.5-1.2B then routed 27 of the 31 steps against 19,
+        # LFM2.5-2.6B 27 against 22, and gpt-oss-20b 30 against 29, at
+        # TASK_CALIBRATION (1.0.0).
         self.worked = not tasks or "worked" in methods
 
     def shown(self, order):
@@ -476,9 +477,10 @@ def let_go(core):
 
 
 def router_for(core, roster, ready, request):
-    """The delegator's router for a request. One with "tasks" set is a build's
-    task, routed on the seats' descriptions with a tenth of the lean taken
-    out (see ModelRouter); a "calibration" in the request is used either way."""
+    """The delegator's router for a request. One with "tasks" set is the next
+    step of a prompt, handed on, and is routed on the seats' descriptions with
+    a tenth of the lean taken out (see ModelRouter); a "calibration" in the
+    request is used either way."""
     tasks = bool(request.get("tasks"))
     calibration = float(request.get("calibration", TASK_CALIBRATION if tasks else CALIBRATION))
     return ModelRouter(core, roster, ready.get("path", ""), calibration, request.get("method", ""), tasks)

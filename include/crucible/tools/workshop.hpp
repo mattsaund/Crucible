@@ -6,8 +6,8 @@
 // something up, and asking the user a question -- and, beyond the folder, the
 // things a person at this machine can do that an expert building software
 // needs too: read a page off the web, use git and GitHub, run Python, leave a
-// server running, and see and work the screen. Together with the cook and
-// build loops these are what make Crucible able to work on a project over an
+// server running, and see and work the screen. Together with the loop a prompt
+// is worked in, these are what make Crucible able to work on a project over an
 // hour instead of answering one question about it.
 //
 // Three things are load-bearing here and none of them is the tool list.
@@ -79,13 +79,13 @@ enum class ToolKind {
     Run,     ///< RUN: <command>, in the project root but not confined to it;
              ///< RUN bash: / RUN powershell: and so on name the shell
     Search,  ///< SEARCH: <query>
-    Ask,     ///< ASK: <question>   -- pauses the cook for an answer
-    Note,    ///< NOTE: <what it is doing>, journalled and shown, no effect
+    Ask,     ///< ASK: <question>   -- a question for the person, not run
+    Note,    ///< NOTE: <what it is doing>, shown, no effect
     Done,    ///< DONE: <summary>   -- this piece of work is finished
-    /// HANDOFF: <the next piece of work> -- ends the iteration and sends that
-    /// line back through the delegator, which may put a different expert in the
-    /// seat. How a programming expert that has finished the code says the next
-    /// thing needed is documentation.
+    /// HANDOFF: <the next step> -- sends that line through the delegator,
+    /// which may put a different expert in the seat to carry on with it. How a
+    /// programming expert that has finished the code says the next thing
+    /// needed is documentation.
     Handoff,
 
     Fetch,      ///< FETCH: <url>        -- a page off the web, as its text
@@ -134,8 +134,8 @@ struct ToolResult {
     /// not what it says at rest.
     std::string detail;
 
-    /// Paths this call changed, relative to the root. The journal's record of
-    /// what a cook actually did to the project.
+    /// Paths this call changed, relative to the root. The record of what a
+    /// prompt actually did to the project.
     std::vector<std::string> changed;
 
     /// Pictures the call produced -- a screenshot, a READ of a picture -- for
@@ -195,9 +195,9 @@ struct WorkshopSettings {
     /// offers none. See mcp.hpp.
     mcp::Hub* mcp = nullptr;
 
-    /// How long a single command may take before it is killed. A build is
-    /// minutes; a command that has not finished in this long is stuck, and a
-    /// cook that waits forever on it has stopped cooking.
+    /// How long a single command may take before it is killed. A build of a
+    /// project is minutes; a command that has not finished in this long is
+    /// stuck, and a prompt that waits forever on it has stopped working.
     int run_timeout_seconds = 120;
 
     /// How much of a command's output comes back to the model.
@@ -315,31 +315,22 @@ private:
 /// Do it.
 ///
 /// Blocking -- a RUN can take the whole timeout -- so call it from the engine
-/// thread. `cancel` is checked while a command runs, which is what makes
-/// Ctrl-C during a cook stop the build rather than wait for it.
+/// thread. `cancel` is checked while a command runs, which is what makes Stop
+/// during a prompt stop the command rather than wait for it.
 ///
-/// ToolKind::Ask and ToolKind::Done are not executed here: they are answers to
-/// the cook loop rather than actions, and it handles them.
+/// ToolKind::Ask, ToolKind::Done and ToolKind::Handoff are not executed here:
+/// they are answers to the loop rather than actions.
 ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
                     const SearchSettings& search, const CancelCallback& cancel);
 
-/// Who the instructions are being written for.
-///
-/// The verbs are the same either way; what differs is how the work ends. A cook
-/// runs until it says DONE or HANDOFF, and those lines are answers to the loop
-/// rather than actions. A chat turn ends when the expert stops calling tools and
-/// writes something for the person who asked -- so telling it about DONE would
-/// invite it to end a reply with a status line instead of an answer, and telling
-/// it about HANDOFF would offer it a seat change that chat has no way to make.
-enum class ToolAudience {
-    Cook,  ///< the cook loop: DONE and HANDOFF are how a piece of work ends
-    Chat,  ///< one turn: the answer is how it ends
-};
-
 /// What to add to an expert's system prompt so it knows the workshop is there.
-/// Lists only the verbs the settings and the audience actually allow.
-std::string workshop_instructions(const WorkshopSettings& settings,
-                                  ToolAudience audience);
+/// Lists only the verbs the settings actually allow.
+///
+/// A turn ends when the expert stops calling tools and writes something for
+/// the person who asked, so DONE is not offered: it would invite a reply that
+/// ends in a status line instead of an answer. HANDOFF is, since the next step
+/// can go to another expert mid-prompt.
+std::string workshop_instructions(const WorkshopSettings& settings);
 
 /// The shells RUN may name, and the argv that runs `command` in `shell`.
 /// Empty when `shell` is not one of them.

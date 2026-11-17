@@ -1,26 +1,27 @@
 // SPDX-License-Identifier: MIT
 //
-// The orchestrator: routing and the cook loop, in Python, in a process of its own.
+// The orchestrator: routing and the loop a prompt is worked in, in Python, in a
+// process of its own.
 //
-// DIRECTION.md's rule is each layer in the language it is good in, and
-// orchestration -- deciding which expert answers, driving a cook pass after
-// pass -- is where an idea should take an afternoon rather than a build. So it
+// The rule is each layer in the language it is good in, and orchestration --
+// deciding which expert answers, driving a prompt round after round -- is
+// where an idea should take an afternoon rather than a build. So it
 // lives in scripts/orchestrator, runs on Crucible's own Python, and talks to
 // the core over a pipe: one JSON object per line on its standard input and
 // output. See scripts/orchestrator/crucible_orchestrator/rpc.py for the shapes.
 //
 // The core keeps what must not be duplicated or guessed at: which model is
 // resident and on which card, what the user has trusted, the tools that touch
-// the disk, the journal the window draws. The orchestrator asks for those, in
-// the middle of answering what it was asked.
+// the disk, the transcript the window draws. The orchestrator asks for those,
+// in the middle of answering what it was asked.
 //
-// Both sides may have many calls outstanding at once. The chat's routing and
-// a build run side by side, and a build's agents each ask for their own
-// rounds, so a call is matched to its answer by id rather than by being the
-// only one waiting, and every request the orchestrator makes is answered on a
-// thread of its own: one agent waiting on its model does not hold up another
-// agent's tool, or the chat's routing. What a handler touches is the engine's
-// to guard, and it does -- see engine.hpp.
+// Both sides may have many calls outstanding at once. A chat turn and a
+// benchmark run side by side, and a conversation is named between them, so a
+// call is matched to its answer by id rather than by being the only one
+// waiting, and every request the orchestrator makes is answered on a thread
+// of its own: a turn waiting on its model does not hold up the benchmark's
+// answers. What a handler touches is the engine's to guard, and it does --
+// see engine.hpp.
 //
 // A protocol rather than embedding an interpreter: a crash in Python is a
 // process that went away and is started again on the next call, not a crash

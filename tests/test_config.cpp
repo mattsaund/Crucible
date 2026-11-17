@@ -616,6 +616,52 @@ TEST(the_config_shape_the_readme_documents_actually_loads) {
     }
 }
 
+TEST(a_config_from_when_a_message_could_become_a_build_loads_with_nothing_said) {
+    TempDir dir;
+    const auto file = dir.path() / "config.json";
+    {
+        // As the 1.0.0 pre-releases wrote it: a "build" section, with values
+        // that were out of range for it then, and a seat a build made for
+        // itself, marked so. Nothing reads either now, and neither is a thing
+        // to warn the person about.
+        const nlohmann::json old{
+            {"models_dir", dir.path().string()},
+            {"experts", nlohmann::json::array({
+                {{"id", "programming"}, {"name", "Programming"}, {"blurb", "code, apps and tests"}, {"model", ""}},
+                {{"id", "css-styling"}, {"name", "CSS Styling"}, {"blurb", "CSS styling"}, {"model", ""},
+                 {"origin", "build"}},
+            })},
+            {"tools", {{"auto_edits", true}}},
+            {"build", {{"architect", "programming"}, {"worker_model", "worker-27b.gguf"},
+                       {"worker_provider", ""}, {"auto_commit", true}, {"confirm_plan", false},
+                       {"rounds_per_task", 900}, {"agents", 12}, {"split", true}}},
+        };
+        std::ofstream(file) << old.dump(2);
+    }
+
+    std::vector<std::string> warnings;
+    Config config = load_config(file, warnings);
+    CHECK(warnings.empty());
+    for (const std::string& warning : warnings) {
+        std::printf("      warned: %s\n", warning.c_str());
+    }
+    // The seat a build made is an expert like any other, and the rest of the
+    // file is read as it always was.
+    CHECK_EQ(config.roster.size(), std::size_t{2});
+    CHECK(config.roster.find("css-styling").has_value());
+    CHECK(config.tools.auto_edits);
+
+    // The next save leaves out what nothing reads.
+    CHECK(save_config(config, file));
+    std::ifstream in(file);
+    const nlohmann::json saved = nlohmann::json::parse(in, nullptr, false);
+    CHECK(saved.is_object());
+    CHECK(!saved.contains("build"));
+    for (const nlohmann::json& expert : saved.value("experts", nlohmann::json::array())) {
+        CHECK(!expert.contains("origin"));
+    }
+}
+
 TEST(an_ejected_expert_does_not_come_back_on_the_next_load) {
     TempDir dir;
     const auto file = dir.path() / "config.json";

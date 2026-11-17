@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 //
-// The project as a place: its files, its version control, a preview of what
-// it shows, and what a build has recorded of its agents' work.
+// The project as a place: its files, its version control, and a preview of
+// what it shows.
 //
-// What the Build view draws beside the agents. A person watching a build
-// wants to click a file an agent just wrote and read it, see what changed
-// since the last commit, commit or push it themselves, and see the page the
-// build is making -- none of which asks anything of the engine, so nearly all
-// of this is lookups, answered on a worker while the window keeps drawing.
+// What the panes beside the conversation draw. A person watching an expert
+// work wants to click a file it just wrote and read it, see what changed
+// since the last commit, commit or push it themselves, and see the page it
+// is making -- none of which asks anything of the engine, so nearly all of
+// this is lookups, answered on a worker while the window keeps drawing.
 #include "methods.hpp"
 
 #include <algorithm>
@@ -51,7 +51,7 @@ bool project_of(const Scene& scene, std::filesystem::path& root, Reply& refusal)
 // ---------------------------------------------------------------------------
 
 /// A fingerprint of a file's bytes: what the editor read, so a save can tell
-/// whether something else -- an agent, another program -- wrote the file
+/// whether something else -- an expert, another program -- wrote the file
 /// since. FNV-1a: enough to tell two versions of a file apart, at no cost.
 std::string fingerprint(std::string_view bytes) {
     std::uint64_t hash = 1469598103934665603ULL;
@@ -189,12 +189,12 @@ Reply project_read(const json& params, const Scene& scene) {
 /// is on the session's thread, in order with whatever the engine is told.
 /// Save a file from the editor.
 ///
-/// Allowed while a build runs: an editor that locks for the length of a
-/// build is not one. What guards against an agent's write is the fingerprint
-/// the editor read: when the file on disk is no longer that, the save is
-/// refused with "changed on disk" and the window asks before overwriting
-/// (`force`). Saving does not wait for anybody; it only refuses to lose work
-/// silently.
+/// Allowed while an expert works: an editor that locks for the length of a
+/// prompt is not one. What guards against an expert's write is the
+/// fingerprint the editor read: when the file on disk is no longer that, the
+/// save is refused with "changed on disk" and the window asks before
+/// overwriting (`force`). Saving does not wait for anybody; it only refuses
+/// to lose work silently.
 Reply project_write(const json& params, Host& host) {
     const std::filesystem::path root = host.project_root();
     if (root.empty()) {
@@ -868,7 +868,7 @@ Reply mcp_status(const json&, Host& host) {
 }
 
 // ---------------------------------------------------------------------------
-// Processes, and what a build recorded
+// Processes
 // ---------------------------------------------------------------------------
 
 Reply processes(const json&, Host& host) {
@@ -892,41 +892,6 @@ Reply process_stop(const json& params, Host& host) {
         return bad(error);
     }
     return good();
-}
-
-/// What builds have kept of their agents' work, per expert: how many
-/// records, and the file, which Create can take as a dataset.
-Reply teach_list(const json&, const Scene& scene) {
-    std::filesystem::path root;
-    Reply refusal;
-    if (!project_of(scene, root, refusal)) {
-        return refusal;
-    }
-    const std::filesystem::path dir = Project::at(root).dir / "teach";
-    json out = json::array();
-    std::error_code ec;
-    if (!std::filesystem::is_directory(dir, ec)) {
-        return good(json{{"experts", out}});
-    }
-    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(dir, ec)) {
-        if (entry.path().extension() != ".jsonl") {
-            continue;
-        }
-        std::ifstream in(entry.path());
-        std::size_t records = 0;
-        std::string line;
-        while (std::getline(in, line)) {
-            records += line.empty() ? 0 : 1;
-        }
-        const std::string id = entry.path().stem().string();
-        const std::optional<std::size_t> seat = scene.config.roster.find(id);
-        out.push_back(json{{"expert", id},
-                           {"name", seat ? scene.config.roster.at(*seat).name : id},
-                           {"records", records},
-                           {"path", entry.path().string()},
-                           {"bytes", static_cast<std::uint64_t>(entry.file_size(ec))}});
-    }
-    return good(json{{"experts", std::move(out)}});
 }
 
 }  // namespace
@@ -964,7 +929,6 @@ void source_methods(std::vector<Method>& table) {
     table.push_back({"mcp.status",         nullptr, mcp_status});
     table.push_back({"processes",          nullptr, processes});
     table.push_back({"process.stop",       nullptr, process_stop});
-    table.push_back({"teach.list",         teach_list, nullptr});
 }
 
 }  // namespace crucible::api

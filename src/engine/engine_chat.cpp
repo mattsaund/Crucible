@@ -28,7 +28,9 @@
 #include <map>
 #include <stdexcept>
 
+#include "crucible/config/paths.hpp"
 #include "crucible/engine/overflow.hpp"
+#include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
 #include "crucible/tools/workshop.hpp"
@@ -50,6 +52,22 @@ tools::SearchSettings search_settings(const Config& config) {
     settings.max_results     = config.tools.search_results;
     settings.timeout_seconds = config.tools.search_timeout;
     return settings;
+}
+
+tools::ToolKind tool_kind_from_name(const std::string& name) {
+    for (const tools::ToolKind kind :
+         {tools::ToolKind::List, tools::ToolKind::Read, tools::ToolKind::Write, tools::ToolKind::Edit,
+          tools::ToolKind::Find, tools::ToolKind::Render, tools::ToolKind::Mcp, tools::ToolKind::Run,
+          tools::ToolKind::Search, tools::ToolKind::Ask, tools::ToolKind::Note, tools::ToolKind::Done,
+          tools::ToolKind::Handoff, tools::ToolKind::Fetch, tools::ToolKind::Git, tools::ToolKind::Gh,
+          tools::ToolKind::Python, tools::ToolKind::Start, tools::ToolKind::Stop, tools::ToolKind::Logs,
+          tools::ToolKind::Screenshot, tools::ToolKind::Click, tools::ToolKind::Move,
+          tools::ToolKind::Type, tools::ToolKind::Key, tools::ToolKind::Scroll}) {
+        if (tools::tool_kind_name(kind) == name) {
+            return kind;
+        }
+    }
+    return tools::ToolKind::None;
 }
 
 Mood mood_named(const std::string& mood) {
@@ -76,18 +94,82 @@ constexpr std::size_t kLoopLook = 16;
 
 }  // namespace
 
+tools::ToolCall Engine::call_from(const json& params) {
+    tools::ToolCall call;
+    call.kind     = tool_kind_from_name(params.value("kind", ""));
+    call.argument = params.value("argument", "");
+    call.content  = params.value("content", "");
+    call.shell    = params.value("shell", "");
+    call.unrun    = params.value("unrun", "");
+    return call;
+}
+
+json Engine::parse_reply(const json& params) {
+    const std::string answer    = params.value("answer", "");
+    const std::string reasoning = params.value("reasoning", "");
+    const std::optional<tools::ToolCall> call = tools::parse_tool_call(answer, reasoning);
+    // And what it asked to look up, if anything. A search is asked for in a
+    // way of its own -- a SEARCH line, or a tool-trained model's own call on
+    // its reasoning channel -- and has bookkeeping of its own. See
+    // web_search.hpp.
+    const std::string search = tools::search_request(answer, reasoning);
+    if (!call) {
+        return json{{"call", nullptr},
+                    {"attempted", std::string(tools::tool_kind_name(
+                                      tools::attempted_tool_call(answer, reasoning)))},
+                    {"search", search}};
+    }
+    // All of it, because the orchestrator hands the call straight back to
+    // turn.tool: without the shell, "RUN powershell:" ran under cmd, and
+    // without `unrun` a second call in the answer went unmentioned.
+    return json{{"call", {{"kind", std::string(tools::tool_kind_name(call->kind))},
+                          {"argument", call->argument},
+                          {"content", call->content},
+                          {"shell", call->shell},
+                          {"unrun", call->unrun}}},
+                {"attempted", "none"},
+                {"search", search}};
+}
+
+void Engine::set_project(std::filesystem::path root) {
+    project_root_ = std::move(root);
+}
+
+tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) const {
+    tools::WorkshopSettings workshop;
+    // Having a root is the permission. It is only ever set to a folder the user
+    // answered the trust question for, and that question is asked in the terms
+    // this is actually about: read, write, run, inside this directory.
+    workshop.enabled             = !root.empty();
+    workshop.root                = root;
+    workshop.allow_run           = !root.empty();
+    {
+        // Under the lock: Settings can be applied while a turn reads these.
+        const std::lock_guard<std::mutex> lock(config_mutex_);
+        workshop.run_timeout_seconds = config_.tools.workshop_timeout;
+        // The rest of what an expert can reach, each behind its own switch.
+        workshop.web              = config_.tools.web_search;
+        workshop.computer_control = config_.tools.computer_control;
+    }
+    workshop.python           = lab::python::installed() ? lab::python::interpreter()
+                                                         : std::filesystem::path();
+    workshop.scratch          = paths::scratch_dir();
+    workshop.processes        = const_cast<tools::Processes*>(&processes_);
+    workshop.mcp              = const_cast<tools::mcp::Hub*>(&mcp_);
+    return workshop;
+}
+
 /// What the core keeps of the chat turn being answered, between the calls the
 /// orchestrator makes of it.
 struct Engine::ChatTurn {
     std::size_t                     index = 0;   ///< the turn, in the transcript
     std::string                     prompt;
     std::vector<attach::Attachment> attachments;
-    std::optional<ExpertId>         pinned;      ///< sent to one seat, for a build it becomes
+    std::optional<ExpertId>         pinned;      ///< sent to one seat
 
     /// The settings as they are when the turn starts, kept for the whole of
-    /// it: a build running beside it can add a seat to the engine's own copy
-    /// at any moment, and a turn read halfway through a change is a turn
-    /// answered by half of two configurations.
+    /// it: Settings can be applied while it runs, and a turn read halfway
+    /// through a change is a turn answered by half of two configurations.
     Config config;
 
     // Who answers, once the turn is routed and the expert seated.
@@ -272,8 +354,8 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             chat->params.n_ctx_most = std::max(chat->params.n_ctx, kWorkContext);
         }
         std::string error;
-        // Held for the whole turn: the lease is what keeps a build's thread
-        // from freeing this model while the turn is answering with it.
+        // Held for the whole turn: the lease is what keeps anybody else from
+        // freeing this model while the turn is answering with it.
         chat->held = hold_model(chat->expert, chat->params, chat->name, cancel, chat->load_ms, error);
         if (chat->held.model == nullptr) {
             return json{{"ok", false}, {"error", error}};
@@ -283,7 +365,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         return json{{"ok", true}, {"remote", chat->params.remote()},
                     {"sees_images", model.sees_images()}, {"takes_effort", model.takes_effort()},
                     {"workshop", chat->workshop.enabled},
-                    {"tools", tools::workshop_instructions(chat->workshop, tools::ToolAudience::Chat)}};
+                    {"tools", tools::workshop_instructions(chat->workshop)}};
     }
 
     if (chat->held.model == nullptr && method != "turn.end" && method != "turn.show") {

@@ -2,7 +2,6 @@
 // crucible-smoke -- one prompt through the whole engine, with no window.
 //
 //   crucible-smoke <delegator.gguf or -> <expert.gguf> "a question"
-//   crucible-smoke --build <expert.gguf> "a directive" ["a question"]
 //
 // Everything a prompt typed into the window goes through, except the window:
 // the orchestrator started on Crucible's Python (or CRUCIBLE_PYTHON), the
@@ -10,20 +9,6 @@
 // in a scratch project folder. It prints the route and the reply, and exits
 // non-zero when the turn failed -- so a platform's whole prompt path can be
 // run where no window can be opened: a CI runner, or Windows code under Wine.
-//
-// With --build it runs a build of the directive instead, with up to three
-// agents, and -- when a question is given -- asks it in the chat while the
-// build is working: the two at once, through the same engine, which is the
-// path a person takes who chats while a build runs. It prints the tasks and
-// the reply, and exits non-zero when the build failed outright or the chat
-// turn did.
-//
-//   crucible-smoke --build-config <config.json> "a directive" ["a question"]
-//
-// The same build on the seats, the delegator and the model for new agents a
-// config names, so a copy of somebody's config builds as their machine
-// would. The plan is taken as it stands, with nobody at a window to confirm
-// it, and so is every write. It prints the seats the build made as well.
 //
 //   crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]
 //
@@ -65,7 +50,6 @@
 #include "crucible/app/setup_runtimes.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/config/paths.hpp"
-#include "crucible/cook/journal.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/llm/loaded_model.hpp"
@@ -344,7 +328,7 @@ int smoke_app(int seconds) {
         std::ofstream out(project / name, std::ios::binary | std::ios::trunc);
         out << text;
     };
-    // A page of the kind a build makes: its title is the program's name, and
+    // A page of the kind an expert makes: its title is the program's name, and
     // its stylesheet and script are files of their own until it is packaged.
     write("index.html",
           "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Crucible Smoke App</title>"
@@ -393,118 +377,6 @@ int smoke_app(int seconds) {
         std::printf("what it printed:\n%s\n", ran.output.c_str());
     }
     return passed ? 0 : 1;
-}
-
-/// A build of `directive` on what `config` names, with `question` asked in
-/// the chat while it works when there is one, given up on after `minutes`.
-int run_build(const Config& config, const std::string& directive, const std::string& question, int minutes) {
-    const std::filesystem::path project = paths::data_dir() / "smoke-build";
-    std::filesystem::remove_all(project);
-    std::filesystem::create_directories(project);
-
-    AppState state;
-    state.configure_seats(config);
-    Engine engine(config, state, [] {});
-    engine.set_project(project, paths::data_dir() / "smoke-build-history");
-    engine.start();
-    if (const std::string refused = engine.start_cook(directive, 0, project, {}, std::nullopt, "build");
-        !refused.empty()) {
-        std::printf("refused: %s\n", refused.c_str());
-        return 1;
-    }
-
-    // The question, once the build has its plan: asked while its agents work.
-    bool asked = question.empty();
-    const auto started = std::chrono::steady_clock::now();
-    for (;;) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        const Snapshot now = state.snapshot();
-        if (!asked && now.cook && !now.cook->tasks.empty()) {
-            std::printf("asking the chat while the build works: %s\n", question.c_str());
-            engine.submit(question);
-            asked = true;
-        }
-        const bool chat_done = question.empty()
-                            || (!now.turns.empty() && !now.turns.back().streaming && !engine.is_busy());
-        if (asked && chat_done && !engine.cooking()) {
-            break;
-        }
-        if (std::chrono::steady_clock::now() - started > std::chrono::minutes(minutes)) {
-            std::printf("timed out\n");
-            engine.cancel_cook();
-            engine.stop();
-            return 1;
-        }
-    }
-    const Snapshot after = state.snapshot();
-    int failed = 0;
-    if (after.cook) {
-        std::printf("build: %s -- %s\n", std::string(cook_state_name(after.cook->state)).c_str(),
-                    after.cook->outcome.substr(0, 400).c_str());
-        // The seats it made, as its notes say them.
-        for (const CookStep& step : after.cook->steps) {
-            if (step.kind == "note" && step.summary.rfind("added ", 0) == 0) {
-                std::printf("  %s\n", step.summary.c_str());
-            }
-        }
-        for (const CookTask& task : after.cook->tasks) {
-            std::printf("  task %d %-10s %s (%s, for %s)\n", task.index + 1, task.state.c_str(),
-                        task.title.c_str(), task.expert.c_str(), task.needs.c_str());
-        }
-        failed = after.cook->state == CookState::Failed ? 1 : 0;
-    }
-    if (!question.empty() && !after.turns.empty()) {
-        const Turn& turn = after.turns.back();
-        // How much it wrote and how much of that was thinking: what the
-        // reasoning effort a chat turn is given changes.
-        std::printf("chat %s (%d tokens, %zu chars thought): %s\n", turn.failed ? "failed" : "reply",
-                    turn.output_tokens, turn.reasoning.size(), turn.reply.substr(0, 400).c_str());
-        failed = failed || turn.failed || turn.reply.empty() ? 1 : 0;
-    }
-    engine.stop();
-    return failed;
-}
-
-/// A build of `directive` on `expert`, with `question` asked in the chat
-/// while it works when there is one. See the file comment.
-int smoke_build(const std::string& expert, const std::string& directive, const std::string& question) {
-    Config config;
-    config.routing.keep_delegator_loaded = false;
-    config.build.confirm_plan = false;
-    config.build.agents       = 3;
-    config.tools.auto_edits   = true;
-    std::string error;
-    for (const auto& [name, blurb] :
-         {std::pair<const char*, const char*>{"Programming", "Code, programs, scripts and tests"},
-          {"Writing", "Documentation, READMEs and prose"}}) {
-        Expert seat;
-        seat.name  = name;
-        seat.blurb = blurb;
-        if (!config.roster.add(seat, error)) {
-            std::printf("could not add %s: %s\n", name, error.c_str());
-            return 1;
-        }
-    }
-    for (const Expert& seat : config.roster.experts()) {
-        config.experts[seat.id].model = std::filesystem::absolute(expert).string();
-    }
-    config.resolve_models();
-    return run_build(config, directive, question, 30);
-}
-
-/// A build of `directive` on the seats `file` names. See the file comment.
-int smoke_build_config(const std::filesystem::path& file, const std::string& directive,
-                       const std::string& question) {
-    std::vector<std::string> warnings;
-    Config config = load_config(file, warnings);
-    for (const std::string& warning : warnings) {
-        std::printf("config: %s\n", warning.c_str());
-    }
-    config.build.confirm_plan = false;   // nobody at a window to confirm it
-    config.tools.auto_edits   = true;
-    config.resolve_models();
-    // A whole machine's build, with as many agents and rounds as it has.
-    return run_build(config, directive, question, 240);
 }
 
 /// `model` through the Bench at `size`, on the benchmarks named in `only`
@@ -625,20 +497,12 @@ int main(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "--app") {
         return smoke_app(argc >= 3 ? std::atoi(argv[2]) : 60);
     }
-    if (argc >= 4 && std::string(argv[1]) == "--build") {
-        return smoke_build(argv[2], argv[3], argc >= 5 ? argv[4] : "");
-    }
-    if (argc >= 4 && std::string(argv[1]) == "--build-config") {
-        return smoke_build_config(argv[2], argv[3], argc >= 5 ? argv[4] : "");
-    }
     if (argc >= 3 && std::string(argv[1]) == "--bench") {
         return smoke_bench(argv[2], argc >= 4 ? argv[3] : "quick", argc >= 5 ? argv[4] : "",
                            argc >= 6 ? std::atof(argv[5]) : 0.0);
     }
     if (argc < 4) {
         std::printf("usage: crucible-smoke <delegator.gguf or -> <expert.gguf> \"a question\"\n"
-                    "       crucible-smoke --build <expert.gguf> \"a directive\" [\"a question\"]\n"
-                    "       crucible-smoke --build-config <config.json> \"a directive\" [\"a question\"]\n"
                     "       crucible-smoke --turns <model.gguf> <count>\n"
                     "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n"
                     "       crucible-smoke --runtime cpu\n"
@@ -682,7 +546,7 @@ int main(int argc, char** argv) {
     AppState state;
     state.configure_seats(config);
     Engine engine(config, state, [] {});
-    engine.set_project(project, paths::data_dir() / "smoke-history");
+    engine.set_project(project);
     engine.start();
     engine.submit(prompt);
 

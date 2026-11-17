@@ -122,8 +122,6 @@ public:
     // --- the project -------------------------------------------------------
 
     /// The trusted project directory, or an empty path when none is open.
-    /// Cook refuses to start without one, and that refusal belongs here
-    /// rather than in each interface.
     virtual std::filesystem::path project_root() const { return {}; }
 
     /// Open a project directory. Returns a reason it could not, or empty.
@@ -271,14 +269,14 @@ private:
     std::unordered_set<std::uint64_t> sent_;
 };
 
-/// The large parts of the snapshot as the page was last sent them: a build's
-/// journal, an edit waiting on an answer, a benchmark run.
+/// The large parts of the snapshot as the page was last sent them: an edit
+/// waiting on an answer, a benchmark run.
 ///
 /// Each is published whole and never changed after, so the same pointer is
 /// the same part. One the page was sent last time is left out of the next
 /// push and named in its "same", and the page keeps the one it has
-/// (ui/shell.js): a journal of two hundred steps was sent whole up to thirty
-/// times a second, for a status line that moved beside it.
+/// (ui/shell.js): a large part was sent whole up to thirty times a second,
+/// for a status line that moved beside it.
 class PageParts {
 public:
     /// Take out of `frame` the parts the page has already, and name them.
@@ -286,8 +284,6 @@ public:
 
 private:
     std::mutex                            mutex_;
-    std::shared_ptr<const Cook>           cook_;
-    long long                             cook_seconds_ = -1;   ///< it says how long it has run
     std::shared_ptr<const PendingEdit>    edit_;
     std::shared_ptr<const nlohmann::json> bench_;
 };

@@ -2,13 +2,14 @@
 //
 // Crucible's own Python.
 //
-// Routing and the cook loop are Python (see orchestra/link.hpp), and so are the
-// trainer and MLX's server. None of that may depend on whatever Python a
-// machine happens to have -- a Mac has none worth the name, Windows has none at
-// all, and a Linux distribution's is the system's, to be left alone. So
-// Crucible fetches one of its own: a standalone CPython build from the
-// python-build-standalone project, the same interpreter on every platform,
-// unpacked into Crucible's data folder and removed by deleting that folder.
+// Routing and the loop a prompt is worked in are Python (see
+// orchestra/link.hpp), and so are the trainer and MLX's server. None of that
+// may depend on whatever Python a machine happens to have -- a Mac has none
+// worth the name, Windows has none at all, and a Linux distribution's is the
+// system's, to be left alone. So Crucible fetches one of its own: a
+// standalone CPython build from the python-build-standalone project, the same
+// interpreter on every platform, unpacked into Crucible's data folder and
+// removed by deleting that folder.
 //
 // Pinned, by version and by SHA-256. A newer build is a deliberate change made
 // here, and a download that does not hash to the digest compiled in beside its

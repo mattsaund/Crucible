@@ -7,8 +7,6 @@
 // the page every time the engine wakes it.
 #include "methods.hpp"
 
-#include "crucible/cook/journal.hpp"
-
 #include <mutex>
 #include <unordered_set>
 
@@ -87,9 +85,6 @@ json turn_json(const Turn& turn) {
     if (!turn.attachments.empty()) {
         out["attachments"] = attachments_json(turn.attachments);
     }
-    if (!turn.build.empty()) {
-        out["build"] = turn.build;   // drawn as the build's journal
-    }
     if (turn.route) {
         // How the decision was reached, not just what it was. "the delegator
         // chose this, 100%" and "nothing chose it, this is the fallback" are
@@ -123,27 +118,6 @@ json attachments_json(const std::vector<attach::Tile>& attachments) {
         out.push_back(json{{"path", one.path}, {"name", one.name}, {"label", one.label}, {"kind", one.kind}});
     }
     return out;
-}
-
-json cook_step_json(const CookStep& step) {
-    json one{{"iteration", step.iteration},
-             {"expert",    step.expert},
-             {"kind",      step.kind},
-             {"summary",   step.summary},
-             {"ok",        step.ok},
-             {"ms",        step.ms}};
-    if (!step.detail.empty())  { one["detail"]  = step.detail; }
-    if (!step.changed.empty()) { one["changed"] = step.changed; }
-    if (!step.picture.empty()) { one["picture"] = step.picture; }
-    if (step.task >= 0)        { one["task"]    = step.task; }
-    return one;
-}
-
-json cook_task_json(const CookTask& task) {
-    return json{{"index",   task.index},   {"title", task.title},     {"detail", task.detail},
-                {"needs",   task.needs},   {"files", task.files},     {"after", task.after},
-                {"expert",  task.expert},  {"state", task.state},     {"outcome", task.outcome},
-                {"started", task.started_unix}, {"ended", task.ended_unix}};
 }
 
 /// The whole drawable state.
@@ -221,11 +195,6 @@ json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
             if (seated && !snapshot.seats[i].provider.empty()) {
                 one["provider"] = snapshot.seats[i].provider;
             }
-            // A seat a build made, so the side menu can list the agents
-            // apart from the experts.
-            if (list[i].made_by_build()) {
-                one["made"] = true;
-            }
             experts.push_back(std::move(one));
         }
     }
@@ -241,47 +210,6 @@ json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
 
     if (snapshot.bench) {
         out["bench"] = *snapshot.bench;
-    }
-    if (snapshot.cook) {
-        const Cook& cook = *snapshot.cook;
-        json steps = json::array();
-        // The tail rather than all of them. An hour's cook is thousands of
-        // steps, the view shows the end of the list, and sending the whole
-        // journal on every wake would be most of the bytes for none of the
-        // information. The full record is on disk and history reads it.
-        const std::size_t keep = 200;
-        const std::size_t from = cook.steps.size() > keep ? cook.steps.size() - keep : 0;
-        for (std::size_t i = from; i < cook.steps.size(); ++i) {
-            steps.push_back(cook_step_json(cook.steps[i]));
-        }
-        json tasks = json::array();
-        for (const CookTask& task : cook.tasks) {
-            tasks.push_back(cook_task_json(task));
-        }
-        out["cook"] = json{
-            {"running",  cook.state == CookState::Working || cook.state == CookState::Asking
-                             || cook.state == CookState::Finishing},
-            {"id",       cook.id},
-            {"kind",     cook.kind},
-            {"goal",     cook.goal},
-            {"plan",     json{{"summary", cook.plan.summary}, {"run", cook.plan.run},
-                              {"check", cook.plan.check}, {"ship", cook.plan.ship}}},
-            {"tasks",    std::move(tasks)},
-            {"attachments", attachments_json(cook.attachments)},
-            {"state",    std::string(cook_state_name(cook.state))},
-            {"question", cook.question},
-            {"outcome",  cook.outcome},
-            {"headline", cook.headline()},
-            {"iterations", cook.iterations},
-            {"started",  cook.started_unix},
-            {"ended",    cook.ended_unix},
-            {"seconds",  static_cast<long long>(cook.duration().count())},
-            {"experts",  cook.experts_used()},
-            {"files",    cook.files_touched()},
-            {"total",    cook.steps.size()},
-            {"shown_from", from},
-            {"steps",    std::move(steps)},
-        };
     }
     if (snapshot.pending_edit) {
         // Both sides of the edit, because the interface draws them side by
@@ -327,16 +255,6 @@ std::string PageTurns::turns_json(const TurnList& turns) {
 json PageParts::keep(Snapshot& frame) {
     const std::lock_guard<std::mutex> lock(mutex_);
     json same = json::array();
-    // A running build's journal says how long it has run, so it is the same
-    // only for as long as that is too: it goes once a second, not thirty times.
-    const long long seconds = frame.cook ? static_cast<long long>(frame.cook->duration().count()) : -1;
-    if (frame.cook && frame.cook == cook_ && seconds == cook_seconds_) {
-        frame.cook.reset();
-        same.push_back("cook");
-    } else {
-        cook_         = frame.cook;
-        cook_seconds_ = seconds;
-    }
     if (frame.pending_edit && frame.pending_edit == edit_) {
         frame.pending_edit.reset();
         same.push_back("pending_edit");

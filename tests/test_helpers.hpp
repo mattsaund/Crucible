@@ -33,7 +33,6 @@
 #include "crucible/llm/model_shape.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
-#include "crucible/cook/journal.hpp"
 #include "crucible/util/diff.hpp"
 #include "crucible/tools/workshop.hpp"
 #include "crucible/util/resources.hpp"
@@ -138,21 +137,6 @@ private:
     static int& counter() { static int n = 0; return n; }
     std::filesystem::path path_;
 };
-
-/// A journal step, built by name. CookStep has grown a field in the middle
-/// more than once, and a positional literal has to be edited every time.
-inline CookStep step_of(int iteration, const char* expert, const char* kind, const char* summary,
-                 bool ok = true, long ms = 0, std::vector<std::string> changed = {}) {
-    CookStep step;
-    step.iteration = iteration;
-    step.expert    = expert;
-    step.kind      = kind;
-    step.summary   = summary;
-    step.ok        = ok;
-    step.ms        = ms;
-    step.changed   = std::move(changed);
-    return step;
-}
 
 /// One seat's state out of a snapshot, found by id rather than by index.
 ///

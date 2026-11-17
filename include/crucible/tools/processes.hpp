@@ -9,10 +9,10 @@
 // the meantime. Each gets a short name -- p1, p2 -- which is what the other
 // verbs take.
 //
-// They belong to the session rather than to a turn or a cook: a server
-// started in a cook is still serving when the chat asks about it, and all of
-// them are stopped when Crucible closes, so nothing is left running behind a
-// window that is gone.
+// They belong to the session rather than to a turn: a server started in one
+// turn is still serving when the next asks about it, and all of them are
+// stopped when Crucible closes, so nothing is left running behind a window
+// that is gone.
 #pragma once
 
 #include <chrono>

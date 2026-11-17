@@ -764,28 +764,34 @@ check     "the program can fetch it by itself" \
           grep -q '"--install-python"' "$HERE/../src/app/cli.cpp"
 
 echo
-echo "  a cook can change hands"
+echo "  a prompt can change hands"
 
 # The verb table specifically, not the instructions -- those name it too, so a
 # grep for the word alone would pass with the verb renamed out from under it.
 check     "HANDOFF is in the verb table" \
           grep -qE '"HANDOFF", +ToolKind::Handoff' "$HERE/../src/tools/workshop.cpp"
-# The loop is the orchestrator's now, in Python, and a handoff goes back
-# through the same route() a prompt does.
-check     "the cook loop re-routes on one" \
-          grep -q 'after = self.take_the_seat(work)' \
-          "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
+# The loop is the orchestrator's, in Python, and a handoff goes through the
+# same route() a prompt does.
+check     "the loop re-routes on one" \
+          grep -q 'taken = self.hand_off(' \
+          "$HERE/../scripts/orchestrator/crucible_orchestrator/chat.py"
 check     "and the delegator decides it, the same way it decides a prompt" \
-          grep -q 'return routing.route(core, {' \
-          "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
+          grep -q 'decision = routing.route(self.core, {' \
+          "$HERE/../scripts/orchestrator/crucible_orchestrator/chat.py"
 # The memory argument for the design: an expert is resident while something
-# holds it, and after that only until a load needs its room. A cook's seat
-# holds its model through the same door a chat turn does, and that door is
+# holds it, and after that only until a load needs its room. A turn holds its
+# expert's model through the one door every seat does, and that door is
 # where the lease and the swap are.
-check     "a cook takes its seat the way a chat turn does" \
-          grep -q 'hold_model(id, seat_params' "$HERE/../src/engine/engine_cook.cpp"
+check     "a turn takes its seat through the door every seat does" \
+          grep -q 'chat->held = hold_model(' "$HERE/../src/engine/engine_chat.cpp"
 check     "an expert is freed for the next when the next needs its room" \
           grep -q 'acquire_expert' "$HERE/../src/engine/engine.cpp"
+# There is no other mode to work in: a message is worked in one loop, not
+# decided into an answer or a build.
+check_not "nothing decides a message into a build" \
+          test -e "$HERE/../scripts/orchestrator/crucible_orchestrator/intent.py"
+check_not "and there is no build loop beside the chat's" \
+          test -e "$HERE/../scripts/orchestrator/crucible_orchestrator/build.py"
 
 echo
 echo "  no runtimes are installed (continued)"

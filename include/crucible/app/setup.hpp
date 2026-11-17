@@ -9,7 +9,7 @@
 // of those a Python the machine might not have. Now the window does it, in the
 // order things are needed:
 //
-//   1. Crucible's own Python, which routing and cooks run on (lab/python.hpp);
+//   1. Crucible's own Python, which routing and the chat run on (lab/python.hpp);
 //   2. the compute runtimes this machine can use -- the CPU always, CUDA with
 //      NVIDIA's libraries where there is an NVIDIA driver, Metal or Vulkan;
 //   3. the programs an expert reaches for that the machine lacks -- see

@@ -540,4 +540,12 @@ TEST(every_file_of_the_orchestrator_is_compiled_in) {
             }
         }
     }
+    // And nothing the folder no longer has: a module taken out of it, as the
+    // build loop's were, goes from both lists too.
+    for (const std::string& name : written) {
+        CHECK(std::filesystem::exists(source / name));
+        if (!std::filesystem::exists(source / name)) {
+            std::printf("      %s is compiled in but not in the folder\n", name.c_str());
+        }
+    }
 }

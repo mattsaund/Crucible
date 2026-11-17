@@ -445,28 +445,42 @@ TEST(a_turns_thinking_is_kept_so_a_reopened_conversation_can_show_it) {
     CHECK(!saved["turns"][1].contains("reasoning"));
 }
 
-TEST(a_message_that_became_a_build_is_kept_with_its_build_even_before_it_has_a_reply) {
+TEST(a_conversation_from_when_a_message_could_become_a_build_opens_as_what_it_left) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
 
     SessionStore store(Project::current());
-    // The build still running: no reply yet, and kept all the same, so a
-    // conversation closed mid-build opens with the build where it was. An
-    // ordinary turn with no reply is still not worth a line.
-    std::vector<Turn> turns{finished_turn("make me a todo app", "", 0),
-                            finished_turn("and nothing came", "", 0)};
-    turns[0].build = "20261026-210000";
+    std::vector<Turn> turns{finished_turn("make me a todo app", "Made index.html and app.js.", 0),
+                            finished_turn("now add dark mode", "Done: a toggle in the header.", 0)};
     std::string error;
     CHECK(store.save(turns, TokenUsage{}, error));
 
+    // The first as a build wrote it: its journal's id beside what it left.
+    const std::filesystem::path file = store.project().dir / "sessions" / (store.session_id() + ".json");
+    nlohmann::json saved;
+    {
+        std::ifstream in(file);
+        saved = nlohmann::json::parse(in);
+    }
+    saved["turns"][0]["build"] = "20261026-210000";
+    std::ofstream(file, std::ios::trunc) << saved.dump();
+
+    // Nothing reads the id: the turn opens as its prompt and what the build
+    // left, which is what the turns after it were about.
     std::vector<Turn> loaded;
     TokenUsage loaded_usage;
     CHECK(store.load(store.session_id(), loaded, loaded_usage, error));
-    CHECK_EQ(loaded.size(), std::size_t{1});
-    if (!loaded.empty()) {
-        CHECK_EQ(loaded[0].build, std::string("20261026-210000"));
-        CHECK_EQ(loaded[0].reply, std::string());
+    CHECK_EQ(loaded.size(), std::size_t{2});
+    if (loaded.size() == 2) {
+        CHECK_EQ(loaded[0].prompt, std::string("make me a todo app"));
+        CHECK_EQ(loaded[0].reply, std::string("Made index.html and app.js."));
+        CHECK_EQ(loaded[1].reply, std::string("Done: a toggle in the header."));
     }
+    // And the next save leaves it out.
+    CHECK(store.save(loaded, TokenUsage{}, error));
+    std::ifstream in(file);
+    const nlohmann::json again = nlohmann::json::parse(in);
+    CHECK(!again["turns"][0].contains("build"));
 }
 
 TEST(every_route_source_survives_a_round_trip_through_its_name) {

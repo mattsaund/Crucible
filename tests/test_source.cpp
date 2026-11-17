@@ -256,7 +256,7 @@ TEST(the_project_methods_read_inside_the_project_and_refuse_outside_it) {
     // With no project, every one of them says so rather than reading the disk.
     api::Host     nobody;
     api::Surface  bare(nobody);
-    for (const char* method : {"project.tree", "project.read", "git.status", "preview.candidates", "teach.list"}) {
+    for (const char* method : {"project.tree", "project.read", "git.status", "preview.candidates"}) {
         const nlohmann::json reply = ask(bare, {{"method", method}, {"params", {{"path", "x"}}}});
         CHECK(reply["ok"] == false);
     }
@@ -326,17 +326,6 @@ TEST(what_a_page_saves_in_the_preview_is_there_after_a_restart) {
     // A file that was not written whole is as good as none.
     write(folder / "storage.json", "{\"rows\": \"[3");
     CHECK(!kept(root, "index.html")["result"].contains("local"));
-}
-
-TEST(a_build_is_started_through_the_same_door_as_a_cook) {
-    api::Host    nobody;
-    api::Surface surface(nobody);
-    const nlohmann::json reply = ask(surface, {{"method", "build.start"}, {"params", {{"directive", "a todo app"}}}});
-    // No engine: refused the way cook.start is, not as an unknown method.
-    CHECK(reply["ok"] == false);
-    CHECK(reply["error"].get<std::string>().find("no method") == std::string::npos);
-    const nlohmann::json empty = ask(surface, {{"method", "build.start"}});
-    CHECK(empty["error"].get<std::string>().find("directive") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
