@@ -910,8 +910,9 @@ std::string measured_shortfall(const std::vector<CardNeed>& need,
             continue;
         }
         const std::uint64_t wants = need[index].total() + runtime_allowance(gpu);
-        // The same margin vram_shortfall keeps for a desktop that moves.
-        const std::uint64_t reserve = 128ULL << 20;
+        // The same margin vram_shortfall keeps for a desktop that moves, and
+        // the one a plan from a dry run's figures aims at.
+        const std::uint64_t reserve = kMeasuredHeadroom;
         const std::uint64_t room    = gpu.memory_free > reserve ? gpu.memory_free - reserve : 0;
         if (wants <= room) {
             continue;
@@ -1013,7 +1014,7 @@ ggml_backend_dev_t projector_card(const std::filesystem::path& file, const mtmd_
     bare.warmup = false;
     const std::uint64_t weights = dry_run(file, bare, nullptr).bytes;
     // The same margin measured_shortfall keeps for a desktop that moves.
-    const std::uint64_t reserve = 128ULL << 20;
+    const std::uint64_t reserve = kMeasuredHeadroom;
     const auto          wants   = [&](std::uint64_t figure) {
         const std::uint64_t buffers = figure > weights ? figure - weights : 0;
         const std::uint64_t larger  = processor.most_tokens > 0 ? 2 * buffers : 0;
@@ -1069,19 +1070,41 @@ void note(const std::string& line) {
 
 /// `params` divided over `cards` as refresh_gpu_split divides it over the
 /// cards as they are: for the cards as they would be, with memory given back
-/// to them or set aside on them.
-ModelParams planned_on(ModelParams params, const GpuConfig& gpu, const std::vector<ComputeDevice>& cards) {
+/// to them or set aside on them. From `fit` when there is one, and from the
+/// header when not.
+ModelParams planned_on(ModelParams params, const GpuConfig& gpu, const std::vector<ComputeDevice>& cards,
+                       const ModelFit* fit = nullptr) {
     const SplitPolicy policy = split_policy(gpu, params, cards);
     if (cards.empty() || policy.mode == GpuSplitMode::Auto) {
         return params;
     }
-    const GpuPlan plan = plan_gpu_split(policy.mode, cards, policy.order, gpu.main_gpu, model_fit(params));
+    const GpuPlan plan = plan_gpu_split(policy.mode, cards, policy.order, gpu.main_gpu,
+                                        fit != nullptr ? *fit : model_fit(params));
     if (!plan.split.empty()) {
         params.tensor_split  = plan.split;
         params.main_gpu      = gpu.main_gpu;
         params.split_planned = true;
     }
     return params;
+}
+
+/// `cards` as a plan sees them once the desktop's card gives up its room
+/// (kDisplayRoom), as if none of them drew the desktop.
+std::vector<ComputeDevice> without_room(std::vector<ComputeDevice> cards) {
+    for (ComputeDevice& card : cards) {
+        card.display = false;
+    }
+    return cards;
+}
+
+/// The last `count` of `fit`'s units, the ones a load with `count` layers on
+/// the cards puts there, since llama.cpp leaves the first ones on the
+/// processor.
+ModelFit last_units(const ModelFit& fit, int count) {
+    ModelFit part = fit;
+    part.units.assign(fit.units.end() - count, fit.units.end());
+    part.resident = std::accumulate(part.units.begin(), part.units.end(), std::uint64_t{0});
+    return part;
 }
 
 /// How a load fits: not at all, with the whole cache, or with the window
@@ -1506,40 +1529,79 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
             // planned for every layer, cut short, filled the card that ran
             // out first and left the rest part empty -- 2.5 GB of a 16 GB
             // card unused under flint, with six layers on the processor.
-            const ModelFit whole = model_fit(params);
-            const auto     tried = [&](int count) {
-                ModelParams trial  = params;
-                trial.n_gpu_layers = count;
-                if (divided(params, gpu_) && whole.units.size() == static_cast<std::size_t>(layers) + 1) {
-                    ModelFit part     = whole;
-                    part.units.assign(whole.units.end() - count, whole.units.end());
-                    part.resident     = std::accumulate(part.units.begin(), part.units.end(), std::uint64_t{0});
-                    refresh_gpu_split(trial, gpu_, part);
-                }
-                return trial;
-            };
+            const ModelFit whole    = model_fit(params);
+            const bool     planning = divided(params, gpu_) && whole.units.size() == static_cast<std::size_t>(layers) + 1;
+            const bool     desktop  = std::any_of(cards.begin(), cards.end(),
+                                                  [](const ComputeDevice& card) { return card.display; });
             // `fits` holds on the cards and `over` does not; one past the
             // repeating layers is the output layer, which the whole asked for.
             int fits = 0;
             int over = layers + 1;
             std::vector<CardNeed> best;
             ModelParams           chosen = params;
-            while (over - fits > 1) {
-                const ModelParams trial = tried((fits + over) / 2);
+            // One count tried. It is planned from `from` where the plan is
+            // Crucible's, held to the margins by a dry run, and kept when it
+            // fits. A plan that kept the desktop's room and does not fit is
+            // tried again without it, since the room is kept only when the
+            // layers fit beside it, and that is the dry run's to say.
+            const auto take = [&](int count, const ModelFit& from) {
+                ModelParams trial  = params;
+                trial.n_gpu_layers = count;
+                const ModelFit part = planning ? last_units(from, count) : ModelFit{};
+                if (planning) {
+                    trial = planned_on(trial, gpu_, cards, &part);
+                }
                 std::vector<CardNeed> got = measured_need(trial, cards);
-                if (!got.empty() && measured_shortfall(got, cards, 0, {}).empty()) {
-                    fits   = trial.n_gpu_layers;
+                bool holds = !got.empty() && measured_shortfall(got, cards, 0, {}).empty();
+                if (!holds && planning && desktop) {
+                    ModelParams bare = planned_on(trial, gpu_, without_room(cards), &part);
+                    if (bare.tensor_split != trial.tensor_split) {
+                        got   = measured_need(bare, cards);
+                        holds = !got.empty() && measured_shortfall(got, cards, 0, {}).empty();
+                        trial = std::move(bare);
+                    }
+                }
+                if (holds) {
+                    fits   = count;
                     best   = std::move(got);
-                    chosen = trial;
-                } else {
-                    over = trial.n_gpu_layers;
+                    chosen = std::move(trial);
+                }
+                return holds;
+            };
+            while (over - fits > 1) {
+                const int count = (fits + over) / 2;
+                if (!take(count, whole)) {
+                    over = count;
+                }
+            }
+            // The header sets 512 MiB aside on every card for its buffers,
+            // and a dry run of flint partly on the processor measured 345 on
+            // the first card, 84 on the next and 306 on the last, the
+            // output's. Planned from what the dry run of the count found
+            // measured, each card's own buffers and the dry run's own
+            // margins, a layer more can fit, 45 of flint's 49 on three cards
+            // rather than 44. The count found is planned so first, which
+            // keeps the desktop's room where the header's figures gave it up
+            // and the layers fit beside it. Then a count more is tried at a
+            // time, each a dry run held to the margins, from what the last
+            // one that fitted measured.
+            const auto measured = [&] {
+                const auto on = static_cast<std::size_t>(fits);
+                return calibrated_fit(whole, llama_layer_assignment(chosen.tensor_split, on), best,
+                                      runtime_allowance(cards), whole.units.size() - on);
+            };
+            if (planning && fits > 0) {
+                take(fits, measured());
+                while (fits <= layers && take(fits + 1, measured())) {
                 }
             }
             params              = fits > 0 ? chosen : params;
             params.n_gpu_layers = fits;
             need                = std::move(best);
-            note(std::filesystem::path(params.path).filename().string() + ": " + std::to_string(fits) + " of "
-                 + std::to_string(layers) + " layers on the cards, the rest on the processor");
+            const std::string file = std::filesystem::path(params.path).filename().string();
+            note(fits > layers ? file + ": all " + std::to_string(layers) + " layers on the cards, planned from a dry run"
+                               : file + ": " + std::to_string(fits) + " of " + std::to_string(layers)
+                                     + " layers on the cards, the rest on the processor");
         }
     }
 
@@ -1549,18 +1611,18 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
     // a card without the output. Planned again from what a dry run measured,
     // the split packs the cards first in the order closer to full. It is used
     // only when a dry run of it fits every card with the margins the refusal
-    // below keeps, so no card is handed more than it holds. Not for a model
-    // only partly on the cards: the packing plans every layer.
+    // below keeps, so no card is handed more than it holds. A model only
+    // partly on the cards was planned from a dry run as its layers were
+    // counted, above.
     if (divided(params, gpu_) && params.n_gpu_layers < 0) {
         const ModelFit fit = model_fit(params);
         if (!fit.units.empty() && need.empty()) {
             need = measured_need(params, cards);
         }
         if (!fit.units.empty() && !need.empty()) {
-            ModelParams packed = params;
-            refresh_gpu_split(packed, gpu_,
-                              calibrated_fit(fit, llama_layer_assignment(params.tensor_split, fit.units.size()),
-                                             need, runtime_allowance(cards)));
+            const ModelFit measured = calibrated_fit(fit, llama_layer_assignment(params.tensor_split, fit.units.size()),
+                                                     need, runtime_allowance(cards));
+            ModelParams packed = planned_on(params, gpu_, cards, &measured);
             if (packed.tensor_split != params.tensor_split) {
                 std::vector<CardNeed> checked = measured_need(packed, cards);
                 if (!checked.empty() && measured_shortfall(checked, cards, 0, {}).empty()) {
