@@ -445,6 +445,43 @@ TEST(a_turns_thinking_is_kept_so_a_reopened_conversation_can_show_it) {
     CHECK(!saved["turns"][1].contains("reasoning"));
 }
 
+TEST(a_reopened_answer_still_says_how_much_went_in) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    SessionStore store(Project::current());
+    std::vector<Turn> turns{finished_turn("summarize this file", "It reads a config.", 41)};
+    turns[0].prompt_tokens = 779;
+    std::string error;
+    CHECK(store.save(turns, TokenUsage{}, error));
+
+    std::vector<Turn> loaded;
+    TokenUsage usage;
+    CHECK(store.load(store.session_id(), loaded, usage, error));
+    CHECK_EQ(loaded.size(), std::size_t{1});
+    if (!loaded.empty()) {
+        CHECK_EQ(loaded[0].prompt_tokens, 779);   // the "779 in" under the reply
+        CHECK_EQ(loaded[0].output_tokens, 41);
+    }
+
+    // A chat saved before the count was kept opens with none, not a failure.
+    const std::filesystem::path file = store.project().dir / "sessions" / (store.session_id() + ".json");
+    nlohmann::json saved;
+    {
+        std::ifstream in(file);
+        saved = nlohmann::json::parse(in);
+    }
+    CHECK_EQ(saved["turns"][0].value("prompt_tokens", 0), 779);
+    saved["turns"][0].erase("prompt_tokens");
+    std::ofstream(file) << saved.dump();
+    loaded.clear();
+    CHECK(store.load(store.session_id(), loaded, usage, error));
+    CHECK_EQ(loaded.size(), std::size_t{1});
+    if (!loaded.empty()) {
+        CHECK_EQ(loaded[0].prompt_tokens, 0);
+        CHECK_EQ(loaded[0].reply, std::string("It reads a config."));
+    }
+}
+
 TEST(a_message_that_became_a_build_is_kept_with_its_build_even_before_it_has_a_reply) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
