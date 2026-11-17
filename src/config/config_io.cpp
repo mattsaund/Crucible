@@ -319,6 +319,7 @@ json config_to_json(const Config& config) {
             {"search_results",  config.tools.search_results},
             {"search_timeout",  config.tools.search_timeout},
             {"search_rounds",   config.tools.search_rounds},
+            {"actions",         config.tools.actions},
             {"auto_edits",       config.tools.auto_edits},
             {"overflow",         config.tools.overflow},
             {"workshop_timeout", config.tools.workshop_timeout},
@@ -455,6 +456,7 @@ void write_default_config(const std::filesystem::path& file) {
             {"search_results",  defaults.tools.search_results},
             {"search_timeout",  defaults.tools.search_timeout},
             {"search_rounds",   defaults.tools.search_rounds},
+            {"actions",         defaults.tools.actions},
             {"auto_edits",       defaults.tools.auto_edits},
             {"overflow",         defaults.tools.overflow},
             {"workshop_timeout", defaults.tools.workshop_timeout},
@@ -647,6 +649,7 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*tools, "search_results",  config.tools.search_results,  "tools", warnings);
         read_field(*tools, "search_timeout",  config.tools.search_timeout,  "tools", warnings);
         read_field(*tools, "search_rounds",   config.tools.search_rounds,   "tools", warnings);
+        read_field(*tools, "actions",         config.tools.actions,         "tools", warnings);
         read_field(*tools, "auto_edits",       config.tools.auto_edits,       "tools", warnings);
         read_field(*tools, "overflow",         config.tools.overflow,         "tools", warnings);
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);

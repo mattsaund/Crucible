@@ -469,13 +469,13 @@ TEST(the_instructions_offer_a_handoff_to_a_cook_and_not_to_a_chat) {
     CHECK(cook.find("HANDOFF:") != std::string::npos);
     CHECK(cook.find("DONE:") != std::string::npos);
 
-    // A chat turn has no seat to hand over and no loop to say DONE to. Offered
-    // them anyway, an expert that has finished the work ends the turn with a
-    // status line, and the person who asked gets "DONE: fixed it" instead of an
-    // answer.
+    // A prompt is worked in one loop, and the next step can go to another
+    // expert, so a chat turn may hand off. It is not told DONE: offered it,
+    // an expert that has finished the work ends the turn with a status line,
+    // and the person who asked gets "DONE: fixed it" instead of an answer.
     const std::string chat =
         tools::workshop_instructions(settings, tools::ToolAudience::Chat);
-    CHECK(chat.find("HANDOFF:") == std::string::npos);
+    CHECK(chat.find("HANDOFF: <the next step>") != std::string::npos);
     CHECK(chat.find("DONE:") == std::string::npos);
 
     // The verbs that act on the project are the same either way: what differs

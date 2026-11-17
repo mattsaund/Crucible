@@ -343,6 +343,12 @@ struct ToolsConfig {
     /// useful; one that does it eight times is stuck.
     int search_rounds = 2;
 
+    /// How many actions one prompt may take: reading a file, changing it and
+    /// running the tests is three. A prompt is worked until what was asked is
+    /// done, so this is the backstop for one that never gets there, not a
+    /// budget it is expected to spend.
+    int actions = 60;
+
     /// Apply a file edit without asking first.
     ///
     /// Off, every WRITE an expert makes in Chat stops and shows you the file as

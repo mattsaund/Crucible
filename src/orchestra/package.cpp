@@ -36,6 +36,8 @@ extern const unsigned char kOrchestratorBenchScore[];
 extern const unsigned int  kOrchestratorBenchScore_size;
 extern const unsigned char kOrchestratorIntent[];
 extern const unsigned int  kOrchestratorIntent_size;
+extern const unsigned char kOrchestratorSteps[];
+extern const unsigned int  kOrchestratorSteps_size;
 }  // namespace embedded
 
 namespace {
@@ -59,6 +61,7 @@ const File kFiles[] = {
     {"bench.py", embedded::kOrchestratorBench, &embedded::kOrchestratorBench_size},
     {"bench_score.py", embedded::kOrchestratorBenchScore, &embedded::kOrchestratorBenchScore_size},
     {"intent.py", embedded::kOrchestratorIntent, &embedded::kOrchestratorIntent_size},
+    {"steps.py", embedded::kOrchestratorSteps, &embedded::kOrchestratorSteps_size},
 };
 
 }  // namespace

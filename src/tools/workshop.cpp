@@ -2887,6 +2887,12 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         }
     }
     text += "NOTE: <what you are doing>  recorded in the log, no other effect\n";
+    if (audience == ToolAudience::Chat) {
+        text +=
+            "HANDOFF: <the next step>   the next step needs another kind of expertise --\n"
+            "                           say what it is, in one line, and an expert for it\n"
+            "                           takes over from here\n";
+    }
     if (audience == ToolAudience::Cook) {
         text +=
             "ASK: <question>            ask the user something you cannot work out\n"
@@ -2920,9 +2926,9 @@ std::string workshop_instructions(const WorkshopSettings& settings,
         // expert that has finished the work and then writes "DONE: fixed it",
         // leaving the person who asked with a status line instead of an answer.
         text +=
-            "\nWhen you have finished, write the answer for the person who asked --"
-            " no verb, no status line. If you need something from them, just ask it"
-            " in the reply.\n";
+            "\nKeep going, one action a reply, until what was asked is done. When it is,"
+            " write the answer for the person who asked -- no verb, no status line. If"
+            " you need something from them, just ask it in the reply.\n";
     }
     // A worked example, because the rules alone are not enough. Told only the
     // shape, models write `WRITE path "a description of the change"` and expect

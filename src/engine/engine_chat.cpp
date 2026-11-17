@@ -23,6 +23,7 @@
 // drop or refuse is the orchestrator's.
 #include "crucible/engine/engine.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <stdexcept>
@@ -31,6 +32,7 @@
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
 #include "crucible/tools/workshop.hpp"
+#include "crucible/util/text.hpp"
 
 namespace crucible {
 namespace {
@@ -58,21 +60,19 @@ Mood mood_named(const std::string& mood) {
                               : Mood::Idle;
 }
 
-/// Whether `root` has anything in it a person put there: a file or a folder
-/// whose name does not start with a dot. The first one found is enough.
-bool has_files(const std::filesystem::path& root) {
-    std::error_code ec;
-    if (root.empty() || !std::filesystem::is_directory(root, ec)) {
-        return false;
-    }
-    for (std::filesystem::directory_iterator it{root, ec}, end; it != end && !ec; it.increment(ec)) {
-        const std::string name = it->path().filename().string();
-        if (!name.empty() && name.front() != '.') {
-            return true;
-        }
-    }
-    return false;
-}
+/// The most context a turn with the tools is given, when the cards hold it.
+/// Its rounds are long: the request, an account of what was done, the tools,
+/// the last few exchanges with the files they read, and the thinking before
+/// the next action, all in one context. A ceiling, not a demand:
+/// ModelHost::load gives what the cards hold of it and never less than the
+/// seat's own context. gpt-oss-20b at 32K is 13.1 GB on a card by its header,
+/// against 12.0 at 8K.
+constexpr int kWorkContext = 32768;
+
+/// How often, in pieces of output, a round looks at whether its reply has
+/// started going round in a loop. Often enough to stop one early, and rarely
+/// enough to cost nothing.
+constexpr std::size_t kLoopLook = 16;
 
 }  // namespace
 
@@ -177,14 +177,10 @@ void Engine::handle(const Request& request) {
     asked["effort"]        = chat->config.reasoning_effort;
     asked["web_search"]    = chat->config.tools.web_search;
     asked["search_rounds"] = chat->config.tools.search_rounds;
+    asked["actions"]       = chat->config.tools.actions;
+    asked["root"]          = project_root_.string();
     asked["search_tools"]  = tools::tool_instructions();
     asked["overflow"]      = chat->config.tools.overflow;
-    // Whether this message may become a build (see the orchestrator's
-    // intent.py), and whether the folder it would be built in has anything
-    // in it yet. Not while a build runs: one at a time, and a message typed
-    // beside one is answered. Nor one sent to be answered whatever it asks.
-    asked["can_build"] = !request.answer_only && !cooking() && !project_root_.empty();
-    asked["files"]     = has_files(project_root_);
 
     {
         const std::lock_guard<std::mutex> lock(chat_mutex_);
@@ -238,25 +234,6 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             || orchestra_.ended(asker);
     };
 
-    // --- or a build ------------------------------------------------------------
-    if (method == "turn.build") {
-        // The message is a build: started now, on its own words and what came
-        // with them, in the folder this turn is about, and sent to the seat
-        // it was sent to when it was. The turn is the build's from here (see
-        // Turn::build), and over for the chat; the build's end is its reply.
-        std::string id;
-        const std::string refused =
-            start_cook(chat->prompt, 0, project_root_, chat->attachments, chat->pinned, "build", &id);
-        if (!refused.empty()) {
-            return json{{"ok", false}, {"error", refused}};
-        }
-        state_.set_build(turn, id);
-        if (wake_) {
-            wake_();
-        }
-        return json{{"ok", true}, {"id", id}};
-    }
-
     // --- who answers ---------------------------------------------------------
     if (method == "turn.route") {
         const json decided = params.value("decision", json::object());
@@ -287,6 +264,13 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // to the raw id on its own.
         chat->name   = expert_label(chat->config.roster, chat->expert);
         chat->params = chat->config.expert(chat->expert);
+        // The tools a turn gets, in a folder the person has trusted. An empty
+        // root is a workshop with nothing in it to offer. A turn that has them
+        // may work for a while, and is given the room for it.
+        chat->workshop = workshop_for(project_root_);
+        if (chat->workshop.enabled) {
+            chat->params.n_ctx_most = std::max(chat->params.n_ctx, kWorkContext);
+        }
         std::string error;
         // Held for the whole turn: the lease is what keeps a build's thread
         // from freeing this model while the turn is answering with it.
@@ -294,10 +278,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         if (chat->held.model == nullptr) {
             return json{{"ok", false}, {"error", error}};
         }
-        const ChatModel& model = *chat->held.model;
-        // The tools a cook gets, in a folder the person has trusted. An empty
-        // root is a workshop with nothing in it to offer.
-        chat->workshop               = workshop_for(project_root_);
+        const ChatModel& model       = *chat->held.model;
         chat->workshop.sees_pictures = model.sees_images();
         return json{{"ok", true}, {"remote", chat->params.remote()},
                     {"sees_images", model.sees_images()}, {"takes_effort", model.takes_effort()},
@@ -372,6 +353,13 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // A paragraph between what the rounds before this one left on screen
         // and what this one says, rather than one run into the other.
         const bool        paragraph    = params.value("paragraph", false);
+        // A round the person does not see: the loop asking the expert what the
+        // next step is, so the delegator can choose who takes it.
+        const bool        quiet        = params.value("quiet", false);
+        // Set once the reply has started going round, a few words or a dot
+        // again and again. Stopped there rather than run to the end of the
+        // context: gpt-oss once wrote 7177 dots.
+        bool              looped       = false;
         bool              first_answer = true;
         std::string       answer;
         std::string       reasoning;
@@ -387,18 +375,27 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             }
             if (!thought.empty()) {
                 reasoning += thought;
-                state_.append_reasoning(turn, thought);
+                if (!quiet) {
+                    state_.append_reasoning(turn, thought);
+                }
             }
             if (!said.empty()) {
                 if (first_answer) {
                     first_answer = false;
-                    state_.set_mood(Mood::Talking, name + " is answering");
-                    if (paragraph) {
-                        state_.append_reply(turn, "\n\n");
+                    if (!quiet) {
+                        state_.set_mood(Mood::Talking, name + " is answering");
+                        if (paragraph) {
+                            state_.append_reply(turn, "\n\n");
+                        }
                     }
                 }
                 answer += said;
-                state_.append_reply(turn, said);
+                if (!quiet) {
+                    state_.append_reply(turn, said);
+                }
+            }
+            if (chat->streamed_chunks % kLoopLook == 0 && !looped) {
+                looped = detail::ends_in_loop(answer) || detail::ends_in_loop(reasoning);
             }
 
             // Recomputing the rate on every token would be noise on screen
@@ -417,7 +414,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         };
 
         ChatSink sink;
-        sink.cancel = cancel;
+        sink.cancel = [&cancel, &looped] { return looped || cancel(); };
         if (model.reasons_inline()) {
             // A reasoning model writes its working before its answer, and on
             // some of them the markers between the two are ordinary visible
@@ -439,8 +436,10 @@ json Engine::serve_turn(const std::string& method, const json& params) {
 
         // Whatever was still held back, waiting to see if it was a marker.
         if (const ResponseFilter::Piece last = filter.flush(); !last.answer.empty() || !last.reasoning.empty()) {
-            state_.append_reasoning(turn, last.reasoning);
-            state_.append_reply(turn, last.answer);
+            if (!quiet) {
+                state_.append_reasoning(turn, last.reasoning);
+                state_.append_reply(turn, last.answer);
+            }
             reasoning += last.reasoning;
             answer += last.answer;
         }
@@ -452,7 +451,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             stats.output_tokens += pass.output_tokens;
             stats.prompt_ms     += pass.prompt_ms;
             stats.output_ms     += pass.output_ms;
-            stats.canceled       = pass.canceled;
+            stats.canceled       = pass.canceled && !looped;
             stats.hit_limit      = pass.hit_limit;
         }
         const Snapshot now = state_.snapshot();
@@ -461,7 +460,8 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                     {"error", outcome.error},
                     {"discard", outcome.discard_partial},
                     {"notes", outcome.notes},
-                    {"canceled", pass.canceled},
+                    {"canceled", pass.canceled && !looped},
+                    {"looped", looped},
                     {"hit_limit", pass.hit_limit},
                     {"output_tokens", pass.output_tokens},
                     {"reply", turn < now.turns.size() ? now.turns[turn].reply : std::string()}};

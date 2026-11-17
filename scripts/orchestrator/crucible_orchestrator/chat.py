@@ -1,31 +1,42 @@
 # SPDX-License-Identifier: MIT
-"""A chat turn: a question, the expert's answer, and the tools in between.
+"""A prompt, worked in one loop until what it asked for is done.
 
-A prompt typed into Chat -- or into the Test window in Create -- is first
-decided: a request to make or change software becomes a build, which the
-core starts on the turn's own words, and the turn is the build's from there
-(see intent.py). Anything else is routed, the expert that wins is seated, and
-it answers. Ordinarily that is one round and the end of it. When the expert
-reaches for a tool instead -- READ a file, RUN the tests, SEARCH the web -- the
-tool is run, what came of it goes back, and the expert goes round again, until
-it writes an answer for the person who asked or the turn runs out of rounds.
+Whatever is typed into Chat (or into the Test window in Create) is routed,
+the expert that wins is seated, and it works. Ordinarily that is one round and
+the end of it: a question, and its answer. When the expert reaches for a tool
+instead (READ a file, WRITE one, RUN the tests, SEARCH the web) the tool is run,
+what came of it goes back, and the expert goes round again, an action a round,
+until it writes an answer for the person who asked. There is no other mode: a
+request to make an app is worked the same way as a question about one, for as
+long as it takes.
 
-Three things are worth knowing before reading it.
+Five things are worth knowing before reading it.
 
 The transcript is the person's, and it is kept readable while the turn works.
 A round that reached for a tool said two things: a sentence for the reader and
-a line for the machine. The line comes off the reply and the sentence stays --
-it is the only explanation of the change that will ever be written -- and what
+a line for the machine. The line comes off the reply and the sentence stays
+(it is the only explanation of the change that will ever be written) and what
 the tool did goes above the reply as an action, with the diff it made or the
 output it printed.
 
-A turn is bounded, because a turn that never writes an answer is a turn the
-person who asked gets nothing from. A dozen actions at most, the same call
-never run twice, a search asked for again refused, and the last round told it
-is the last. A turn that spends its rounds and still reaches for a tool, or
-asks for the same thing twice, is asked once more with no tools offered, to
-answer from what it has. One that ends with a call where its answer should be
-even so says why in words instead.
+The expert can change mid-prompt. When the next step needs another kind of
+expertise, the expert says so with a HANDOFF line, and every few actions the
+loop asks it, out of sight, what the next step is. Either way the delegator
+routes that step, and when another expert fits it better, that one is seated
+and carries on with the same conversation. A prompt sent to one expert stays
+with it.
+
+The context is bounded, and the loop is not. The expert is shown the request,
+an account of what has been done, and the last few exchanges; older ones live
+in the account. So a prompt can take sixty actions without its request being
+pushed out of the window by the files it read along the way.
+
+The loop is honest about itself. The same call made again with nothing changed
+since is not run, a run of actions that goes round the same few steps is told
+so, a reply that nearly called a tool is told what was wrong with it, and one
+that starts repeating itself is stopped. A prompt has a ceiling on its actions
+(Settings, Tools), as a backstop rather than a budget, and the round after it
+answers from what it has.
 
 The core does what only the core may: it seats the expert and holds its model
 for the turn, keeps the conversation the turn belongs to and fits it to the
@@ -38,17 +49,32 @@ about each, is decided here.
 import re
 import sys
 
-from . import intent, routing
+from . import routing, steps
 from .rpc import Disconnected
 
-# How many times one chat turn may act on the project before it has to answer.
-#
-# Higher than the search ceiling and counting a different thing. Reading a
-# file, rewriting it and running the tests is three rounds of honest work; the
-# same number of searches is a model going round in circles. Bounded all the
-# same, because a turn that never writes an answer is a turn the person who
-# asked gets nothing from.
-TOOL_ROUNDS = 12
+# How many actions one prompt may take, when Settings does not say. A backstop,
+# not a budget: a prompt is worked until what was asked is done, and a model
+# that would take more than this is going round, whatever it thinks.
+ACTIONS = 60
+
+# How many of the turn's own messages the expert is shown in full: four actions
+# with their results. Fewer and it forgets the error it was fixing, more and a
+# couple of file listings crowd out the request. The account carries the rest.
+RECENT = 8
+
+# How many lines the account of what was done carries.
+ACCOUNT_LINES = 12
+
+# How many actions pass before the loop asks, out of sight, what the next step
+# is, and lets the delegator choose who takes it. A small model may never hand
+# off, and then a long prompt is one expert doing everything, which is the
+# thing the roster is for. The answer is usually the seat already there, which
+# costs one short round and no reload.
+CHECKPOINT_EVERY = 6
+
+# How many replies in a row may nearly call a tool and not, before the words
+# are taken as the answer.
+NUDGES = 2
 
 # How many past exchanges are replayed to the expert, before the context is
 # consulted. Bounded deliberately: a swapped-in expert reads the whole history
@@ -76,34 +102,58 @@ MARKDOWN = ("\n\nReplies are shown as Markdown. Write math as LaTeX: $...$ in a 
 
 NO_MODEL = "No expert has a model. Add one in Settings, Experts."
 
-# The verbs that act on the project, rather than answer a cook or search the
-# web. SEARCH has a path of its own below. ASK, DONE and HANDOFF are how a cook
-# ends a piece of work and are not offered to a chat turn at all; one that
-# arrives anyway is shown, which is right -- a model that writes "DONE: fixed
-# it" has said something to the reader.
+# The verbs that act on the project. SEARCH has a path of its own below, and so
+# do HANDOFF, which hands the next step to another expert, and DONE, which is
+# not offered but is a way of saying the work is finished all the same.
 PROJECT_VERBS = frozenset((
     "list", "read", "write", "edit", "find", "render", "tool", "run", "note", "fetch", "git",
     "gh", "python", "start", "stop", "logs", "screenshot", "click", "move", "type", "key",
     "scroll"))
 
-ALREADY_DONE = ("You already did exactly that this turn, and its result is above. You have no "
-                "tools left, so answer the question now from what you have, and say plainly if "
-                "it is not enough.")
+# A call made again with nothing changed since, the second time in a prompt.
+ALREADY_DONE = ("You keep making calls you have already made, with nothing changed since, and "
+                "their results are above. Stop calling tools, and answer now from what you "
+                "have: say what you did, and what is left.")
 
-# What the round after the last is told about the call it made instead of
-# answering, which was not run.
-NOT_RUN = ("That was not run. You have no tools left this turn, so answer the question now "
-           "from what you have, and say plainly if it is not enough.")
+# The actions a prompt may take are spent, and the round asked for another.
+NOT_RUN = ("That was not run: this request has used all the actions it may take. Answer now "
+           "from what you have: say what you did, and what is left.")
+
+# A run of actions going round the same few steps with nothing changing.
+CYCLING = ("The last several actions changed nothing and went round the same few steps. "
+           "Take a different approach. If you are stuck, stop calling tools and say what is "
+           "in the way.")
 
 DECLINED = ("The user declined that edit; the file is unchanged. Do not try the same write "
             "again. Either explain what you were going to change and why, or propose "
             "something different.")
 
-LAST_ACTION = ("\n\nThat was the last action available this turn. Write the answer now from "
-               "what you have.")
+LAST_ACTION = ("\n\nThat was the last action this request may take. Write the answer now from "
+               "what you have: what you did, and what is left.")
 
 LAST_SEARCH = ("\n\nThis was the last search available. Answer now from what you have, and say "
                "plainly if it is not enough.")
+
+NO_SEARCH = "There is no web search here. Carry on without it."
+
+# The checkpoint's question, out of sight: the next step, for the delegator.
+NEXT_STEP = ("Before you go on: what is the next step towards what was asked? Say it in one "
+             "line, as\n\nHANDOFF: <the next step>\n\nand nothing else. If it is all done, "
+             "reply DONE: instead.")
+
+# Said to the expert seated for a step another one handed on.
+TAKES_OVER = ("\n\nYou are taking over this request from {} for the next step: {}. The "
+              "conversation so far is above. Carry on from it.")
+
+# Said to an expert that handed off, when nobody fits the step better.
+CARRY_ON = "\n\nNobody else fits the next step better than you. Carry on with it: {}"
+
+# Said to an expert whose prompt was sent to it by name.
+PINNED_ON = "\n\nThis request was sent to you by name, so it stays with you. Carry on."
+
+# A reply that went round in a loop and was stopped.
+REPEATED_ITSELF = ("\n\nYour last reply started repeating itself and was stopped. Write it "
+                   "again, plainly and once.")
 
 TEXT_ONLY = "\n(This model reads text only and cannot see the picture itself.)"
 
@@ -215,23 +265,42 @@ def system_prompt(params, seat, tools=True):
     return text + seat.get("tools", "")
 
 
-def rounds_for(params, workshop):
-    """How many rounds a turn may take.
+def actions_for(params):
+    """How many actions a prompt may take: Settings, Tools, or ACTIONS."""
+    try:
+        return max(1, int(params.get("actions") or ACTIONS))
+    except (TypeError, ValueError):
+        return ACTIONS
 
-    Ordinarily one: the expert answers and that is the end of it. A round only
-    repeats when the expert asked to look something up, and the number of
-    times it may is bounded -- an expert that reads results and searches again
-    is being useful, one that does it eight times is stuck. With the workshop
-    the ceiling is higher and a different thing is being counted: reading a
-    file, changing it and running the tests is three rounds of honest work,
-    where three searches is a model going in circles.
-    """
-    rounds = 1
-    if params.get("web_search"):
-        rounds = max(rounds, int(params.get("search_rounds") or 0) + 1)
-    if workshop:
-        rounds = max(rounds, TOOL_ROUNDS)
-    return rounds
+
+def running_account(done):
+    """What the prompt has done so far, for the top of the window: the loop's
+    memory of itself, once the actions it took are older than the window."""
+    if not done:
+        return ""
+    text = "What has been done for this request so far, oldest first:\n"
+    for step in done[-ACCOUNT_LINES:]:
+        text += "- " + step["summary"] + ("" if step.get("ok", True) else "  (failed)") + "\n"
+    seen, files = set(), []
+    for step in done:
+        for path in step.get("changed") or []:
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
+    if files:
+        text += "Files changed: " + ", ".join(files) + "\n"
+    return text
+
+
+def window(log):
+    """The turn's own messages the expert is shown in full, and where they
+    start in `log`: the last RECENT of them, from an answer of the expert's."""
+    if len(log) <= RECENT:
+        return 0, log
+    start = len(log) - RECENT
+    if log[start]["role"] != "assistant":
+        start += 1
+    return start, log[start:]
 
 
 def dropped_note(dropped):
@@ -260,7 +329,8 @@ def unanswered(shown, parsed, hit_limit):
     if shown and not asked_to_act and not asked_to_search:
         return ""
     if asked_to_act:
-        return "ran out of turns before finishing. Ask again to carry on"
+        return ('used all the actions this request may take. Ask again to carry on, or raise '
+                '"Actions per prompt" in Settings, Tools')
     if asked_to_search:
         return 'kept searching instead of answering. Raise "Searches per prompt" in Settings, Tools'
     if hit_limit:
@@ -281,6 +351,13 @@ class Turn:
         self.params = params
         self.index = params.get("turn", 0)
         self.roster = routing.Roster(params.get("roster"))
+        self.decision = None   # who is seated, as the delegator decided it
+        self.expert = ""
+        self.name = ""
+        self.seat = {}
+        # A note for the next round alone, put after the instructions: who is
+        # taking over, or that a reply was stopped for repeating itself.
+        self.aside = ""
 
     # --- the core's calls -----------------------------------------------------
 
@@ -320,15 +397,6 @@ class Turn:
         params = self.params
         pinned = params.get("pinned") or ""
 
-        # --- what it becomes ---------------------------------------------------
-        #
-        # Before who answers, because a build needs nobody to answer: its
-        # architect is chosen for the plan, and its agents for their tasks.
-        # The core says when a build cannot start (one is running already),
-        # and then the message is a turn like any other.
-        if params.get("can_build") and self.became_a_build():
-            return
-
         # --- who answers -------------------------------------------------------
         try:
             decision = routing.route(self.core, {
@@ -354,7 +422,6 @@ class Turn:
             return
 
         # --- the expert, in its seat ---------------------------------------------
-        name = self.roster.label(decision.expert)
         seat = self.call("turn.load")
         if not seat.get("ok"):
             error = seat.get("error", "")
@@ -365,19 +432,33 @@ class Turn:
             else:
                 self.end("failed", reason=error, mood="error", status=error)
             return
-        self.mood("thinking", name + " is reading")
+        self.decision = decision
+        self.expert = decision.expert
+        self.name = self.roster.label(decision.expert)
+        self.seat = seat
+        self.mood("thinking", self.name + " is reading")
 
         # --- the conversation ----------------------------------------------------
         #
         # What was attached goes above what was typed, so the question comes
-        # after the material it is about -- the order every model reads best.
+        # after the material it is about, the order every model reads best.
         # The core reads it for the seated model: how much of a long document
         # fits is a question about this expert's context.
         if params.get("attachments"):
-            self.mood("thinking", name + " is reading the attachments")
-        opened = self.call("turn.open", {"system": system_prompt(params, seat),
-                                         "history": HISTORY_TURNS * 2, "share": PROMPT_SHARE})
+            self.mood("thinking", self.name + " is reading the attachments")
+        refused = self.open()
+        if refused:
+            self.end("failed", reason=refused, mood="error", status="context full")
+            return
+        self.rounds()
 
+    def open(self):
+        """The conversation, opened for the seated expert and fitted to its
+        context. What was dropped to fit is said; "" when it opened, or why it
+        is refused when the person said to stop rather than drop."""
+        params = self.params
+        opened = self.call("turn.open", {"system": system_prompt(params, self.seat),
+                                         "history": HISTORY_TURNS * 2, "share": PROMPT_SHARE})
         # Does it still fit? Asked once the expert is seated, because only the
         # expert can answer it: the context is the one it was loaded with and
         # the count is its own tokenizer's.
@@ -388,74 +469,141 @@ class Turn:
         if policy == "stop" and used > budget:
             # Refused rather than shortened. The model cannot tell you what it
             # stopped being able to see, so the program says it instead.
-            reason = ('this conversation no longer fits: %d of %d tokens. Raise "Context" in '
-                      'Settings, Generation, or start a new chat.' % (used, size))
-            self.end("failed", reason=reason, mood="error", status="context full")
-            return
+            return ('this conversation no longer fits: %d of %d tokens. Raise "Context" in '
+                    'Settings, Generation, or start a new chat.' % (used, size))
         dropped = int(self.call("turn.fit", {"policy": policy, "budget": budget}).get("dropped") or 0)
         if dropped > 0:
             self.show(actions=[{"summary": dropped_note(dropped)}])
+        return ""
 
-        self.rounds(seat)
+    def could_switch(self, explicit):
+        """Whether the next step may go to another expert: never for a prompt
+        sent to one by name, never with nobody else to go to, and at a
+        checkpoint only with a delegator to choose (keywords read a step's
+        line poorly; a handoff the expert asked for may use them)."""
+        if self.params.get("pinned"):
+            return False
+        seats = self.params.get("seats") or {}
+        if sum(1 for one in seats.values() if (one or {}).get("model")) < 2:
+            return False
+        return explicit or (self.decision is not None and self.decision.source == routing.MODEL)
 
-    def became_a_build(self):
-        """Decide whether this message is a build, and start it when it is.
-
-        True when the turn is over because a build has it now. A decision
-        that could not be made, a Stop while it was, or a build the core
-        would not start leaves the message to be answered, which a turn can
-        always do.
-        """
+    def hand_off(self, work, explicit):
+        """Route the next step, `work`, and seat the expert that wins when it
+        is somebody else. The new expert's name, or "" when the step stays."""
         params = self.params
         try:
-            decided = intent.decide(self.core, {"prompt": params.get("prompt", ""),
-                                                "attachments": params.get("attachments") or [],
-                                                "files": bool(params.get("files"))})
+            decision = routing.route(self.core, {
+                "prompt": work,
+                "pinned": "",
+                "roster": params.get("roster"),
+                "seats": params.get("seats"),
+                "routing": params.get("routing"),
+                # Worded as a task is, so routed on the seats' descriptions.
+                "tasks": True,
+            })
         except Disconnected:
             raise
-        except Exception as error:   # the delegator's calls failed outright
-            print("chat: the message could not be decided (%s), so it is answered" % error,
-                  file=sys.stderr)
-            return False
-        if decided.kind != intent.BUILD or self.flags().get("cancel"):
-            return False
-        started = self.call("turn.build", {"decision": decided.to_json()})
-        if not started.get("ok"):
-            print("chat: the build was not started (%s), so it is answered" % started.get("error", ""),
-                  file=sys.stderr)
-            return False
-        # Over for the chat. What the build leaves becomes the reply, and is
-        # remembered, when it ends; the status line is the build's meanwhile.
-        self.end("finished", status="building")
-        return True
+        except Exception as error:   # the delegator could not be had; the step stays
+            print("chat: the next step could not be routed (%s)" % error, file=sys.stderr)
+            return ""
+        if (not decision.expert or decision.expert == self.expert
+                or decision.source == routing.FALLBACK
+                or (decision.source == routing.KEYWORD and not explicit)):
+            return ""
+        return self.reseat(decision, work)
 
-    def rounds(self, seat):
+    def reseat(self, decision, work):
+        """Seat the expert `decision` names for the next step, `work`, with the
+        conversation as it is. One that cannot be seated leaves the step
+        where it was, and says so."""
+        before = (self.decision, self.expert, self.name, self.seat)
+        name = self.roster.label(decision.expert)
+        self.mood("loading", name + " is taking over")
+        routed = self.call("turn.route", {"decision": decision.to_json()})
+        seat = self.call("turn.load") if routed.get("has_model") else {"ok": False, "error": "no model"}
+        why = "" if seat.get("ok") else seat.get("error", "") or "could not load"
+        if not why:
+            self.decision, self.expert, self.name, self.seat = decision, decision.expert, name, seat
+            why = self.open()
+        if why:
+            # Back to the one that had it: its model is still held, so this
+            # costs a route and no load.
+            self.decision, self.expert, self.name, self.seat = before
+            self.call("turn.route", {"decision": before[0].to_json()})
+            if not self.call("turn.load").get("ok") or self.open():
+                raise RuntimeError("%s could not take over (%s), and %s could not go on"
+                                   % (name, why, before[2]))
+            self.show(actions=[{"summary": "%s could not take over: %s" % (name, why)}])
+            return ""
+        self.show(actions=[{"summary": "%s takes over: %s" % (name, steps.line(work, 80))}])
+        self.mood("thinking", name + " is reading")
+        return name
+
+    def checkpoint(self, shown, account):
+        """Ask the seated expert, out of sight, what the next step is, and let
+        the delegator choose who takes it. `shown` is what it is shown of the
+        turn so far, ending in the result of its last action, and `account`
+        what was done before that. The step, when another expert took it,
+        or ""."""
+        if not shown or shown[-1]["role"] != "user":
+            return ""
+        messages = [dict(m) for m in shown]
+        messages[-1]["content"] = messages[-1]["content"] + "\n\n" + NEXT_STEP
+        system = system_prompt(self.params, self.seat, tools=False)
+        if account:
+            system += "\n\n" + account
+        self.mood("thinking", self.name + " is choosing the next step")
+        said = self.call("turn.round", {"messages": messages, "paragraph": False, "quiet": True,
+                                        "system": system})
+        if said.get("error") or said.get("canceled") or said.get("looped"):
+            return ""
+        parsed = self.core.call("tools.parse", {"answer": said.get("answer", ""),
+                                                "reasoning": said.get("reasoning", "")}) or {}
+        call = parsed.get("call") or {}
+        work = (call.get("argument") or "").strip() if call.get("kind") == "handoff" else ""
+        return work if work and self.hand_off(work, explicit=False) else ""
+
+    def rounds(self):
         """Ask, and act on what the expert reached for, until it answers."""
         params = self.params
-        workshop = bool(seat.get("workshop"))
-        rounds = rounds_for(params, workshop)
-        exchanges = []         # this turn's own messages, after the conversation it opened with
+        workshop = bool(self.seat.get("workshop"))
+        searching = bool(params.get("web_search"))
+        limit = actions_for(params)
+        searches = int(params.get("search_rounds") or 0)
+        root = params.get("root", "")
+        log = []               # this turn's own messages, after the conversation it opened with
+        done = []              # what each action did, for the account
         earlier = ""           # what the rounds before this one left on screen
-        already_done = []      # the project calls made this turn
-        already_searched = []
+        repeats = steps.Repeats(root)
+        cycles = steps.Cycles()
+        searched = []
+        actions = since_checkpoint = nudges = loops = cycle_strikes = 0
         canceled = hit_limit = False
         output_tokens = 0
         shown = ""
         # The round that answers from what the turn found, with no tools
-        # offered: one past the last, when the expert spent its rounds and
-        # still reached for a tool, or sooner, when it asked for the same
-        # thing twice. Either way it is going round, and another round with
-        # tools on offer is another call.
+        # offered: the one after the last action the prompt may take, or after
+        # it went round once too often. Either way another round with tools on
+        # offer is another call.
         final = False
+        # Rounds of any kind, so nudges and handoffs cannot go on for ever.
+        most = limit * 2 + 20
 
-        for round_ in range(rounds + 1):
+        for _ in range(most):
+            start, shown_log = window(log)
+            account = running_account(done) if start > 0 else ""
+            system = system_prompt(params, self.seat, tools=not final)
+            if account:
+                system += "\n\n" + account
+            if self.aside:
+                system += self.aside
+                self.aside = ""
             # A turn that reads a file, then writes one, then answers says
-            # something each time, and each is kept -- a paragraph apart,
-            # rather than run into the next sentence or replaced by it.
-            asked = {"messages": exchanges, "paragraph": bool(earlier)}
-            if final:
-                asked["system"] = system_prompt(params, seat, tools=False)
-            said = self.call("turn.round", asked)
+            # something each time, and each is kept: a paragraph apart, rather
+            # than run into the next sentence or replaced by it.
+            said = self.call("turn.round", {"messages": shown_log, "paragraph": bool(earlier),
+                                            "system": system})
             answer = said.get("answer", "")
             reasoning = said.get("reasoning", "")
             # That a different model answered than the one in the seat, mostly.
@@ -473,7 +621,7 @@ class Turn:
                         # reason, which would then go unsaid.
                         notes.append({"summary": error})
                 elif answer:
-                    # A reply that had started is kept -- but then nothing would
+                    # A reply that had started is kept, but then nothing would
                     # say why it stops where it does.
                     notes.append({"summary": "cut short: " + error})
                 self.end("failed", reason=error, mood="error", status=error, actions=notes, reply=reply)
@@ -484,44 +632,134 @@ class Turn:
             hit_limit = bool(said.get("hit_limit"))
             output_tokens += int(said.get("output_tokens") or 0)
             shown = said.get("reply", "")
-            if canceled or final or rounds == 1:
+            if canceled:
+                break
+            if said.get("looped"):
+                # What it wrote went round and was stopped: off the screen, and
+                # asked again once, plainly. Twice is a model that cannot.
+                self.show(reply=earlier)
+                shown = earlier
+                loops += 1
+                if loops > 1:
+                    break
+                self.aside = REPEATED_ITSELF
+                continue
+            if final or (not workshop and not searching):
                 break
 
-            last = round_ + 2 >= rounds
             parsed = self.core.call("tools.parse", {"answer": answer, "reasoning": reasoning}) or {}
+            call = (parsed.get("call") or {}) if workshop else {}
+            kind = call.get("kind", "")
 
-            # --- did it reach for the project? ----------------------------------
-            #
-            # Before the search, because SEARCH is one of the verbs the parser
-            # knows and the search below has bookkeeping of its own -- repeats,
-            # the last-search warning -- that the file verbs do not want.
-            call = parsed.get("call") if workshop else None
-            acting = bool(call) and call.get("kind") in PROJECT_VERBS
+            # --- the next step, to somebody else ----------------------------------
+            if kind == "handoff":
+                work = (call.get("argument") or "").strip()
+                earlier = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                self.show(reply=earlier)
+                shown = earlier
+                log.append({"role": "assistant", "content": answer})
+                if not self.could_switch(explicit=True):
+                    log.append({"role": "user", "content": (PINNED_ON if params.get("pinned") else
+                                                            CARRY_ON.format(work)).strip()})
+                    continue
+                before = self.name
+                taken = self.hand_off(work or params.get("prompt", ""), explicit=True)
+                log.append({"role": "user", "content": (TAKES_OVER.format(before, work) if taken
+                                                        else CARRY_ON.format(work)).strip()})
+                since_checkpoint = 0
+                cycles.clear()
+                continue
+
+            # --- finished, said in a word ------------------------------------------
+            if kind == "done":
+                # Not offered, but plain enough: the work is finished, and what
+                # follows the word is what the person is told.
+                said_done = (call.get("argument") or "").strip()
+                shown = paragraphs(paragraphs(earlier, prose_before_tool_call(answer, kind)), said_done)
+                self.show(reply=shown)
+                break
+
+            acting = kind in PROJECT_VERBS
             query = "" if acting else parsed.get("search") or ""
             if not acting and not query:
-                break   # it answered, which is the ordinary case
+                # A reply that nearly called a tool and did not is told what
+                # was wrong with it, a couple of times. Anything else is the
+                # answer, which is the ordinary way a prompt ends.
+                if workshop and parsed.get("attempted", "none") not in ("none", "", None) and nudges < NUDGES:
+                    nudges += 1
+                    log.append({"role": "assistant", "content": answer})
+                    log.append({"role": "user", "content": steps.nudge_for(parsed)})
+                    self.show(reply=earlier)
+                    continue
+                break
+            nudges = 0
 
-            if round_ + 1 >= rounds:
-                # Every round spent, and this one asked for more. What it asked
-                # for is not run, and comes off the reply the way a call that
-                # ran does, or a search's whole round. The next round answers.
-                if acting:
-                    earlier = paragraphs(earlier, prose_before_tool_call(answer, call["kind"]))
+            if query:
+                if not searching:
+                    log.append({"role": "assistant", "content": answer})
+                    log.append({"role": "user", "content": NO_SEARCH})
+                    self.show(reply=earlier)
+                    continue
+                spent = len(searched) >= searches
+                final = self.search(query, answer, earlier, searched, log, spent) or final
+                continue
+
+            if actions >= limit:
+                # Every action spent, and this round asked for another. What it
+                # asked for is not run, and comes off the reply the way a call
+                # that ran does. The next round answers.
+                earlier = paragraphs(earlier, prose_before_tool_call(answer, kind))
                 self.show(reply=earlier)
-                exchanges.append({"role": "assistant", "content": answer})
-                exchanges.append({"role": "user", "content": NOT_RUN})
+                log.append({"role": "assistant", "content": answer})
+                log.append({"role": "user", "content": NOT_RUN})
                 final = True
                 continue
 
-            if acting:
-                earlier, final = self.act(call, answer, earlier, already_done, exchanges, last)
-            else:
-                final = self.search(query, answer, earlier, already_searched, exchanges, last)
+            # --- the same call again --------------------------------------------
+            if repeats.again(call, start):
+                kept = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                self.show(reply=kept)
+                earlier = kept
+                log.append({"role": "assistant", "content": answer})
+                if repeats.strikes > 1:
+                    log.append({"role": "user", "content": ALREADY_DONE})
+                    final = True
+                else:
+                    log.append({"role": "user", "content": steps.REPEAT_NUDGE.format("request")})
+                continue
+
+            earlier, result = self.act(call, answer, earlier, log, actions + 1 >= limit)
+            actions += 1
+            since_checkpoint += 1
+            if result is None:
+                done.append({"summary": "declined: " + steps.spoken(call), "ok": False})
+                continue
+            done.append({"summary": result.get("summary") or steps.spoken(call),
+                         "ok": bool(result.get("ok", True)), "changed": result.get("changed") or []})
+            repeats.ran(call, result, len(log) - 1)
+            if cycles.add(call, bool(result.get("changed"))):
+                cycle_strikes += 1
+                cycles.clear()
+                if cycle_strikes > 1:
+                    log[-1]["content"] += "\n\n" + ALREADY_DONE
+                    final = True
+                    continue
+                log[-1]["content"] += "\n\n" + CYCLING
+
+            # --- who has the next step -------------------------------------------
+            if since_checkpoint >= CHECKPOINT_EVERY and actions < limit and self.could_switch(explicit=False):
+                since_checkpoint = 0
+                before = self.name
+                at, now_shown = window(log)
+                work = self.checkpoint(now_shown, running_account(done) if at > 0 else "")
+                if work:
+                    self.aside = TAKES_OVER.format(before, work)
+                    cycles.clear()
 
         # --- the end of the turn ------------------------------------------------
         #
         # Only an exchange that produced an answer is remembered, so a canceled
-        # turn -- or one that spent its whole budget thinking -- does not poison
+        # turn (or one that spent its whole budget thinking) does not poison
         # the context of the next one. Remembered before a placeholder is put
         # in its place: what goes into the history is what the model said, not
         # what Crucible said about it.
@@ -530,41 +768,32 @@ class Turn:
         if answered:
             parsed = (self.core.call("tools.parse", {"answer": shown, "reasoning": ""}) or {}) if shown else {}
             why = unanswered(shown, parsed, hit_limit)
+            if why and not workshop and (parsed.get("call") or {}).get("kind") in PROJECT_VERBS:
+                why = "reached for the project with no folder open. Open one to let it work there"
+            if loops > 1 and not shown:
+                why = "kept repeating itself and was stopped"
         # Finished only now, with the reply it will keep: the session is saved
         # as a turn finishes, and a turn finished before its placeholder saved
         # the raw call, which came back on resume.
         self.end("finished", status="canceled" if canceled else "", remember=answered and bool(shown),
                  reply="(" + why + ")" if why else None)
 
-    def act(self, call, answer, earlier, already_done, exchanges, last):
+    def act(self, call, answer, earlier, log, last):
         """Run the project call `call` the expert made, put what came of it
         above the reply, and hand the result back. The reply as it now reads,
-        and whether the next round is the one that answers with no tools."""
+        and what the tool said, or None for an edit the person declined."""
         kind = call.get("kind", "")
         argument = call.get("argument", "")
         self.mood("thinking", doing(kind, argument))
 
         # The turn so far, and this round's prose up to the call.
         kept = paragraphs(earlier, prose_before_tool_call(answer, kind))
-
-        # The same call twice in one turn is a model going round, and the
-        # second answer would be the first one again. Not run, and not drawn:
-        # it is told its result is already above, and to answer from it. A
-        # write or an edit is the exception -- changing a file again is how a
-        # fix to it is made.
         changes_a_file = kind in ("write", "edit")
-        asked_for = kind + "\n" + argument
-        if not changes_a_file and asked_for in already_done:
-            self.show(reply=kept)
-            exchanges.append({"role": "assistant", "content": answer})
-            exchanges.append({"role": "user", "content": ALREADY_DONE})
-            return kept, True
-        already_done.append(asked_for)
 
         # --- the gate ---------------------------------------------------------
         #
         # A write or an edit is the call that changes something the person
-        # owns, so it is the one that stops and asks -- unless they have said
+        # owns, so it is the one that stops and asks, unless they have said
         # not to, which is read now, so the button pressed during a turn
         # counts from the next write. Everything else either changes nothing
         # or was agreed to by trusting the folder. The core asks about an edit
@@ -576,24 +805,26 @@ class Turn:
                 # This round described a change that did not happen; what came
                 # before it still stands.
                 self.show(actions=[{"summary": "declined the edit to " + argument}], reply=earlier)
-                exchanges.append({"role": "assistant", "content": answer})
-                exchanges.append({"role": "user", "content": DECLINED})
-                return earlier, False
+                log.append({"role": "assistant", "content": answer})
+                log.append({"role": "user", "content": DECLINED})
+                return earlier, None
 
         result = self.call("turn.tool", {"call": call})
         # The diff a write made, or the output a command printed, kept for the
-        # transcript rather than only handed to the model -- and the protocol
+        # transcript rather than only handed to the model, and the protocol
         # line off the reply, with the prose around it staying.
         self.show(actions=[{"summary": result.get("summary", ""), "body": result.get("detail", ""),
                             "language": argument if changes_a_file else "",
                             "picture": result.get("picture", "")}],
                   reply=kept)
-        exchanges.append({"role": "assistant", "content": answer})
+        log.append({"role": "assistant", "content": answer})
 
         # A picture the tool produced goes to a model that can see one, as a
         # picture, and with every round after this one; one that cannot is
-        # told so, beside whatever words were read off it.
-        handback = {"role": "user", "content": result.get("output", "")}
+        # told so, beside whatever words were read off it. A RUN that only
+        # printed lines of a file is told the READ that numbers them.
+        handback = {"role": "user", "content": result.get("output", "")
+                    + steps.read_hint(call, result, self.params.get("root", ""))}
         if result.get("pictures"):
             if result.get("sees"):
                 handback["pictures"] = result["pictures"]
@@ -601,25 +832,27 @@ class Turn:
                 handback["content"] += TEXT_ONLY
         if last:
             handback["content"] += LAST_ACTION
-        exchanges.append(handback)
-        return kept, False
+        log.append(handback)
+        return kept, result
 
-    def search(self, query, answer, earlier, already_searched, exchanges, last):
+    def search(self, query, answer, earlier, searched, log, spent):
         """Look up what the expert asked for, and hand back what was found.
         Whether the next round is the one that answers with no tools.
 
         Asking twice for the same thing is a model that has read the results
         and not known what to do with them. Running the search again would hand
-        back the same page and invite it to do the same, so it is told instead
-        -- and the round after answers, with no tools offered.
+        back the same page and invite it to do the same, so it is told instead.
+        A search past the last one allowed is not run either.
         """
-        repeat = query in already_searched
-        already_searched.append(query)
-        self.mood("thinking", ('already searched for "%s"' if repeat else 'searching for "%s"') % query)
+        repeat = query in searched or spent
+        searched.append(query)
+        self.mood("thinking", ('already searched for "%s"' if query in searched[:-1] else
+                               'searching for "%s"') % query)
 
         actions = []
         if repeat:
-            handback = 'You have already searched for "%s" and been given the results above.' % query
+            handback = ('You have already searched for "%s" and been given the results above.' % query
+                        if query in searched[:-1] else "There are no searches left for this request.")
         else:
             found = self.call("turn.search", {"query": query})
             count = int(found.get("count") or 0)
@@ -634,14 +867,15 @@ class Turn:
         # Only the answer goes back, never the reasoning: the formats that
         # produce reasoning say to drop it from the context, and feeding it
         # back teaches the model that thinking aloud is part of the transcript.
-        exchanges.append({"role": "assistant", "content": answer})
+        log.append({"role": "assistant", "content": answer})
+        last = len(searched) >= int(self.params.get("search_rounds") or 0)
         if repeat or last:
             # The last search it is allowed. Saying so is the difference
             # between an answer and a model that asks to search again and ends
             # the turn with nothing in it.
             handback += LAST_SEARCH
-        exchanges.append({"role": "user", "content": handback})
-        return repeat
+        log.append({"role": "user", "content": handback})
+        return repeat and not self.seat.get("workshop")
 
 
 def turn(core, params):

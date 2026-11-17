@@ -236,7 +236,8 @@ set(CRUCIBLE_ORCHESTRATOR_DIR ${CMAKE_CURRENT_LIST_DIR}/../scripts/orchestrator/
 set(CRUCIBLE_ORCHESTRATOR_CPP "")
 foreach(_entry "__init__.py:Init" "__main__.py:Run" "main.py:Main" "rpc.py:Rpc"
                "routing.py:Routing" "cook.py:Cook" "naming.py:Naming" "build.py:Build"
-               "chat.py:Chat" "bench.py:Bench" "bench_score.py:BenchScore" "intent.py:Intent")
+               "chat.py:Chat" "bench.py:Bench" "bench_score.py:BenchScore" "intent.py:Intent"
+               "steps.py:Steps")
     string(REPLACE ":" ";" _parts "${_entry}")
     list(GET _parts 0 _file)
     list(GET _parts 1 _symbol)

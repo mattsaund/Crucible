@@ -675,6 +675,7 @@ function pageTools(c) {
   return `<h1>Tools</h1>
     <h2>PROJECT</h2>
     <p class="lede">${project.open ? escape(project.root) : 'None open.'}</p>
+    ${setting('tools.actions', 'Actions per prompt', 'slider', '', { min: 10, max: 200, step: 10 })}
     ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider', '',
       { min: 5, max: 900, step: 5 })}
     ${processes.length ? `<div class="field"><label>Running now</label>${processes.map((p) => `<div class="order-row">
