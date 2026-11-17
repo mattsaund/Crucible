@@ -1074,7 +1074,7 @@ private:
             }
             asked_at_ = std::chrono::steady_clock::now();
         }
-        // Asked without the lock held: two agents starting at once may both
+        // Asked without the lock held: two callers starting at once may both
         // ask, which costs a second listing, where holding the lock across a
         // request would make every other caller wait on the network.
         http::Request request;
@@ -1404,7 +1404,7 @@ std::string fingerprint(const std::vector<Provider>& providers) {
 /// their own threads.
 ///
 /// A client is never destroyed while Crucible runs, only retired: adopt()
-/// is a settings change, and an agent may be halfway through a request on
+/// is a settings change, and a turn may be halfway through a request on
 /// the client the change replaces. A retired client finishes its request
 /// and is never handed out again; there are as many of them as there were
 /// provider changes, which is a handful.

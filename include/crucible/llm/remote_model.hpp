@@ -83,8 +83,8 @@ struct Quirks {
 
 /// Hands out the model behind a seat, and stops the requests that should stop.
 ///
-/// One per engine, and asked from several threads: the chat's and each of a
-/// build's agents. It remembers what it has learned about each model for as
+/// One per engine, and asked from several threads: the chat's and the API
+/// server's. It remembers what it has learned about each model for as
 /// long as the providers stay the same, so the question "what can this model
 /// do" is asked once rather than before every prompt.
 class Hub {
@@ -100,7 +100,7 @@ public:
     ///
     /// The pointer is good for as long as the hub is: a provider change
     /// retires the clients it replaces rather than destroying them, because
-    /// an agent may be halfway through a request on one.
+    /// a turn may be halfway through a request on one.
     ChatModel* model(const ModelParams& params, std::string& error);
 
     /// A model served on this machine by something that speaks the

@@ -1798,7 +1798,7 @@ LoadedModel* ModelHost::acquire_router(const ModelParams& params,
     // Otherwise only experts nobody is using are freed for it, the least
     // recently used first. When the ones in use leave no room, the delegator
     // waits: routing goes on keywords meanwhile, which is a worse pick, where
-    // the alternative is a crashed agent.
+    // the alternative is a crash mid-answer.
     if (routes_off_cards(params, keep)) {
         ModelParams off_cards  = params;
         off_cards.on_processor = true;
@@ -2090,7 +2090,7 @@ ModelParams ModelHost::with_room(const ModelParams& asked) const {
         return asked;
     }
     // The delegator is let go while an expert loads and comes back to route
-    // the next task, which, with the agent still holding this model, it can
+    // the next step, which, with the turn still holding this model, it can
     // only do beside it. Its room is kept when it had room beside the context
     // asked for: the cache grows into memory nobody would have used, rather
     // than into the delegator's, which would send routing to keywords.
@@ -2140,7 +2140,7 @@ bool ModelHost::could_hold(const ModelParams& params, bool delegator_stays) cons
         return true;
     }
     // Crucible's own models are let go for one that needs the room -- the
-    // ones in use when their agents are done with them -- so what they hold
+    // ones in use when whoever holds them is done -- so what they hold
     // counts as free. The delegator does not when it stays loaded.
     const auto give_back = [&cards](const LoadedModel& model) {
         for (ComputeDevice& card : cards) {
@@ -2199,8 +2199,9 @@ LoadedModel* ModelHost::acquire_expert(const ExpertId& id,
     // as the one most recently asked for.
     for (auto it = experts_.begin(); it != experts_.end(); ++it) {
         // Except when it was loaded with less room than this load may take
-        // and nobody is using it: a chat's model, wanted now by a build's
-        // agent, is loaded again with the context the cards hold for it.
+        // and nobody is using it: a model loaded for a plain chat, wanted now
+        // by a turn with the tools, is loaded again with the context the
+        // cards hold for it.
         const bool roomier = params.n_ctx_most > it->params.n_ctx_most && !(keep && keep(it->params.path));
         if (it->params.path == params.path && (it->id == id || same_load(it->params, params)) && !roomier) {
             Resident resident = std::move(*it);

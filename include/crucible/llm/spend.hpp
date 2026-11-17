@@ -2,9 +2,8 @@
 //
 // What the frontier models have been asked.
 //
-// Every request to a provider is counted as it ends -- the chat's, each of a
-// build's agents', the architect's -- by the one place they all go through,
-// remote::Hub. Counted the way providers bill: tokens read fresh, read from
+// Every request to a provider is counted as it ends -- the chat's, the API
+// server's -- by the one place they all go through, remote::Hub. Counted the way providers bill: tokens read fresh, read from
 // the provider's cache, written to it, and written out. A cached read costs
 // about a tenth of a fresh one, so a total that lumped them together would
 // put a long conversation's cost at several times what it was.
