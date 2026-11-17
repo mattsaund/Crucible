@@ -94,9 +94,6 @@ function benchItems(size, off) {
 /// How many answers of a result ran out of room before they were done.
 const benchCut = (r) => Object.values(r.cut_off || {}).reduce((a, n) => a + (Number(n) || 0), 0);
 
-/// A benchmark's name, from its id.
-const benchTitle = (id) => (BENCH_SUITE.find(([x]) => x === id) || [id, id])[1];
-
 /// A result's name as people say it: its file, the way the Models list and
 /// the run panel show it, without the extension. The name inside a GGUF is
 /// often a converter's ("Openai_Gpt Oss 20b"), and goes on the hover text of a
@@ -355,8 +352,9 @@ function benchLiveView() {
   }).join('');
   return `<div class="bench-live">
       <div class="row"><div class="caption" style="margin:0;flex:1">${live.running ? 'RUNNING' : live.stopped ? 'STOPPED' : 'LAST RUN'}</div>
-        <span class="status">${apart(live.fetching ? `Fetching ${escape(benchTitle(live.fetching))}` : '',
-          `${done} of ${total} questions`, span(seconds), left ? `about ${span(left)} left` : '')}</span></div>
+        <span class="status">${apart(live.fetching
+            ? `Fetching ${Number(live.fetching.done) || 0} of ${Number(live.fetching.of) || 0}`
+            : `${done} of ${total} questions`, span(seconds), left ? `about ${span(left)} left` : '')}</span></div>
       ${live.error ? `<div class="bad">${escape(live.error)}</div>` : ''}${rows}</div>`;
 }
 

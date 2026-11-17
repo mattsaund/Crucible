@@ -3509,8 +3509,16 @@ TEST(the_bench_tab_runs_compares_and_posts) {
                 " started: Date.now() / 1000 - 1000, current: 'mmlu_pro', benchmarks: { mmlu_pro: { done: 10, n: 50, correct: 8 } } }] }");
     CHECK(page().eval("views.bench()").find("about 2h 30m left") != std::string::npos);
     CHECK(live.find("data-act=\"bench-stop\"") != std::string::npos);
-    page().eval("state.snapshot.bench.fetching = 'truthfulqa'");
-    CHECK(page().eval("views.bench()").find("Fetching TruthfulQA") != std::string::npos);
+    // Fetching the rows: how many items have theirs, so the count moves
+    // while the datasets server is slow, in place of answers there are none of.
+    page().eval("state.snapshot.bench.fetching = { done: 120, of: 450 }");
+    const std::string fetching = page().eval("views.bench()");
+    const std::size_t count = fetching.find("Fetching 120 of 450");
+    CHECK(count != std::string::npos);
+    if (count != std::string::npos) {
+        const std::string line = fetching.substr(count, fetching.find("</div>", count) - count);
+        CHECK(line.find("questions") == std::string::npos);
+    }
     page().eval("delete state.snapshot.bench.fetching");
     page().eval("state.snapshot.bench.running = false; state.snapshot.bench.stopped = true;"
                 "state.snapshot.bench.ended = state.snapshot.bench.started + 60");

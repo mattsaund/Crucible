@@ -32,6 +32,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/engine/bench_rows.hpp"
 #include "crucible/lab/condense.hpp"
 #include "crucible/llm/batch_chat.hpp"
 #include "crucible/llm/model_host.hpp"
@@ -129,13 +130,15 @@ bool pause(std::chrono::milliseconds delay, const CancelCallback& stopped) {
 /// A page of a dataset's rows, from the cache or from Hugging Face's datasets
 /// server. Kept for good once fetched: the suite pins its items, and a quick
 /// run of a second model should not wait on the network for the first's.
+/// `status` is the server's answer to the last try, 0 for none.
 ///
 /// Stopped at once by `stopped`, the request and the waits between tries
 /// alike: closing the window waits for whatever this thread is doing.
 json dataset_rows(const std::string& dataset, const std::string& config, const std::string& split,
-                  int offset, int length, const CancelCallback& stopped, std::string& error) {
-    const std::filesystem::path cached = bench_dir() / "rows" / cache_name(dataset + "__" + config + "__" + split)
+                  int offset, int length, const CancelCallback& stopped, std::string& error, int& status) {
+    const std::filesystem::path cached = bench_rows::folder(dataset, config, split)
                                        / (std::to_string(offset) + "-" + std::to_string(length) + ".json");
+    status = 0;
     std::error_code ec;
     if (std::filesystem::is_regular_file(cached, ec)) {
         json page = json::parse(read_text(cached), nullptr, false);
@@ -148,11 +151,15 @@ json dataset_rows(const std::string& dataset, const std::string& config, const s
                 + "&config=" + url_escape(config) + "&split=" + url_escape(split)
                 + "&offset=" + std::to_string(offset) + "&length=" + std::to_string(length);
     request.timeout_seconds = 60;
-    // The server says "too many requests" to a burst, and a run asks for a
-    // few dozen pages; a short wait and another try is what it wants.
+    // A server error or a network that failed is tried again after a short
+    // wait. A refusal (429, too many requests) is not: the server refuses
+    // this address for about a minute after the asking stops, whatever is
+    // asked meanwhile (2026-11-17), so tries a few seconds apart only add to
+    // it. The run waits a refusal out for all its requests at once (bench.py).
     constexpr int kTries = 4;
     for (int attempt = 0; attempt < kTries; ++attempt) {
         const util::http::Response response = util::http::send(request, stopped);
+        status = response.status;
         if (response.ok()) {
             json page = json::parse(response.body, nullptr, false);
             if (page.is_object() && page.contains("rows")) {
@@ -167,7 +174,7 @@ json dataset_rows(const std::string& dataset, const std::string& config, const s
             return {};
         }
         error = dataset + ": " + response.reason();
-        if (response.status != 429 && response.status < 500 && response.status != 0) {
+        if (response.status < 500 && response.status != 0) {
             break;
         }
         // No wait after the last try: there is nothing left to wait for.
@@ -315,6 +322,37 @@ struct Reply {
 };
 
 }  // namespace
+
+std::filesystem::path bench_rows::folder(const std::string& dataset, const std::string& config,
+                                         const std::string& split) {
+    return bench_dir() / "rows" / cache_name(dataset + "__" + config + "__" + split);
+}
+
+std::vector<std::pair<int, int>> bench_rows::kept(const std::filesystem::path& folder) {
+    std::vector<std::pair<int, int>> pages;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+        // <offset>-<length>.json and nothing else: a .part is a page not yet
+        // written whole.
+        const std::string name = it->path().filename().string();
+        const std::size_t dash = name.find('-');
+        if (dash == std::string::npos || dash == 0 || name.size() <= 5 || name.substr(name.size() - 5) != ".json") {
+            continue;
+        }
+        const std::string from = name.substr(0, dash);
+        const std::string rows = name.substr(dash + 1, name.size() - 5 - dash - 1);
+        const auto digits = [](const std::string& text) {
+            return !text.empty() && text.size() <= 9
+                && std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+        };
+        if (!digits(from) || !digits(rows) || std::stoi(rows) == 0) {
+            continue;
+        }
+        pages.emplace_back(std::stoi(from), std::stoi(rows));
+    }
+    std::sort(pages.begin(), pages.end());
+    return pages;
+}
 
 /// The model under test: the seat that holds it, and the answers it is
 /// giving, each kept until the orchestrator takes it. The questions in
@@ -650,13 +688,28 @@ json Engine::serve_bench(const std::string& method, const json& params) {
     // --- what the run needs to know --------------------------------------
     if (method == "bench.rows") {
         std::string error;
+        int         status = 0;
         json page = dataset_rows(params.value("dataset", std::string()), params.value("config", std::string()),
                                  params.value("split", std::string()), params.value("offset", 0),
-                                 std::clamp(params.value("length", 100), 1, 100), stopped, error);
+                                 std::clamp(params.value("length", 100), 1, 100), stopped, error, status);
         if (page.is_null()) {
-            return json{{"error", error.empty() ? "could not fetch the rows" : error}};
+            // The server's status with it: a refusal (429) is waited out,
+            // one it will never answer is not asked again.
+            return json{{"error", error.empty() ? "could not fetch the rows" : error}, {"status", status}};
         }
         return page;
+    }
+    if (method == "bench.cached") {
+        // The pages of a dataset already here: what a run reads back rather
+        // than asks the server for again.
+        json pages = json::array();
+        for (const auto& [offset, length] :
+             bench_rows::kept(bench_rows::folder(params.value("dataset", std::string()),
+                                                 params.value("config", std::string()),
+                                                 params.value("split", std::string())))) {
+            pages.push_back(json::array({offset, length}));
+        }
+        return json{{"ranges", std::move(pages)}};
     }
     if (method == "bench.hash") {
         return json{{"sha256", model_sha256(params.value("path", std::string()), stopped)}};
