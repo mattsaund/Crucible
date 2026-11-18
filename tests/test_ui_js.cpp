@@ -2884,12 +2884,13 @@ TEST(the_storage_stand_in_behaves_as_a_browsers_own) {
                         " localStorage.removeItem('never'); String(localStorage.length)"),
              "5");
 
-    // Handed over to be kept once a run of changes is over, and only when
-    // something changed.
+    // Handed over to be kept at once, and again once a run of changes is
+    // over, and only when something changed: two for the run, not three.
     CHECK_EQ(frame.eval("handed = []; localStorage.setItem('a', '1'); localStorage.setItem('b', '2');"
                         " localStorage.removeItem('a'); String(handed.length)"),
-             "0");
+             "1");
     CHECK_EQ(frame.eval("handed.join('|')"),
+             R"(local {"theme":"dark","count":"3","n":"5","o":"[object Object]","u":"undefined","a":"1"}|)"
              R"(local {"theme":"dark","count":"3","n":"5","o":"[object Object]","u":"undefined","b":"2"})");
     CHECK_EQ(frame.eval("handed = []; localStorage.setItem('b', '2'); localStorage.removeItem('a'); 'ok'"), "ok");
     CHECK_EQ(frame.eval("String(handed.length)"), "0");
@@ -2927,7 +2928,20 @@ TEST(the_storage_stand_in_behaves_as_a_browsers_own) {
     CHECK_EQ(frame.eval("handed = []; localStorage.clear(); localStorage.setItem('__proto__', 'p');"
                         " localStorage.getItem('__proto__') + ' ' + localStorage.length"),
              "p 1");
-    CHECK_EQ(frame.eval("handed.join('|')"), R"(local {"__proto__":"p"})");
+    CHECK_EQ(frame.eval("handed.join('|')"), R"(local {}|local {"__proto__":"p"})");
+
+    // A page that is going hands over what it has not yet, then and there:
+    // saved and reloaded in one click, the second change was handed over
+    // after the reload began, and an app on Windows lost it.
+    Engine going({"var window = this; var handed = [], heard = {};"
+                  " window.addEventListener = function (event, then) { heard[event] = then; };",
+                  "(" + std::string(crucible::tools::kPageStorage) + ")('{}', function (kind, items) {"
+                  " handed.push(kind + ' ' + JSON.stringify(items)); });"});
+    CHECK(going.load_error().empty());
+    CHECK_EQ(going.eval("localStorage.setItem('a', '1'); localStorage.setItem('b', '2'); heard.beforeunload();"
+                        " handed.join('|')"),
+             R"(local {"a":"1"}|local {"a":"1","b":"2"})");
+    CHECK_EQ(going.eval("String(typeof heard.pagehide)"), "function");
 
     // Nothing kept that can be read: an empty one, not a broken page.
     Engine fresh(stand_in("not json"));
