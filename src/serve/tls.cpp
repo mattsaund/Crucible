@@ -12,9 +12,12 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <sstream>
 #include <string_view>
 #include <system_error>
 
@@ -38,11 +41,18 @@ extern "C" {
 #include <iphlpapi.h>
 #include <mbedtls/threading.h>
 #else
+#include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
+#if defined(__APPLE__)
+// Which IPv6 addresses are temporary, asked of the interface.
+#include <netinet/in_var.h>
+#include <netinet6/in6_var.h>
+#include <sys/ioctl.h>
 #endif
 
 #include "crucible/util/platform.hpp"
@@ -308,9 +318,36 @@ bool reachable(const sockaddr* address, std::array<unsigned char, 16>& bytes, st
     return false;
 }
 
-/// Every address this machine has on a network that is up.
-std::vector<std::string> addresses() {
-    std::vector<std::string> out;
+#if defined(__APPLE__)
+/// Whether macOS marks `address`, of the interface `name`, temporary or
+/// deprecated: asked of the interface, with `probe`, an IPv6 socket.
+bool passing_on_mac(int probe, const char* name, const sockaddr* address) {
+    if (probe < 0) {
+        return false;
+    }
+    in6_ifreq request{};
+    std::strncpy(request.ifr_name, name, sizeof(request.ifr_name) - 1);
+    std::memcpy(&request.ifr_ifru.ifru_addr, address, sizeof(sockaddr_in6));
+    if (::ioctl(probe, SIOCGIFAFLAG_IN6, &request) != 0) {
+        return false;
+    }
+    return (request.ifr_ifru.ifru_flags6 & (IN6_IFF_TEMPORARY | IN6_IFF_DEPRECATED)) != 0;
+}
+#endif
+
+/// An address of this machine a client could reach it at (see reachable),
+/// on a network that is up: as text, on which interface, and whether the
+/// system is letting it go, an IPv6 address it made for a while (RFC 8981)
+/// or one it has replaced already.
+struct Address {
+    std::string text;
+    std::string device;   ///< the interface it is on
+    bool        ipv6    = false;
+    bool        passing = false;
+};
+
+std::vector<Address> addresses() {
+    std::vector<Address>          out;
     std::array<unsigned char, 16> bytes{};
     std::size_t                   size = 0;
 #if defined(_WIN32)
@@ -330,24 +367,112 @@ std::vector<std::string> addresses() {
                 continue;
             }
             for (const auto* one = adapter->FirstUnicastAddress; one != nullptr; one = one->Next) {
-                if (reachable(one->Address.lpSockaddr, bytes, size)) {
-                    out.push_back(ip_text(bytes.data(), size));
+                if (!reachable(one->Address.lpSockaddr, bytes, size)) {
+                    continue;
                 }
+                Address address;
+                address.text      = ip_text(bytes.data(), size);
+                address.device    = adapter->AdapterName != nullptr ? adapter->AdapterName : "";
+                address.ipv6      = size == 16;
+                // Windows says which addresses are temporary by where they
+                // came from: a prefix a router gave, and a suffix made up.
+                address.passing = address.ipv6
+                               && ((one->PrefixOrigin == IpPrefixOriginRouterAdvertisement
+                                    && one->SuffixOrigin == IpSuffixOriginRandom)
+                                   || one->DadState == IpDadStateDeprecated);
+                out.push_back(std::move(address));
             }
         }
     }
 #else
+#if defined(__linux__)
+    std::string listed;
+    {
+        std::ifstream in("/proc/net/if_inet6");
+        listed.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::vector<std::string> passing = detail::passing_in(listed);
+#elif defined(__APPLE__)
+    const int probe = ::socket(AF_INET6, SOCK_DGRAM, 0);
+#endif
     ifaddrs* all = nullptr;
     if (getifaddrs(&all) == 0) {
         for (const ifaddrs* one = all; one != nullptr; one = one->ifa_next) {
-            if ((one->ifa_flags & IFF_UP) != 0 && reachable(one->ifa_addr, bytes, size)) {
-                out.push_back(ip_text(bytes.data(), size));
+            if ((one->ifa_flags & IFF_UP) == 0 || !reachable(one->ifa_addr, bytes, size)) {
+                continue;
             }
+            Address address;
+            address.text      = ip_text(bytes.data(), size);
+            address.device    = one->ifa_name != nullptr ? one->ifa_name : "";
+            address.ipv6      = size == 16;
+#if defined(__linux__)
+            address.passing = address.ipv6 && std::find(passing.begin(), passing.end(), address.text) != passing.end();
+#elif defined(__APPLE__)
+            address.passing = address.ipv6 && passing_on_mac(probe, one->ifa_name, one->ifa_addr);
+#endif
+            out.push_back(std::move(address));
         }
         freeifaddrs(all);
     }
+#if defined(__APPLE__)
+    if (probe >= 0) {
+        ::close(probe);
+    }
+#endif
 #endif
     return out;
+}
+
+/// The address a packet to the outside would leave this machine from, as
+/// text, or empty. A datagram socket "connected" to an address nobody owns
+/// asks the routing table without sending anything: 192.0.2.1 and
+/// 2001:db8::1 are kept for documentation, and the route to each is the
+/// default one. On Windows, with the sockets library started.
+std::string outbound(bool ipv6) {
+    const auto sock = ::socket(ipv6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+#if defined(_WIN32)
+    if (sock == INVALID_SOCKET) {
+        return {};
+    }
+#else
+    if (sock < 0) {
+        return {};
+    }
+#endif
+    sockaddr_storage outside{};
+    socklen_t        size = 0;
+    if (ipv6) {
+        sockaddr_in6 six{};
+        six.sin6_family = AF_INET6;
+        six.sin6_port   = htons(9);
+        inet_pton(AF_INET6, "2001:db8::1", &six.sin6_addr);
+        std::memcpy(&outside, &six, sizeof(six));
+        size = sizeof(six);
+    } else {
+        sockaddr_in four{};
+        four.sin_family = AF_INET;
+        four.sin_port   = htons(9);
+        inet_pton(AF_INET, "192.0.2.1", &four.sin_addr);
+        std::memcpy(&outside, &four, sizeof(four));
+        size = sizeof(four);
+    }
+    std::string found;
+    if (::connect(sock, reinterpret_cast<const sockaddr*>(&outside), size) == 0) {
+        sockaddr_storage              local{};
+        socklen_t                     length = sizeof(local);
+        std::array<unsigned char, 16> bytes{};
+        std::size_t                   width = 0;
+        if (::getsockname(sock, reinterpret_cast<sockaddr*>(&local), &length) == 0
+            && reachable(reinterpret_cast<const sockaddr*>(&local), bytes, width)) {
+            found = ip_text(bytes.data(), width);
+        }
+    }
+#if defined(_WIN32)
+    closesocket(sock);
+#else
+    ::close(sock);
+#endif
+    return found;
 }
 
 /// This machine's own name, as the system has it: never looked up.
@@ -400,7 +525,44 @@ bool ready() {
     return started;
 }
 
-Names this_machine() {
+std::string network_address(bool ipv6) {
+#if defined(_WIN32)
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        return {};
+    }
+    struct Cleanup {
+        ~Cleanup() { WSACleanup(); }
+    } cleanup;
+#endif
+    const std::vector<Address> all     = addresses();
+    const std::string          leaving = outbound(ipv6);
+    std::string                device;   ///< the temporary one's interface, when it is one
+    for (const Address& one : all) {
+        if (one.text == leaving) {
+            if (!one.passing) {
+                return leaving;
+            }
+            device = one.device;
+        }
+    }
+    if (!leaving.empty() && device.empty()) {
+        return leaving;   // an address the interfaces did not list: as the route has it
+    }
+    // A lasting address beside the temporary one packets leave from, on the
+    // same interface first; with no route out, the first interface that is
+    // up. The temporary one only when there is nothing else.
+    for (const bool same : {true, false}) {
+        for (const Address& one : all) {
+            if (one.ipv6 == ipv6 && !one.passing && (!same || one.device == device)) {
+                return one.text;
+            }
+        }
+    }
+    return leaving;
+}
+
+Names reached_by() {
     Names out;
     add_once(out.dns, "localhost");
     for (const std::string& raw : host_names()) {
@@ -414,21 +576,37 @@ Names this_machine() {
     }
     add_once(out.ip, "127.0.0.1");
     add_once(out.ip, "::1");
-    for (const std::string& address : addresses()) {
-        add_once(out.ip, address);
+    add_once(out.ip, network_address(false));
+    add_once(out.ip, network_address(true));
+    return out;
+}
+
+Names this_machine() {
+    // What it is reached by first, which a certificate with no room for
+    // every address keeps (see kMostNames).
+    Names out = reached_by();
+    for (const Address& address : addresses()) {
+        if (!address.passing) {
+            add_once(out.ip, address.text);
+        }
     }
     return out;
 }
 
-bool make(const Names& names, int days, Pem& out, std::string& error) {
+bool make(const Names& names, int days, Pem& out, std::string& error, const std::string& key_pem) {
     if (!ready()) {
         error = "HTTPS could not start";
         return false;
     }
     Key key;
-    if (mbedtls_pk_setup(&key.pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0
-        || mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key.pk), mbedtls_psa_get_random,
-                               MBEDTLS_PSA_RANDOM_STATE) != 0) {
+    if (!key_pem.empty()) {
+        if (read_key(key_pem, key) != 0) {
+            error = "Could not read the key";
+            return false;
+        }
+    } else if (mbedtls_pk_setup(&key.pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0
+               || mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key.pk), mbedtls_psa_get_random,
+                                      MBEDTLS_PSA_RANDOM_STATE) != 0) {
         error = "Could not make a key";
         return false;
     }
@@ -636,20 +814,56 @@ std::vector<std::string> names_in(const std::string& certificate) {
     return out;
 }
 
+bool names_all(const std::string& certificate, const Names& needed) {
+    const std::vector<std::string> named = names_in(certificate);
+    const auto                     has   = [&named](const std::string& one) {
+        return std::any_of(named.begin(), named.end(), [&one](const std::string& name) {
+            return name.size() == one.size()
+                && std::equal(name.begin(), name.end(), one.begin(), [](char a, char b) {
+                       return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+                   });
+        });
+    };
+    return std::all_of(needed.dns.begin(), needed.dns.end(), has) && std::all_of(needed.ip.begin(), needed.ip.end(), has);
+}
+
+bool serves_here(const std::string& certificate) {
+    return expires(certificate) - std::time(nullptr) > static_cast<std::time_t>(kRenewDays) * kDay
+        && names_all(certificate, reached_by());
+}
+
 bool own(const std::filesystem::path& dir, bool renew, Identity& out, std::string& error) {
+    // One at a time: the server's watch reads the folder as Settings' New
+    // writes it, and a key read from one and a certificate from the other
+    // would be made into a third.
+    static std::mutex                 owning;
+    const std::lock_guard<std::mutex> one_at_a_time(owning);
     const std::filesystem::path certificate_file = dir / "certificate.pem";
     const std::filesystem::path key_file         = dir / "key.pem";
+    Names                       names            = this_machine();
+    std::string                 key;   ///< the one kept, when there is one to keep
     if (!renew) {
         Pem raw;
         Pem kept;
-        if (read_file(certificate_file, raw.certificate) && read_file(key_file, raw.key) && prepare(raw, kept).empty()
-            && expires(kept.certificate) - std::time(nullptr) > static_cast<std::time_t>(kRenewDays) * kDay) {
-            fill(out, kept, certificate_file, true);
-            return true;
+        if (read_file(certificate_file, raw.certificate) && read_file(key_file, raw.key) && prepare(raw, kept).empty()) {
+            if (serves_here(kept.certificate)) {
+                fill(out, kept, certificate_file, true);
+                return true;
+            }
+            // Made again with the key it had, and the names it had after this
+            // machine's own: a laptop that moves between two networks has a
+            // certificate for both after its first move, rather than a new
+            // one at every move.
+            key = kept.key;
+            for (const std::string& name : names_in(kept.certificate)) {
+                std::array<unsigned char, 16> bytes{};
+                const std::size_t size = mbedtls_x509_crt_parse_cn_inet_pton(name.c_str(), bytes.data());
+                add_once(size == 4 || size == 16 ? names.ip : names.dns, name);
+            }
         }
     }
     Pem made;
-    if (!make(this_machine(), kOwnDays, made, error)) {
+    if (!make(names, kOwnDays, made, error, key)) {
         return false;
     }
     // A folder only this user can open, before the key goes in it. Where the
@@ -698,5 +912,40 @@ bool load(const std::filesystem::path& certificate_file, const std::filesystem::
     fill(out, prepared, certificate_file, false);
     return true;
 }
+
+namespace detail {
+
+std::vector<std::string> passing_in(const std::string& if_inet6) {
+    // IFA_F_TEMPORARY and IFA_F_DEPRECATED, as <linux/if_addr.h> has them.
+    constexpr unsigned long kPassing = 0x01 | 0x20;
+    std::vector<std::string> out;
+    std::istringstream       lines(if_inet6);
+    for (std::string line; std::getline(lines, line);) {
+        std::istringstream fields(line);
+        std::string        hex;
+        std::string        index;
+        std::string        prefix;
+        std::string        scope;
+        std::string        flags;
+        if (!(fields >> hex >> index >> prefix >> scope >> flags) || hex.size() != 32
+            || (std::strtoul(flags.c_str(), nullptr, 16) & kPassing) == 0) {
+            continue;
+        }
+        std::array<unsigned char, 16> bytes{};
+        bool                          read = true;
+        for (std::size_t i = 0; i < bytes.size() && read; ++i) {
+            char* end = nullptr;
+            const std::string pair = hex.substr(2 * i, 2);
+            bytes[i] = static_cast<unsigned char>(std::strtoul(pair.c_str(), &end, 16));
+            read     = end == pair.c_str() + 2;
+        }
+        if (read) {
+            add_once(out, ip_text(bytes.data(), bytes.size()));
+        }
+    }
+    return out;
+}
+
+}  // namespace detail
 
 }  // namespace crucible::serve::tls

@@ -137,9 +137,15 @@ ModelParams Engine::served_params(const Config& config, ExpertId* seat) {
 
 serve::Status Engine::server_status() const { return server_->status(); }
 
+std::string Engine::new_certificate() { return server_->new_certificate(paths::https_dir()); }
+
 void Engine::configure_server(const Config& config) {
+    const std::lock_guard<std::mutex> closing(server_mutex_);
+    if (!running_.load(std::memory_order_relaxed)) {
+        return;   // closing, or not started: stop() and run() see to the server
+    }
     serve::Settings settings;
-    settings.enabled = config.server.enabled && running_.load(std::memory_order_relaxed);
+    settings.enabled = config.server.enabled;
     settings.port    = config.server.port;
     // A provider's model is the person's credit spent with every request:
     // other computers are let at it only with a key, and without one the
@@ -456,24 +462,40 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
 
         // A thinking model's working goes to the reasoning, apart from the
         // answer, as llama-server sends it: in the model's own markers when
-        // it is one on this machine, on a channel of its own otherwise.
+        // it is one on this machine, on a channel of its own otherwise. The
+        // answer after it from its first word, as open_chat hands one on: a
+        // model puts a line or two between the two, and a client shows the
+        // content as it comes.
         ResponseFilter filter;
-        const auto     sort = [&sink](const ResponseFilter::Piece& piece) {
-            if (!piece.reasoning.empty()) {
-                sink.reasoning(piece.reasoning);
+        bool           reasoned  = false;
+        bool           answering = false;
+        const auto     reason    = [&sink, &reasoned](std::string_view text) {
+            if (!text.empty()) {
+                reasoned = true;
+                sink.reasoning(text);
             }
-            if (!piece.answer.empty()) {
-                sink.answer(piece.answer);
+        };
+        const auto answer = [&sink, &reasoned, &answering](std::string_view text) {
+            if (reasoned && !answering) {
+                text.remove_prefix(std::min(text.find_first_not_of(" \t\r\n"), text.size()));
             }
+            if (!text.empty()) {
+                answering = true;
+                sink.answer(text);
+            }
+        };
+        const auto sort = [&](const ResponseFilter::Piece& piece) {
+            reason(piece.reasoning);
+            answer(piece.answer);
         };
         ChatSink chat_sink;
         chat_sink.cancel = cancel;
         if (model.reasons_inline()) {
             chat_sink.on_text = [&](std::string_view chunk) { sort(filter.feed(chunk)); };
         } else {
-            chat_sink.on_text = [&sink](std::string_view chunk) { sink.answer(chunk); };
+            chat_sink.on_text = [&](std::string_view chunk) { answer(chunk); };
         }
-        chat_sink.on_reasoning = [&sink](std::string_view chunk) { sink.reasoning(chunk); };
+        chat_sink.on_reasoning = [&](std::string_view chunk) { reason(chunk); };
         const std::string_view effort = ask.effort == "none" ? std::string_view() : std::string_view(ask.effort);
         const ChatResult result = model.chat(ChatRequest{messages, params, effort}, chat_sink);
         sort(filter.flush());

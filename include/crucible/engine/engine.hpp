@@ -228,6 +228,11 @@ public:
     /// serve/server.hpp.
     serve::Status server_status() const;
 
+    /// Crucible's own HTTPS certificate made anew, with a new key, and served
+    /// at once where it is being served. Why it could not be, or empty. See
+    /// serve::Server::new_certificate.
+    std::string new_certificate();
+
 private:
     /// One unit of work for the engine thread. `kind` keeps config changes and
     /// expert releases on the same queue as prompts, so they are applied in
@@ -645,8 +650,16 @@ private:
     static constexpr const char* kServerSeat = "Server";
 
     /// Listen as `config` says, or stop listening. From start() and
-    /// apply_config(), on the thread that calls them.
+    /// apply_config(), on the thread that calls them. Once Crucible has
+    /// begun to close it does nothing: see server_mutex_.
     void configure_server(const Config& config);
+
+    /// Whether the engine still runs and the server's start, taken as one
+    /// step, and every stop of the server under it too. A settings save at
+    /// the moment Crucible closed could see the engine running, then start
+    /// the server after run() had stopped it and freed the models, and a
+    /// request then reached a host that was gone.
+    std::mutex server_mutex_;
 
     /// The file the server answers with, as `config` has it: the
     /// delegator's, or the model it names. Empty when there is none, and for

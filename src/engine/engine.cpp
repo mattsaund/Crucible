@@ -143,7 +143,12 @@ void Engine::stop() {
 
     // The API server before anything is joined: what it is answering stops
     // at the next token, and nothing more comes in while the rest goes.
-    server_->stop();
+    // Under the lock a settings save starts it under, so one that saw the
+    // engine running has started it before this, and stops with it.
+    {
+        const std::lock_guard<std::mutex> closing(server_mutex_);
+        server_->stop();
+    }
 
     // A benchmark run first: its model is one the worker is about to free.
     // Told to stop, given a moment, and the orchestrator stopped under it if
@@ -836,8 +841,13 @@ void Engine::run() {
     // folder held by a lease rather than by the models' lock. It is stopped,
     // and that thread joined, before the models go. stop() stops it as well,
     // but this thread hears it is to stop first, and it freed the model a
-    // request was still reading with: Crucible crashed as it closed.
-    server_->stop();
+    // request was still reading with: Crucible crashed as it closed. Under
+    // the lock configure_server starts it under, so that no settings save
+    // can start it again once it is stopped here (see server_mutex_).
+    {
+        const std::lock_guard<std::mutex> closing(server_mutex_);
+        server_->stop();
+    }
 
     // Free the models before the backend goes away, and stop MLX's server and
     // the orchestrator, which are processes of their own and would outlive

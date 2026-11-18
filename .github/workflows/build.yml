@@ -179,7 +179,10 @@ jobs:
       # Then the model host loads the two models on it, asks each for a few
       # words, swaps them, lets them go and loads one again, which has to say
       # the same words, and scores labels with the other as the delegator.
-      # See tools/smoke.cpp.
+      # See tools/smoke.cpp. Then the API server, on copies of the 15M model
+      # made with chat templates it has to work around: one that refuses a
+      # conversation, one llama.cpp cannot read, and one that opens every
+      # reply with a thinking block. See tests/test_server.cpp.
       - name: A model loads, answers and swaps
         shell: bash
         env:
@@ -188,6 +191,9 @@ jobs:
         run: |
           build/bin/crucible-smoke --runtime cpu
           build/bin/crucible-smoke --host tiny-models/stories260K-f32.gguf tiny-models/stories15M-q4_0.gguf
+          CRUCIBLE_TEST_MODEL=tiny-models/stories15M-q4_0.gguf build/bin/crucible_tests \
+            a_chat_template_that_will_not_write_a_conversation_still_answers_it_and_refuses_tools_in_its_words \
+            a_reply_its_template_opens_with_thinking_is_answered_at_once_when_none_is_asked
 
       # A made app's reload, in the system's own webview: WebKitGTK's scheme
       # on Linux, WKURLSchemeHandler on macOS and WebView2's
