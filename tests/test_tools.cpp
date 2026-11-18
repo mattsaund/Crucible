@@ -69,6 +69,15 @@ TEST(a_write_body_is_taken_from_a_fence_a_sentinel_or_the_rest) {
     CHECK_EQ(body("WRITE: README.md\n````markdown\nA\n```\nB\n```\n````\nafter"),
              std::string("A\n```\nB\n```"));
     CHECK_EQ(body("WRITE: a.md\n~~~\n```js\nx\n```\n~~~\n"), std::string("```js\nx\n```"));
+
+    // A block of its own with no language named, a haiku shown in a README:
+    // its bare opening fence reads as the body's end. The reply ends on the
+    // body's own closing fence, and that is the end, whatever came between.
+    CHECK_EQ(body("WRITE: README.md\n```\n# Haiku\n\n## The Haiku\n\n```\nRed leaves fall,\n```\n\n"
+                  "## Imagery\nWarm.\n```\n"),
+             std::string("# Haiku\n\n## The Haiku\n\n```\nRed leaves fall,\n```\n\n## Imagery\nWarm."));
+    CHECK_EQ(body("WRITE: a.md\nText\n"), std::string("Text"));
+    CHECK_EQ(body("WRITE: a.md\n```\nText\n```\ncode\n```\n```\n"), std::string("Text\n```\ncode\n```"));
 }
 
 TEST(a_reply_that_says_something_is_answering_not_calling_a_tool) {
