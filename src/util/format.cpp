@@ -63,8 +63,14 @@ std::string short_path(const std::filesystem::path& path) {
         return path.string();
     }
     const std::string text(path.string());
-    const std::string prefix(home);
-    if (text.rfind(prefix, 0) == 0 && text.size() > prefix.size()) {
+    std::string       prefix(home);
+    while (prefix.size() > 1 && (prefix.back() == '/' || prefix.back() == '\\')) {
+        prefix.pop_back();
+    }
+    // The home folder and what is in it, not a folder whose name only begins
+    // the same way: with a home of /home/matt, /home/matthew/x read ~hew/x.
+    if (text.rfind(prefix, 0) == 0 && text.size() > prefix.size()
+        && (text[prefix.size()] == '/' || text[prefix.size()] == '\\')) {
         return "~" + text.substr(prefix.size());
     }
     return text;

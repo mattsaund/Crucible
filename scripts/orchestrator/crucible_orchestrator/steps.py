@@ -49,6 +49,12 @@ def nudge_for(parsed):
     `WRITE /path "fixed it"` is failing on one character, and is told which.
     """
     attempted = parsed.get("attempted", "none")
+    if parsed.get("inline") and attempted and attempted != "none":
+        # "Here it is. WRITE: style.css" and a fence: right, but a call starts
+        # a line, and nothing before it on the line is read.
+        return ("That was nearly right, but it cannot be run: %s has to start a line of "
+                "its own, with nothing before it on that line, and what goes with it on "
+                "the lines after. Send it again like that." % attempted.upper())
     if attempted == "write":
         return ("That was nearly right, but it cannot be run. WRITE needs a colon "
                 "after it, and the new contents of the file go in a fenced block "

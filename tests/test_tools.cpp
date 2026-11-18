@@ -444,6 +444,52 @@ TEST(a_near_miss_is_recognized_so_it_can_be_corrected) {
           == tools::ToolKind::None);
 }
 
+TEST(a_write_or_an_edit_after_a_sentence_on_its_line_is_a_near_miss_and_runs_nothing) {
+    // LFM2.5 wrote its call at the end of a sentence, with the body after it,
+    // and the call itself became the answer. It is not run (a call starts a
+    // line), but it is named, so the loop can say where it goes.
+    const char* const write = "Here is the page. WRITE: index.html\n```\n<h1>Hi</h1>\n```\n";
+    CHECK(!tools::parse_tool_call(write, "").has_value());
+    CHECK(tools::call_inside_a_line(write, "") == tools::ToolKind::Write);
+    const char* const edit = "I'll make the header blue: EDIT: style.css\n<<<<<<< SEARCH\nh1 { }\n"
+                             "=======\nh1 { color: blue; }\n>>>>>>> REPLACE\n";
+    CHECK(!tools::parse_tool_call(edit, "").has_value());
+    CHECK(tools::call_inside_a_line(edit, "") == tools::ToolKind::Edit);
+
+    // A sentence about one, with nothing to write after it, is prose. So is a
+    // RUN in a sentence, whatever follows, and a word that ends in a verb.
+    CHECK(tools::call_inside_a_line("Use WRITE: path when you want a file.", "") == tools::ToolKind::None);
+    CHECK(tools::call_inside_a_line("You can RUN: npm start\n```\nnpm start\n```", "")
+          == tools::ToolKind::None);
+    CHECK(tools::call_inside_a_line("Then REWRITE: a.txt\n```\nx\n```", "") == tools::ToolKind::None);
+    // A call on a line of its own is a call, not this.
+    CHECK(tools::call_inside_a_line("WRITE: a.txt\n```\nx\n```", "") == tools::ToolKind::None);
+}
+
+TEST(a_call_in_square_brackets_on_a_line_of_its_own_is_the_call) {
+    // "[EDIT: style.css]" above its blocks, as LFM2.5 wrote one: the brackets
+    // are set aside, and the edit is the edit.
+    const auto edit = tools::parse_tool_call("[EDIT: style.css]\n<<<<<<< SEARCH\nh1 { }\n=======\n"
+                                             "h1 { color: blue; }\n>>>>>>> REPLACE\n", "");
+    CHECK(edit.has_value());
+    if (edit) {
+        CHECK(edit->kind == tools::ToolKind::Edit);
+        CHECK_EQ(edit->argument, std::string("style.css"));
+        CHECK(edit->content.find("h1 { color: blue; }") != std::string::npos);
+    }
+    const auto write = tools::parse_tool_call("[WRITE: a.txt]\n```\nhello\n```\n", "");
+    CHECK(write.has_value());
+    if (write) {
+        CHECK(write->kind == tools::ToolKind::Write);
+        CHECK_EQ(write->argument, std::string("a.txt"));
+        CHECK_EQ(write->content, std::string("hello"));
+    }
+    // A link, a ticked box and a bracket inside are prose.
+    CHECK(!tools::parse_tool_call("[READ: the guide](https://example.com/guide)", "").has_value());
+    CHECK(!tools::parse_tool_call("[x] READ: done", "").has_value());
+    CHECK(!tools::parse_tool_call("[READ: a] and [READ: b]", "").has_value());
+}
+
 TEST(the_instructions_show_the_write_shape_rather_than_only_describing_it) {
     tools::WorkshopSettings settings;
     settings.enabled = true;

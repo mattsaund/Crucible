@@ -173,8 +173,16 @@ bool keeps_argument_verbatim(ToolKind kind) {
 /// `RUN bash: ...` names a shell: the verb, a space, a known shell's name and
 /// the colon. A RUN followed by a space and anything else is still prose.
 ToolKind verb_of(std::string_view line, std::string& argument, std::string& shell) {
-    const std::string trimmed = trim(line);
+    std::string trimmed = trim(line);
     shell.clear();
+    // A call in square brackets on a line of its own, "[EDIT: style.css]", as
+    // LFM2.5 wrote one above an edit's blocks: the brackets are set aside. Only
+    // a whole line with no other bracket in it, so a link or a ticked box in a
+    // list is still prose, and LFM2's "[WRITE(path=...)]" is still its own.
+    if (trimmed.size() > 2 && trimmed.front() == '[' && trimmed.back() == ']'
+        && trimmed.find_first_of("[]", 1) == trimmed.size() - 1) {
+        trimmed = trim(std::string_view(trimmed).substr(1, trimmed.size() - 2));
+    }
     for (const Verb& verb : kVerbs) {
         if (trimmed.size() <= verb.word.size() ||
             trimmed.compare(0, verb.word.size(), verb.word) != 0) {
@@ -2103,6 +2111,45 @@ ToolKind attempted_tool_call(std::string_view answer, std::string_view reasoning
                 // A bare verb on a line of its own -- "DONE" -- is the same
                 // mistake with nothing after it.
                 if (trimmed == verb.word) {
+                    return verb.kind;
+                }
+            }
+        }
+        return ToolKind::None;
+    };
+    if (const ToolKind kind = scan(answer); kind != ToolKind::None) {
+        return kind;
+    }
+    return trim(answer).empty() ? scan(reasoning) : ToolKind::None;
+}
+
+ToolKind call_inside_a_line(std::string_view answer, std::string_view reasoning) {
+    const auto scan = [](std::string_view text) {
+        const std::vector<std::string> lines = split_lines(text);
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            const std::string trimmed = trim(lines[i]);
+            for (const Verb& verb : kVerbs) {
+                if (verb.kind != ToolKind::Write && verb.kind != ToolKind::Edit) {
+                    continue;
+                }
+                const std::string word = std::string(verb.word) + ":";
+                const std::size_t at   = trimmed.find(word);
+                // After a word and a space, "Here it is. WRITE: a.txt", and
+                // naming something: not the start of the line, which is a call,
+                // and not REWRITE: or a verb with nothing after it.
+                if (at == std::string::npos || at == 0 || trimmed[at - 1] != ' '
+                    || trim(std::string_view(trimmed).substr(at + word.size())).empty()) {
+                    continue;
+                }
+                // And what goes with it on the lines after: a fence, or an
+                // edit's first block. Without that it is a sentence about one.
+                std::size_t next = i + 1;
+                while (next < lines.size() && trim(lines[next]).empty()) {
+                    ++next;
+                }
+                if (next < lines.size()
+                    && (is_fence(lines[next])
+                        || (verb.kind == ToolKind::Edit && marker_of(lines[next]) == Marker::Search))) {
                     return verb.kind;
                 }
             }

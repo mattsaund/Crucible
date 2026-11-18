@@ -2198,6 +2198,9 @@ json status_json(const Status& status) {
                 {"https", status.listening && status.https},
                 {"fingerprint", status.listening ? status.fingerprint : std::string()},
                 {"certificate", status.listening ? status.certificate : std::string()},
+                // As Settings shows it, from the home folder, as it shows the
+                // runtimes' folder. Copy takes the whole path.
+                {"certificate_shown", status.listening ? format::short_path(status.certificate) : std::string()},
                 {"own_certificate", status.listening && status.own_certificate},
                 {"recent", std::move(recent)}};
 }

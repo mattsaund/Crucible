@@ -349,6 +349,26 @@ json calls_of(const Events& events) {
 
 }  // namespace
 
+TEST(a_path_in_the_home_folder_is_shown_from_it_and_one_beside_it_is_not) {
+    // Settings shows the certificate's file and the runtimes' folder this way.
+    const char* const before = std::getenv("HOME");
+    const std::string kept   = before != nullptr ? before : "";
+    set_env("HOME", "/home/matt");
+    CHECK_EQ(format::short_path("/home/matt/.local/share/crucible/https/certificate.pem"),
+             std::string("~/.local/share/crucible/https/certificate.pem"));
+    // A folder whose name only begins like the home folder's is not in it.
+    CHECK_EQ(format::short_path("/home/matthew/notes.txt"), std::string("/home/matthew/notes.txt"));
+    CHECK_EQ(format::short_path("/home/matt"), std::string("/home/matt"));
+    // A home written with a slash at its end is the same home.
+    set_env("HOME", "/home/matt/");
+    CHECK_EQ(format::short_path("/home/matt/models"), std::string("~/models"));
+    if (before != nullptr) {
+        set_env("HOME", kept);
+    } else {
+        unset_env("HOME");
+    }
+}
+
 TEST(a_tool_offered_reaches_the_model_and_its_call_comes_back_whole) {
     if (!curl_here()) {
         return;

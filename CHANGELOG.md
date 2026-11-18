@@ -6,6 +6,23 @@ macOS, Windows and Linux that its commit's checks built. Running Crucible checks
 for a newer release once a day and says so in **Settings, About**, where Update
 now installs it and keeps your config, models and history.
 
+## 1.0.1 (2026-11-17)
+
+Small fixes found taking the README's pictures for 1.0.0.
+
+- **A tool call in square brackets runs.** LFM2.5 wrote "[EDIT: style.css]"
+  above its edit, and the call itself became the answer.
+- **A call written after a sentence is pointed out.** "Here it is. WRITE:
+  style.css" with the file after it is not run, since prose can name a
+  command, but the expert is told to start a line with it, where the turn
+  used to end on the raw call.
+- **Settings, Server shows the certificate's file from your home folder**,
+  as the runtimes' folder is shown. Copy still takes the whole path.
+- **"not trusted: choose a folder to work in" leaves the side menu** once a
+  folder is chosen and opened.
+- **Nothing describes Crucible as building with agents any more**, in its
+  desktop entry or its build files.
+
 ## 1.0.0 (2026-11-17)
 
 The first release since 0.9.9. The update check and the website move to it. It

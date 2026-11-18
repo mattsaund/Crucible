@@ -384,6 +384,12 @@ void AppState::add_notice(std::string notice) {
 
 void AppState::clear_notices() {
     const std::lock_guard<std::mutex> lock(mutex_);
+    // What the newest of them put on the status line goes with them, unless
+    // something has been said since: "not trusted: choose a folder to work
+    // in" stayed there after a folder was chosen and opened.
+    if (!notices_.empty() && status_ == notices_.back()) {
+        status_.clear();
+    }
     notices_.clear();
 }
 
