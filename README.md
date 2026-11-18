@@ -64,7 +64,7 @@ clone.
 **Updating:** Settings → About → **Update now**, or run the installer again.
 Crucible checks GitHub once a day and says when there is one, and with
 **Pre-releases** ticked there it offers pre-releases and betas too. Config,
-models and history are kept. Versions are tagged `v0.9.5` (`--branch v0.9.5`
+models and history are kept. Versions are tagged `v1.0.0` (`--branch v1.0.0`
 builds one from source), and what changed is in [CHANGELOG.md](CHANGELOG.md).
 
 **Uninstall:** `crucible --uninstall`. It asks before deleting models. If the

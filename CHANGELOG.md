@@ -1,10 +1,64 @@
 # Changelog
 
-Crucible is versioned `MAJOR.MINOR.PATCH`. A release is a `v`-prefixed tag on
-GitHub, which builds the installers for macOS, Windows and Linux and attaches
-them to the release. Running Crucible checks for a newer tag once a day and says
-so in **Settings → About**; updating is the same one-line installer that put it
-there, and it keeps your config, models and history.
+Crucible is versioned `MAJOR.MINOR.PATCH`, and a pre-release adds `-pre.N`. A
+release is a `v`-prefixed tag on GitHub, which publishes the installers for
+macOS, Windows and Linux that its commit's checks built. Running Crucible checks
+for a newer release once a day and says so in **Settings, About**, where Update
+now installs it and keeps your config, models and history.
+
+## 1.0.0 (2026-11-17)
+
+The first release since 0.9.9. The update check and the website move to it. It
+holds the four pre-releases below and this round's work.
+
+- **Ask for anything, and it is worked until it is done.** A message is no
+  longer decided into an answer or a build. The expert it is routed to works
+  with the tools, an action at a time, until it writes the answer, up to 60
+  actions a prompt (Actions per prompt in Settings, Tools). When the next
+  step needs another kind of expertise, the expert says so, or the delegator,
+  asked out of sight after each new piece of work, finds a better fit, and
+  that expert carries on in the same conversation. Asked for a page and a
+  README explaining it, flint wrote the page and GPT OSS the README.
+- **Build mode is gone**, with its plans, its agents, the seats builds made
+  and the Build settings page. History lists conversations. A config or a
+  conversation from before opens as it did, a seat a build made stays an
+  expert, and old build records stay on disk.
+- **The guards builds had now watch every prompt.** A call made again with
+  nothing changed is not run, a run of actions going round is told so, a near
+  miss of a call is told what was wrong, and a reply that starts repeating
+  itself is stopped. An answer right after a failed action is asked once to
+  face it, and a path written from the top of the disk is told how to write
+  it relative to the project.
+- **A file is written whole.** A README with a code block of its own was cut
+  off where the block opened. A file whose last fence was left off, as GPT OSS
+  leaves it, is written to its end, and a write the length limit cut short is
+  not written at all: the expert is asked for it again, in parts.
+- **Settings, About has a Pre-releases box.** Ticked, the check and Update now
+  take the newest pre-release or beta. Pre-releases are ordered as semantic
+  versioning orders them, and a copy built from source is handed the install
+  of the tag found rather than of main.
+- **HTTPS certificates keep up.** A certificate replaced in place, as a renewed
+  Let's Encrypt one is, is served within seconds and nobody is dropped.
+  Crucible's own is made again when the machine moves to another network,
+  keeping its key, and New beside its SHA-256 makes a new one.
+- **The server honors reasoning effort "none"** on a model whose template
+  always opens a thinking block (LFM2.5 2.6B), and an answer after thinking
+  starts at its first word. A settings save as Crucible closes no longer
+  starts the server again.
+- **A model partly on the processor puts more layers on the cards.** Each
+  card's buffers are measured on their own. flint fits 45 of its 49 layers on
+  three cards, where it fit 44, and the desktop's card no longer costs a layer.
+- **The preview and History keep to the project open**, and Get it seats a
+  Qwen3 4B the folder already holds.
+- **A page that saves and reloads in one click keeps everything it saved.** A
+  made app on Windows could lose its sessionStorage.
+- **A reopened chat still says how much went in.**
+- **The Bench's first fetch takes under three minutes** rather than four and a
+  half, and its count moves.
+- **Renders at the same moment no longer collide.** Each browser run has a
+  profile folder of its own.
+- **CI checks the server on real chat templates** that refuse a conversation,
+  cannot be read, or always think, on Linux, macOS and Windows.
 
 ## 1.0.0-pre.4 (2026-11-11)
 
