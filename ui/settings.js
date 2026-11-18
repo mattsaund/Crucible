@@ -862,14 +862,14 @@ function serverCertificate(conf, s) {
         <input id="${id}" data-path="${path}" data-change="set" spellcheck="false" autocomplete="off"
                placeholder="${placeholder}" value="${escape(at(state.config, path) || '')}">
         <button class="action" data-act="server-pick" data-path="${path}">Browse</button></div></div>`;
-  const row = (label, text, more = '') => `<div class="order-row">
-        <span class="order-name">${label} <code class="wrap">${escape(text)}</code></span>${more}${serverCopy(text)}</div>`;
+  const row = (label, text, more = '', shown = text) => `<div class="order-row">
+        <span class="order-name">${label} <code class="wrap">${escape(shown)}</code></span>${more}${serverCopy(text)}</div>`;
   const serving = s.https && s.fingerprint;
   const renew = s.own_certificate ? '<button class="action" data-act="server-certificate-new">New</button>' : '';
   return `${file('server.certificate', 'server-certificate', 'Certificate', 'Self-signed')}
     ${conf.certificate ? file('server.certificate_key', 'server-certificate-key', 'Key', 'Same file') : ''}
     ${serving ? `<div class="field">${row('SHA-256', s.fingerprint, renew)}${
-      s.own_certificate && s.certificate ? row('File', s.certificate) : ''}</div>` : ''}`;
+      s.own_certificate && s.certificate ? row('File', s.certificate, '', s.certificate_shown || s.certificate) : ''}</div>` : ''}`;
 }
 
 /// Whether it is running, in a word or two, and what a request waits for.

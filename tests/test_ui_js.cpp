@@ -3463,6 +3463,7 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
                 "  error: '', model: 'physics.gguf', answering: false, waiting: '', queued: 0,"
                 "  addresses: { local: 'https://localhost:8338/v1' }, lan: '', https: true,"
                 "  fingerprint: 'AB:CD:EF', certificate: '/home/x/.local/share/crucible/https/certificate.pem',"
+                "  certificate_shown: '~/.local/share/crucible/https/certificate.pem',"
                 "  own_certificate: true, recent: [] }");
     CHECK_EQ(drawn("views.settings()"), "ok");
     const std::string secure = page().eval("views.settings()");
@@ -3471,8 +3472,11 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(secure.find("placeholder=\"Self-signed\"") != std::string::npos);
     CHECK(secure.find("server-certificate-key") == std::string::npos);   // no key without a certificate named
     CHECK(secure.find("SHA-256 <code class=\"wrap\">AB:CD:EF</code>") != std::string::npos);
-    CHECK(secure.find("File <code class=\"wrap\">/home/x/.local/share/crucible/https/certificate.pem</code>")
+    // Its file shown from the home folder, as the runtimes' folder is, and
+    // copied whole, since that is what a client is handed.
+    CHECK(secure.find("File <code class=\"wrap\">~/.local/share/crucible/https/certificate.pem</code>")
           != std::string::npos);
+    CHECK(secure.find("data-text=\"/home/x/.local/share/crucible/https/certificate.pem\"") != std::string::npos);
     // Crucible's own can be made anew, as the API key can: asked first, since
     // a client given the old one stops trusting the server.
     CHECK(secure.find("data-act=\"server-certificate-new\">New</button>") != std::string::npos);
