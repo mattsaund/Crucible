@@ -212,9 +212,8 @@ h2 {
 /* The parts of a line, set apart by space where a dot used to go. */
 .part + .part { margin-left: 1.1em; }
 
-/* At work: said in orange in the side menu's status line and under the
-   agent working -- the sign that a model is busy between the moments a file
-   changes. */
+/* At work: said in orange -- the sign that a model is busy between the
+   moments something on screen changes. */
 .working { color: var(--flame); }
 
 .body { white-space: pre-wrap; }
@@ -433,23 +432,6 @@ details.work[open] > summary { margin-bottom: .5rem; }
 .dl-del .sign { color: #E5847B; }
 .dl-note { color: var(--faint); font-style: italic; }
 
-/* --- cook ------------------------------------------------------------- */
-.goal { color: var(--text); font-size: 1.1em; }
-.asking {
-  background: var(--raised); border-left: 2px solid var(--flame);
-  padding: .8rem 1rem; margin-bottom: 1.4rem; border-radius: 0 6px 6px 0;
-}
-.step { margin-bottom: 1rem; }
-.step-head { display: flex; gap: .7rem; align-items: baseline; }
-.kind {
-  flex: none; min-width: 4.5rem; color: var(--faint); font-size: 11px;
-  text-transform: uppercase; letter-spacing: .05em;
-}
-/* The same colors the window gives a step: red for a failure, orange for a
-   write, flame for anything that ran, faint for the rest. */
-.kind-write, .kind-edit   { color: var(--flame-lit); }
-.kind-run                 { color: var(--flame); }
-.kind-failed { color: var(--error); }
 .bar {
   display: block; height: 6px; margin: .6rem 0;
   background: var(--panel-edge); border-radius: 3px; overflow: hidden;
@@ -596,7 +578,6 @@ button.seat:hover { background: var(--raised); }
 aside.rail button.seat { width: auto; padding: .35rem .4rem; height: auto; }
 aside h2 { position: relative; padding-left: .9rem; }
 aside h2.experts-head { margin: 0; padding-top: 1.6rem; padding-bottom: .7rem; }
-aside h2.agents-head { padding-top: 1.4rem; }
 
 /* The load, as a ring with the figure in the middle of it. */
 .ring { flex: none; margin-left: auto; }
@@ -656,7 +637,6 @@ textarea {
 }
 textarea:focus { outline: none; border-color: var(--flame); }
 textarea:disabled, input:disabled, select:disabled { color: var(--faint); }
-.composer-note { align-self: center; }
 
 /* One rounded box holding the tiles, the text and a row of controls, the
    way the box is drawn in every chat program somebody has used this year.
@@ -814,30 +794,10 @@ body.dropping #top, body.dropping #main, body.dropping #layer {
   background: var(--panel); color: var(--dim); font-size: .9em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.goal-card .attached { margin: .55rem 0 0; }
 .tally.warm { color: var(--flame-lit); }
 
-/* --- cook ------------------------------------------------------------------------ */
+/* --- captions -------------------------------------------------------------------- */
 .caption { color: var(--faint); font-size: 11px; letter-spacing: .08em; margin-bottom: .3rem; }
-.goal-card {
-  position: relative; background: var(--raised); border-left: 2px solid var(--flame);
-  border-radius: 0 6px 6px 0; padding: .8rem 1.1rem; margin-bottom: 1rem;
-}
-.goal-stop { position: absolute; top: .6rem; right: .6rem; opacity: 0; }
-.goal-card:hover .goal-stop, .goal-stop:focus-visible { opacity: 1; }
-.cook-state { gap: .7rem; margin-bottom: .4rem; }
-.chain { margin-bottom: 1rem; }
-.asking { border: 1px solid var(--flame); border-radius: 6px; }
-details.step > summary { list-style: none; cursor: pointer; }
-details.step > summary::before { content: '>'; color: var(--faint); width: .8rem; flex: none; }
-details.step[open] > summary::before { content: 'v'; }
-div.step > .step-head { padding-left: 1.5rem; }
-details.step .code { margin: .5rem 0 0 1.5rem; }
-details.step .step-thought { margin: .5rem 0 0 1.5rem; color: var(--faint); font-style: italic; }
-hr.rule { border: 0; border-top: 1px solid var(--panel-edge); margin: 1.4rem 0; }
-.outcome { color: var(--dim); }
-.changed { margin-top: 1rem; }
-.ok-file { color: #7EC699; }
 
 /* --- settings and create -------------------------------------------------------------- */
 button.card { display: block; width: 100%; text-align: left; font: inherit; color: inherit; }
@@ -885,7 +845,7 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .setup-item .bar { margin-top: .35rem; }
 .setup .action { margin-top: .6rem; }
 
-/* --- the panes beside the conversation, and a build in it ------------------------------ */
+/* --- the panes beside the conversation ------------------------------------------------ */
 .pane.with-nav { grid-template-rows: auto 1fr auto; }
 .pane-nav { display: flex; gap: .3rem; margin: 0; padding: .5rem 2.5rem 0; border-bottom: 1px solid var(--panel-edge); }
 .pane-nav button {
@@ -895,24 +855,7 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .pane-nav button:hover { color: var(--dim); }
 .pane-nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(--flame); }
 .pane-nav .pip { top: .35rem; right: .15rem; }
-/* The agents down one side, the work on the other. The work takes what is
-   left, and the list keeps its width however long a title is. With the side
-   menu open the running build's agents are in it, and the work has the
-   whole width. */
-.build-split { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1.4rem; margin-top: .6rem; }
-.build-split.solo { grid-template-columns: minmax(0, 1fr); }
-.agents { min-width: 0; }
-button.agent { height: auto; padding: .45rem .6rem .45rem .9rem; align-items: flex-start; }
-button.agent.here { background: var(--raised); }
-.agent .dot { margin-top: .45rem; }
-.agent-text { min-width: 0; display: flex; flex-direction: column; }
-.agent-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-who { color: var(--faint); font-size: .85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent[data-phase="missing"] .agent-who { color: var(--error); }
 .work { min-width: 0; }
-.work .goal-card .goal { font-size: 1em; }
-.file-chip { padding: .1rem .4rem; color: #7EC699; }
-.file-chip:hover { color: var(--text); }
 .picture-chip { padding: .05rem .4rem; color: var(--flame-lit); }
 .picture-full { max-width: 100%; max-height: 70vh; border-radius: 6px; }
 

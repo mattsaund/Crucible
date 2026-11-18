@@ -235,6 +235,21 @@ Link link_of(const char* bus_id);
 
 }  // namespace pci
 
+/// Room left on every card beyond what the arithmetic accounts for.
+///
+/// Free video memory is a moving target: a compositor redraws, a browser opens
+/// a tab, and the figure a plan was made from is stale by the time the weights
+/// are uploaded. This is the margin that absorbs that -- and the reason it is
+/// worth having is that a load which misses fails at the very last allocation,
+/// with the whole model already on the cards.
+inline constexpr std::uint64_t kCardHeadroom = 256ULL * 1024 * 1024;
+
+/// The room a dry run's figures are held to on every card, beyond what the
+/// backend takes past them. It is what a desktop's use of a card moves by
+/// while a model loads, and all the margin measured figures need, where the
+/// header's estimates keep kCardHeadroom.
+inline constexpr std::uint64_t kMeasuredHeadroom = 128ULL * 1024 * 1024;
+
 /// What a model will want from the cards.
 ///
 /// Three parts, because they are placed by three different rules. Weights, KV
@@ -254,7 +269,8 @@ Link link_of(const char* bus_id);
 /// Leave it empty when the model's header could not be read; the split then
 /// falls back to dividing proportionally.
 ///
-/// All of it comes from the model's own header. See llm/model_shape.hpp.
+/// All of it comes from the model's own header, or from a dry run of a load
+/// of it. See llm/model_shape.hpp and calibrated_fit.
 struct ModelFit {
     std::uint64_t resident     = 0;  ///< weights + cache + state, divided between cards
     std::uint64_t per_card     = 0;  ///< activation buffers, needed on each card
@@ -263,6 +279,22 @@ struct ModelFit {
     /// Bytes per placeable unit, in llama.cpp's order: layer 0 first, the
     /// output last. See ModelShape::units.
     std::vector<std::uint64_t> units;
+
+    /// Each card's own buffers in place of `per_card`, as a dry run measured
+    /// them, by ggml device index. Zero, or past the end, for a card it
+    /// measured nothing on, which `per_card` stands for. Empty from a header.
+    ///
+    /// One figure for every card, the header's or the largest a card
+    /// measured, cost a layer. Under flint, partly on the processor, the
+    /// first card's buffers were 345 MiB, since llama.cpp has it do the
+    /// processor's layers' work on a long prompt, and the next card's were
+    /// 84. That card kept 759 MiB unused, room for a 721 MiB layer.
+    std::vector<std::uint64_t> per_device = {};
+
+    /// Room left on every card beyond all of the above. It is kCardHeadroom
+    /// for the header's estimates and kMeasuredHeadroom for what a dry run
+    /// measured, the margin a dry run of the plan is then held to.
+    std::uint64_t headroom = kCardHeadroom;
 };
 
 /// What a dry run says a load puts on one card, in llama.cpp's own figures:
@@ -283,17 +315,25 @@ struct CardNeed {
 /// for them, and the logits besides on the card with the output: 805 MiB
 /// there for flint. A dry run of flint at 8K over two devices put them at 194
 /// MiB on the card without the output and 393 on the one with it.
-/// Calibrated, `per_card` is the largest compute buffer measured on a card
-/// without the output plus `runtime`, what the backend takes beyond the
-/// buffers llama.cpp reports; `output_extra` is what the card with the
-/// output measured over that; and the units are scaled by the most the
-/// header's weights and cache missed the measured ones by on any card.
+/// Calibrated, each card the dry run measured is planned with its own
+/// buffers (`per_device`) plus `runtime`, what the backend takes beyond the
+/// buffers llama.cpp reports. `output_extra` is what the card with the
+/// output measured over the least any other card did. A card it measured
+/// nothing on gets the largest any card without the output measured
+/// (`per_card`). The units are scaled by the most the header's weights and
+/// cache missed the measured ones by on any card, and the headroom is the
+/// dry run's own (kMeasuredHeadroom).
 ///
 /// `counts` is how many units the measured plan put on each card and `need`
-/// what the dry run found there, both indexed by ggml device index. When the
-/// two do not describe the whole of `fit`, `fit` comes back unchanged.
+/// what the dry run found there, both indexed by ggml device index. `first`
+/// is the first of the units on the cards. It is zero when they held them
+/// all, and more when the first layers were left on the processor, as a load
+/// partly there leaves them. Every unit comes back calibrated, those
+/// included, so a plan for more of them can be made from it. When the counts
+/// do not describe the units from `first` to the last, `fit` comes back
+/// unchanged.
 ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
-                        const std::vector<CardNeed>& need, std::uint64_t runtime);
+                        const std::vector<CardNeed>& need, std::uint64_t runtime, std::size_t first = 0);
 
 /// A finished arrangement: what to hand llama.cpp, and what it will do.
 struct GpuPlan {
@@ -305,17 +345,8 @@ struct GpuPlan {
     std::vector<int> units;
 };
 
-/// Room left on every card beyond what the arithmetic accounts for.
-///
-/// Free video memory is a moving target: a compositor redraws, a browser opens
-/// a tab, and the figure a plan was made from is stale by the time the weights
-/// are uploaded. This is the margin that absorbs that -- and the reason it is
-/// worth having is that a load which misses fails at the very last allocation,
-/// with the whole model already on the cards.
-inline constexpr std::uint64_t kCardHeadroom = 256ULL * 1024 * 1024;
-
-/// What a plan leaves free on the card drawing the desktop, beyond
-/// kCardHeadroom, when the model fits without it. A compositor and a browser
+/// What a plan leaves free on the card drawing the desktop, beyond its
+/// headroom, when the model fits without it. A compositor and a browser
 /// there took 2.4 GB and move by most of a gigabyte as windows and videos
 /// open; a card filled to its last 900 MB left them nothing to move into.
 inline constexpr std::uint64_t kDisplayRoom = 768ULL * 1024 * 1024;

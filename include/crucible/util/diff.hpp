@@ -5,7 +5,7 @@
 // The workshop's WRITE replaces a whole file, so "updated calc.py" is true and
 // almost useless -- it does not say whether one character moved or the file was
 // replaced with something unrelated. This turns the before and after into the
-// few lines that differ, which is what a person reading a cook's journal wants
+// few lines that differ, which is what a person reading what a turn did wants
 // to see and what the desktop app renders as a diff.
 //
 // Deliberately not a full LCS. Trimming the common head and tail is O(n) and

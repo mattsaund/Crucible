@@ -11,6 +11,7 @@
 
 #include <llama.h>
 
+#include "crucible/engine/bench_rows.hpp"
 #include "crucible/llm/batch_chat.hpp"
 #include "crucible/llm/model_host.hpp"
 #include "crucible/llm/model_shape.hpp"
@@ -304,4 +305,25 @@ TEST(a_batch_going_away_tells_every_question_it_ended) {
     CHECK_EQ(ended.load(), 6);
     CHECK(stopped.load() >= 4);
     llama_log_set(nullptr, nullptr);
+}
+
+TEST(a_datasets_pages_on_disk_are_known_by_their_names) {
+    // What a run plans its requests around (bench.py, plan): a page kept is
+    // read back rather than asked for again, whichever run of whichever size
+    // kept it.
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    const std::filesystem::path folder = bench_rows::folder("openai/gsm8k", "main", "test");
+    CHECK(folder.parent_path().filename() == "rows");
+    CHECK(bench_rows::kept(folder).empty());   // nothing yet, not even the folder
+    std::filesystem::create_directories(folder);
+    for (const char* name : {"1000-100.json", "12-63.json", "0-100.json", "1100-100.json.part", "7-0.json",
+                             "x-5.json", "5-.json", "-5.json", "5-x.json", "notes.txt"}) {
+        std::ofstream(folder / name) << "{\"rows\": []}";
+    }
+    const std::vector<std::pair<int, int>> pages{{0, 100}, {12, 63}, {1000, 100}};
+    CHECK(bench_rows::kept(folder) == pages);
+    // Each dataset, config and split in a folder of its own.
+    CHECK(bench_rows::folder("openai/gsm8k", "main", "train") != folder);
+    CHECK(bench_rows::folder("openai/gsm8k", "socratic", "test") != folder);
 }

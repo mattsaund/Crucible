@@ -34,7 +34,7 @@ bool is_utf8(std::string_view text);
 /// `text`, with each byte that is not part of a well-formed UTF-8 sequence
 /// replaced by U+FFFD.
 ///
-/// Everything Crucible keeps -- a session, a cook's journal, the config -- is
+/// Everything Crucible keeps -- a session, a Bench result, the config -- is
 /// JSON, and JSON is UTF-8: a string that is not refuses to be written, and
 /// refusing threw from whichever thread was saving. Text from outside -- a
 /// file read into a turn, what a command printed, the end of a reply cut off

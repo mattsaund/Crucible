@@ -18,9 +18,9 @@
 // template (see LoadedModel::open_chat). A provider's model and an MLX one
 // are asked as the chat asks them: text and pictures.
 //
-// The chat and a build go on all the while. A request waits for whoever has
-// the model, and says what it waits for; nothing the app is doing waits on a
-// request longer than the model takes to answer it.
+// The chat goes on all the while. A request waits for whoever has the model,
+// and says what it waits for; nothing the app is doing waits on a request
+// longer than the model takes to answer it.
 #include "crucible/engine/engine.hpp"
 
 #include <algorithm>
@@ -137,9 +137,15 @@ ModelParams Engine::served_params(const Config& config, ExpertId* seat) {
 
 serve::Status Engine::server_status() const { return server_->status(); }
 
+std::string Engine::new_certificate() { return server_->new_certificate(paths::https_dir()); }
+
 void Engine::configure_server(const Config& config) {
+    const std::lock_guard<std::mutex> closing(server_mutex_);
+    if (!running_.load(std::memory_order_relaxed)) {
+        return;   // closing, or not started: stop() and run() see to the server
+    }
     serve::Settings settings;
-    settings.enabled = config.server.enabled && running_.load(std::memory_order_relaxed);
+    settings.enabled = config.server.enabled;
     settings.port    = config.server.port;
     // A provider's model is the person's credit spent with every request:
     // other computers are let at it only with a key, and without one the
@@ -159,9 +165,6 @@ void Engine::configure_server(const Config& config) {
 std::string Engine::serve_blocker() const {
     if (benching()) {
         return "the benchmark";
-    }
-    if (cooking()) {
-        return "the build";
     }
     if (is_busy()) {
         return "the chat";
@@ -246,7 +249,7 @@ serve::Answer Engine::serve_request(const serve::Ask& ask, const serve::Sink& si
         if (host_->router() == nullptr) {
             sink.waiting("loading");
             ensure_router(cancel);
-            if (!is_busy() && !cooking()) {
+            if (!is_busy()) {
                 state_.set_mood(Mood::Idle);   // load_router left it saying it was loading
             }
         }
@@ -327,7 +330,7 @@ Engine::HeldModel Engine::hold_served(const ModelParams& params, const ExpertId&
                                                     : name + " did not load" + (error.empty() ? std::string() : ": " + error);
         return held;
     }
-    if (!is_busy() && !cooking() && !resident) {
+    if (!is_busy() && !resident) {
         state_.set_mood(Mood::Idle);   // the load said so on the status line, and is over
     }
     // Somebody else holding it is somebody answering with it: the model takes
@@ -459,24 +462,40 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
 
         // A thinking model's working goes to the reasoning, apart from the
         // answer, as llama-server sends it: in the model's own markers when
-        // it is one on this machine, on a channel of its own otherwise.
+        // it is one on this machine, on a channel of its own otherwise. The
+        // answer after it from its first word, as open_chat hands one on: a
+        // model puts a line or two between the two, and a client shows the
+        // content as it comes.
         ResponseFilter filter;
-        const auto     sort = [&sink](const ResponseFilter::Piece& piece) {
-            if (!piece.reasoning.empty()) {
-                sink.reasoning(piece.reasoning);
+        bool           reasoned  = false;
+        bool           answering = false;
+        const auto     reason    = [&sink, &reasoned](std::string_view text) {
+            if (!text.empty()) {
+                reasoned = true;
+                sink.reasoning(text);
             }
-            if (!piece.answer.empty()) {
-                sink.answer(piece.answer);
+        };
+        const auto answer = [&sink, &reasoned, &answering](std::string_view text) {
+            if (reasoned && !answering) {
+                text.remove_prefix(std::min(text.find_first_not_of(" \t\r\n"), text.size()));
             }
+            if (!text.empty()) {
+                answering = true;
+                sink.answer(text);
+            }
+        };
+        const auto sort = [&](const ResponseFilter::Piece& piece) {
+            reason(piece.reasoning);
+            answer(piece.answer);
         };
         ChatSink chat_sink;
         chat_sink.cancel = cancel;
         if (model.reasons_inline()) {
             chat_sink.on_text = [&](std::string_view chunk) { sort(filter.feed(chunk)); };
         } else {
-            chat_sink.on_text = [&sink](std::string_view chunk) { sink.answer(chunk); };
+            chat_sink.on_text = [&](std::string_view chunk) { answer(chunk); };
         }
-        chat_sink.on_reasoning = [&sink](std::string_view chunk) { sink.reasoning(chunk); };
+        chat_sink.on_reasoning = [&](std::string_view chunk) { reason(chunk); };
         const std::string_view effort = ask.effort == "none" ? std::string_view() : std::string_view(ask.effort);
         const ChatResult result = model.chat(ChatRequest{messages, params, effort}, chat_sink);
         sort(filter.flush());
@@ -562,7 +581,7 @@ serve::Answer Engine::serve_embeddings(const serve::Ask& ask, const serve::Sink&
         if (host_->router() == nullptr) {
             sink.waiting("loading");
             ensure_router(cancel);
-            if (!is_busy() && !cooking()) {
+            if (!is_busy()) {
                 state_.set_mood(Mood::Idle);
             }
         }

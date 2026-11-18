@@ -43,7 +43,7 @@ const state = {
 
   // Fetched, and null until it has been.
   config: null, models: null, providers: null, runtimes: null, devices: null, recents: null,
-  trainer: null, flavors: null, about: null, history: null, recipes: null, teach: null, kit: null, ci: null, mcp: null, self: null,
+  trainer: null, flavors: null, about: null, history: null, recipes: null, kit: null, ci: null, mcp: null, self: null,
   fonts: null,
 
   // Long jobs, as last reported.
@@ -305,8 +305,8 @@ const afterDraw = [];
 //
 // A region -- one element with an id, and everything in it -- whose markup is
 // what is on screen already goes to the patcher as that element alone, empty
-// and signed, and the patcher keeps it as it is (see morph). Parsing a
-// build's journal, or a page of search results and a README, again for every
+// and signed, and the patcher keeps it as it is (see morph). Parsing a long
+// transcript, or a page of search results and a README, again for every
 // push that changed something beside it was most of what those pushes cost.
 
 /// By id: the markup last made for it, the signature that stands for it, and

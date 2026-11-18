@@ -6,8 +6,8 @@
 // between, its system prompt, its worked examples, the keyword sets the
 // model-free router scores with, and the order experts appear in the panel
 // are all derived from it, so they cannot drift apart -- adding a seat adds it
-// everywhere, whether a person filled in New expert a minute ago or a build
-// made it. The delegator's side is the orchestrator's, built from the roster
+// everywhere, whether a person filled in New expert a minute ago or Create
+// kept a fine-tune as one. The delegator's side is the orchestrator's, built from the roster
 // it is sent with each route: see scripts/orchestrator's routing.py.
 #include "crucible/routing/expert.hpp"
 #include "crucible/util/format.hpp"

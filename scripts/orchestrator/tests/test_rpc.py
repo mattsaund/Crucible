@@ -68,11 +68,11 @@ class Calls(unittest.TestCase):
         self.assertEqual(sent(writer), [{"id": 4, "error": "no such method: nope"}])
 
     def test_a_request_s_context_goes_with_the_calls_it_makes(self):
-        # The core asks for a build; the build asks the core for a flag. The
-        # flag is asked in the build's context, so the core knows which Stop
-        # it is about.
+        # The core asks for a benchmark run; the run asks the core for a
+        # flag. The flag is asked in the run's context, so the core knows
+        # which Stop it is about.
         writer = io.BytesIO()
-        channel = rpc.Channel(lines({"id": 9, "method": "build.run", "params": {"context": "build"}},
+        channel = rpc.Channel(lines({"id": 9, "method": "bench.run", "params": {"context": "bench"}},
                                     {"id": 1, "result": {"stop": False}}), writer)
         seen = {}
 
@@ -82,16 +82,16 @@ class Calls(unittest.TestCase):
             thread = channel.spawn(lambda: seen["spawned"].append(channel.context))
             thread.join()
             return {}
-        channel.handlers["build.run"] = run
+        channel.handlers["bench.run"] = run
         channel.serve()
         messages = sent(writer)
-        self.assertEqual(messages[0], {"id": 1, "method": "engine.flags", "params": {"context": "build"}})
-        self.assertEqual(seen["spawned"], ["build"])
+        self.assertEqual(messages[0], {"id": 1, "method": "engine.flags", "params": {"context": "bench"}})
+        self.assertEqual(seen["spawned"], ["bench"])
         self.assertEqual(messages[-1], {"id": 9, "result": {}})
 
     def test_calls_from_several_threads_each_get_their_own_answer(self):
-        # Two agents asking at once, answered out of order: each is handed
-        # the answer with its own id, whoever reads the pipe.
+        # Two calls at once, answered out of order: each is handed the
+        # answer with its own id, whoever reads the pipe.
         import threading
         reader_side, writer_side = os.pipe()
         reader = os.fdopen(reader_side, "rb")
@@ -128,14 +128,14 @@ class Calls(unittest.TestCase):
 class Starting(unittest.TestCase):
     def test_it_starts_with_what_a_chat_turn_needs_and_reads_in_the_rest_when_asked(self):
         # In a process of its own, so what the other tests imported is not
-        # counted: builds, cooks and benchmarks are most of the package.
+        # counted: the benchmarks are most of the package.
         package = os.path.join(os.path.dirname(__file__), "..")
         probe = ("import sys; import crucible_orchestrator.main as main;"
                  "channel = main.Channel(None, None); handlers = main.handlers(channel);"
                  "print(sorted(m for m in sys.modules if m.startswith('crucible_orchestrator.')))")
         loaded = subprocess.run([sys.executable, "-c", probe], cwd=package, capture_output=True, text=True,
                                 check=True).stdout
-        for heavy in ("bench", "bench_score", "build", "cook"):
+        for heavy in ("bench", "bench_score"):
             self.assertNotIn("'crucible_orchestrator.%s'" % heavy, loaded)
         self.assertIn("'crucible_orchestrator.chat'", loaded)
 

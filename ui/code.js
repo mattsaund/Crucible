@@ -2,18 +2,19 @@
 //
 // Code: the project's files, open in tabs and changed in place.
 //
-// Agents do most of the typing in a build, but somebody reading what an agent
-// wrote wants to fix the line without leaving for another program. So this is
-// a small editor rather than a viewer: files in tabs, line numbers, find and
-// replace, a search across the project, new, rename and delete, and a box to
-// run a command in. What is typed is colored as it is typed, by the same
-// lexer the chat uses, drawn under a textarea that keeps the keyboard, the
-// selection and undo.
+// Experts do most of the typing in a project, but somebody reading what an
+// expert wrote wants to fix the line without leaving for another program. So
+// this is a small editor rather than a viewer: files in tabs, line numbers,
+// find and replace, a search across the project, new, rename and delete, and
+// a box to run a command in. What is typed is colored as it is typed, by the
+// same lexer the chat uses, drawn under a textarea that keeps the keyboard,
+// the selection and undo.
 //
-// Saving is allowed while a build runs. What keeps it from losing an agent's
-// work, and an agent from losing the person's, is the fingerprint each file
-// was read with: when the disk no longer matches it, a save asks first, and a
-// tab with nothing unsaved in it is read again. See project.write.
+// Saving is allowed while an expert works. What keeps it from losing the
+// expert's work, and the expert from losing the person's, is the fingerprint
+// each file was read with: when the disk no longer matches it, a save asks
+// first, and a tab with nothing unsaved in it is read again. See
+// project.write.
 
 const CODE_ICONS = {
   file: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M4 1.8h5.2L12.5 5v9.2H4z"/><path d="M9 1.8V5h3.5"/><path d="M8.2 7.5v4.4M6 9.7h4.4" stroke-linecap="round"/></svg>',
@@ -41,8 +42,8 @@ function foldedFolders() {
   return state.code.closed;
 }
 
-/// The file on screen. Kept as state.open.file so the agents' views, which
-/// open a file with file-open, need not know about tabs.
+/// The file on screen. Kept as state.open.file so the views that open a file
+/// with file-open need not know about tabs.
 const activeTab = () => state.open.file || null;
 const tabOf = (path) => state.code.tabs.find((t) => t.path === path);
 const unsaved = (tab) => !!(tab && tab.editable && tab.draft !== undefined && tab.draft !== tab.content);
@@ -116,8 +117,8 @@ async function openFile(path, line) {
   }
   if (tab.error && !unsaved(tab)) { tab.error = ''; tab.loading = true; }
   state.open.file = tab;
-  // A file opened from the conversation (a chip a turn or a build left) is
-  // opened in the Code pane beside it.
+  // A file opened from the conversation (a chip a turn left) is opened in the
+  // Code pane beside it.
   if (state.view === 'chat' && state.chatPane !== 'code') {
     state.chatPane = 'code';
     if (!state.tree) loadTree();
@@ -150,7 +151,7 @@ async function refreshTabs() {
   render();
 }
 
-/// Files a build step just wrote: the open ones among them are looked at.
+/// Files a turn just wrote: the open ones among them are looked at.
 function codeFilesChanged(paths) {
   if (!paths.some((p) => tabOf(p))) return;
   refreshTabs();
@@ -173,7 +174,7 @@ async function saveTab(tab, force) {
     tab.saving = false;
     if (/changed on disk/.test(error.message)) {
       const sure = await confirmIt({ title: `${fileName(tab.path)} changed`,
-        body: 'It changed since you opened it, maybe by an agent. Save yours over it?',
+        body: 'It changed since you opened it, maybe by an expert. Save yours over it?',
         yes: 'Save mine', no: 'Cancel' });
       if (sure) return saveTab(tab, true);
       tab.conflict = true;
@@ -501,7 +502,7 @@ afterDraw.push(() => {
   const tab = activeTab();
   if (!box || !tab) return;
   follow(box);
-  // A tab opened at a line, from a search or an agent's error: put the caret
+  // A tab opened at a line, from a search or an expert's error: put the caret
   // there once, then forget it.
   if (tab.goto) {
     const line = tab.goto;

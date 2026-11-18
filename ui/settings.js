@@ -10,7 +10,7 @@
 const SETTINGS_PAGES = [
   ['general', 'General'], ['experts', 'Experts'], ['providers', 'Providers'],
   ['generation', 'Generation'], ['hardware', 'Hardware'], ['runtimes', 'Runtimes'],
-  ['training', 'Training'], ['tools', 'Tools'], ['build', 'Build'], ['server', 'Server'],
+  ['training', 'Training'], ['tools', 'Tools'], ['server', 'Server'],
   ['about', 'About'],
 ];
 
@@ -21,11 +21,13 @@ const SETTINGS_PAGES = [
 /// `kind` is how it is drawn and how its value is read back: bool, int,
 /// float, string, text (several lines), secret, choice (with `extra` as the
 /// list of [value, label] pairs) or slider (with `extra` as {min, max, step}).
+/// A bool's `extra.change` names the action that saves it, for one that does
+/// more than save.
 function setting(path, label, kind, hint, extra) {
   const value = at(state.config, path);
   const id = 'f-' + path.replace(/\./g, '-');
   const note = hint ? `<div class="hint">${hint}</div>` : '';
-  const bind = { id, 'data-path': path, 'data-change': 'set' };
+  const bind = { id, 'data-path': path, 'data-change': (kind === 'bool' && extra && extra.change) || 'set' };
 
   if (kind === 'bool') {
     return `<div class="field"><label class="check"><input type="checkbox"${
@@ -139,11 +141,12 @@ actions['router-model'] = (e) => configure({ router: { model: splitModel(e.value
 /// Delegators to fetch, the best first, with what each file costs. Measured
 /// with crucible-routebench in 1.0.0 on an RTX 4070, Qwen3 4B Instruct 2507
 /// at four bits, Apache-2.0 and the starter's 4B file, routed 54 of the 54
-/// benchmark questions, 50 of the 50 in tools/routes and 29 of its 31 build
-/// tasks, and decided 46 of 46 and 19 of 20 messages, in 120 to 200 ms a
-/// route. LFM2.5 1.2B got 49, 48, 27, 44 and 17 in 90 to 120 ms, LFM2.5 2.6B
-/// 51, 49, 27, 46 and 18, and gpt-oss-20b, five times the file, 52, 50, 30,
-/// 46 and 18. A machine is offered the best whose file is at most a quarter
+/// benchmark questions, 50 of the 50 in tools/routes and 29 of the 31 steps
+/// in tools/routes/steps.json (what a handoff is routed on), in 120 to 200
+/// ms a route. LFM2.5 1.2B got 49, 48 and 27 in 90 to 120 ms, LFM2.5 2.6B
+/// 51, 49 and 27, and gpt-oss-20b, five times the file, 52, 50 and 30. (The
+/// answer-or-build decision they were measured on too went with Build mode.)
+/// A machine is offered the best whose file is at most a quarter
 /// of its cards' memory (on a Mac, its GPU's share), so the experts keep the
 /// rest; with no card, the smallest. `known` reads a chosen file as that
 /// model in any quantization, or as one no better.
@@ -175,8 +178,9 @@ function delegatorBetter(chosen) {
 /// The menu, with a way to fetch a delegator. That is one for a folder with
 /// nothing in it that can route here (a GGUF, or an MLX model where MLX
 /// runs), or a better one than the one chosen when the cards hold it. Either
-/// opens Models on it, and it is seated once it is in the folder unless
-/// another was chosen meanwhile.
+/// is seated at once when the folder holds it, and otherwise opens Models on
+/// it, to be seated once it is in the folder unless another was chosen
+/// meanwhile.
 function delegatorPicker(c) {
   const chosen = c.router ? c.router.model : '';
   const select = modelSelect(chosen, '', { id: 'router-model', 'data-change': 'router-model' }, true);
@@ -188,9 +192,20 @@ function delegatorPicker(c) {
   return better ? `<div class="row">${select}<span class="status">${escape(better.name)} routes better</span>
       <button class="action" data-act="delegator-get">Get it</button></div>` : select;
 }
+/// The model in the folder that is `wanted`: its own file, else any file
+/// `known` reads as it (another quantization, or another person's upload).
+/// Never an MLX copy, whose name can match too, since the list's are GGUF.
+function delegatorInFolder(wanted) {
+  const files = (state.models ? state.models.models : []).filter((m) => m.format !== 'mlx');
+  return files.find((m) => fileName(m.name) === wanted.file)
+      || files.find((m) => wanted.known.test(fileName(m.name))) || null;
+}
 actions['delegator-get'] = () => {
   const wanted = delegatorFits();
-  delegatorWanted = { file: wanted.file, over: delegatorChosen() };
+  // One the folder holds already is seated as it is, not fetched again.
+  const here = delegatorInFolder(wanted);
+  if (here) return configure({ router: { model: here.name } });
+  delegatorWanted = { wanted, over: delegatorChosen() };
   marketShow(wanted.query, wanted.repo, wanted.file);
 };
 function seatWantedDelegator() {
@@ -199,8 +214,7 @@ function seatWantedDelegator() {
     delegatorWanted = null;
     return;
   }
-  const wanted = delegatorWanted.file;
-  const got = state.models.models.find((m) => m.format !== 'mlx' && m.name.split('/').pop() === wanted);
+  const got = delegatorInFolder(delegatorWanted.wanted);
   if (!got) return;
   delegatorWanted = null;
   configure({ router: { model: got.name } });
@@ -675,6 +689,7 @@ function pageTools(c) {
   return `<h1>Tools</h1>
     <h2>PROJECT</h2>
     <p class="lede">${project.open ? escape(project.root) : 'None open.'}</p>
+    ${setting('tools.actions', 'Actions per prompt', 'slider', '', { min: 10, max: 200, step: 10 })}
     ${setting('tools.workshop_timeout', 'Command timeout (seconds)', 'slider', '',
       { min: 5, max: 900, step: 5 })}
     ${processes.length ? `<div class="field"><label>Running now</label>${processes.map((p) => `<div class="order-row">
@@ -806,44 +821,6 @@ actions['process-stop'] = (button) => guard(async () => {
   state.processes = (await call('processes')).processes;
 });
 
-// --- Build ---------------------------------------------------------------------------------------
-
-function pageBuild(c) {
-  const roster = state.snapshot.experts || [];
-  const seated = roster.filter((e) => e.phase !== 'unconfigured');
-  return `<h1>Build</h1>
-    <h2>WHO PLANS IT</h2>
-    <div class="field">
-      <select data-change="set" data-path="build.architect" aria-label="Architect">
-        <option value=""${!at(c, 'build.architect') ? ' selected' : ''}>The delegator picks</option>
-        ${seated.map((e) => `<option value="${escape(e.id)}"${at(c, 'build.architect') === e.id ? ' selected' : ''}>${
-          escape(e.name)}${e.provider ? ` (${escape(e.provider)})` : ''}</option>`).join('')}
-      </select>
-      <div class="hint">Writes the plan.</div></div>
-    ${setting('build.confirm_plan', 'Show me the plan before it starts', 'bool', '')}
-
-    <h2 style="margin-top:1.8rem">NEW AGENTS</h2>
-    <div class="field"><label for="worker-model">Model for a seat a build makes</label>
-      ${modelSelect(at(c, 'build.worker_model') || '', at(c, 'build.worker_provider') || '',
-        { id: 'worker-model', 'data-change': 'worker-model' })}
-      <div class="hint">For tasks no expert fits.</div></div>
-
-    <h2 style="margin-top:1.8rem">THE RUN</h2>
-    ${setting('build.split', 'Frontier models for the large tasks, local ones for the small', 'bool',
-      'Saves provider tokens.')}
-    ${setting('build.agents', 'Agents at once', 'slider',
-      'A model on this machine takes one at a time.',
-      { min: 1, max: 8, step: 1 })}
-    ${setting('build.auto_commit', 'Commit after each task', 'bool', 'Starts a repository when there is none.')}
-    ${setting('build.rounds_per_task', 'Rounds per task', 'slider', 'Before the build moves on without it.',
-      { min: 4, max: 200, step: 1 })}`;
-}
-
-actions['worker-model'] = (e) => {
-  const chosen = splitModel(e.value);
-  configure({ build: { worker_model: chosen.model, worker_provider: chosen.provider } });
-};
-
 // --- Server --------------------------------------------------------------------------------------------
 
 /// A model on this machine, offered to other programs at an address in
@@ -877,19 +854,21 @@ function pageServer(c) {
 
 /// HTTPS: a certificate and key of the person's, or none for one Crucible
 /// makes for this machine and keeps. A client is given its file to trust, or
-/// checks it by its SHA-256, which are shown once it serves with it.
+/// checks it by its SHA-256, which are shown once it serves with it. Its own
+/// can be made anew, with a new key, as the API key can.
 function serverCertificate(conf, s) {
   const file = (path, id, label, placeholder) => `<div class="field"><label for="${id}">${label}</label>
       <div class="row">
         <input id="${id}" data-path="${path}" data-change="set" spellcheck="false" autocomplete="off"
                placeholder="${placeholder}" value="${escape(at(state.config, path) || '')}">
         <button class="action" data-act="server-pick" data-path="${path}">Browse</button></div></div>`;
-  const row = (label, text) => `<div class="order-row">
-        <span class="order-name">${label} <code class="wrap">${escape(text)}</code></span>${serverCopy(text)}</div>`;
+  const row = (label, text, more = '') => `<div class="order-row">
+        <span class="order-name">${label} <code class="wrap">${escape(text)}</code></span>${more}${serverCopy(text)}</div>`;
   const serving = s.https && s.fingerprint;
+  const renew = s.own_certificate ? '<button class="action" data-act="server-certificate-new">New</button>' : '';
   return `${file('server.certificate', 'server-certificate', 'Certificate', 'Self-signed')}
     ${conf.certificate ? file('server.certificate_key', 'server-certificate-key', 'Key', 'Same file') : ''}
-    ${serving ? `<div class="field">${row('SHA-256', s.fingerprint)}${
+    ${serving ? `<div class="field">${row('SHA-256', s.fingerprint, renew)}${
       s.own_certificate && s.certificate ? row('File', s.certificate) : ''}</div>` : ''}`;
 }
 
@@ -942,7 +921,14 @@ function serverModelSelect(c) {
         offered.map((m) => option(`${p.id}|${m}`, m)).join('')}</optgroup>`;
     }
   }
-  if (chosen && !shown) html += option(chosen, `${fileName(splitModel(chosen).model)} (not in the models folder)`);
+  // A provider's model while the providers are still being read, or once its
+  // provider is gone, is no file: it is said by whose it is. A file is said
+  // to be missing only once the folder has been read.
+  if (chosen && !shown) {
+    const model = splitModel(chosen).model;
+    html += option(chosen, provider ? `${model} (${providerName(provider)})`
+                         : state.models ? `${fileName(model)} (not in the models folder)` : fileName(model));
+  }
   return `<select id="server-model" data-change="server-model">${html}</select>`;
 }
 
@@ -959,7 +945,7 @@ function serverEmbeddingsSelect(c) {
       option(m.name, `${m.name} (${bytes(m.bytes)})`)).join('')}</optgroup>`;
   }
   if (chosen && !files.some((m) => m.name === chosen)) {
-    html += option(chosen, `${fileName(chosen)} (not in the models folder)`);
+    html += option(chosen, state.models ? `${fileName(chosen)} (not in the models folder)` : fileName(chosen));
   }
   return `<select id="server-embeddings" data-change="server-embeddings">${html}</select>`;
 }
@@ -1047,6 +1033,16 @@ actions['server-key-new'] = async () => {
   await configure({ server: { api_key: key } });
 };
 
+/// Crucible's own certificate made anew, with a new key, and served at once.
+/// A client given the old one stops trusting the server, so that is asked
+/// first. The new SHA-256 comes with the next snapshot.
+actions['server-certificate-new'] = async () => {
+  const sure = await confirmIt({ title: 'Make a new certificate?', body: 'Clients given the old one stop trusting it.',
+                                 yes: 'New certificate', no: 'Keep' });
+  if (!sure) return;
+  await guard(() => call('server.certificate.new'));
+};
+
 // --- About -----------------------------------------------------------------------------------------------
 
 /// Crucible's own source, as a project like any other: open it, build on
@@ -1124,6 +1120,7 @@ function pageAbout() {
         <button class="action" data-act="update-check">${
         state.open.checking ? 'Asking...' : 'Check now'}</button></div></div>
     ${setting('ui.check_updates', 'Check for new versions', 'bool', 'Daily, from GitHub.')}
+    ${setting('ui.prereleases', 'Pre-releases', 'bool', '', { change: 'update-channel' })}
     ${selfView()}
     <h2 style="margin-top:1.8rem">WHAT LEAVES THIS MACHINE</h2>
     <p class="lede">The version check, web searches, model searches and downloads, first-start
@@ -1174,6 +1171,14 @@ actions['update-check'] = () => guard(async () => {
   finally { state.open.checking = false; }
 });
 
+/// The Pre-releases box. What the last check found was the newest of the
+/// other kind, so it is asked again at once, unless checking is off.
+actions['update-channel'] = async (element) => {
+  await configure(patchOf(element.dataset.path, valueOf(element)));
+  if (at(state.config, 'ui.check_updates')) return actions['update-check']();
+  return guard(async () => { state.about = await call('about'); });
+};
+
 // --- the view ------------------------------------------------------------------------------------------------
 
 views.settings = () => {
@@ -1181,7 +1186,7 @@ views.settings = () => {
   const page = !c ? '<p class="lede">Reading...</p>' : ({
     general: pageGeneral, experts: pageExperts, providers: pageProviders,
     generation: pageGeneration, hardware: pageHardware, runtimes: pageRuntimes,
-    training: pageTraining, tools: pageTools, build: pageBuild, server: pageServer, about: pageAbout,
+    training: pageTraining, tools: pageTools, server: pageServer, about: pageAbout,
   }[state.settingsPage] || pageGeneral)(c);
   return sideView() + `<div class="settings">
       <div class="settings-nav">${SETTINGS_PAGES.map(([id, label]) =>

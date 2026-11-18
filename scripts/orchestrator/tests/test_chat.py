@@ -24,7 +24,7 @@ ROSTER = [
      "keywords": ["readme"], "examples": []},
 ]
 
-VERBS = ("LIST", "READ", "WRITE", "EDIT", "RUN", "NOTE", "DONE", "SEARCH", "SCREENSHOT")
+VERBS = ("LIST", "READ", "WRITE", "EDIT", "RUN", "NOTE", "DONE", "SEARCH", "SCREENSHOT", "HANDOFF")
 
 
 def parse(answer):
@@ -33,7 +33,8 @@ def parse(answer):
     match = re.search(r"^(%s): ?(.*)$" % "|".join(VERBS), answer, re.M)
     search = re.search(r"^SEARCH: ?(.*)$", answer, re.M)
     if not match:
-        return {"call": None, "attempted": "none", "search": ""}
+        near = re.search(r"^(%s) \S" % "|".join(VERBS), answer, re.M)
+        return {"call": None, "attempted": near.group(1).lower() if near else "none", "search": ""}
     content = ""
     if match.group(1) == "WRITE":
         fence = re.search(r"```\n(.*?)```", answer, re.S)
@@ -56,10 +57,8 @@ class ScriptedCore:
 
     def __init__(self, rounds, seat=None, has_model=True, cancel=False, auto_edits=False,
                  approve=True, used=100, size=1000, dropped=0, results=1, pictures="",
-                 sees=True, refuse_build=""):
+                 sees=True):
         self.rounds = list(rounds)
-        self.refuse_build = refuse_build
-        self.built = None      # what turn.build was asked with
         self.seat = {"ok": True, "remote": False, "sees_images": True, "takes_effort": False,
                      "workshop": True, "tools": "\n\nTOOLS"}
         self.seat.update(seat or {})
@@ -86,6 +85,10 @@ class ScriptedCore:
         self.asked_edit = []
         self.searched = []
         self.routed = None
+        self.routes = []       # every expert seated, in order
+        self.loads = 0
+        self.opens = 0
+        self.quiet = []        # the checkpoint rounds' messages, never shown
         self.opened = None
         self.fitted = None
         self.replies_during_asks = []
@@ -106,25 +109,32 @@ class ScriptedCore:
             return {}
         if method == "turn.route":
             self.routed = params["decision"]
+            self.routes.append(params["decision"]["expert"])
             return {"has_model": self.has_model}
-        if method == "turn.build":
-            self.built = params["decision"]
-            if self.refuse_build:
-                return {"ok": False, "error": self.refuse_build}
-            return {"ok": True, "id": "20261026-210000"}
         if method == "turn.load":
+            self.loads += 1
             return dict(self.seat)
         if method == "turn.open":
             self.opened = params
+            self.opens += 1
             return {"used": self.used, "size": self.size}
         if method == "turn.fit":
             self.fitted = params
             return {"dropped": self.dropped}
         if method == "turn.round":
+            if params.get("quiet"):
+                # The checkpoint's round: what it says never reaches the reply.
+                self.quiet.append([dict(m) for m in params["messages"]])
+                out = self.rounds.pop(0) if self.rounds else said("(out of script)")
+                return dict(out, reply=self.reply)
             self.sent.append([dict(m) for m in params["messages"]])
             self.systems.append(params.get("system"))
             self.paragraphs.append(params["paragraph"])
             out = self.rounds.pop(0) if self.rounds else said("(out of script)")
+            if out.get("looped"):
+                # Streamed and then stopped: the turn takes it off again.
+                self.reply += ("\n\n" if params["paragraph"] else "") + out["answer"]
+                return dict(out, reply=self.reply)
             if out["answer"] and not out.get("discard"):
                 if params["paragraph"]:
                     self.reply += "\n\n"
@@ -213,8 +223,10 @@ class OneRound(unittest.TestCase):
         core = run(ScriptedCore([said("READ: notes.txt")], seat={"workshop": False, "tools": ""}))
         self.assertEqual(len(core.sent), 1)
         self.assertEqual(core.ran, [])
-        # A call left where the answer goes is never shown as the answer.
-        self.assertEqual(core.ended["reply"], "(ran out of turns before finishing. Ask again to carry on)")
+        # A call left where the answer goes is never shown as the answer, and
+        # with no folder open it is said why nothing ran.
+        self.assertEqual(core.ended["reply"],
+                         "(reached for the project with no folder open. Open one to let it work there)")
         # Remembered all the same, as it was said: the history is what the
         # model said, not what was said about it.
         self.assertTrue(core.ended["remember"])
@@ -229,66 +241,6 @@ class OneRound(unittest.TestCase):
         # A round that produced nothing at all is not dressed up as anything.
         nothing = run(ScriptedCore([said("", output_tokens=0)]))
         self.assertNotIn("reply", nothing.ended)
-
-
-class BecomingABuild(unittest.TestCase):
-    """What a message becomes is decided first (intent.py). With no delegator,
-    as here, by its words."""
-
-    def test_software_asked_for_becomes_a_build_and_the_turn_is_over_for_the_chat(self):
-        core = run(ScriptedCore([]), prompt="Make me a todo app.", can_build=True, files=False)
-        self.assertEqual(core.built["kind"], "build")
-        self.assertEqual(core.built["source"], "keywords")
-        self.assertEqual(core.ended["state"], "finished")
-        self.assertEqual(core.ended["status"], "building")
-        # Remembered when the build ends, by the core, as what it left.
-        self.assertFalse(core.ended["remember"])
-        self.assertNotIn("turn.route", core.calls)
-        self.assertNotIn("turn.load", core.calls)
-        self.assertEqual(core.sent, [])
-
-    def test_a_question_is_answered_as_it_always_was(self):
-        core = run(ScriptedCore([said("Use a list.")]), prompt="How do I build a todo app in React?",
-                   can_build=True)
-        self.assertIsNone(core.built)
-        self.assertEqual(core.calls.count("delegator.ready"), 2)   # the decision's, then the route's
-        self.assertEqual(core.reply, "Use a list.")
-        self.assertTrue(core.ended["remember"])
-
-    def test_a_change_is_a_build_in_a_folder_with_files_and_an_answer_in_an_empty_one(self):
-        built = run(ScriptedCore([]), prompt="Now add dark mode.", can_build=True, files=True)
-        self.assertEqual(built.built["kind"], "build")
-        answered = run(ScriptedCore([said("Here is how.")]), prompt="Now add dark mode.",
-                       can_build=True, files=False)
-        self.assertIsNone(answered.built)
-
-    def test_nothing_is_decided_while_a_build_runs_and_the_message_is_answered_beside_it(self):
-        core = run(ScriptedCore([said("Sure.")]), prompt="Make me a todo app.", can_build=False)
-        self.assertIsNone(core.built)
-        # The route's, and no decision's before it.
-        self.assertEqual(core.calls.count("delegator.ready"), 1)
-        self.assertEqual(core.reply, "Sure.")
-
-    def test_a_build_the_core_would_not_start_is_answered_instead(self):
-        core = run(ScriptedCore([said("I can write it here.")], refuse_build="a build is already running"),
-                   prompt="Make me a todo app.", can_build=True)
-        self.assertEqual(core.built["kind"], "build")
-        self.assertEqual(core.reply, "I can write it here.")
-        self.assertEqual(core.ended["state"], "finished")
-
-    def test_a_pinned_message_is_decided_the_same_way(self):
-        core = run(ScriptedCore([]), prompt="Make me a todo app.", pinned="writing", can_build=True)
-        self.assertEqual(core.built["kind"], "build")
-        answered = run(ScriptedCore([said("Words.")]), prompt="What is a sonnet?", pinned="writing",
-                       can_build=True)
-        self.assertIsNone(answered.built)
-        self.assertEqual(answered.routed["expert"], "writing")
-
-    def test_a_stop_while_it_is_decided_starts_no_build(self):
-        core = run(ScriptedCore([], cancel=True), prompt="Make me a todo app.", can_build=True)
-        self.assertIsNone(core.built)
-        self.assertEqual(core.ended["state"], "failed")
-        self.assertEqual(core.ended["reason"], "canceled before routing finished")
 
 
 class Routing(unittest.TestCase):
@@ -369,16 +321,39 @@ class Tools(unittest.TestCase):
         ])
         self.assertIn(("thinking", "read notes.txt"), core.moods)
 
-    def test_the_same_call_twice_is_not_run_again_and_the_next_round_answers_with_no_tools(self):
+    def test_the_same_call_with_nothing_changed_is_not_run_again_and_twice_ends_the_tools(self):
         core = run(ScriptedCore([said("READ: a.txt"), said("READ: a.txt"), said("Done."), said("Never.")]))
         self.assertEqual(core.ran, [("read", "a.txt")])
         self.assertEqual(len(core.sent), 3)
-        self.assertEqual(core.sent[2][-1], {"role": "user", "content": chat.ALREADY_DONE})
-        self.assertEqual(core.systems[:2], [None, None])
-        self.assertEqual(core.systems[2], "You are helpful." + chat.MARKDOWN)
+        # Told once, and it carries on with its tools.
+        self.assertEqual(core.sent[2][-1], {"role": "user", "content": chat.steps.REPEAT_NUDGE.format("request")})
+        self.assertIn("TOOLS", core.systems[2])
         self.assertEqual(core.reply, "Done.")
         self.assertNotIn("reply", core.ended)
         self.assertTrue(core.ended["remember"])
+
+        # A second repeat in the same prompt ends the tools: the next round
+        # answers with none offered.
+        twice = run(ScriptedCore([said("READ: a.txt"), said("READ: a.txt"), said("READ: a.txt"),
+                                  said("From what I have.")]))
+        self.assertEqual(twice.ran, [("read", "a.txt")])
+        self.assertEqual(twice.sent[3][-1], {"role": "user", "content": chat.ALREADY_DONE})
+        self.assertEqual(twice.systems[3], "You are helpful." + chat.MARKDOWN)
+        self.assertEqual(twice.reply, "From what I have.")
+
+        # A file changed since is a different file to read.
+        changed = ScriptedCore([said("READ: a.txt"), said("WRITE: a.txt\n```\nx\n```"),
+                                said("READ: a.txt"), said("Fixed.")], auto_edits=True)
+        original = changed.call
+
+        def call(method, params=None):
+            out = original(method, params)
+            if method == "turn.tool" and params["call"]["kind"] == "write":
+                out = dict(out, changed=["a.txt"])
+            return out
+        changed.call = call
+        run(changed)
+        self.assertEqual(changed.ran, [("read", "a.txt"), ("write", "a.txt"), ("read", "a.txt")])
 
     def test_a_write_is_asked_about_and_a_no_takes_back_what_was_said_about_it(self):
         core = run(ScriptedCore([said("Before.\nREAD: a.txt"), said("Writing.\nWRITE: a.txt\n```\nx\n```"),
@@ -411,22 +386,22 @@ class Tools(unittest.TestCase):
         self.assertEqual(core.asked_edit, [])
         self.assertEqual(core.ran, [("write", "a.txt"), ("write", "a.txt")])
 
-    def test_the_last_round_is_told_it_is_the_last_and_one_still_calling_is_asked_to_answer(self):
-        rounds = [said("READ: f%d.txt" % i) for i in range(chat.TOOL_ROUNDS - 1)]
+    def test_the_last_action_is_told_it_is_the_last_and_one_still_calling_is_asked_to_answer(self):
+        rounds = [said("READ: f%d.txt" % i) for i in range(3)]
         core = run(ScriptedCore(rounds + [said("One more.\nREAD: last.txt"), said("Shakespeare."),
-                                          said("Never asked.")]))
-        self.assertEqual(len(core.sent), chat.TOOL_ROUNDS + 1)
-        self.assertEqual(len(core.ran), chat.TOOL_ROUNDS - 1)
+                                          said("Never asked.")]), actions=3)
+        self.assertEqual(len(core.sent), 5)
+        self.assertEqual(len(core.ran), 3)
         self.assertNotIn(("read", "last.txt"), core.ran)
-        self.assertTrue(core.sent[-2][-1]["content"].endswith(chat.LAST_ACTION))
-        self.assertFalse(core.sent[-3][-1]["content"].endswith(chat.LAST_ACTION))
+        self.assertTrue(core.sent[3][-1]["content"].endswith(chat.LAST_ACTION))
+        self.assertFalse(core.sent[2][-1]["content"].endswith(chat.LAST_ACTION))
         # The call it made instead of answering goes back unrun, and the round
         # after is offered no tools.
         self.assertEqual(core.sent[-1][-2:], [
             {"role": "assistant", "content": "One more.\nREAD: last.txt"},
             {"role": "user", "content": chat.NOT_RUN},
         ])
-        self.assertEqual(core.systems[:-1], [None] * chat.TOOL_ROUNDS)
+        self.assertTrue(all("TOOLS" in system for system in core.systems[:-1]))
         self.assertEqual(core.systems[-1], "You are helpful." + chat.MARKDOWN)
         # The call's line is off the reply, and what was said before it stays.
         self.assertEqual(core.reply, "One more.\n\nShakespeare.")
@@ -434,10 +409,12 @@ class Tools(unittest.TestCase):
         self.assertTrue(core.ended["remember"])
 
     def test_a_turn_that_calls_even_with_no_tools_offered_says_so(self):
-        rounds = [said("READ: f%d.txt" % i) for i in range(chat.TOOL_ROUNDS + 1)]
-        core = run(ScriptedCore(rounds + [said("Never asked.")]))
-        self.assertEqual(len(core.sent), chat.TOOL_ROUNDS + 1)
-        self.assertEqual(core.ended["reply"], "(ran out of turns before finishing. Ask again to carry on)")
+        rounds = [said("READ: f%d.txt" % i) for i in range(4)]
+        core = run(ScriptedCore(rounds + [said("Never asked.")]), actions=2)
+        self.assertEqual(len(core.sent), 4)
+        self.assertEqual(core.ended["reply"], '(used all the actions this request may take. Ask again '
+                                              'to carry on, or raise "Actions per prompt" in Settings, '
+                                              'Tools)')
         self.assertTrue(core.ended["remember"])
 
     def test_a_picture_goes_with_the_result_to_a_model_that_sees_and_is_named_to_one_that_does_not(self):
@@ -453,6 +430,227 @@ class Tools(unittest.TestCase):
         self.assertEqual(len(core.sent), 2)
 
 
+class Loop(unittest.TestCase):
+    """A prompt worked until it is done, by whoever fits each step."""
+
+    def test_a_prompt_is_worked_past_a_dozen_actions_until_it_answers(self):
+        rounds = [said("READ: f%d.txt" % i) for i in range(20)] + [said("All twenty read.")]
+        core = run(ScriptedCore(rounds))
+        self.assertEqual(len(core.ran), 20)
+        self.assertEqual(core.reply, "All twenty read.")
+        self.assertNotIn("reply", core.ended)
+        self.assertTrue(core.ended["remember"])
+
+    def test_what_was_done_is_kept_in_an_account_once_it_leaves_the_window(self):
+        rounds = [said("READ: f%d.txt" % i) for i in range(6)] + [said("Read.")]
+        core = run(ScriptedCore(rounds))
+        # Four actions fit the window, so the account starts with the fifth
+        # round's instructions, and it remembers the first read.
+        self.assertNotIn("What has been done", core.systems[3])
+        self.assertIn("What has been done for this request so far", core.systems[5])
+        self.assertIn("- read f0.txt", core.systems[5])
+        self.assertEqual(len(core.sent[5]), chat.RECENT)
+
+    def test_an_expert_hands_off_and_the_next_one_carries_on_with_the_conversation(self):
+        core = run(ScriptedCore([said("The page is done.\nHANDOFF: write the README for it"),
+                                 said("WRITE: README.md\n```\n# Page\n```"), said("Both written.")],
+                                auto_edits=True))
+        # Routed on the step: keywords here, which read README as Writing's.
+        self.assertEqual(core.routes, ["programming", "writing"])
+        self.assertEqual(core.loads, 2)
+        self.assertEqual(core.opens, 2)
+        self.assertIn("Writing takes over: write the README for it", core.actions)
+        self.assertEqual(core.sent[1][-1]["content"],
+                         chat.TAKES_OVER.format("Programming", "write the README for it").strip())
+        self.assertEqual(core.ran, [("write", "README.md")])
+        # The HANDOFF line is off the reply, and the words before it stay.
+        self.assertEqual(core.reply, "The page is done.\n\nBoth written.")
+
+    def test_a_handoff_nobody_fits_better_carries_on_with_the_same_expert(self):
+        core = run(ScriptedCore([said("HANDOFF: tidy the python module"), said("Tidied.")]))
+        self.assertEqual(core.routes, ["programming"])
+        self.assertEqual(core.loads, 1)
+        self.assertEqual(core.sent[1][-1]["content"],
+                         chat.CARRY_ON.format("tidy the python module").strip())
+
+    def test_a_prompt_sent_to_one_expert_stays_with_it(self):
+        core = run(ScriptedCore([said("HANDOFF: write the README"), said("Done myself.")]),
+                   pinned="programming")
+        self.assertEqual(core.routes, ["programming"])
+        self.assertEqual(core.sent[1][-1]["content"], chat.PINNED_ON.strip())
+        self.assertEqual(core.reply, "Done myself.")
+
+    def test_every_few_actions_the_delegator_may_give_the_next_step_to_another_expert(self):
+        decisions = [chat.routing.Decision("programming", 0.9, chat.routing.MODEL),
+                     chat.routing.Decision("writing", 0.8, chat.routing.MODEL)]
+        asked = []
+
+        def route(core, request):
+            asked.append(request)
+            return decisions.pop(0)
+        rounds = ([said("READ: f%d.txt" % i) for i in range(chat.CHECKPOINT_EVERY)]
+                  + [said("HANDOFF: document what the files do"), said("Documented.")])
+        original = chat.routing.route
+        chat.routing.route = route
+        try:
+            core = run(ScriptedCore(rounds))
+        finally:
+            chat.routing.route = original
+        # The checkpoint asked, out of sight, and the step was routed as a task.
+        self.assertEqual(len(core.quiet), 1)
+        self.assertIn(chat.NEXT_STEP, core.quiet[0][-1]["content"])
+        self.assertEqual(asked[1]["prompt"], "document what the files do")
+        self.assertTrue(asked[1]["tasks"])
+        self.assertEqual(core.routes, ["programming", "writing"])
+        self.assertIn("Writing takes over: document what the files do", core.actions)
+        # The new expert is told what it is taking over; nothing of the
+        # checkpoint reached the reply.
+        self.assertTrue(core.systems[-1].endswith(
+            chat.TAKES_OVER.format("Programming", "document what the files do")))
+        self.assertNotIn("HANDOFF", core.reply)
+        self.assertEqual(core.reply, "Documented.")
+
+    def test_the_checkpoint_keeps_the_expert_the_delegator_keeps(self):
+        decisions = [chat.routing.Decision("programming", 0.9, chat.routing.MODEL)] * 2
+
+        def route(core, request):
+            return decisions.pop(0)
+        rounds = ([said("READ: f%d.txt" % i) for i in range(chat.CHECKPOINT_EVERY)]
+                  + [said("HANDOFF: keep reading"), said("Read them all.")])
+        original = chat.routing.route
+        chat.routing.route = route
+        try:
+            core = run(ScriptedCore(rounds))
+        finally:
+            chat.routing.route = original
+        self.assertEqual(core.routes, ["programming"])
+        self.assertEqual(core.loads, 1)
+        self.assertEqual(core.reply, "Read them all.")
+
+    def routed(self, decisions, rounds, **extra):
+        """A turn with the delegator's decisions scripted, and writes that
+        say which file they changed."""
+        def route(core, request):
+            return decisions.pop(0)
+        core = ScriptedCore(rounds, auto_edits=True)
+        original = core.call
+
+        def call(method, params=None):
+            out = original(method, params)
+            if method == "turn.tool" and params["call"]["kind"] in ("write", "edit"):
+                out = dict(out, changed=[params["call"]["argument"]])
+            return out
+        core.call = call
+        before = chat.routing.route
+        chat.routing.route = route
+        try:
+            run(core, **extra)
+        finally:
+            chat.routing.route = before
+        return core
+
+    def test_a_finished_piece_of_work_lets_the_delegator_give_the_next_one_to_another_expert(self):
+        Decision, MODEL = chat.routing.Decision, chat.routing.MODEL
+        core = self.routed([Decision("programming", 0.61, MODEL), Decision("writing", 0.9, MODEL)],
+                           [said("WRITE: index.html\n```\n<p>leaves</p>\n```"),
+                            said("HANDOFF: write a README explaining the haiku's imagery"),
+                            said("WRITE: README.md\n```\n# Imagery\n```"), said("A page, and a README about it.")])
+        # Asked right after the page was written, not six actions later.
+        self.assertEqual(len(core.quiet), 1)
+        self.assertEqual(core.routes, ["programming", "writing"])
+        self.assertIn("Writing takes over: write a README explaining the haiku's imagery", core.actions)
+        self.assertEqual(core.ran, [("write", "index.html"), ("write", "README.md")])
+        self.assertEqual(core.reply, "A page, and a README about it.")
+
+    def test_a_checkpoint_the_delegator_is_unsure_of_keeps_the_expert(self):
+        Decision, MODEL = chat.routing.Decision, chat.routing.MODEL
+        core = self.routed([Decision("programming", 0.9, MODEL), Decision("writing", 0.6, MODEL)],
+                           [said("WRITE: a.py\n```\nx\n```"), said("HANDOFF: write the docs"),
+                            said("Done.")])
+        self.assertEqual(core.routes, ["programming"])
+        self.assertEqual(core.loads, 1)
+
+    def test_an_edit_and_test_loop_on_one_file_is_not_asked_its_next_step_each_time(self):
+        Decision, MODEL = chat.routing.Decision, chat.routing.MODEL
+        rounds = [said("WRITE: a.py\n```\nx\n```"), said("HANDOFF: test it"),
+                  said("RUN: pytest"), said("EDIT: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"),
+                  said("RUN: pytest"), said("EDIT: a.py\n<<<<<<< SEARCH\ny\n=======\nz\n>>>>>>> REPLACE"),
+                  said("It passes.")]
+        core = self.routed([Decision("programming", 0.9, MODEL)] * 2, rounds)
+        # Once, for the new file; the edits to it are the same piece of work.
+        self.assertEqual(len(core.quiet), 1)
+        self.assertEqual(core.reply, "It passes.")
+
+    def test_without_a_delegator_there_is_no_checkpoint(self):
+        rounds = [said("READ: f%d.txt" % i) for i in range(chat.CHECKPOINT_EVERY + 1)] + [said("Read.")]
+        core = run(ScriptedCore(rounds))
+        self.assertEqual(core.quiet, [])
+        self.assertEqual(core.reply, "Read.")
+
+    def test_a_run_of_actions_going_round_is_told_so_and_a_second_answers_with_no_tools(self):
+        going = [said("RUN: make" if i % 2 == 0 else "RUN: make test") for i in range(16)]
+        core = run(ScriptedCore(going + [said("It will not build, because of the missing header.")]))
+        self.assertEqual(len(core.ran), 16)
+        self.assertTrue(core.sent[8][-1]["content"].endswith(chat.CYCLING))
+        self.assertTrue(core.sent[16][-1]["content"].endswith(chat.ALREADY_DONE))
+        # The last round is offered no tools, and still told what was done.
+        self.assertTrue(core.systems[16].startswith("You are helpful." + chat.MARKDOWN + "\n\nWhat has been done"))
+        self.assertNotIn("TOOLS", core.systems[16])
+        self.assertEqual(core.reply, "It will not build, because of the missing header.")
+
+    def test_a_reply_that_nearly_called_a_tool_is_told_what_was_wrong(self):
+        core = run(ScriptedCore([said("WRITE index.html"), said("WRITE: index.html\n```\nx\n```"),
+                                 said("Made it.")], auto_edits=True))
+        self.assertEqual(core.sent[1][-1]["content"], chat.steps.nudge_for({"attempted": "write"}))
+        self.assertEqual(core.ran, [("write", "index.html")])
+        self.assertEqual(core.reply, "Made it.")
+
+    def test_an_answer_straight_after_a_failed_action_is_asked_to_face_it(self):
+        core = ScriptedCore([said("WRITE: /index.html\n```\nx\n```"), said("I made the page."),
+                             said("WRITE: index.html\n```\nx\n```"), said("Made index.html.")],
+                            auto_edits=True)
+        original = core.call
+
+        def call(method, params=None):
+            out = original(method, params)
+            if method == "turn.tool" and params["call"]["argument"].startswith("/"):
+                out = dict(out, ok=False, summary="/index.html is outside the project")
+            return out
+        core.call = call
+        run(core)
+        self.assertEqual(core.sent[2][-1]["content"],
+                         chat.FAILED_LAST.format("/index.html is outside the project"))
+        self.assertEqual(core.ran, [("write", "/index.html"), ("write", "index.html")])
+        self.assertEqual(core.reply, "Made index.html.")
+        # Only once: an answer after the nudge is the answer.
+        once = ScriptedCore([said("RUN: make test"), said("Two tests fail."), said("They fail on the date.")])
+        original_once = once.call
+
+        def failing(method, params=None):
+            out = original_once(method, params)
+            if method == "turn.tool":
+                out = dict(out, ok=False, summary="make test: 2 failed")
+            return out
+        once.call = failing
+        run(once)
+        self.assertEqual(once.reply, "They fail on the date.")
+
+    def test_a_write_the_length_limit_cut_off_is_not_written_and_is_asked_for_again(self):
+        core = run(ScriptedCore([said("WRITE: README.md\n```\n# Haiku\nThe haiku is", hit_limit=True),
+                                 said("WRITE: README.md\n```\n# Haiku\n```"), said("Written.")],
+                                auto_edits=True))
+        self.assertEqual(core.ran, [("write", "README.md")])
+        self.assertEqual(core.sent[1][-1], {"role": "user", "content": chat.CUT_OFF})
+        self.assertEqual(core.reply, "Written.")
+
+    def test_a_reply_that_repeats_itself_is_stopped_and_asked_once_more(self):
+        core = run(ScriptedCore([said("again again again", looped=True), said("Plainly, once.")]))
+        self.assertTrue(core.systems[1].endswith(chat.REPEATED_ITSELF))
+        self.assertEqual(core.reply, "Plainly, once.")
+        twice = run(ScriptedCore([said("a a a", looped=True), said("b b b", looped=True)]))
+        self.assertEqual(twice.ended["reply"], "(kept repeating itself and was stopped)")
+
+
 class Searching(unittest.TestCase):
     def test_a_search_is_run_once_and_asked_again_is_refused(self):
         core = run(ScriptedCore([said("SEARCH: capital of France"), said("SEARCH: capital of France"),
@@ -466,8 +664,10 @@ class Searching(unittest.TestCase):
         self.assertEqual(core.reply, "Paris.")
         self.assertIn(("thinking", 'searching for "capital of France"'), core.moods)
         self.assertIn(("thinking", 'already searched for "capital of France"'), core.moods)
-        # Asked for twice, it answers next with no tools offered.
-        self.assertEqual(core.systems, [None, None, "You are helpful." + chat.MARKDOWN])
+        # Asked for twice, it is told so and carries on with what it has: with
+        # a folder open it still has its other tools.
+        self.assertEqual(len(core.sent), 3)
+        self.assertIn("TOOLS", core.systems[2])
 
     def test_the_last_search_says_so_and_a_turn_still_searching_is_asked_to_answer(self):
         core = run(ScriptedCore([said("SEARCH: one"), said("SEARCH: two"), said("SEARCH: three"),
@@ -478,7 +678,8 @@ class Searching(unittest.TestCase):
         self.assertFalse(core.sent[1][-1]["content"].endswith(chat.LAST_SEARCH))
         self.assertTrue(core.sent[2][-1]["content"].endswith(chat.LAST_SEARCH))
         self.assertEqual(core.searched, ["one", "two"])
-        self.assertEqual(core.sent[3][-1], {"role": "user", "content": chat.NOT_RUN})
+        self.assertEqual(core.sent[3][-1], {"role": "user", "content": "There are no searches left for this "
+                                                                        "request." + chat.LAST_SEARCH})
         self.assertEqual(core.systems[3], "You are helpful." + chat.MARKDOWN)
         self.assertEqual(core.reply, "Nothing turned up.")
         self.assertNotIn("reply", core.ended)
@@ -573,12 +774,23 @@ class Words(unittest.TestCase):
         self.assertLessEqual(len(wide[:-1].encode("utf-8")), 64)
         self.assertEqual(wide[:-1], "read " + "é" * 29)
 
-    def test_the_rounds_a_turn_may_take(self):
-        self.assertEqual(chat.rounds_for({}, False), 1)
-        self.assertEqual(chat.rounds_for({"web_search": True, "search_rounds": 2}, False), 3)
-        self.assertEqual(chat.rounds_for({"web_search": True, "search_rounds": 0}, False), 1)
-        self.assertEqual(chat.rounds_for({"web_search": True, "search_rounds": 20}, True), 21)
-        self.assertEqual(chat.rounds_for({}, True), chat.TOOL_ROUNDS)
+    def test_the_actions_a_prompt_may_take(self):
+        self.assertEqual(chat.actions_for({}), chat.ACTIONS)
+        self.assertEqual(chat.actions_for({"actions": 25}), 25)
+        self.assertEqual(chat.actions_for({"actions": 0}), chat.ACTIONS)
+        self.assertEqual(chat.actions_for({"actions": "x"}), chat.ACTIONS)
+
+    def test_the_turn_is_shown_its_last_few_messages_from_an_answer_of_its_own(self):
+        log = [{"role": "assistant" if i % 2 == 0 else "user", "content": str(i)} for i in range(12)]
+        start, shown = chat.window(log)
+        self.assertEqual(start, 12 - chat.RECENT)
+        self.assertEqual(shown[0]["role"], "assistant")
+        self.assertEqual(chat.window(log[:5]), (0, log[:5]))
+        self.assertEqual(chat.running_account([]), "")
+        account = chat.running_account([{"summary": "read a.py"}, {"summary": "ran tests", "ok": False},
+                                        {"summary": "wrote b.py", "changed": ["b.py"]}])
+        self.assertIn("- read a.py\n- ran tests  (failed)\n- wrote b.py\n", account)
+        self.assertTrue(account.endswith("Files changed: b.py\n"))
 
     def test_a_pinned_prompt_is_routed_as_it_was_typed(self):
         self.assertEqual(chat.routed_prompt("Q", "", ["a.md", "b.py"]), "Q\n\nAttached: a.md b.py")

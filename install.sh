@@ -552,7 +552,7 @@ usage: install.sh [options]
   environment.
 
   --prefix DIR     install location (default: ~/.local, or /usr/local as root)
-  --branch NAME    git branch to build (default: main)
+  --branch NAME    git branch or release tag to build (default: main)
   --jobs N         parallel build jobs (default: all cores)
   --gui, --no-gui  accepted and ignored
   --no-deps        do not install system packages
@@ -1088,6 +1088,14 @@ git_clone_with_progress() {
     ok "cloned $branch"
 }
 
+# A clone made by an earlier install, moved to what $2 names: a branch's
+# newest commit, or a release's tag, which is what Crucible's own update hands
+# an install built from source.
+update_clone() {
+    git -C "$1" fetch --depth 1 origin "$2" --quiet >/dev/null 2>&1 \
+        && git -C "$1" checkout --quiet FETCH_HEAD >/dev/null 2>&1
+}
+
 locate_source() {
     local here=""
     if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
@@ -1109,8 +1117,7 @@ locate_source() {
         spinner_start
         # Said and stopped, not stopped: under `set -e` an offline fetch ended
         # the install here, behind the spinner, with nothing on the screen.
-        if ! git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH" --quiet >/dev/null 2>&1 \
-           || ! git -C "$SRC_DIR" checkout --quiet FETCH_HEAD >/dev/null 2>&1; then
+        if ! update_clone "$SRC_DIR" "$BRANCH"; then
             spinner_stop
             die "could not update $SRC_DIR from $REPO_URL. Check the connection and try again."
         fi
@@ -1629,7 +1636,7 @@ path_advice() {
 # --------------------------------------------------------------------------
 # What the program fetches for itself: its Python, the runtimes, the trainer
 # --------------------------------------------------------------------------
-# Crucible's own Python, which routing and cooks run on -- and the trainer is
+# Crucible's own Python, which routing and the chat run on -- and the trainer is
 # built from. Always, --no-trainer or not: without it no prompt is routed.
 # Tens of megabytes, so it goes first. Never fatal: the window fetches it on
 # first start if this could not.

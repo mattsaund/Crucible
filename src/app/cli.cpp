@@ -52,7 +52,7 @@ usage: crucible [options]
       --no-trust   skip the folder trust prompt for this run
   -y, --yes        with --uninstall, answer yes to everything
 
-      --install-python    fetch the Python that routing, cooks and training run on
+      --install-python    fetch the Python that routing, the chat and training run on
       --install-kit       fetch the programs experts use that this machine lacks
       --install-runtimes  install the compute backends this machine can use
       --runtime-status    say which backends are installed and active, and exit
@@ -91,7 +91,7 @@ Options parse_arguments(int argc, char** argv) {
             update::State state;
             if (update::read_cache(state) && update::newer_than_this(state)) {
                 std::cout << "  " << state.latest << " is available. Update with:\n"
-                          << "  " << update::update_command() << "\n";
+                          << "  " << update::update_command(state.latest) << "\n";
             }
             options.should_exit = true;
             return options;

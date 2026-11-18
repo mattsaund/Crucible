@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 //
-// A build's journal, and what the tools beyond the folder parse and refuse.
+// What the tools beyond the folder parse and refuse, and how the models they
+// are asked of are held.
 //
-// The build loop itself is Python and is tested there, against a scripted
-// core. What is here is the core's side of it: the journal a build is kept
-// in, with its plan and its tasks; the new verbs the workshop reads; the
-// settings that gate them; and the small pure functions under the screen
-// and version control tools, which are the parts of those that can be wrong
-// without a screen or a repository to try them on. And what a build's seats
-// load, with once a whole build through the engine, its agents a provider
-// that answers from a script, as test_chat.cpp's turns are.
+// The loop a prompt is worked in is Python and is tested there, against a
+// scripted core. What is here is the core's side of the tools: the verbs the
+// workshop reads, the settings that gate them, and the small pure functions
+// under the screen and version control tools, which are the parts of those
+// that can be wrong without a screen or a repository to try them on. And the
+// leases that keep a model in use from being freed under its user, and how
+// much context a turn with the tools is given.
 #include "test_helpers.hpp"
 
 #include <atomic>
@@ -48,208 +48,7 @@ tools::WorkshopSettings everything_on(const std::filesystem::path& root) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// The journal
-// ---------------------------------------------------------------------------
-
-TEST(a_build_round_trips_with_its_plan_and_tasks) {
-    TempDir dir;
-    const CookLog log(dir.path());
-
-    Cook build;
-    build.id           = CookLog::new_id();
-    build.kind         = "build";
-    build.goal         = "a todo CLI";
-    build.state        = CookState::Done;
-    build.plan.summary = "A Python CLI with tests.";
-    build.plan.run     = "python todo.py";
-    build.plan.check   = "pytest -q";
-    CookTask first;
-    first.index   = 0;
-    first.title   = "Write todo.py";
-    first.detail  = "adds and lists";
-    first.needs   = "Python back end";
-    first.files   = {"todo.py"};
-    first.expert  = "programming";
-    first.state   = "done";
-    first.outcome = "wrote it";
-    CookTask second;
-    second.index = 1;
-    second.title = "Tests";
-    second.after = {0};
-    second.state = "skipped";
-    build.tasks  = {first, second};
-    CookStep step = step_of(1, "programming", "write", "created todo.py", true, 3, {"todo.py"});
-    step.task     = 0;
-    step.picture  = "/tmp/shot.png";
-    build.steps.push_back(step);
-
-    std::string error;
-    CHECK(log.save(build, error));
-    const std::optional<Cook> back = log.load(build.id);
-    CHECK(back.has_value());
-    if (!back) {
-        return;
-    }
-    CHECK(back->is_build());
-    CHECK_EQ(back->plan.check, std::string("pytest -q"));
-    CHECK_EQ(back->tasks.size(), std::size_t{2});
-    CHECK_EQ(back->tasks[0].needs, std::string("Python back end"));
-    CHECK_EQ(back->tasks[0].files.size(), std::size_t{1});
-    CHECK_EQ(back->tasks[1].after.size(), std::size_t{1});
-    CHECK_EQ(back->tasks[1].state, std::string("skipped"));
-    CHECK_EQ(back->steps[0].task, 0);
-    CHECK_EQ(back->steps[0].picture, std::string("/tmp/shot.png"));
-
-    // The list says what kind each is, so History can tell a build from a cook.
-    const std::vector<CookSummary> listed = log.list();
-    CHECK_EQ(listed.size(), std::size_t{1});
-    CHECK_EQ(listed[0].kind, std::string("build"));
-    CHECK_EQ(listed[0].tasks, 2);
-}
-
-TEST(a_journal_from_before_builds_reads_as_a_cook) {
-    // No kind, no tasks, a step with no task field: what every journal on
-    // disk looked like until 0.9.
-    const Cook old = cook_from_json(nlohmann::json::parse(
-        R"({"id":"x","goal":"g","state":"done","steps":[{"kind":"read","summary":"read a"}]})"), "x");
-    CHECK(!old.is_build());
-    CHECK(old.tasks.empty());
-    CHECK_EQ(old.steps.size(), std::size_t{1});
-    CHECK_EQ(old.steps[0].task, -1);
-}
-
-TEST(a_seat_a_build_made_says_so_through_the_config_file) {
-    TempDir dir;
-    const auto file = dir.path() / "config.json";
-    Config original;
-    Expert agent;
-    agent.name   = "CSS Layout";
-    agent.blurb  = "layout and spacing in stylesheets";
-    agent.origin = "build";
-    Expert person;
-    person.name  = "Physics";
-    person.blurb = "mechanics";
-    std::string error;
-    CHECK(original.roster.add(agent, error));
-    CHECK(original.roster.add(person, error));
-    CHECK(save_config(original, file));
-    std::vector<std::string> warnings;
-    const Config reloaded = load_config(file, warnings);
-    CHECK(reloaded.roster.at(0).made_by_build());
-    CHECK(!reloaded.roster.at(1).made_by_build());
-    // And the page is told, so it can list the agents under their own heading.
-    Snapshot snapshot;
-    snapshot.roster = std::make_shared<const Roster>(reloaded.roster);
-    const nlohmann::json out = nlohmann::json::parse(api::snapshot_json(snapshot));
-    CHECK(out["experts"][0]["made"] == true);
-    CHECK(!out["experts"][1].contains("made"));
-}
-
-TEST(build_settings_round_trip_through_the_config_file) {
-    TempDir dir;
-    const auto file = dir.path() / "config.json";
-    Config original;
-    original.build.architect       = "claude";
-    original.build.worker_model    = "worker.gguf";
-    original.build.auto_commit     = false;
-    original.build.confirm_plan    = false;
-    original.build.rounds_per_task = 25;
-    original.build.agents          = 5;
-    original.build.split           = false;
-    original.tools.computer_control = true;
-    CHECK(save_config(original, file));
-    std::vector<std::string> warnings;
-    const Config reloaded = load_config(file, warnings);
-    CHECK_EQ(reloaded.build.architect, std::string("claude"));
-    CHECK_EQ(reloaded.build.worker_model, std::string("worker.gguf"));
-    CHECK(!reloaded.build.auto_commit);
-    CHECK(!reloaded.build.confirm_plan);
-    CHECK_EQ(reloaded.build.rounds_per_task, 25);
-    CHECK_EQ(reloaded.build.agents, 5);
-    CHECK(!reloaded.build.split);
-    // The one switch that is not about the folder survives a restart in
-    // whichever position it was left: a screen that quietly turned itself
-    // back on would be the worse mistake.
-    CHECK(reloaded.tools.computer_control);
-}
-
-TEST(agents_at_once_outside_one_to_eight_is_refused_for_the_default) {
-    TempDir dir;
-    const auto file = dir.path() / "config.json";
-    std::ofstream(file) << R"({"build": {"agents": 40}})";
-    std::vector<std::string> warnings;
-    const Config loaded = load_config(file, warnings);
-    CHECK_EQ(loaded.build.agents, BuildConfig{}.agents);
-    bool said = false;
-    for (const std::string& warning : warnings) {
-        said = said || warning.find("build.agents") != std::string::npos;
-    }
-    CHECK(said);
-}
-
-// ---------------------------------------------------------------------------
-// What a build's seats load: a model the cards hold, with the context they hold
-// ---------------------------------------------------------------------------
-
-TEST(a_made_seat_runs_on_a_model_that_loads_here_and_says_what_it_passed_over) {
-    Config config;
-    config.models_dir = "/models";
-    std::string error;
-    for (const char* name : {"Programming", "Writing"}) {
-        Expert seat;
-        seat.name  = name;
-        seat.blurb = name;
-        CHECK(config.roster.add(seat, error));
-    }
-    config.experts["programming"].model = "gpt-oss-20b.gguf";
-    config.experts["writing"].model     = "small.gguf";
-    config.build.worker_model           = "coder-7b.gguf";
-    config.resolve_models();
-
-    // What loads on the cards here: all but the 27B, as on one card of the
-    // three it was chosen for.
-    std::vector<std::string> asked;
-    const auto here = [&asked](const ModelParams& model) {
-        asked.push_back(std::filesystem::path(model.path).filename().string());
-        return model.path.find("qwen-27b") == std::string::npos ? std::string()
-                                                                : std::string("does not fit the cards here");
-    };
-
-    // The model set for new agents, when it loads.
-    SeatModel chosen = made_seat_model(config, {"programming"}, here);
-    CHECK_EQ(chosen.model, std::string("coder-7b.gguf"));
-    CHECK(chosen.passed_over.empty());
-    CHECK_EQ(asked.size(), std::size_t{1});
-
-    // When it does not, the first of the build's own seats whose model does:
-    // the one the task was routed to, then the architect.
-    config.build.worker_model = "qwen-27b.gguf";
-    asked.clear();
-    chosen = made_seat_model(config, {"programming", "writing"}, here);
-    CHECK_EQ(chosen.model, std::string("gpt-oss-20b.gguf"));
-    CHECK(chosen.provider.empty());
-    CHECK_EQ(chosen.passed_over, std::string("qwen-27b.gguf"));
-    CHECK_EQ(chosen.why, std::string("does not fit the cards here"));
-    CHECK(asked == std::vector<std::string>({"qwen-27b.gguf", "gpt-oss-20b.gguf"}));
-
-    // A seat on the very model that does not load is not asked again, and
-    // one with no model is no stand-in.
-    config.experts["programming"].model = "qwen-27b.gguf";
-    config.resolve_models();
-    asked.clear();
-    chosen = made_seat_model(config, {"nobody", "programming", "writing"}, here);
-    CHECK_EQ(chosen.model, std::string("small.gguf"));
-    CHECK(asked == std::vector<std::string>({"qwen-27b.gguf", "small.gguf"}));
-
-    // None of them: no model, and why, for the build's notes.
-    chosen = made_seat_model(config, {"programming"}, here);
-    CHECK(chosen.model.empty());
-    CHECK_EQ(chosen.passed_over, std::string("qwen-27b.gguf"));
-    CHECK_EQ(chosen.why, std::string("does not fit the cards here"));
-}
-
-TEST(an_agent_gets_the_most_context_that_fits_and_never_less_than_its_own) {
+TEST(a_turn_with_the_tools_gets_the_most_context_that_fits_and_never_less_than_its_own) {
     std::vector<int> tried;
     const auto up_to = [&tried](int most_that_fits) {
         tried.clear();
@@ -274,192 +73,6 @@ TEST(an_agent_gets_the_most_context_that_fits_and_never_less_than_its_own) {
     CHECK_EQ(roomiest_context(8192, 32768, 4096, up_to(100000)), 8192);
     CHECK_EQ(roomiest_context(32768, 32768, 0, up_to(100000)), 32768);
     CHECK(tried.empty());
-}
-
-namespace {
-
-/// A Python for the orchestrator and the scripted provider, or empty.
-std::string python_here() {
-    if (const char* chosen = std::getenv("CRUCIBLE_PYTHON"); chosen != nullptr && *chosen != '\0') {
-        return chosen;
-    }
-    for (const char* name : {"python3", "python"}) {
-        if (util::on_path(name)) {
-            return name;
-        }
-    }
-    return {};
-}
-
-/// An environment variable set for as long as this lives.
-class ScopedVariable {
-public:
-    ScopedVariable(const char* name, const std::string& value) : name_(name) {
-        if (const char* now = std::getenv(name); now != nullptr) {
-            previous_ = now;
-            had_      = true;
-        }
-        set_env(name, value);
-    }
-    ~ScopedVariable() {
-        if (had_) {
-            set_env(name_, previous_);
-        } else {
-            unset_env(name_);
-        }
-    }
-    ScopedVariable(const ScopedVariable&)            = delete;
-    ScopedVariable& operator=(const ScopedVariable&) = delete;
-
-private:
-    const char* name_;
-    std::string previous_;
-    bool        had_ = false;
-};
-
-/// tests/scripted_provider.py, answering from `replies` for as long as this
-/// lives. See tests/test_chat.cpp, whose turns it plays the same way.
-class ScriptedProvider {
-public:
-    ScriptedProvider(const std::filesystem::path& dir, const nlohmann::json& replies, const std::string& python) {
-        const std::filesystem::path file = dir / "script.json";
-        std::ofstream(file, std::ios::binary) << nlohmann::json{{"replies", replies}}.dump();
-        util::Subprocess::Streams streams;
-        streams.input  = true;
-        streams.errors = dir / "provider.log";
-        const std::filesystem::path source =
-            std::filesystem::path(CRUCIBLE_SOURCE_DIR) / "tests" / "scripted_provider.py";
-        std::string error;
-        if (child_.start({python, "-u", source.string(), file.string(), (dir / "requests.jsonl").string()}, {}, {},
-                         error, streams)) {
-            std::string line;
-            if (child_.read_line(line)) {
-                port_ = format::trim(line);
-            }
-        }
-    }
-    ~ScriptedProvider() {
-        child_.close_input();
-        child_.wait();
-    }
-    ScriptedProvider(const ScriptedProvider&)            = delete;
-    ScriptedProvider& operator=(const ScriptedProvider&) = delete;
-
-    bool        ok() const { return !port_.empty(); }
-    std::string url() const { return "http://127.0.0.1:" + port_ + "/v1"; }
-
-private:
-    util::Subprocess child_;
-    std::string      port_;
-};
-
-}  // namespace
-
-TEST(a_build_makes_its_seat_on_a_model_of_its_own_when_the_one_for_new_agents_cannot_load) {
-    const std::string python = python_here();
-    if (python.empty()) {
-        std::printf("      (no Python to run the orchestrator on; skipped)\n");
-        return;
-    }
-    TempDir        dir;
-    ScopedDataHome home(dir.path() / "data");
-    ScopedVariable chosen("CRUCIBLE_PYTHON", python);
-
-    // The architect's plan, one task needing what nobody on the roster has
-    // a model for; the task's one round; and the write-up.
-    const nlohmann::json plan{
-        {"summary", "A stylesheet."}, {"run", ""}, {"check", ""}, {"ship", ""},
-        {"tasks", nlohmann::json::array({nlohmann::json{{"title", "Style the page"},
-                                                        {"detail", "Calm colors and spacing in style.css."},
-                                                        {"files", nlohmann::json::array()},
-                                                        {"needs", "CSS styling"},
-                                                        {"after", nlohmann::json::array()}}})}};
-    ScriptedProvider provider(dir.path(),
-                              nlohmann::json::array({nlohmann::json{{"content", plan.dump()}},
-                                                     nlohmann::json{{"content", "DONE: styled it"}},
-                                                     nlohmann::json{{"content", "It is styled."}}}),
-                              python);
-    CHECK(provider.ok());
-    if (!provider.ok()) {
-        return;
-    }
-
-    Config config;
-    config.models_dir = (dir.path() / "models").string();
-    crucible::Provider scripted;
-    scripted.id       = "scripted";
-    scripted.name     = "Scripted";
-    scripted.kind     = "openai";
-    scripted.base_url = provider.url();
-    config.providers.push_back(scripted);
-    std::string error;
-    Expert programming;
-    programming.name     = "Programming";
-    programming.blurb    = "apps and pages";
-    programming.keywords = {"page"};
-    CHECK(config.roster.add(programming, error));
-    // On the roster with no model yet: the task the delegator sends here falls
-    // back to Programming, and the build makes a seat for it.
-    Expert design;
-    design.name     = "Design";
-    design.blurb    = "visual design";
-    design.keywords = {"css", "styling"};
-    CHECK(config.roster.add(design, error));
-    config.experts["programming"].model    = "programming-model";
-    config.experts["programming"].provider = "scripted";
-    config.routing.default_expert          = "programming";
-    // The model for new agents, which cannot be loaded here: it is not in
-    // the models folder at all, the plainest way a model fails to load.
-    config.build.worker_model = "worker-27b.gguf";
-    config.build.confirm_plan = false;
-    config.build.auto_commit  = false;
-    config.build.agents       = 1;
-    config.tools.auto_edits   = true;
-    config.resolve_models();
-
-    AppState state;
-    state.configure_seats(config);
-    Engine engine(config, state, [] {});
-    const std::filesystem::path project = dir.path() / "project";
-    std::filesystem::create_directories(project);
-    engine.set_project(project, dir.path() / "history");
-    engine.start();
-    CHECK(engine.start_cook("make the page calm", 0, project, {}, std::nullopt, "build").empty());
-    const auto started = std::chrono::steady_clock::now();
-    while (engine.cooking() && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    CHECK(!engine.cooking());
-    const Snapshot after = state.snapshot();
-    CHECK(after.cook != nullptr);
-    if (after.cook == nullptr) {
-        engine.stop();
-        return;
-    }
-
-    // The task was worked, by the seat made for it, rather than failed on a
-    // model that could not be had.
-    CHECK_EQ(after.cook->tasks.size(), std::size_t{1});
-    if (!after.cook->tasks.empty()) {
-        CHECK_EQ(after.cook->tasks[0].state, std::string("done"));
-        CHECK_EQ(after.cook->tasks[0].expert, std::string("css-styling"));
-    }
-    // It runs on the model of the seat the task was routed to, and the notes
-    // say what it is on and why.
-    bool said = false;
-    for (const CookStep& step : after.cook->steps) {
-        said = said || step.summary == "added CSS Styling to the experts, for CSS styling, on programming-model: "
-                                       "worker-27b.gguf is not in the models folder";
-    }
-    CHECK(said);
-    const std::vector<Engine::MadeSeat> made = engine.take_made_seats();
-    CHECK_EQ(made.size(), std::size_t{1});
-    if (!made.empty()) {
-        CHECK_EQ(made[0].expert.name, std::string("CSS Styling"));
-        CHECK_EQ(made[0].params.model, std::string("programming-model"));
-        CHECK_EQ(made[0].params.provider, std::string("scripted"));
-    }
-    engine.stop();
 }
 
 // ---------------------------------------------------------------------------
@@ -840,7 +453,7 @@ TEST(a_call_written_the_way_lfm2_writes_one_is_the_call_it_stands_for) {
 TEST(the_instructions_offer_each_group_only_when_its_switch_is_on) {
     tools::WorkshopSettings settings;
     settings.enabled = true;
-    const std::string plain = tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    const std::string plain = tools::workshop_instructions(settings);
     CHECK(plain.find("GIT:") != std::string::npos);
     CHECK(plain.find("PYTHON:") != std::string::npos);
     CHECK(plain.find("FETCH:") == std::string::npos);
@@ -853,7 +466,7 @@ TEST(the_instructions_offer_each_group_only_when_its_switch_is_on) {
     settings.computer_control = true;
     tools::Processes processes;
     settings.processes = &processes;
-    const std::string all = tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    const std::string all = tools::workshop_instructions(settings);
     CHECK(all.find("FETCH:") != std::string::npos);
     CHECK(all.find("SEARCH:") != std::string::npos);
     CHECK(all.find("SCREENSHOT:") != std::string::npos);
@@ -861,7 +474,7 @@ TEST(the_instructions_offer_each_group_only_when_its_switch_is_on) {
     CHECK(all.find("START:") != std::string::npos);
 
     settings.allow_run = false;
-    const std::string no_run = tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    const std::string no_run = tools::workshop_instructions(settings);
     CHECK(no_run.find("GIT:") == std::string::npos);
     CHECK(no_run.find("PYTHON:") == std::string::npos);
     CHECK(no_run.find("START:") == std::string::npos);
@@ -1295,7 +908,7 @@ TEST(a_glob_matches_names_anywhere_or_paths_from_the_root) {
 
 TEST(the_instructions_teach_edit_and_find_and_the_example_parses) {
     TempDir dir;
-    const std::string text = tools::workshop_instructions(everything_on(dir.path()), tools::ToolAudience::Cook);
+    const std::string text = tools::workshop_instructions(everything_on(dir.path()));
     CHECK(text.find("EDIT: <file>") != std::string::npos);
     CHECK(text.find("FIND: <text>") != std::string::npos);
     // The worked example is itself a call the parser reads.
@@ -1309,7 +922,7 @@ TEST(the_instructions_teach_edit_and_find_and_the_example_parses) {
 
 TEST(the_instructions_say_a_write_line_holds_the_path_alone_and_the_example_parses) {
     TempDir dir;
-    const std::string text = tools::workshop_instructions(everything_on(dir.path()), tools::ToolAudience::Cook);
+    const std::string text = tools::workshop_instructions(everything_on(dir.path()));
     CHECK(text.find("WRITE: <path>") != std::string::npos);
     CHECK(text.find("the file's path and nothing else") != std::string::npos);
     const std::size_t at = text.find("WRITE: src/calc.py");
@@ -1346,6 +959,31 @@ TEST(render_draws_a_page_into_a_pdf_and_a_picture) {
     CHECK(result.ok);
     CHECK(result.changed == std::vector<std::string>{"shot.png"});
     CHECK(!result.pictures.empty());
+
+    // Several at once, as agents of a build or runs of these tests on one
+    // machine draw: each browser has a profile of its own. They shared one,
+    // and a browser that met another's lock on it aborted, having drawn
+    // nothing ("the browser drew nothing"). Three at once lost one of them
+    // in 10 of 10 tries with the shared folder; two in 9 of 10.
+    const std::vector<std::string> outputs{"many/one.pdf", "many/two.png at 640x360", "many/three.png at 320x200"};
+    std::vector<tools::ToolResult> drawn(outputs.size());
+    std::vector<std::thread> drawing;
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+        drawing.emplace_back([&, i] {
+            tools::ToolCall again = call;
+            again.argument = "report.html to " + outputs[i];
+            drawn[i] = tools::run_tool(again, settings, {}, {});
+        });
+    }
+    for (std::thread& one : drawing) {
+        one.join();
+    }
+    for (const tools::ToolResult& one : drawn) {
+        CHECK(one.ok);
+        if (!one.ok) {
+            std::printf("      %s\n", one.output.c_str());
+        }
+    }
 
     // Where it goes and what it is are checked before the browser starts.
     call.argument = "report.html to ../away.pdf";

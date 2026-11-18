@@ -210,7 +210,7 @@ int bench_chat(const std::vector<std::string>& prompts, bool cold, bool traced, 
     AppState state;
     state.configure_seats(config);
     Engine engine(config, state, [] {});
-    engine.set_project(project, paths::data_dir() / "loadbench-history");
+    engine.set_project(project);
     engine.start();
 
     const auto run_start = Clock::now();
@@ -224,7 +224,7 @@ int bench_chat(const std::vector<std::string>& prompts, bool cold, bool traced, 
         }
         const std::size_t before = state.snapshot().turns.size();
         const auto        sent   = Clock::now();
-        engine.submit(prompt, pinned, {}, true);
+        engine.submit(prompt, pinned);
         double      first_ms = -1.0;
         std::string said;   // the status line as last printed, for --trace
         const auto  trace = [&](const Snapshot& now) {

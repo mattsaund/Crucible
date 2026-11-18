@@ -63,13 +63,13 @@ struct Method {
 // rather than by anything structural: the test for which file a new one goes
 // in is which of these sentences it finishes.
 
-void conversation_methods(std::vector<Method>& table);  ///< talking, cooking, history
+void conversation_methods(std::vector<Method>& table);  ///< talking, and history
 void project_methods(std::vector<Method>& table);       ///< which folder, and may we
 void roster_methods(std::vector<Method>& table);        ///< experts and where they are answered
 void settings_methods(std::vector<Method>& table);      ///< the configuration and the machine
 void install_methods(std::vector<Method>& table);       ///< runtimes and the trainer
 void lab_methods(std::vector<Method>& table);           ///< making an expert
-void source_methods(std::vector<Method>& table);        ///< the project's files, git, a preview, a build
+void source_methods(std::vector<Method>& table);        ///< the project's files, git, a preview
 void market_methods(std::vector<Method>& table);        ///< models to download, and their downloads
 void bench_methods(std::vector<Method>& table);         ///< benchmark runs, their results, the public board
 
@@ -78,11 +78,7 @@ void bench_methods(std::vector<Method>& table);         ///< benchmark runs, the
 /// The engine's state. In wire.cpp.
 json snapshot_to_json(const Snapshot& snapshot, bool with_turns = true);
 
-/// One step of a cook's journal, and one task of a build's plan.
-json cook_step_json(const CookStep& step);
-json cook_task_json(const CookTask& task);
-
-/// What was attached to a turn or a cook, for the tiles above it.
+/// What was attached to a turn, for the tiles above it.
 json attachments_json(const std::vector<attach::Tile>& attachments);
 
 /// The refusal every engine-moving method makes when there is no engine.

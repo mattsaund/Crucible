@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Things attached to a prompt or a goal: files, pictures, a folder.
+// Things attached to a prompt: files, pictures, a folder.
 //
 // The gray plus at the bottom left of the box opens a menu of two -- files
 // or photos, or a folder -- and either one opens the platform's own file
@@ -11,9 +11,9 @@
 // which are shrunk to what a provider takes before they are sent, because a
 // canvas is the one image codec this program has.
 //
-// There is one box, and a message's attachments go with it whatever it
-// becomes: a question about them, or a build made from them. "chat" names
-// that box wherever a mode is asked for.
+// There is one box, and a message's attachments go with it whatever it asks:
+// a question about them, or something to make from them. "chat" names that
+// box wherever a mode is asked for.
 
 const CLIP = {
   plus: `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor"
@@ -89,8 +89,8 @@ function attachedChips(list) {
 
 /// The plus, and the menu it opens. Up from the box rather than down from
 /// it, because the box is at the bottom of the window.
-function attachButton(mode, disabled) {
-  const open = state.menu === `attach:${mode}` && !disabled;
+function attachButton(mode) {
+  const open = state.menu === `attach:${mode}`;
   const menu = open ? `<div class="popmenu" role="menu">
       <button type="button" role="menuitem" data-act="attach-files">${CLIP.file}
         <span>Add files or photos</span><kbd>Ctrl+U</kbd></button>
@@ -99,7 +99,7 @@ function attachButton(mode, disabled) {
   return `<div class="menu-wrap">
       <button type="button" class="plus" data-act="attach-menu" aria-haspopup="menu"
               aria-expanded="${open}" title="Attach files, photos or a folder"
-              aria-label="Attach files, photos or a folder" ${disabled ? 'disabled' : ''}>${CLIP.plus}</button>
+              aria-label="Attach files, photos or a folder">${CLIP.plus}</button>
       ${menu}</div>`;
 }
 
@@ -237,7 +237,7 @@ function forSending(image, picture) {
   return { mime, data: best.data };
 }
 
-/// What is attached in `mode`, in the shape submit and cook.start take.
+/// What is attached in `mode`, in the shape submit takes.
 /// Null while anything is still being read, which the send waits on.
 function attachmentsFor(mode) {
   const list = state.attached[mode] || [];
@@ -265,8 +265,8 @@ document.addEventListener('keydown', (event) => {
 //
 // Anything dragged over the window is offered the box: the window goes soft
 // behind an outline in the flame, and what is let go of is attached as if it
-// had been chosen with the plus. On Chat or Build it goes in that box; from
-// any other view, in Chat's, which the drop then opens.
+// had been chosen with the plus. On Chat it goes in that box; from any other
+// view, in Chat's, which the drop then opens.
 //
 // A page is handed a dropped file's contents and never its path -- and on
 // WebKitGTK not even the contents. Where the window can say the paths
@@ -291,14 +291,9 @@ CLIP.drop = `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" 
   stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/>
   <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>`;
 
-/// Which box a drop would go in, or why it cannot go in one. The box takes
-/// one whatever a build is doing, except while it asks something: then
-/// what is typed is the answer, and an answer has no attachments.
+/// Which box a drop would go in, or why it cannot go in one.
 function dropTarget() {
-  const s = state.snapshot || {};
   if (state.modal) return { why: 'Close the dialog first' };
-  const cook = s.cook && s.cook.running ? s.cook : null;
-  if (cook && cook.state === 'asking') return { why: 'Answer the build\'s question first' };
   return { mode: 'chat' };
 }
 

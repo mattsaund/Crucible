@@ -30,12 +30,7 @@
 #include <httplib.h>
 
 #if !defined(_WIN32)
-#include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <netinet/in.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #endif
 
 #include "crucible/serve/tls.hpp"
@@ -163,109 +158,6 @@ bool names(const std::string& id, const std::string& named) {
 
 std::int64_t now_seconds() {
     return static_cast<std::int64_t>(std::time(nullptr));
-}
-
-/// `address` as text, IPv4 or IPv6, or empty for any other kind.
-std::string address_text(const sockaddr* address) {
-    char text[INET6_ADDRSTRLEN] = {};
-    if (address->sa_family == AF_INET) {
-        const auto* four = reinterpret_cast<const sockaddr_in*>(address);
-        return inet_ntop(AF_INET, &four->sin_addr, text, sizeof(text)) != nullptr ? std::string(text) : std::string();
-    }
-    if (address->sa_family == AF_INET6) {
-        const auto* six = reinterpret_cast<const sockaddr_in6*>(address);
-        return inet_ntop(AF_INET6, &six->sin6_addr, text, sizeof(text)) != nullptr ? std::string(text) : std::string();
-    }
-    return {};
-}
-
-/// Whether another computer could reach this machine at `address`: not the
-/// loopback, not the unspecified address, and for IPv6 not a link-local one,
-/// which is reached only with this machine's interface named after it.
-bool reachable(const std::string& address) {
-    const auto starts = [&address](std::string_view prefix) {
-        return address.size() >= prefix.size()
-            && std::equal(prefix.begin(), prefix.end(), address.begin(), [](char a, char b) {
-                   return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
-               });
-    };
-    return !address.empty() && !starts("127.") && address != "0.0.0.0" && address != "::" && address != "::1"
-        && !starts("fe8") && !starts("fe9") && !starts("fea") && !starts("feb") && !starts("::ffff:");
-}
-
-/// This machine's address on its network, IPv4 or IPv6 as `family` says: the
-/// one a packet to the outside would leave from. A datagram socket
-/// "connected" to an address nobody owns asks the routing table without
-/// sending anything. Where there is no route out, the first interface that
-/// is up and has an address another computer could reach. Empty when there
-/// is no network at all, or none of that kind.
-std::string lan_address(int family) {
-#if defined(_WIN32)
-    WSADATA data;
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
-        return {};
-    }
-    struct Cleanup {
-        ~Cleanup() { WSACleanup(); }
-    } cleanup;
-#endif
-    std::string found;
-    const auto sock = ::socket(family, SOCK_DGRAM, 0);
-#if defined(_WIN32)
-    const bool opened = sock != INVALID_SOCKET;
-#else
-    const bool opened = sock >= 0;
-#endif
-    if (opened) {
-        // 192.0.2.1 and 2001:db8::1 are kept for documentation: nobody has
-        // them, and the route to each is the default one.
-        sockaddr_storage outside{};
-        socklen_t        size = 0;
-        if (family == AF_INET6) {
-            auto* six        = reinterpret_cast<sockaddr_in6*>(&outside);
-            six->sin6_family = AF_INET6;
-            six->sin6_port   = htons(9);
-            inet_pton(AF_INET6, "2001:db8::1", &six->sin6_addr);
-            size = sizeof(sockaddr_in6);
-        } else {
-            auto* four       = reinterpret_cast<sockaddr_in*>(&outside);
-            four->sin_family = AF_INET;
-            four->sin_port   = htons(9);
-            inet_pton(AF_INET, "192.0.2.1", &four->sin_addr);
-            size = sizeof(sockaddr_in);
-        }
-        if (::connect(sock, reinterpret_cast<const sockaddr*>(&outside), size) == 0) {
-            sockaddr_storage local{};
-            socklen_t        length = sizeof(local);
-            if (::getsockname(sock, reinterpret_cast<sockaddr*>(&local), &length) == 0) {
-                found = address_text(reinterpret_cast<const sockaddr*>(&local));
-            }
-        }
-#if defined(_WIN32)
-        closesocket(sock);
-#else
-        ::close(sock);
-#endif
-    }
-#if !defined(_WIN32)
-    if (!reachable(found)) {
-        found.clear();
-        ifaddrs* all = nullptr;
-        if (getifaddrs(&all) == 0) {
-            for (const ifaddrs* one = all; one != nullptr && found.empty(); one = one->ifa_next) {
-                if (one->ifa_addr == nullptr || one->ifa_addr->sa_family != family
-                    || (one->ifa_flags & IFF_UP) == 0 || (one->ifa_flags & IFF_LOOPBACK) != 0) {
-                    continue;
-                }
-                if (const std::string text = address_text(one->ifa_addr); reachable(text)) {
-                    found = text;
-                }
-            }
-            freeifaddrs(all);
-        }
-    }
-#endif
-    return reachable(found) ? found : std::string();
 }
 
 /// Where a request came from, as a person reads it: an IPv4 client of the
@@ -933,6 +825,63 @@ const char* finish_reason(bool stopped, bool limit, bool called) {
     return called ? "tool_calls" : "stop";
 }
 
+/// How often the certificate of listeners over HTTPS is looked at: its
+/// files' times and sizes, which is a moment's work (see watch_certificate).
+constexpr auto kCertificateLook = std::chrono::seconds(2);
+
+/// Crucible's own is asked whether it still serves this machine at every
+/// this many looks: the machine's names and addresses are asked of it.
+constexpr int kOwnLooks = 5;
+
+/// A file as it was when it was last read: whether it was there, when it
+/// last changed and how long it was. A certificate renewed in place is one
+/// whose file has changed.
+struct Stamp {
+    bool                            there = false;
+    std::filesystem::file_time_type time{};
+    std::uintmax_t                  size = 0;
+
+    bool operator==(const Stamp&) const = default;
+};
+
+std::vector<Stamp> stamps_of(const std::vector<std::filesystem::path>& files) {
+    std::vector<Stamp> out;
+    for (const std::filesystem::path& file : files) {
+        Stamp           stamp;
+        std::error_code ec;
+        stamp.time  = std::filesystem::last_write_time(file, ec);
+        stamp.there = !ec;
+        if (stamp.there) {
+            stamp.size = std::filesystem::file_size(file, ec);
+        }
+        out.push_back(stamp);
+    }
+    return out;
+}
+
+/// The files a listener's certificate and its key are read from: the
+/// person's, or Crucible's own in its folder.
+std::vector<std::filesystem::path> files_of(const Settings& settings) {
+    if (settings.certificate.empty()) {
+        return {settings.own_dir / "certificate.pem", settings.own_dir / "key.pem"};
+    }
+    std::vector<std::filesystem::path> files{settings.certificate};
+    if (!settings.certificate_key.empty()) {
+        files.push_back(settings.certificate_key);
+    }
+    return files;
+}
+
+/// The certificate of listeners over HTTPS, watched from a thread of its
+/// own (see watch_certificate): told to stop when the listeners go, and to
+/// read it again at once when Crucible's own has been made anew.
+struct Watch {
+    std::mutex              mutex;
+    std::condition_variable woken;
+    bool                    stop = false;
+    bool                    now  = false;
+};
+
 }  // namespace
 
 struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
@@ -966,18 +915,21 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     /// A listener for each address listened on, and its thread: one on
     /// this machine for 127.0.0.1 and one for ::1, and one on the network
-    /// for both kinds at once where there is IPv6 (see open).
-    std::vector<std::unique_ptr<httplib::Server>> http;
+    /// for both kinds at once where there is IPv6 (see open). Shared with
+    /// the watch on their certificate, which may be swapping one in as they
+    /// close.
+    std::vector<std::shared_ptr<httplib::Server>> http;
     std::vector<std::thread>                      listeners;
     bool                                          ipv6 = false;   ///< one of them listens on IPv6
     std::shared_ptr<std::atomic<bool>>            closing;        ///< the listeners' own: set when they are going
 
     /// Over HTTPS, with this certificate, while it listens so: its SHA-256,
-    /// its file, and whether it is Crucible's own.
-    bool        https = false;
-    std::string certificate_sha256;
-    std::string certificate_file;
-    bool        own_certificate = false;
+    /// its file, and whether it is Crucible's own. And the watch on it.
+    bool                   https = false;
+    std::string            certificate_sha256;
+    std::string            certificate_file;
+    bool                   own_certificate = false;
+    std::shared_ptr<Watch> watching;
 
     std::deque<std::shared_ptr<Job>> queue;
     std::shared_ptr<Job>             current;
@@ -1805,12 +1757,20 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// the port the first was given, where the machine has IPv6.
     std::string open(const Settings& wanted) {
         // The certificate first: one that will not serve is said before a
-        // port is taken, and Crucible's own is made here the first time.
-        tls::Identity identity;
+        // port is taken, and Crucible's own is made here the first time, or
+        // made again when it no longer serves this machine. Its files as
+        // they were before they were read, so that one changing as it is
+        // read is read again; Crucible's own as it wrote them.
+        tls::Identity      identity;
+        std::vector<Stamp> stamps;
         if (wanted.https) {
+            stamps = stamps_of(files_of(wanted));
             std::string why;
             if (!tls::load(wanted.certificate, wanted.certificate_key, wanted.own_dir, identity, why)) {
                 return why;
+            }
+            if (identity.own) {
+                stamps = stamps_of(files_of(wanted));
             }
         }
         auto gone = std::make_shared<std::atomic<bool>>(false);
@@ -1860,7 +1820,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                                                                 : " is in use");
         };
 
-        std::vector<std::unique_ptr<httplib::Server>> servers;
+        std::vector<std::shared_ptr<httplib::Server>> servers;
         bool on_ipv6 = false;
         int  bound   = wanted.port;
         const std::string no_tls = "HTTPS could not start";
@@ -1898,13 +1858,20 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             }
         }
         std::vector<std::thread> threads;
-        for (const std::unique_ptr<httplib::Server>& server : servers) {
+        for (const std::shared_ptr<httplib::Server>& server : servers) {
             httplib::Server* listening = server.get();
             threads.emplace_back([listening] { listening->listen_after_bind(); });
             listening->wait_until_ready();
         }
 
         const std::lock_guard<std::mutex> lock(mutex);
+        if (wanted.https) {
+            auto watch     = std::make_shared<Watch>();
+            this->watching = watch;
+            std::thread([keep = shared_from_this(), watch, servers, wanted, identity, stamps]() mutable {
+                keep->watch_certificate(*watch, servers, wanted, std::move(identity), std::move(stamps));
+            }).detach();
+        }
         this->http               = std::move(servers);
         this->listeners          = std::move(threads);
         this->ipv6               = on_ipv6;
@@ -1918,6 +1885,68 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         return {};
     }
 
+    /// The certificate of `servers`, listeners over HTTPS, looked at every
+    /// kCertificateLook until `watch` says to stop: read again when its
+    /// files change, as a certificate renewed in place does (Let's Encrypt's
+    /// is), and Crucible's own made again when it no longer serves this
+    /// machine (see tls::serves_here). Swapped into the listeners as they
+    /// listen, so nobody connected is dropped, and said. On a thread of its
+    /// own, holding the listeners for as long as a swap takes, so that
+    /// closing them never waits for one.
+    void watch_certificate(Watch& watch, const std::vector<std::shared_ptr<httplib::Server>>& servers,
+                           const Settings& wanted, tls::Identity identity, std::vector<Stamp> stamps) {
+        const std::vector<std::filesystem::path> files = files_of(wanted);
+        for (int look = 1;; ++look) {
+            bool asked = false;
+            {
+                std::unique_lock<std::mutex> lock(watch.mutex);
+                watch.woken.wait_for(lock, kCertificateLook, [&watch] { return watch.stop || watch.now; });
+                if (watch.stop) {
+                    return;
+                }
+                asked     = watch.now;
+                watch.now = false;
+            }
+            std::vector<Stamp> seen  = stamps_of(files);
+            const bool         moved = asked || seen != stamps
+                               || (identity.own && look % kOwnLooks == 0
+                                   && !tls::serves_here(identity.pem.certificate));
+            if (!moved) {
+                continue;
+            }
+            tls::Identity fresh;
+            std::string   why;
+            const bool    read = tls::load(wanted.certificate, wanted.certificate_key, wanted.own_dir, fresh, why);
+            // A file that will not serve -- half written, or a certificate
+            // whose key has not come yet -- is read again when it changes
+            // again. What Crucible wrote of its own is no change to read.
+            stamps = identity.own ? stamps_of(files) : std::move(seen);
+            if (!read || fresh.fingerprint == identity.fingerprint) {
+                continue;
+            }
+            bool swapped = true;
+            for (const std::shared_ptr<httplib::Server>& server : servers) {
+                // Over HTTPS every listener is one.
+                auto& secure = static_cast<httplib::SSLServer&>(*server);
+                swapped      = secure.update_certs_pem(fresh.pem.certificate.c_str(), fresh.pem.key.c_str()) && swapped;
+            }
+            if (!swapped) {
+                continue;
+            }
+            identity = std::move(fresh);
+            {
+                const std::lock_guard<std::mutex> lock(mutex);
+                if (watching.get() != &watch) {
+                    return;   // the listeners went while it was swapped in
+                }
+                certificate_sha256 = identity.fingerprint;
+                certificate_file   = identity.file.string();
+                own_certificate    = identity.own;
+            }
+            tell();
+        }
+    }
+
     /// Stop listening, ending what is in flight on the way.
     ///
     /// Without waiting for it to end. The listeners' threads are joined --
@@ -1928,16 +1957,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// likes. That is the window, when a setting changes, and Crucible, when
     /// it closes. A request's thread that outlives stop() finds the fence up.
     void close() {
-        std::vector<std::unique_ptr<httplib::Server>> http_was;
+        std::vector<std::shared_ptr<httplib::Server>> http_was;
         std::vector<std::thread>                      listeners_was;
         std::shared_ptr<std::atomic<bool>>            closing_was;
+        std::shared_ptr<Watch>                        watching_was;
         {
             const std::lock_guard<std::mutex> lock(mutex);
             http_was      = std::move(http);
             listeners_was = std::move(listeners);
             closing_was   = std::move(closing);
+            watching_was  = std::move(watching);
             http.clear();
             listeners.clear();
+            watching.reset();
             closed_port = http_was.empty() ? closed_port : port;
             port        = 0;
             ipv6        = false;
@@ -1949,10 +1981,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         if (closing_was) {
             closing_was->store(true);   // a request's thread waiting on its answer gives up
         }
+        if (watching_was) {
+            // Told, not waited for: a swap under way finishes on listeners
+            // nobody listens with, which the watch holds until it has.
+            {
+                const std::lock_guard<std::mutex> lock(watching_was->mutex);
+                watching_was->stop = true;
+            }
+            watching_was->woken.notify_all();
+        }
         if (http_was.empty()) {
             return;
         }
-        for (const std::unique_ptr<httplib::Server>& server : http_was) {
+        for (const std::shared_ptr<httplib::Server>& server : http_was) {
             server->stop();   // the port is free again from here
         }
         std::thread([http_was = std::move(http_was), listeners_was = std::move(listeners_was),
@@ -1979,7 +2020,8 @@ std::string Server::apply(const Settings& wanted) {
     {
         const std::lock_guard<std::mutex> lock(s.mutex);
         // The same address, and the same certificate when there is one: a
-        // file named again is read again only when the listener starts again.
+        // file named again is not read again for being named, but when it
+        // changes (see watch_certificate).
         same_place = !s.http.empty() && wanted.enabled && wanted.port == s.settings.port
                   && wanted.network == s.settings.network && wanted.https == s.settings.https
                   && (!wanted.https
@@ -2045,6 +2087,34 @@ void Server::stop() {
     s.detached = true;
 }
 
+std::string Server::new_certificate(const std::filesystem::path& own_dir) {
+    Impl& s = *impl_;
+    const std::lock_guard<std::mutex> one_at_a_time(s.control);
+    tls::Identity made;
+    std::string   error;
+    if (!tls::own(own_dir, /*renew=*/true, made, error)) {
+        return error;
+    }
+    // Listeners serving Crucible's own from that folder have it from now:
+    // their watch reads it at once and swaps it in. Any other listener, or
+    // none, leaves it for the next to start over HTTPS.
+    std::shared_ptr<Watch> watch;
+    {
+        const std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.own_certificate && s.settings.certificate.empty() && s.settings.own_dir == own_dir) {
+            watch = s.watching;
+        }
+    }
+    if (watch) {
+        {
+            const std::lock_guard<std::mutex> lock(watch->mutex);
+            watch->now = true;
+        }
+        watch->woken.notify_all();
+    }
+    return {};
+}
+
 Status Server::status() const {
     const Impl& s = *impl_;
     Status out;
@@ -2073,8 +2143,8 @@ Status Server::status() const {
             // computer would reach it before it is let in.
             const auto now = Clock::now();
             if (s.lan.empty() || now - s.lan_at > std::chrono::seconds(10)) {
-                s.lan    = lan_address(AF_INET);
-                s.lan6   = lan_address(AF_INET6);
+                s.lan    = tls::network_address(false);
+                s.lan6   = tls::network_address(true);
                 s.lan_at = now;
             }
             out.lan  = s.lan;

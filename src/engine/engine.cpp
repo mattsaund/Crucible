@@ -9,9 +9,9 @@
 // never calls into the engine's internals, and the engine never calls into
 // the window toolkit.
 //
-// The worker is not the only thread that reaches llama.cpp: a build's agents,
-// the orchestrator's requests and a load for the box's choice each run on
-// threads of their own. Every load and free takes host_mutex_, and a model
+// The worker is not the only thread that reaches llama.cpp: the orchestrator's
+// requests, the API server, a benchmark run and a load for the box's choice
+// each run on threads of their own. Every load and free takes host_mutex_, and a model
 // somebody is generating with is held by a lease, so none of them frees it
 // under its user. See leases.hpp.
 //
@@ -55,7 +55,7 @@ Engine::Engine(Config config, AppState& state, std::function<void()> wake)
       hub_(paths::data_dir() / "spend.json") {
     auto_edits_.store(config_.tools.auto_edits);
     // What the orchestrator asks for, answered on the link's own threads --
-    // the chat's routing and a build's agents side by side.
+    // a chat turn and a benchmark run side by side.
     orchestra_.set_handler([this](const std::string& method, const nlohmann::json& params) {
         return serve(method, params);
     });
@@ -125,14 +125,12 @@ void Engine::stop() {
         return;
     }
     cancel_.store(true, std::memory_order_relaxed);
-    cook_stop_.store(true, std::memory_order_relaxed);
-    cook_cancel_.store(true, std::memory_order_relaxed);
     // A request to a provider is blocked reading the next line of the answer,
     // and would keep the worker -- and so the window closing -- waiting on it.
     hub_.interrupt();
     // So does an MCP server still starting, for as long as a minute and a
-    // half, and a call to one: the warm-up, the worker and a build can each
-    // be in either. They end now, before anything is joined, and no server
+    // half, and a call to one: the warm-up and the worker can each be in
+    // either. They end now, before anything is joined, and no server
     // starts after.
     mcp_.stop_all();
     queued_.notify_all();
@@ -141,29 +139,21 @@ void Engine::stop() {
     }
     prepare_wanted_.notify_all();
     edit_answered_.notify_all();
-    cook_answered_.notify_all();
     leases_.wake_all();
 
     // The API server before anything is joined: what it is answering stops
     // at the next token, and nothing more comes in while the rest goes.
-    server_->stop();
-
-    // The build first: its agents hold models the worker is about to free.
-    // Every wait it can be in has just been woken and told to stop, so it
-    // ends within a round -- unless the orchestrator itself has hung, which
-    // is what stopping the orchestrator after a grace period is for: its
-    // pipe closing ends the call the build thread is blocked in.
-    if (cook_thread_.joinable()) {
-        for (int waited = 0; waited < 50 && cooking_.load(std::memory_order_relaxed); ++waited) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        if (cooking_.load(std::memory_order_relaxed)) {
-            orchestra_.stop();
-        }
-        cook_thread_.join();
+    // Under the lock a settings save starts it under, so one that saw the
+    // engine running has started it before this, and stops with it.
+    {
+        const std::lock_guard<std::mutex> closing(server_mutex_);
+        server_->stop();
     }
-    // A benchmark run the same way: told to stop, given a moment, and the
-    // orchestrator stopped under it if it does not.
+
+    // A benchmark run first: its model is one the worker is about to free.
+    // Told to stop, given a moment, and the orchestrator stopped under it if
+    // it does not: its pipe closing ends the call the run's thread is
+    // blocked in.
     bench_stop_.store(true, std::memory_order_relaxed);
     if (bench_thread_.joinable()) {
         for (int waited = 0; waited < 50 && benching_.load(std::memory_order_relaxed); ++waited) {
@@ -203,13 +193,8 @@ void Engine::stop() {
     }
 }
 
-std::vector<Engine::MadeSeat> Engine::take_made_seats() {
-    const std::lock_guard<std::mutex> lock(written_mutex_);
-    return std::exchange(made_seats_, {});
-}
-
 void Engine::submit(std::string prompt, std::optional<ExpertId> pinned,
-                    std::vector<attach::Attachment> attachments, bool answer_only) {
+                    std::vector<attach::Attachment> attachments) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Request request;
@@ -217,7 +202,6 @@ void Engine::submit(std::string prompt, std::optional<ExpertId> pinned,
         request.prompt      = std::move(prompt);
         request.pinned      = std::move(pinned);
         request.attachments = std::move(attachments);
-        request.answer_only = answer_only;
         pending_.push_back(std::move(request));
     }
     queued_.notify_one();
@@ -228,8 +212,8 @@ attach::Composed Engine::read_attachments(std::vector<attach::Attachment> attach
                                           const std::vector<ChatMessage>& messages,
                                           double share) {
     // A picture sent before keeps the bytes it was sent with; one the window
-    // has just sent is remembered for the next time. Under a lock: a build's
-    // agent reads the directive's pictures while a chat turn reads its own.
+    // has just sent is remembered for the next time. Under a lock: the
+    // orchestrator's calls are answered on threads of the link's own.
     std::unique_lock<std::mutex> remembered(pictures_mutex_);
     for (attach::Attachment& one : attachments) {
         if (one.kind != attach::Kind::Image) {
@@ -343,7 +327,7 @@ void Engine::cancel() {
     // And one waiting on a provider is inside a read. A local model looks at
     // the flag between tokens; a remote one may not send a token for a minute
     // while it thinks, and Stop should not take a minute. Only the requests
-    // whose switch is this one are cut: a build's agents carry on.
+    // whose switch is this one are cut: the API server's carry on.
     hub_.interrupt();
 }
 
@@ -480,7 +464,7 @@ void Engine::do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choic
     const HeldModel held = hold_model(*seat, params, name, cancel, load_ms, error);
     if (held.model == nullptr && !error.empty() && error != "stopped") {
         state_.set_mood(Mood::Error, name + " did not load: " + error);
-    } else if (!is_busy() && !cooking()) {
+    } else if (!is_busy()) {
         state_.set_mood(Mood::Idle);
     }
 }
@@ -527,18 +511,6 @@ bool Engine::ask_about_edit(const tools::ToolCall& call,
                                              : std::nullopt;
     if (!target) {
         return true;   // let run_tool produce the refusal and its explanation
-    }
-
-    // One edit on screen at a time: an agent of the build and the chat may
-    // both want a yes, and the window asks about one file at once. Waited
-    // for in a way a Stop ends, since the one on screen may be a build's
-    // question nobody answers for an hour.
-    std::unique_lock<std::mutex> one_at_a_time(asking_mutex_, std::defer_lock);
-    while (!one_at_a_time.try_lock()) {
-        if ((cancel && cancel()) || !running_.load(std::memory_order_relaxed)) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     auto edit    = std::make_shared<PendingEdit>();
@@ -704,9 +676,9 @@ void Engine::run() {
             // Order matters: free everything first, then reload. Loading the
             // router while the old expert is still resident would need both in
             // memory at once, which on a machine that was just given a GPU is
-            // the moment least likely to have room for it. A model a build's
-            // agent is using stays until it lets go, and loads the new way
-            // the next time it is wanted.
+            // the moment least likely to have room for it. A model in use --
+            // the API server's, mid-answer -- stays until it is let go, and
+            // loads the new way the next time it is wanted.
             {
                 const std::lock_guard<std::mutex> host(host_mutex_);
                 host_->release_experts(in_use());
@@ -732,9 +704,9 @@ void Engine::run() {
         }
 
         if (request.kind == RequestKind::ReleaseExpert || request.kind == RequestKind::ReleaseAll) {
-            // Eject frees what nobody is using. What a build's agent holds
-            // goes when the agent lets go of it, which the status line says,
-            // rather than out from under a sentence it is writing.
+            // Eject frees what nobody is using. A model in use goes when it
+            // is let go, which the status line says, rather than out from
+            // under a sentence it is writing.
             const bool all = request.kind == RequestKind::ReleaseAll;
             bool kept = false;
             {
@@ -753,7 +725,7 @@ void Engine::run() {
             if (all && !kept) {
                 state_.set_linked(std::nullopt);
             }
-            state_.set_mood(Mood::Idle, kept ? "released what is not in use (the build is using the rest)"
+            state_.set_mood(Mood::Idle, kept ? "released what is not in use"
                                       : all ? "nothing loaded" : "expert released");
             if (wake_) {
                 wake_();
@@ -846,13 +818,9 @@ void Engine::run() {
         settle();
     }
 
-    // A build still finishing holds models; they are freed once it has let
-    // go of them. stop() has already told it to stop.
-    while (cooking_.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    // A benchmark the same way: its model is held by a lease, and its
-    // questions are read on a thread of its own. stop() has told it to stop.
+    // A benchmark still finishing holds its model by a lease, and its
+    // questions are read on a thread of its own: it is freed once the run
+    // has let go of it. stop() has told it to stop.
     while (benching_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -873,8 +841,13 @@ void Engine::run() {
     // folder held by a lease rather than by the models' lock. It is stopped,
     // and that thread joined, before the models go. stop() stops it as well,
     // but this thread hears it is to stop first, and it freed the model a
-    // request was still reading with: Crucible crashed as it closed.
-    server_->stop();
+    // request was still reading with: Crucible crashed as it closed. Under
+    // the lock configure_server starts it under, so that no settings save
+    // can start it again once it is stopped here (see server_mutex_).
+    {
+        const std::lock_guard<std::mutex> closing(server_mutex_);
+        server_->stop();
+    }
 
     // Free the models before the backend goes away, and stop MLX's server and
     // the orchestrator, which are processes of their own and would outlive
@@ -889,8 +862,8 @@ void Engine::run() {
 }
 
 void Engine::load_router(const CancelCallback& cancel) {
-    // A copy: the build's thread may be adding a seat to the config as this
-    // runs, and the delegator's settings are what is read here.
+    // A copy: Settings may be applied as this runs, and the delegator's
+    // settings are what is read here.
     const ModelParams router = config().router;
     if (router.model.empty()) {
         // The side menu says "(none)" on the delegator's row, and why.
@@ -944,8 +917,8 @@ void Engine::load_router(const CancelCallback& cancel) {
         error, in_use(), &crowded, beside_mlx, idle_mlx);
 
     if (model == nullptr && crowded) {
-        // Not a broken delegator: the experts a build is using, or an MLX
-        // model in use, leave it no room for now. Prompts go on keywords
+        // Not a broken delegator: the experts in use, or an MLX model in
+        // use, leave it no room for now. Prompts go on keywords
         // until they are let go, and it is tried again then, so nothing is
         // remembered as a failure.
         state_.set_delegator_problem({});
@@ -1228,8 +1201,8 @@ void Engine::do_apply_config(Config config) {
     // outright, which reads as an empty path and is the same answer: dropped,
     // rather than left resident and unreachable, or handed to the next prompt
     // loaded the old way. Every one, since several stay loaded while they
-    // fit. Only what nobody is using: a build's agent keeps the model it has
-    // until it lets go, and the next seat to want it loads it the new way.
+    // fit. Only what nobody is using: a model answering keeps its place
+    // until it is let go, and the next to want it loads it the new way.
     //
     // The API server's model is not a seat's: it is what the server would
     // load now -- the model it serves, or the one it makes embeddings with --
@@ -1406,7 +1379,7 @@ bool Engine::wait_for_python(std::string& error, const CancelCallback& cancel) {
             return true;
         }
     }
-    error = "Routing and cooks run on Crucible's own Python, which is not installed. It is "
+    error = "Routing and the chat run on Crucible's own Python, which is not installed. It is "
             "downloaded when Crucible starts: check the connection and restart Crucible, "
             "or run crucible --install-python.";
     return false;
@@ -1421,13 +1394,9 @@ nlohmann::json Engine::routing_request(const Config& config, const std::string& 
         roster.push_back(json{{"id", expert.id}, {"name", expert.name}, {"tag", expert.tag},
                               {"blurb", expert.blurb}, {"keywords", expert.keywords},
                               {"examples", expert.examples}});
-        const ModelParams params = config.expert(expert.id);
-        // Which model on this machine answers for the seat, when one does: a
-        // build runs one agent at a time on each, since two agents on one
-        // model take turns at it and throw away each other's cache.
-        seats[expert.id] = json{{"model", config.has_expert(expert.id)},
-                                {"remote", params.remote()},
-                                {"local", params.remote() ? std::string() : params.path}};
+        // Whether the seat can answer: a prompt is not routed to one with no
+        // model, and the next step of one is handed only to a seat that can.
+        seats[expert.id] = json{{"model", config.has_expert(expert.id)}};
     }
     return json{
         {"prompt", prompt},
@@ -1446,12 +1415,6 @@ CancelCallback Engine::cancel_for(const nlohmann::json& params) const {
     if (params.value("context", std::string()) == "bench") {
         return [this, asker] {
             return bench_stop_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)
-                || orchestra_.ended(asker);
-        };
-    }
-    if (params.value("context", std::string()) == "build") {
-        return [this, asker] {
-            return cook_cancel_.load(std::memory_order_relaxed) || !running_.load(std::memory_order_relaxed)
                 || orchestra_.ended(asker);
         };
     }
@@ -1524,8 +1487,7 @@ nlohmann::json Engine::serve_mlx_delegator(const std::string& method, const nloh
 
 nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& params) {
     using json = nlohmann::json;
-    const bool           building = params.value("context", std::string()) == "build";
-    const CancelCallback cancel   = cancel_for(params);
+    const CancelCallback cancel = cancel_for(params);
 
     // --- the delegator -----------------------------------------------------
     //
@@ -1646,22 +1608,12 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     }
 
     // --- the switches the window sets ---------------------------------------
-    //
-    // Whose they are depends on who asks: an agent of a build heeds the
-    // build's Stop and Wrap up, a chat turn's routing heeds the chat's Stop.
     if (method == "engine.flags") {
-        return json{{"stop", building && cook_stop_.load(std::memory_order_relaxed)},
-                    {"cancel", building ? cook_cancel_.load(std::memory_order_relaxed)
-                                        : cancel_.load(std::memory_order_relaxed)},
+        return json{{"cancel", cancel_.load(std::memory_order_relaxed)},
                     {"running", running_.load(std::memory_order_relaxed)},
                     {"auto_edits", auto_edits_.load(std::memory_order_relaxed)}};
     }
     if (method == "mood") {
-        // The status line is one line. While a chat turn is being answered it
-        // is the turn's, and a build's agents report in their own pane.
-        if (building && busy_.load(std::memory_order_relaxed)) {
-            return json::object();
-        }
         const std::string mood = params.value("mood", "idle");
         const Mood as = mood == "thinking" ? Mood::Thinking
                       : mood == "loading"  ? Mood::Loading
@@ -1687,7 +1639,10 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     if (method.rfind("turn.", 0) == 0) {
         return serve_turn(method, params);
     }
-    return serve_cook(method, params);
+    if (method == "tools.parse") {
+        return parse_reply(params);
+    }
+    throw std::runtime_error("the core has no method " + method);
 }
 
 Engine::HeldModel Engine::hold_model(const ExpertId& id, const ModelParams& params,
@@ -1724,12 +1679,12 @@ Engine::HeldModel Engine::hold_model(const ExpertId& id, const ModelParams& para
         if (!crowded) {
             return held;   // a real failure, or a stop, said in `error`
         }
-        // The models other seats are using leave no room. Wait for one of
-        // them to be let go, rather than pull it out from under its agent.
+        // The models in use leave no room. Wait for one of them to be let
+        // go, rather than pull it out from under whoever is using it.
         if (!told) {
             told = true;
             state_.set_seat(id, SeatPhase::Loading, -1.0F);
-            state_.set_mood(Mood::Loading, name + " is waiting for memory the build's agents are using");
+            state_.set_mood(Mood::Loading, name + " is waiting for memory another model is using");
             if (wake_) {
                 wake_();
             }

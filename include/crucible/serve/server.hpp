@@ -263,6 +263,18 @@ public:
     /// connection still open does.
     void stop();
 
+    /// Crucible's own certificate made anew in `own_dir`, with a new key
+    /// (see tls::own), and served at once by listeners serving it from
+    /// there, without them stopping. A client that trusted the old one, or
+    /// pinned its key, has to be given the new one. Why it could not be
+    /// made, or empty.
+    ///
+    /// A certificate's files are read again whenever they change, too:
+    /// one renewed in place is served a few seconds later, and Crucible's
+    /// own is made again when this machine is no longer reached by what it
+    /// names, after a move to another network.
+    std::string new_certificate(const std::filesystem::path& own_dir);
+
     Status status() const;
 
 private:

@@ -131,7 +131,7 @@ TEST(a_server_is_started_listed_and_called) {
     const tools::ToolResult result = tools::run_tool(*call, settings, {}, {});
     CHECK(result.ok);
     CHECK_EQ(result.output, std::string("42"));
-    CHECK(tools::workshop_instructions(settings, tools::ToolAudience::Cook).find("sums/add: Add two numbers. (a*, b*, note)")
+    CHECK(tools::workshop_instructions(settings).find("sums/add: Add two numbers. (a*, b*, note)")
           != std::string::npos);
 
     // A server taken out of the list is stopped.

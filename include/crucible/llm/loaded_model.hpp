@@ -343,10 +343,10 @@ private:
 
     /// Six at most, the least recently used going first: the delegator
     /// shows its roster in three orders, and each is a prefix of its own,
-    /// and decides whether a message is a build in two more (the
-    /// orchestrator's intent.py). Five taking turns in four places would
-    /// each be gone by the time it came round again. Each is no larger than
-    /// the cache it came from.
+    /// and routes the next step of a prompt on the seats' descriptions alone
+    /// in three more (the orchestrator's routing.py). Six taking turns in
+    /// fewer places would each be gone by the time it came round again.
+    /// Each is no larger than the cache it came from.
     std::vector<KeptPrompt> kept_;
     std::uint64_t           kept_clock_ = 0;
 
@@ -378,7 +378,7 @@ private:
     bool owns_model_ = true;
 
     /// One caller at a time. A context is one conversation's worth of state
-    /// on the card, and a build's agent and the chat may both be answered by
+    /// on the card, and the API server and the chat may both be answered by
     /// this model: the second waits for the first's round rather than the
     /// two decoding into one cache. Recursive because chat() measures the
     /// prompt through prompt_tokens(), and that renders it through

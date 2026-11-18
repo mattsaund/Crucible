@@ -1016,6 +1016,276 @@ TEST(priority_packs_the_first_card_further_from_measured_buffers) {
     }
 }
 
+namespace {
+
+constexpr std::uint64_t kMib = 1024ULL * 1024ULL;
+
+std::uint64_t mib_of(double value) {
+    return static_cast<std::uint64_t>(value * static_cast<double>(kMib));
+}
+
+/// flint's units at 8K with the window cache as its header gives them, in
+/// llama.cpp's order. Two dense layers come first, then forty-seven of
+/// experts (every fourth with the whole cache, and one larger), then the
+/// output. Its dry runs put the same bytes on the cards, to the MiB.
+ModelFit flint_header() {
+    ModelFit fit;
+    for (int layer = 0; layer < 49; ++layer) {
+        const double size = layer < 2                          ? 73.39
+                          : layer == 14                        ? 845.02
+                          : layer == 48 || layer % 4 == 1      ? 734.52
+                                                               : 721.02;
+        fit.units.push_back(mib_of(size));
+    }
+    fit.units.push_back(mib_of(311.59));
+    for (const std::uint64_t unit : fit.units) {
+        fit.resident += unit;
+    }
+    fit.per_card     = 512 * kMib;
+    fit.output_extra = mib_of(293.2);
+    return fit;
+}
+
+/// The last `count` of `fit`'s units, which a load with `count` layers on
+/// the cards puts there.
+ModelFit last_of(const ModelFit& fit, int count) {
+    ModelFit part = fit;
+    part.units.assign(fit.units.end() - count, fit.units.end());
+    part.resident = 0;
+    for (const std::uint64_t unit : part.units) {
+        part.resident += unit;
+    }
+    return part;
+}
+
+/// Matt's three cards as they were for flint on 2026-11-11, with what each
+/// had free in MiB. The RTX 4070 draws the desktop and is on sixteen lanes,
+/// the 5060 Ti and the 3060 on one each, so with no order written they fill
+/// in index order.
+std::vector<ComputeDevice> matts_cards(double first, double second, double third) {
+    std::vector<ComputeDevice> gpus{
+        fake_gpu(0, "RTX 4070", 12282 * kMib),
+        fake_gpu(1, "RTX 5060 Ti", 16311 * kMib),
+        fake_gpu(2, "RTX 3060", 12288 * kMib),
+    };
+    gpus[0].memory_free = mib_of(first);
+    gpus[1].memory_free = mib_of(second);
+    gpus[2].memory_free = mib_of(third);
+    gpus[0].display     = true;
+    gpus[0].link_gbps   = 31.5;
+    gpus[1].link_gbps   = 0.98;
+    gpus[2].link_gbps   = 0.98;
+    return gpus;
+}
+
+/// A dry run of flint with the last `count` of its units on the cards,
+/// divided by `split`, in llama.cpp b11846's own figures. The weights are
+/// the header's, and the buffers what it measured with layers on the
+/// processor. The first card had 345 MiB whether it held layers or not,
+/// since it does the processor's layers' work on a long prompt, the card
+/// with the output 306, and any other card holding layers 84.
+std::vector<CardNeed> flint_dry_run(const std::vector<float>& split, int count) {
+    const ModelFit         header = flint_header();
+    const std::vector<int> counts = llama_cpp_assignment(split, count);
+    std::vector<CardNeed>  need(counts.size());
+    std::size_t            unit   = header.units.size() - static_cast<std::size_t>(count);
+    std::size_t            output = counts.size();
+    for (std::size_t card = 0; card < counts.size(); ++card) {
+        for (int i = 0; i < counts[card]; ++i, ++unit) {
+            need[card].weights += header.units[unit];
+        }
+        if (counts[card] > 0) {
+            output = card;
+        }
+    }
+    for (std::size_t card = 0; card < counts.size(); ++card) {
+        if (card == output) {
+            need[card].compute = mib_of(306.78);
+        } else if (card == 0) {
+            need[card].compute = mib_of(345.75);
+        } else if (counts[card] > 0) {
+            need[card].compute = mib_of(84.79);
+        }
+    }
+    return need;
+}
+
+/// What a dry run's figures leave on each card past the margins a load is
+/// held to, in MiB, which are CUDA's 256 MiB beyond llama.cpp's buffers and
+/// kMeasuredHeadroom. A card that would be overfilled is below zero.
+std::vector<double> past_margins(const std::vector<CardNeed>& need, const std::vector<ComputeDevice>& gpus) {
+    std::vector<double> past;
+    for (const ComputeDevice& gpu : gpus) {
+        const CardNeed& here = need[static_cast<std::size_t>(gpu.index)];
+        past.push_back((static_cast<double>(gpu.memory_free) - static_cast<double>(here.total())
+                        - static_cast<double>(256 * kMib + kMeasuredHeadroom))
+                       / static_cast<double>(kMib));
+    }
+    return past;
+}
+
+bool holds(const std::vector<CardNeed>& need, const std::vector<ComputeDevice>& gpus) {
+    const std::vector<double> past = past_margins(need, gpus);
+    return std::all_of(past.begin(), past.end(), [](double room) { return room >= 0.0; });
+}
+
+}  // namespace
+
+TEST(a_dry_run_gives_each_card_its_own_buffers) {
+    // flint, partly on the processor, measured 345 MiB of buffers on the
+    // first of three cards, since that card does the processor's layers' work
+    // on a long prompt. The next card had 84, and the last, with the output,
+    // 306. One figure for all three would plan the middle card as if it had
+    // the first card's buffers, a layer's room it never uses.
+    ModelFit fit;
+    fit.units.assign(12, kGb / 2);
+    fit.units.push_back(kGb / 4);
+    for (const std::uint64_t unit : fit.units) {
+        fit.resident += unit;
+    }
+    fit.per_card     = 512 * kMib;
+    fit.output_extra = 293 * kMib;
+
+    std::vector<CardNeed> need(3);
+    need[0] = {4 * (kGb / 2), 0, 345 * kMib};
+    need[1] = {4 * (kGb / 2), 0, 84 * kMib};
+    need[2] = {4 * (kGb / 2) + kGb / 4, 0, 306 * kMib};
+    const ModelFit calibrated = calibrated_fit(fit, {4, 4, 5}, need, 256 * kMib);
+
+    CHECK_EQ(calibrated.per_device.size(), std::size_t{3});
+    if (calibrated.per_device.size() != 3) {
+        return;
+    }
+    CHECK_EQ(calibrated.per_device[0], (345 + 256) * kMib);
+    CHECK_EQ(calibrated.per_device[1], (84 + 256) * kMib);
+    // The output's card is its buffers less the output's cost, which is what
+    // it measured over the card that needed least, and which goes to
+    // whichever card the plan gives the output.
+    CHECK_EQ(calibrated.output_extra, (306 - 84) * kMib);
+    CHECK_EQ(calibrated.per_device[2] + calibrated.output_extra, (306 + 256) * kMib);
+    // A card the dry run measured nothing on is planned as the largest that
+    // was measured without the output.
+    CHECK_EQ(calibrated.per_card, (345 + 256) * kMib);
+    // And the margin is the dry run's, not the header's.
+    CHECK_EQ(calibrated.headroom, kMeasuredHeadroom);
+    CHECK_EQ(fit.headroom, kCardHeadroom);
+}
+
+TEST(a_dry_run_of_a_load_partly_on_the_processor_calibrates_every_unit) {
+    // The first four of ten units on the processor, the last six on two
+    // cards, which measured a tenth more than the header said. Every unit
+    // grows by that much, the processor's too, so a plan for one more of
+    // them can be made from it.
+    ModelFit fit;
+    fit.units.assign(10, kGb);
+    fit.resident = 10 * kGb;
+    std::vector<CardNeed> need(2);
+    need[0] = {3 * kGb + 3 * kGb / 10, 0, 300ULL << 20};
+    need[1] = {3 * kGb + 3 * kGb / 10, 0, 500ULL << 20};
+    const ModelFit calibrated = calibrated_fit(fit, {3, 3}, need, 0, 4);
+
+    CHECK_EQ(calibrated.units.size(), std::size_t{10});
+    for (const std::uint64_t unit : calibrated.units) {
+        CHECK(unit >= kGb + kGb / 10);
+        CHECK(unit <= kGb + kGb / 10 + 1);
+    }
+    CHECK_EQ(calibrated.output_extra, 200ULL << 20);
+    // Counts that stop short of the last unit describe no load llama.cpp
+    // makes, and change nothing.
+    CHECK_EQ(calibrated_fit(fit, {2, 3}, need, 0, 4).headroom, kCardHeadroom);
+    CHECK(calibrated_fit(fit, {2, 3}, need, 0, 4).units == fit.units);
+    // Nor do counts for more units than there are past the first.
+    CHECK(calibrated_fit(fit, {3, 3}, need, 0, 10).units == fit.units);
+}
+
+TEST(three_cards_with_uneven_buffers_take_a_layer_more_planned_from_a_dry_run) {
+    // flint on Matt's three cards, partly on the processor, as measured. 44
+    // layers fitted with 417, 759 and 282 MiB past the margins, and 45, as
+    // the header plans it, overfilled the last card by 439. The 759 on the
+    // middle card is a layer's room, since its buffers were 84 MiB where the
+    // header set 512 aside.
+    const std::vector<ComputeDevice> gpus   = matts_cards(9228, 15715, 9990);
+    const ModelFit                   header = flint_header();
+
+    const GpuPlan fortyfour = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(header, 44));
+    const std::vector<CardNeed> need = flint_dry_run(fortyfour.split, 44);
+    CHECK(holds(need, gpus));
+    CHECK(past_margins(need, gpus)[1] > 721.02);
+    const GpuPlan header_45 = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(header, 45));
+    CHECK(!holds(flint_dry_run(header_45.split, 45), gpus));
+
+    // Planned from that dry run, each card with its own buffers and held to
+    // the dry run's margins, 45 fit, with the 45th layer on the middle card.
+    const ModelFit measured = calibrated_fit(header, llama_cpp_assignment(fortyfour.split, 44), need,
+                                             256 * kMib, header.units.size() - 44);
+    const GpuPlan forty_five = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(measured, 45));
+    CHECK_EQ(forty_five.units.size(), std::size_t{3});
+    if (forty_five.units.size() != 3) {
+        return;
+    }
+    CHECK_EQ(forty_five.units[0] + forty_five.units[1] + forty_five.units[2], 45);
+    CHECK_EQ(forty_five.units[1], fortyfour.units[1] + 1);
+    const std::vector<int> placed = llama_cpp_assignment(forty_five.split, 45);
+    for (std::size_t card = 0; card < placed.size(); ++card) {
+        CHECK_EQ(placed[card], forty_five.units[card]);
+    }
+    CHECK(holds(flint_dry_run(forty_five.split, 45), gpus));
+
+    // And no further. 46 is past what the cards hold, and the plan for it
+    // overfills a card, so its dry run refuses it.
+    const GpuPlan forty_six = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(measured, 46));
+    CHECK(!holds(flint_dry_run(forty_six.split, 46), gpus));
+
+    // One figure for every card, the largest measured, as the calibration
+    // had before, does not find the 45th layer's room.
+    ModelFit one_figure       = measured;
+    one_figure.per_device.clear();
+    one_figure.output_extra   = 0;
+    const GpuPlan one_figure_45 = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(one_figure, 45));
+    CHECK(!holds(flint_dry_run(one_figure_45.split, 45), gpus));
+}
+
+TEST(the_desktop_card_gives_its_room_up_when_its_layers_do_not_fit_beside_it) {
+    // The load that got 43 of flint's layers rather than 44. The bytes of
+    // 44 fitted beside the desktop's room, so the plan kept it, and the
+    // last card took the part of a layer each card before it stopped short
+    // of. It was given 14 units where it held 13, and the dry run refused
+    // the count.
+    const std::vector<ComputeDevice> gpus   = matts_cards(9300, 15744, 10018);
+    const ModelFit                   header = flint_header();
+    const ModelFit                   part   = last_of(header, 44);
+
+    // Kept, the room leaves the desktop's card 10 layers and overfills the
+    // last card.
+    std::vector<ComputeDevice> roomy = gpus;
+    roomy[0].display     = false;
+    roomy[0].memory_free -= kDisplayRoom;
+    const GpuPlan kept = plan_gpu_split(GpuSplitMode::Priority, roomy, {}, 0, part);
+    CHECK_EQ(kept.units[0], 10);
+    CHECK(!holds(flint_dry_run(kept.split, 44), gpus));
+
+    // Given up, since the layers do not fit beside it, and the dry run of
+    // what is left agrees.
+    const GpuPlan given = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, part);
+    CHECK_EQ(given.units[0], 11);
+    CHECK_EQ(given.units[0] + given.units[1] + given.units[2], 44);
+    CHECK(holds(flint_dry_run(given.split, 44), gpus));
+
+    // Planned from the dry run's own figures, the room fits beside 44, and
+    // the dry run agrees. It is given up only for a layer more.
+    const ModelFit measured = calibrated_fit(header, llama_cpp_assignment(given.split, 44),
+                                             flint_dry_run(given.split, 44), 256 * kMib,
+                                             header.units.size() - 44);
+    const GpuPlan beside = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(measured, 44));
+    CHECK_EQ(beside.units[0], 10);
+    const std::vector<CardNeed> beside_need = flint_dry_run(beside.split, 44);
+    CHECK(holds(beside_need, gpus));
+    CHECK(past_margins(beside_need, gpus)[0] >= static_cast<double>(kDisplayRoom / kMib));
+    const GpuPlan more = plan_gpu_split(GpuSplitMode::Priority, gpus, {}, 0, last_of(measured, 45));
+    CHECK_EQ(more.units[0], 11);
+    CHECK(holds(flint_dry_run(more.split, 45), gpus));
+}
+
 TEST(the_priority_card_takes_the_most_layers) {
     // Equal cards, so the only thing that can decide which carries more is the
     // order the user put them in.

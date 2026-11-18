@@ -428,6 +428,11 @@ check_eq  "every install invocation is scoped" \
 # the runtimes outside the component; the path is passed at startup instead.
 check_not "GGML_BACKEND_DIR is not set" \
           grep -q "^ *set(GGML_BACKEND_DIR" "$HERE/../cmake/CrucibleDependencies.cmake"
+# llama.cpp's libraries are installed for their binaries alone. mtmd carries
+# a private header list too, and a rule with nowhere to put it warned at
+# every configure.
+check     "llama.cpp's header lists, public and private, are not installed" \
+          grep -qF 'PROPERTIES PUBLIC_HEADER "" PRIVATE_HEADER ""' "$HERE/../CMakeLists.txt"
 
 echo
 echo "  the bar stays on one row"
@@ -764,28 +769,34 @@ check     "the program can fetch it by itself" \
           grep -q '"--install-python"' "$HERE/../src/app/cli.cpp"
 
 echo
-echo "  a cook can change hands"
+echo "  a prompt can change hands"
 
 # The verb table specifically, not the instructions -- those name it too, so a
 # grep for the word alone would pass with the verb renamed out from under it.
 check     "HANDOFF is in the verb table" \
           grep -qE '"HANDOFF", +ToolKind::Handoff' "$HERE/../src/tools/workshop.cpp"
-# The loop is the orchestrator's now, in Python, and a handoff goes back
-# through the same route() a prompt does.
-check     "the cook loop re-routes on one" \
-          grep -q 'after = self.take_the_seat(work)' \
-          "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
+# The loop is the orchestrator's, in Python, and a handoff goes through the
+# same route() a prompt does.
+check     "the loop re-routes on one" \
+          grep -q 'taken = self.hand_off(' \
+          "$HERE/../scripts/orchestrator/crucible_orchestrator/chat.py"
 check     "and the delegator decides it, the same way it decides a prompt" \
-          grep -q 'return routing.route(core, {' \
-          "$HERE/../scripts/orchestrator/crucible_orchestrator/cook.py"
+          grep -q 'decision = routing.route(self.core, {' \
+          "$HERE/../scripts/orchestrator/crucible_orchestrator/chat.py"
 # The memory argument for the design: an expert is resident while something
-# holds it, and after that only until a load needs its room. A cook's seat
-# holds its model through the same door a chat turn does, and that door is
+# holds it, and after that only until a load needs its room. A turn holds its
+# expert's model through the one door every seat does, and that door is
 # where the lease and the swap are.
-check     "a cook takes its seat the way a chat turn does" \
-          grep -q 'hold_model(id, seat_params' "$HERE/../src/engine/engine_cook.cpp"
+check     "a turn takes its seat through the door every seat does" \
+          grep -q 'chat->held = hold_model(' "$HERE/../src/engine/engine_chat.cpp"
 check     "an expert is freed for the next when the next needs its room" \
           grep -q 'acquire_expert' "$HERE/../src/engine/engine.cpp"
+# There is no other mode to work in: a message is worked in one loop, not
+# decided into an answer or a build.
+check_not "nothing decides a message into a build" \
+          test -e "$HERE/../scripts/orchestrator/crucible_orchestrator/intent.py"
+check_not "and there is no build loop beside the chat's" \
+          test -e "$HERE/../scripts/orchestrator/crucible_orchestrator/build.py"
 
 echo
 echo "  no runtimes are installed (continued)"
@@ -1350,6 +1361,51 @@ check     "and the README says how to update" \
 # function: bumping CMakeLists without saying what changed fails here.
 check     "the changelog has an entry for the version being shipped" \
           grep -q "^## $VERSION" "$ROOT/CHANGELOG.md"
+
+echo "  a release's tag can be built"
+# Crucible's update hands an install built from source the one-line install
+# with --branch and the tag the check found: main can be ahead of the newest
+# release (a pre-release), or behind the newest pre-release somebody ticked
+# the box for. A fresh clone and an earlier one both have to take a tag.
+# A repository of three commits: v1.0.0-pre.4, then main, then v1.0.0-pre.5.
+tagged_git() {
+    git -c user.name=crucible -c user.email=tests@example.invalid -c commit.gpgsign=false \
+        -c tag.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+ORIGIN="$TMP/origin"
+mkdir -p "$ORIGIN"
+tagged_git -C "$ORIGIN" init -q
+tagged_git -C "$ORIGIN" checkout -q -b main
+tagged_git -C "$ORIGIN" commit -q --allow-empty -m "pre.4"
+tagged_git -C "$ORIGIN" tag -a v1.0.0-pre.4 -m "1.0.0-pre.4"
+pre4="$(git -C "$ORIGIN" rev-parse HEAD)"
+tagged_git -C "$ORIGIN" commit -q --allow-empty -m "after it"
+tip="$(git -C "$ORIGIN" rev-parse HEAD)"
+tagged_git -C "$ORIGIN" checkout -q -b later
+tagged_git -C "$ORIGIN" commit -q --allow-empty -m "pre.5"
+tagged_git -C "$ORIGIN" tag -a v1.0.0-pre.5 -m "1.0.0-pre.5"
+pre5="$(git -C "$ORIGIN" rev-parse HEAD)"
+tagged_git -C "$ORIGIN" checkout -q main
+# Three commits, or every comparison below is of nothing with nothing.
+three_commits() { [ ${#pre4} -ge 40 ] && [ ${#tip} -ge 40 ] && [ ${#pre5} -ge 40 ] && [ "$pre4" != "$tip" ]; }
+check     "the repository for it has its three commits" three_commits
+# file://, since a plain path is cloned whole and --depth ignored.
+( git_clone_with_progress "file://$ORIGIN" "$TMP/fresh" "v1.0.0-pre.4" ) >/dev/null 2>&1
+check_eq  "a fresh install clones the tag it is given" \
+          "$(git -C "$TMP/fresh" rev-parse HEAD 2>/dev/null)" "$pre4"
+git clone -q --depth 1 --branch main "file://$ORIGIN" "$TMP/earlier" >/dev/null 2>&1
+check_eq  "an earlier install starts on main" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$tip"
+check     "and is moved to an older release's tag" update_clone "$TMP/earlier" "v1.0.0-pre.4"
+check_eq  "which is what it then builds" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$pre4"
+check     "or to a newer one main has not reached" update_clone "$TMP/earlier" "v1.0.0-pre.5"
+check_eq  "the same way" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$pre5"
+check     "and back to main" update_clone "$TMP/earlier" "main"
+check_eq  "at main's newest" "$(git -C "$TMP/earlier" rev-parse HEAD 2>/dev/null)" "$tip"
+check_not "a tag that is not there fails rather than building what was" \
+          update_clone "$TMP/earlier" "v9.9.9"
+check     "install.sh takes --branch" grep -qF -- '--branch)    BRANCH=' "$ROOT/install.sh"
+check     "and install.ps1 -Branch, for the same clone and fetch" \
+          grep -qF -- "'--branch', \$Branch" "$ROOT/install.ps1"
 
 echo "  a runtime can arrive already built"
 # Compiling a backend on the machine that runs it is right and slow, and for

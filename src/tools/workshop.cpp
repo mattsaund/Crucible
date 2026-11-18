@@ -21,8 +21,8 @@
 //     model that means its text as a description will otherwise get a file
 //     named after it. See plausible_path.
 //   - attempted_tool_call spots the near-misses -- the right verb in the wrong
-//     shape -- so the cook loop can answer with the syntax instead of treating
-//     a malformed call as an answer.
+//     shape -- so the loop can answer with the syntax instead of treating a
+//     malformed call as an answer.
 //
 // The containment itself is resolve_in_root, and its order is the point:
 // weakly_canonical runs first, so a symlink is followed before anything is
@@ -149,8 +149,9 @@ std::string unquote(std::string_view text) {
 /// that means the text as a description, and obeying it would put the
 /// description into the file in place of the code.
 ///
-/// The cook loop notices the colon-less form of the strict verbs and replies
-/// with the syntax rather than guessing -- see engine_cook.cpp.
+/// The loop notices the colon-less form of the strict verbs and replies with
+/// the syntax rather than guessing -- see nudge_for in the orchestrator's
+/// steps.py.
 bool colon_optional(ToolKind kind) {
     return kind == ToolKind::List || kind == ToolKind::Read;
 }
@@ -303,26 +304,34 @@ std::string collect_body(const std::vector<std::string>& lines, std::size_t& ind
     };
 
     if (const Fence open = fence_of(lines[index]); open.length > 0) {
-        // A file is often written with fences of its own in it -- a README's
-        // ```bash -- and ending the body at the first fence line wrote half
-        // of it and said nothing. So a fence naming a language opens a block
-        // inside the body, a bare one closes the innermost, and the body ends
-        // at a bare fence of its own mark at least as long, with none open.
         ++index;  // the opening fence, and whatever language tag it carried
+        // Which fence ends the body. A fence naming a language opens a block
+        // inside it, and a bare one closes the innermost of those. A bare
+        // fence with none open is either the body's end or a block of its own
+        // opening, and the two read the same: a README that showed a haiku in
+        // a bare block was written up to where that block opened. So they are
+        // counted. They come in pairs, a block's opening and its closing, and
+        // an odd one out is the body's end. With none left over the body has
+        // no end of its own and runs to the end of the reply, as GPT OSS
+        // writes one, leaving its last fence off.
+        std::vector<std::size_t> loose;
         int inside = 0;
-        while (index < lines.size()) {
-            const Fence fence = fence_of(lines[index]);
-            if (fence.length > 0 && fence.mark == open.mark) {
-                if (!fence.bare) {
-                    ++inside;
-                } else if (inside > 0) {
-                    --inside;
-                } else if (fence.length >= open.length) {
-                    break;
-                }
+        for (std::size_t at = index; at < lines.size(); ++at) {
+            const Fence fence = fence_of(lines[at]);
+            if (fence.length == 0 || fence.mark != open.mark) {
+                continue;
             }
+            if (!fence.bare) {
+                ++inside;
+            } else if (inside > 0) {
+                --inside;
+            } else if (fence.length >= open.length) {
+                loose.push_back(at);
+            }
+        }
+        const std::size_t end = loose.size() % 2 == 1 ? loose.back() : lines.size();
+        for (; index < end; ++index) {
             append(lines[index]);
-            ++index;
         }
         if (index < lines.size()) {
             ++index;  // the closing fence
@@ -492,6 +501,22 @@ ToolResult failure(std::string message) {
     return result;
 }
 
+/// Why `path` cannot be used, and how to write it so it can when it was
+/// written from the top of the disk: "/index.html" is how a small model writes
+/// a file at the top of the project. Told only that it was outside the
+/// project, LFM2.5 said it had made the file anyway.
+std::string outside(const std::string& path) {
+    std::string said = path + " is outside the project";
+    if (!path.empty() && (path.front() == '/' || path.front() == '\\')) {
+        const std::size_t from = path.find_first_not_of("/\\");
+        if (from != std::string::npos) {
+            said += ". Paths are relative to the project: write " + path.substr(from) + ", not " + path;
+        }
+    }
+    return said;
+}
+
+
 /// Run `argv` in `cwd` and keep what it printed, with a deadline and a Stop
 /// (util::run). `timed_out` and `stopped` say which of the two ended it.
 struct Captured {
@@ -588,7 +613,7 @@ ToolResult do_list(const ToolCall& call, const WorkshopSettings& settings) {
     const std::optional<std::filesystem::path> dir =
         resolve_argument(settings.root, target, target);
     if (!dir) {
-        return failure(target + " is outside the project");
+        return failure(outside(target));
     }
 
     std::error_code ec;
@@ -728,7 +753,7 @@ ToolResult do_read(const ToolCall& call, const WorkshopSettings& settings) {
     const std::optional<std::filesystem::path> file =
         resolve_argument(settings.root, target, target);
     if (!file) {
-        return failure(target + " is outside the project");
+        return failure(outside(target));
     }
     std::error_code ec;
     if (std::filesystem::is_directory(*file, ec)) {
@@ -798,7 +823,7 @@ ToolResult do_write(const ToolCall& call, const WorkshopSettings& settings) {
     const std::optional<std::filesystem::path> file =
         resolve_in_root(settings.root, call.argument);
     if (!file) {
-        return failure(call.argument + " is outside the project");
+        return failure(outside(call.argument));
     }
     if (call.content.empty()) {
         // Refused rather than obeyed. A WRITE whose body did not parse looks
@@ -1066,7 +1091,7 @@ ToolResult do_render(const ToolCall& call, const WorkshopSettings& settings) {
     }
     const std::optional<std::filesystem::path> out = resolve_in_root(settings.root, to);
     if (!out) {
-        return failure(to + " is outside the project");
+        return failure(outside(to));
     }
     // A page of the project, or one on the web when the web is switched on.
     std::string page;
@@ -2759,7 +2784,7 @@ ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
     // Whatever a tool brought in -- a Latin-1 file, a listing of names that
     // are bytes, output cut at the size limit in the middle of a character --
     // leaves here as UTF-8, because it is about to be kept as JSON: in the
-    // session, in a cook's journal, and in what the window is sent.
+    // session, and in what the window is sent.
     ToolResult result = run_tool_as_is(call, settings, search, cancel);
     if (!call.unrun.empty()) {
         result.output += "\n\nOne call per reply: \"" + call.unrun + "\" after it was not run. "
@@ -2817,15 +2842,14 @@ ToolResult run_tool_as_is(const ToolCall& call, const WorkshopSettings& settings
         case ToolKind::None:
             break;
     }
-    // Ask, Done and Handoff are answers to the cook loop rather than actions,
-    // and it handles them before ever reaching here.
+    // Ask, Done and Handoff are answers to the loop rather than actions, and
+    // are never run.
     return failure("nothing to do");
 }
 
 }  // namespace
 
-std::string workshop_instructions(const WorkshopSettings& settings,
-                                  ToolAudience audience) {
+std::string workshop_instructions(const WorkshopSettings& settings) {
     if (!settings.enabled) {
         return {};
     }
@@ -2886,17 +2910,10 @@ std::string workshop_instructions(const WorkshopSettings& settings,
             }
         }
     }
-    text += "NOTE: <what you are doing>  recorded in the log, no other effect\n";
-    if (audience == ToolAudience::Cook) {
-        text +=
-            "ASK: <question>            ask the user something you cannot work out\n"
-            "DONE: <what you changed>   this piece of work is finished\n"
-            "HANDOFF: <the next work>   this piece is done and the next needs a "
-            "different\n"
-            "                           kind of expertise -- say what it is, in one "
-            "line,\n"
-            "                           and the right expert will be brought in\n";
-    }
+    text += "NOTE: <what you are doing>  recorded in the log, no other effect\n"
+            "HANDOFF: <the next step>   the next step needs another kind of expertise --\n"
+            "                           say what it is, in one line, and an expert for it\n"
+            "                           takes over from here\n";
     text +=
         "\nThe colon is required. One call per reply, on its own line, and nothing "
         "after it. Paths are relative to the project root and cannot leave it.\n";
@@ -2915,15 +2932,13 @@ std::string workshop_instructions(const WorkshopSettings& settings,
                     "was asked for is something to be made.\n";
         }
     }
-    if (audience == ToolAudience::Chat) {
-        // Said plainly, because the alternative failure is the visible one: an
-        // expert that has finished the work and then writes "DONE: fixed it",
-        // leaving the person who asked with a status line instead of an answer.
-        text +=
-            "\nWhen you have finished, write the answer for the person who asked --"
-            " no verb, no status line. If you need something from them, just ask it"
-            " in the reply.\n";
-    }
+    // Said plainly, because the alternative failure is the visible one: an
+    // expert that has finished the work and then writes "DONE: fixed it",
+    // leaving the person who asked with a status line instead of an answer.
+    text +=
+        "\nKeep going, one action a reply, until what was asked is done. When it is,"
+        " write the answer for the person who asked -- no verb, no status line. If"
+        " you need something from them, just ask it in the reply.\n";
     // A worked example, because the rules alone are not enough. Told only the
     // shape, models write `WRITE path "a description of the change"` and expect
     // that to be applied -- which would put the description into the file in

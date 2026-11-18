@@ -141,10 +141,6 @@ void write_expert_identity(json& entry, const Expert& expert) {
     entry["blurb"]    = expert.blurb;
     entry["examples"] = expert.examples;
     entry["keywords"] = expert.keywords;
-    // Only for a seat a build made. A person's seat has no line to say so.
-    if (!expert.origin.empty()) {
-        entry["origin"] = expert.origin;
-    }
 }
 
 /// Rebuild one seat from its entry. Returns false when there is not enough to
@@ -158,8 +154,10 @@ bool read_expert_identity(const json& entry, const ExpertId& id, Expert& expert,
     read_field(entry, "tag",      expert.tag,      id, warnings);
     read_field(entry, "blurb",    expert.blurb,    id, warnings);
     read_field(entry, "examples", expert.examples, id, warnings);
+    // An "origin" a seat may still carry, from when a build could make one
+    // for itself, is read by nothing: the seat is an expert like any other,
+    // and the next save drops the line.
     read_field(entry, "keywords", expert.keywords, id, warnings);
-    read_field(entry, "origin",   expert.origin,   id, warnings);
 
     if (expert.name.empty()) {
         expert.name = id;
@@ -319,24 +317,16 @@ json config_to_json(const Config& config) {
             {"search_results",  config.tools.search_results},
             {"search_timeout",  config.tools.search_timeout},
             {"search_rounds",   config.tools.search_rounds},
+            {"actions",         config.tools.actions},
             {"auto_edits",       config.tools.auto_edits},
             {"overflow",         config.tools.overflow},
             {"workshop_timeout", config.tools.workshop_timeout},
             {"computer_control", config.tools.computer_control},
             {"mcp",              mcp_json(config.tools.mcp)},
         }},
-        {"build", json{
-            {"architect",       config.build.architect},
-            {"worker_model",    config.build.worker_model},
-            {"worker_provider", config.build.worker_provider},
-            {"auto_commit",     config.build.auto_commit},
-            {"confirm_plan",    config.build.confirm_plan},
-            {"rounds_per_task", config.build.rounds_per_task},
-            {"agents",          config.build.agents},
-            {"split",           config.build.split},
-        }},
         {"ui", json{
             {"check_updates",  config.ui.check_updates},
+            {"prereleases",    config.ui.prereleases},
             {"source_dir",     config.ui.source_dir},
             {"font",           config.ui.font},
         }},
@@ -455,23 +445,15 @@ void write_default_config(const std::filesystem::path& file) {
             {"search_results",  defaults.tools.search_results},
             {"search_timeout",  defaults.tools.search_timeout},
             {"search_rounds",   defaults.tools.search_rounds},
+            {"actions",         defaults.tools.actions},
             {"auto_edits",       defaults.tools.auto_edits},
             {"overflow",         defaults.tools.overflow},
             {"workshop_timeout", defaults.tools.workshop_timeout},
             {"computer_control", defaults.tools.computer_control},
         }},
-        {"build", json{
-            {"architect",       defaults.build.architect},
-            {"worker_model",    defaults.build.worker_model},
-            {"worker_provider", defaults.build.worker_provider},
-            {"auto_commit",     defaults.build.auto_commit},
-            {"confirm_plan",    defaults.build.confirm_plan},
-            {"rounds_per_task", defaults.build.rounds_per_task},
-            {"agents",          defaults.build.agents},
-            {"split",           defaults.build.split},
-        }},
         {"ui", json{
             {"check_updates",  defaults.ui.check_updates},
+            {"prereleases",    defaults.ui.prereleases},
             {"source_dir",     defaults.ui.source_dir},
             {"font",           defaults.ui.font},
         }},
@@ -647,6 +629,7 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         read_field(*tools, "search_results",  config.tools.search_results,  "tools", warnings);
         read_field(*tools, "search_timeout",  config.tools.search_timeout,  "tools", warnings);
         read_field(*tools, "search_rounds",   config.tools.search_rounds,   "tools", warnings);
+        read_field(*tools, "actions",         config.tools.actions,         "tools", warnings);
         read_field(*tools, "auto_edits",       config.tools.auto_edits,       "tools", warnings);
         read_field(*tools, "overflow",         config.tools.overflow,         "tools", warnings);
         read_field(*tools, "workshop_timeout", config.tools.workshop_timeout, "tools", warnings);
@@ -656,26 +639,9 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
         }
     }
 
-    if (const auto build = doc.find("build"); build != doc.end() && build->is_object()) {
-        read_field(*build, "architect",       config.build.architect,       "build", warnings);
-        read_field(*build, "worker_model",    config.build.worker_model,    "build", warnings);
-        read_field(*build, "worker_provider", config.build.worker_provider, "build", warnings);
-        read_field(*build, "auto_commit",     config.build.auto_commit,     "build", warnings);
-        read_field(*build, "confirm_plan",    config.build.confirm_plan,    "build", warnings);
-        read_field(*build, "rounds_per_task", config.build.rounds_per_task, "build", warnings);
-        if (config.build.rounds_per_task < 4 || config.build.rounds_per_task > 400) {
-            warnings.emplace_back("build.rounds_per_task: " + std::to_string(config.build.rounds_per_task)
-                                  + " is outside 4..400 (keeping the default)");
-            config.build.rounds_per_task = BuildConfig{}.rounds_per_task;
-        }
-        read_field(*build, "split", config.build.split, "build", warnings);
-        read_field(*build, "agents", config.build.agents, "build", warnings);
-        if (config.build.agents < 1 || config.build.agents > 8) {
-            warnings.emplace_back("build.agents: " + std::to_string(config.build.agents)
-                                  + " is outside 1..8 (keeping the default)");
-            config.build.agents = BuildConfig{}.agents;
-        }
-    }
+    // A "build" section, from when a message could become a build with a
+    // plan and agents of its own, is read by nothing. It is passed over
+    // rather than warned about, and the next save drops it.
 
     // Keys an older file may still carry -- animation_ms, show_experts and
     // unicode from the terminal interface, show_reasoning from before each
@@ -683,6 +649,7 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
     // passed over rather than warned about, and the next save drops them.
     if (const auto ui = doc.find("ui"); ui != doc.end() && ui->is_object()) {
         read_field(*ui, "check_updates", config.ui.check_updates, "ui", warnings);
+        read_field(*ui, "prereleases", config.ui.prereleases, "ui", warnings);
         read_field(*ui, "source_dir", config.ui.source_dir, "ui", warnings);
         read_field(*ui, "font", config.ui.font, "ui", warnings);
     }

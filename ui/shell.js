@@ -118,11 +118,24 @@ function modelSelect(selected, provider, extra, localOnly) {
   }
   // A file the seat names that is not in the folder -- set before there was
   // one folder, or since moved. Still offered, so the dropdown shows what is
-  // configured rather than quietly showing "(none)".
+  // configured rather than quietly showing "(none)". Said to be missing only
+  // once the folder has been read.
   if (selected && !provider && !known.has(selected) && !moved) {
-    html += option(selected, `${fileName(selected)}  (not in the models folder)`);
+    html += option(selected, state.models ? `${fileName(selected)}  (not in the models folder)` : fileName(selected));
   }
+  // The same for a provider's model while the providers are still being
+  // read, or once its provider is gone, said by whose it is.
+  const listed = state.providers && state.providers.providers.some((p) => p.id === provider);
+  if (selected && provider && !listed) html += option(chosen, `${selected}  (${providerName(provider)})`);
   return `<select${attrs(extra)}>${html}</select>`;
+}
+
+/// What a provider is called on screen: as listed, else as the config has
+/// it, else by its id, for one the config no longer has.
+function providerName(id) {
+  const listed = (state.providers ? state.providers.providers : []).find((p) => p.id === id);
+  const saved = ((state.config && state.config.providers) || []).find((p) => p.id === id);
+  return (listed && listed.name) || (saved && saved.name) || id;
 }
 
 function splitModel(value) {
@@ -134,10 +147,9 @@ function splitModel(value) {
 // --- the bar across the top ------------------------------------------------------
 
 // History is not one of them: it is the right-hand panel's, under the chats
-// it goes back from. Nor is building: a message that asks for software
-// becomes a build in the chat (build.js).
+// it goes back from.
 const TABS = [
-  ['chat',    'Chat',    'Ask or build'],
+  ['chat',    'Chat',    'Ask anything'],
   ['create',  'Create',  'Fine-tune an expert'],
   ['models',  'Models',  'Download models'],
   ['bench',   'Bench',   'Benchmark models'],
@@ -244,7 +256,7 @@ function recentsView() {
                   ${busy ? 'disabled' : ''}>New chat</button></div>
         ${chats}
         <button class="action wide r-history" data-act="view" data-view="history"
-                title="Past builds and conversations" aria-current="${state.view === 'history'}">History</button>
+                title="Past conversations" aria-current="${state.view === 'history'}">History</button>
         <div class="r-head r-projects"><h2>PROJECTS</h2>
           <button class="action small" data-act="open-project"
                   ${busy ? 'disabled' : ''}>Open project</button></div>
@@ -295,8 +307,7 @@ function usageView() {
   if (asked.length) {
     const [now, ...earlier] = asked;
     const sent = (t) => (t.input || 0) + (t.cache_read || 0) + (t.cache_write || 0);
-    const live = (s.experts || []).some((e) => e.provider && e.model === now.model
-      && (e.id === s.linked || working(e.id)));
+    const live = (s.experts || []).some((e) => e.provider && e.model === now.model && e.id === s.linked);
     const cost = now.session.cost === undefined ? '<span class="u-num" title="Not on the price list">no price</span>'
       : `<span class="u-num" title="At list prices. This month: ${dollars(now.month.cost)}">${dollars(now.session.cost)}</span>`;
     const bars = (now.limits || []).map((l) => `<div class="u-row u-small"><span>${escape(l.what)}</span>
@@ -417,33 +428,11 @@ function seatTip(e) {
   const where = e.provider ? `${e.model}, answered by ${e.provider}`
               : e.model ? e.model + (e.phase === 'missing' ? '  (missing)' : '')
               : 'no model yet';
-  return `${e.blurb ? e.blurb + '\n' : ''}${where}${
-    e.made ? '\nMade by a build' : ''}`;
+  return `${e.blurb ? e.blurb + '\n' : ''}${where}`;
 }
 
-/// The task an expert has in the build that is running, when it has one --
-/// what the side menu lights the seat for, and where clicking it goes.
-function working(id) {
-  const cook = state.snapshot.cook;
-  if (!cook || !cook.running) return null;
-  return (cook.tasks || []).find((t) => t.expert === id && t.state === 'working') || null;
-}
-
-/// Click a seat: the work it is doing, when it is doing some -- the build's
-/// turn in the conversation, on that agent, with the file it touched last
-/// open -- and its settings when it is not.
-actions['seat-open'] = (button) => {
-  const id = button.dataset.expert;
-  const cook = state.snapshot.cook;
-  const tasks = cook ? (cook.tasks || []) : [];
-  const task = working(id) || (cook && cook.kind === 'build'
-    ? tasks.filter((t) => t.expert === id && t.state !== 'waiting').slice(-1)[0] : null);
-  if (task) {
-    openAgent(cook, task.index);
-    return;
-  }
-  enter('settings', 'experts');
-};
+/// Click a seat: its settings.
+actions['seat-open'] = () => enter('settings', 'experts');
 
 function sideView() {
   const s = state.snapshot;
@@ -467,19 +456,13 @@ function sideView() {
     // is loaded, which is the one thing worth a glance while it is folded.
     const dots = experts.map((e, i) =>
       `<button class="seat" data-act="seat-open" data-expert="${escape(e.id)}"
-               data-phase="${i === linked || working(e.id) ? 'active' : e.phase}" title="${escape(e.name)}">
+               data-phase="${i === linked ? 'active' : e.phase}" title="${escape(e.name)}">
          <span class="dot"></span></button>`).join('');
-    // And under them a dot for each agent at work, which opens its work.
-    const cook = state.snapshot.cook;
-    const busy = cook && cook.running ? (cook.tasks || []).filter((t) => t.state === 'working') : [];
-    const agentDots = busy.map((t) =>
-      `<button class="seat working-dot" data-act="agent-open" data-index="${t.index}" data-phase="active"
-               title="${escape(`${t.index + 1}. ${t.title}`)}"><span class="dot"></span></button>`).join('');
     return region('side', `<aside class="rail" id="side">
         <button class="seat" data-act="settings-page" data-page="general"
                 data-phase="${delegatorPhase}"
                 title="${escape(delegator.model || 'no delegator')}"><span class="dot"></span></button>
-        <div class="rail-gap"></div>${dots}${agentDots ? `<div class="rail-gap"></div>${agentDots}` : ''}
+        <div class="rail-gap"></div>${dots}
       </aside>`);
   }
 
@@ -489,26 +472,15 @@ function sideView() {
     const classes = ['seat'];
     if (linked >= 0 && i < linked) classes.push('on-trunk');
     if (i === linked) classes.push('elbow', 'linked');
-    const busy = working(e.id);
     return `<button class="${classes.join(' ')}" data-act="seat-open" data-expert="${escape(e.id)}"
-        data-phase="${(i === linked || busy) && e.phase !== 'loading' ? 'active' : e.phase}"
-        title="${escape(busy ? e.name + ' is on task ' + (busy.index + 1) + ': ' + busy.title
-                             : seatTip(e))}">
+        data-phase="${i === linked && e.phase !== 'loading' ? 'active' : e.phase}"
+        title="${escape(seatTip(e))}">
       <span class="dot"></span><span class="name">${escape(e.name)}</span>
       ${e.provider ? `<span class="cloud" title="Answered by ${escape(e.provider)}">${ICONS.cloud}</span>` : ''}
       ${e.phase === 'loading' ? ring(e.progress) : ''}
     </button>`;
   };
-  // Every seat on the roster, those a build made for work nobody fitted
-  // among them: they are experts like any other once they are made.
   const seats = experts.map(seatRow).join('') || '<div class="status">None yet.</div>';
-  // Under the experts, the agents of the build: the architect and one per
-  // task, each saying whose it is and how far it has got, and each opening
-  // its work. Here as well as in the build's turn, so what is at work is in
-  // sight from whichever view is open.
-  const build = state.snapshot.cook;
-  const agents = build ? `<h2 class="experts-head agents-head">AGENTS</h2>
-      ${agentRows(build, agentShown(build))}` : '';
 
   // What the program last said stays on the line until something else is:
   // an idle engine says nothing, which would otherwise wipe it the moment it
@@ -521,7 +493,7 @@ function sideView() {
   // dragged to four hundred pixels reads as the most important thing here.
   // A region (see region): drawn in every view, and seldom changed by a push.
   return region('side', `<aside id="side" style="width:${sidebarWidth()}rem">
-      <div class="side-status${state.error ? ' bad' : s.busy || atWork(s.cook) ? ' busy' : ''}" title="${escape(said || status)}">${
+      <div class="side-status${state.error ? ' bad' : s.busy ? ' busy' : ''}" title="${escape(said || status)}">${
         escape(status) || '&nbsp;'}</div>
       <div class="roster-scroll">
         <h2${linked >= 0 ? ' class="on-trunk-gap"' : ''}>DELEGATOR</h2>
@@ -536,7 +508,6 @@ function sideView() {
         </button>
         <h2 class="experts-head${linked >= 0 ? ' on-trunk' : ''}">EXPERTS</h2>${seats}
         <button class="action wide" data-act="settings-page" data-page="experts">Manage experts</button>
-        ${agents}
       </div>
       <div class="roster-foot">
         <button class="action" data-act="eject" ${loaded ? '' : 'disabled'}
@@ -764,8 +735,8 @@ function keepTurns(turns) {
 }
 
 window.crucibleSnapshot = (snapshot) => {
-  // The large parts the window left out as the same as last time: a build's
-  // journal, an edit waiting (api::PageParts). The page keeps the ones it has.
+  // The large parts the window left out as the same as last time: an edit
+  // waiting, a benchmark run (api::PageParts). The page keeps the ones it has.
   for (const key of snapshot.same || []) {
     if (state.snapshot && state.snapshot[key] !== undefined) snapshot[key] = state.snapshot[key];
   }

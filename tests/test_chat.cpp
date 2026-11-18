@@ -237,7 +237,7 @@ public:
 
         engine_ = std::make_unique<Engine>(config, state_, [this] { woken(); });
         if (with_project) {
-            engine_->set_project(project_, dir_.path() / "history");
+            engine_->set_project(project_);
         }
         engine_->start();
     }
@@ -400,14 +400,16 @@ TEST(a_turn_with_nothing_to_look_up_is_one_round) {
     CHECK_EQ(requests.at(0)["model"].get<std::string>(), std::string("programming-model"));
     CHECK_EQ(messages.size(), std::size_t{2});
     // The configured prompt first, then how replies are drawn, then the
-    // tools a trusted folder offers -- and nothing that only a cook is told.
+    // tools a trusted folder offers: worked until done, with a way to hand
+    // the next step to another expert, and no status line to end on.
     const std::string system = text_of(messages.front());
     CHECK_EQ(messages.front()["role"].get<std::string>(), std::string("system"));
     CHECK(system.rfind(kSystem, 0) == 0);
     CHECK(has(system, "Replies are shown as Markdown. Write math as LaTeX"));
     CHECK(has(system, "You can act on the project, not only describe it."));
-    CHECK(has(system, "When you have finished, write the answer for the person who asked"));
-    CHECK(!has(system, "HANDOFF:"));
+    CHECK(has(system, "Keep going, one action a reply, until what was asked is done."));
+    CHECK(has(system, "HANDOFF: <the next step>"));
+    CHECK(!has(system, "DONE: <what you changed>"));
     CHECK(!has(system, "You can look things up on the internet."));
     CHECK_EQ(text_of(messages.back()), std::string("What is the capital of France?"));
 
@@ -485,8 +487,9 @@ TEST(a_turn_reads_a_file_and_answers_from_what_it_read) {
                                     "read notes.txt", "Programming is answering", ""}));
 }
 
-TEST(a_turn_is_not_run_the_same_call_twice_and_answers_with_no_tools_offered) {
-    Rig rig(script({reply("READ: notes.txt"), reply("READ: notes.txt"), reply("Done.")}));
+TEST(a_turn_is_not_run_the_same_call_again_and_a_second_time_answers_with_no_tools_offered) {
+    Rig rig(script({reply("READ: notes.txt"), reply("READ: notes.txt"), reply("READ: notes.txt"),
+                    reply("Done.")}));
     if (!rig.ready()) {
         skipped();
         return;
@@ -496,16 +499,16 @@ TEST(a_turn_is_not_run_the_same_call_twice_and_answers_with_no_tools_offered) {
     CHECK_EQ(turn.actions.size(), std::size_t{1});
     CHECK_EQ(turn.reply, std::string("Done."));
     const std::vector<json> requests = rig.requests();
-    CHECK_EQ(requests.size(), std::size_t{3});
+    CHECK_EQ(requests.size(), std::size_t{4});
+    // Told once that nothing has changed, and it keeps its tools.
     const json& third = requests.at(2)["messages"];
-    CHECK_EQ(text_of(third.back()),
-             std::string("You already did exactly that this turn, and its result is above. You have no "
-                         "tools left, so answer the question now from what you have, and say plainly if "
-                         "it is not enough."));
-    // The rounds before it were told of the tools, and it is not.
-    CHECK(has(text_of(requests.at(1)["messages"].front()), "You can act on the project"));
-    CHECK(!has(text_of(third.front()), "You can act on the project"));
-    CHECK(has(text_of(third.front()), kSystem));
+    CHECK(has(text_of(third.back()), "You already did exactly that, and its result is above"));
+    CHECK(has(text_of(third.front()), "You can act on the project"));
+    // A second time, it answers with none.
+    const json& fourth = requests.at(3)["messages"];
+    CHECK(has(text_of(fourth.back()), "You keep making calls you have already made"));
+    CHECK(!has(text_of(fourth.front()), "You can act on the project"));
+    CHECK(has(text_of(fourth.front()), kSystem));
 }
 
 TEST(a_turn_asks_before_it_writes_and_a_no_leaves_the_file_alone) {
@@ -576,7 +579,7 @@ TEST(a_turn_writes_when_the_person_says_yes) {
 TEST(a_turn_writes_without_asking_when_auto_is_on_and_an_edit_that_cannot_apply_is_not_asked) {
     Rig rig(script({reply("WRITE: out.txt\n```\nhello\n```"),
                     reply("EDIT: out.txt\n<<<<<<< SEARCH\nnot in it\n=======\nbye\n>>>>>>> REPLACE"),
-                    reply("Done.")}),
+                    reply("Done."), reply("It says hello. The edit did not apply.")}),
             [](Config& config) { config.tools.auto_edits = true; });
     if (!rig.ready()) {
         skipped();
@@ -588,12 +591,14 @@ TEST(a_turn_writes_without_asking_when_auto_is_on_and_an_edit_that_cannot_apply_
     CHECK(!asked);
     CHECK_EQ(read_file(rig.project() / "out.txt"), std::string("hello\n"));
     CHECK_EQ(turn.actions.size(), std::size_t{2});
-    CHECK_EQ(turn.reply, std::string("Done."));
+    // An answer straight after the edit that failed is asked once to face it.
+    CHECK(has(text_of(rig.requests().at(3)["messages"].back()), "That last action failed"));
+    CHECK_EQ(turn.reply, std::string("It says hello. The edit did not apply."));
 }
 
 TEST(an_edit_that_would_not_apply_is_run_rather_than_asked_about) {
     Rig rig(script({reply("EDIT: notes.txt\n<<<<<<< SEARCH\nnot in it\n=======\nbye\n>>>>>>> REPLACE"),
-                    reply("Could not.")}));
+                    reply("Could not."), reply("The line was not in notes.txt, so nothing changed.")}));
     if (!rig.ready()) {
         skipped();
         return;
@@ -605,66 +610,91 @@ TEST(an_edit_that_would_not_apply_is_run_rather_than_asked_about) {
     CHECK(!asked);
     CHECK_EQ(read_file(rig.project() / "notes.txt"), std::string("one line\n"));
     CHECK_EQ(turn.actions.size(), std::size_t{1});
-    CHECK_EQ(turn.reply, std::string("Could not."));
+    CHECK_EQ(turn.reply, std::string("The line was not in notes.txt, so nothing changed."));
 }
 
-TEST(a_turn_out_of_rounds_answers_from_what_it_has_with_no_tools_offered) {
-    // Twelve different reads, one a round: the most a turn may take. The
-    // twelfth is not run, and the round after it answers.
+TEST(a_turn_out_of_actions_answers_from_what_it_has_with_no_tools_offered) {
+    // Four different reads with "Actions per prompt" at three: the fourth is
+    // not run, and the round after it answers.
     json replies = json::array();
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < 4; ++i) {
         replies.push_back(reply("READ: f" + std::to_string(i) + ".txt"));
     }
     replies.push_back(reply("William Shakespeare."));
-    Rig rig(json{{"replies", replies}});
+    Rig rig(json{{"replies", replies}}, [](Config& config) { config.tools.actions = 3; });
     if (!rig.ready()) {
         skipped();
         return;
     }
     const Turn turn = rig.ask("Who wrote Hamlet?");
-    CHECK_EQ(turn.actions.size(), std::size_t{11});
+    CHECK_EQ(turn.actions.size(), std::size_t{3});
     CHECK_EQ(turn.reply, std::string("William Shakespeare."));
     CHECK(!turn.failed);
 
     const std::vector<json> requests = rig.requests();
-    CHECK_EQ(requests.size(), std::size_t{13});
-    const std::string last = "That was the last action available this turn. Write the answer now from what you have.";
-    CHECK(!has(text_of(requests.at(10)["messages"].back()), last));
-    CHECK(has(text_of(requests.at(11)["messages"].back()), last));
-    const json& answering = requests.at(12)["messages"];
-    CHECK_EQ(text_of(answering[answering.size() - 2]), std::string("READ: f11.txt"));
-    CHECK(has(text_of(answering.back()), "That was not run. You have no tools left this turn"));
-    CHECK(has(text_of(requests.at(11)["messages"].front()), "You can act on the project"));
+    CHECK_EQ(requests.size(), std::size_t{5});
+    const std::string last = "That was the last action this request may take.";
+    CHECK(!has(text_of(requests.at(2)["messages"].back()), last));
+    CHECK(has(text_of(requests.at(3)["messages"].back()), last));
+    const json& answering = requests.at(4)["messages"];
+    CHECK_EQ(text_of(answering[answering.size() - 2]), std::string("READ: f3.txt"));
+    CHECK(has(text_of(answering.back()), "That was not run: this request has used all the actions"));
+    CHECK(has(text_of(requests.at(3)["messages"].front()), "You can act on the project"));
     CHECK(!has(text_of(answering.front()), "You can act on the project"));
 
     // The history keeps the answer.
     rig.ask("Thanks.");
-    const json next = rig.requests().at(13)["messages"];
+    const json next = rig.requests().at(5)["messages"];
     CHECK_EQ(next.size(), std::size_t{4});
     CHECK_EQ(text_of(next[2]), std::string("William Shakespeare."));
 }
 
-TEST(a_turn_that_calls_even_with_no_tools_offered_says_so_and_remembers_what_the_expert_said) {
+TEST(a_turn_works_past_a_dozen_actions_until_it_answers) {
+    // Twenty reads in one prompt, where a turn once stopped at twelve.
     json replies = json::array();
-    for (int i = 0; i < 13; ++i) {
+    for (int i = 0; i < 20; ++i) {
         replies.push_back(reply("READ: f" + std::to_string(i) + ".txt"));
     }
+    replies.push_back(reply("Twenty files, and none of them is Hamlet."));
     Rig rig(json{{"replies", replies}});
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    for (int i = 0; i < 20; ++i) {
+        write_file(rig.project() / ("f" + std::to_string(i) + ".txt"), "line " + std::to_string(i) + "\n");
+    }
+    const Turn turn = rig.ask("Read them all.");
+    CHECK_EQ(turn.actions.size(), std::size_t{20});
+    CHECK_EQ(turn.reply, std::string("Twenty files, and none of them is Hamlet."));
+    CHECK(!turn.failed);
+    // The account carries what scrolled out of the window.
+    const std::vector<json> requests = rig.requests();
+    CHECK(has(text_of(requests.back()["messages"].front()), "What has been done for this request so far"));
+}
+
+TEST(a_turn_that_calls_even_with_no_tools_offered_says_so_and_remembers_what_the_expert_said) {
+    json replies = json::array();
+    for (int i = 0; i < 4; ++i) {
+        replies.push_back(reply("READ: f" + std::to_string(i) + ".txt"));
+    }
+    Rig rig(json{{"replies", replies}}, [](Config& config) { config.tools.actions = 2; });
     if (!rig.ready()) {
         skipped();
         return;
     }
     const Turn turn = rig.ask("Read everything.");
     // A call left where the answer goes is never shown as the answer.
-    CHECK_EQ(turn.reply, std::string("(ran out of turns before finishing. Ask again to carry on)"));
+    CHECK_EQ(turn.reply, std::string("(used all the actions this request may take. Ask again to carry "
+                                     "on, or raise \"Actions per prompt\" in Settings, Tools)"));
     CHECK(!turn.failed);
-    CHECK_EQ(rig.requests().size(), std::size_t{13});
+    CHECK_EQ(rig.requests().size(), std::size_t{4});
 
     // The history keeps what the expert said, not what was said about it.
     rig.ask("Well?");
-    const json next = rig.requests().at(13)["messages"];
+    const json next = rig.requests().at(4)["messages"];
     CHECK_EQ(next.size(), std::size_t{4});
-    CHECK_EQ(text_of(next[2]), std::string("READ: f12.txt"));
+    CHECK_EQ(text_of(next[2]), std::string("READ: f3.txt"));
 }
 
 TEST(a_turn_without_a_project_has_no_tools_and_one_round) {
@@ -675,7 +705,7 @@ TEST(a_turn_without_a_project_has_no_tools_and_one_round) {
     }
     const Turn turn = rig.ask("Read notes.txt.");
     CHECK(turn.actions.empty());
-    CHECK_EQ(turn.reply, std::string("(ran out of turns before finishing. Ask again to carry on)"));
+    CHECK_EQ(turn.reply, std::string("(reached for the project with no folder open. Open one to let it work there)"));
     const std::vector<json> requests = rig.requests();
     CHECK_EQ(requests.size(), std::size_t{1});
     CHECK(!has(text_of(requests.at(0)["messages"].front()), "You can act on the project"));
@@ -737,8 +767,9 @@ TEST(a_turn_searches_and_is_told_when_it_asks_for_the_same_search_again) {
              std::string("You have already searched for \"capital of France\" and been given the "
                          "results above.\n\nThis was the last search available. Answer now from what "
                          "you have, and say plainly if it is not enough."));
-    // Asked for twice, the answer is asked for with no tools offered.
-    CHECK(!has(text_of(requests.at(2)["messages"].front()), "You can look things up on the internet."));
+    // Asked for twice, it is told so, and with a folder open it still has
+    // its other tools to carry on with.
+    CHECK(has(text_of(requests.at(2)["messages"].front()), "You can act on the project"));
     CHECK(in_order(rig.statuses(), {"searching for \"capital of France\"",
                                     "already searched for \"capital of France\""}));
 }
@@ -767,7 +798,7 @@ TEST(a_turn_that_keeps_searching_is_asked_to_answer_and_says_why_when_it_will_no
     CHECK(has(text_of(requests.at(2)["messages"].back()), "This was the last search available."));
     CHECK(!has(text_of(requests.at(1)["messages"].back()), "This was the last search available."));
     CHECK(has(text_of(requests.at(2)["messages"].front()), "You can look things up on the internet."));
-    CHECK(has(text_of(requests.at(3)["messages"].back()), "That was not run."));
+    CHECK(has(text_of(requests.at(3)["messages"].back()), "There are no searches left for this request."));
     CHECK(!has(text_of(requests.at(3)["messages"].front()), "You can look things up on the internet."));
 }
 
@@ -1150,7 +1181,6 @@ TEST(an_mlx_delegator_routes_the_turn_from_a_helper_of_its_own) {
         return;
     }
     const Turn turn = rig.ask("How do I write a python loop?");
-    CHECK(turn.build.empty());
     CHECK_EQ(turn.reply, std::string("A loop repeats a block."));
     CHECK(turn.route && turn.route->expert == "writing");
     CHECK(turn.route && turn.route->source == RouteSource::Model);
@@ -1242,147 +1272,5 @@ TEST(a_conversation_too_long_for_the_context_is_trimmed_or_refused_as_set) {
         CHECK(has(turn.reply, " of 128000 tokens. Raise \"Context\" in Settings, Generation, or start a new chat."));
         CHECK_EQ(rig.snapshot().status, std::string("context full"));
         CHECK(rig.requests().empty());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// A message that becomes a build
-
-namespace {
-
-/// Wait for the build a message became to end, a minute at most.
-bool built(Rig& rig) {
-    const auto started = std::chrono::steady_clock::now();
-    while (rig.engine().cooking() && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return !rig.engine().cooking();
-}
-
-/// A plan of one task: a page.
-json page_plan() {
-    return json{{"summary", "A todo page."}, {"run", ""}, {"check", ""}, {"ship", ""},
-                {"tasks", json::array({json{{"title", "Write the page"},
-                                            {"detail", "index.html with a list and an add box."},
-                                            {"files", json::array({"index.html"})},
-                                            {"needs", "web page"},
-                                            {"after", json::array()}}})}};
-}
-
-void quick_builds(Config& config) {
-    config.build.confirm_plan = false;
-    config.build.auto_commit  = false;
-    config.build.agents       = 1;
-    config.tools.auto_edits   = true;
-}
-
-}  // namespace
-
-TEST(a_message_asking_for_software_becomes_a_build_and_the_conversation_remembers_what_it_left) {
-    // No delegator here, so the words decide (intent.py): "make me a todo
-    // app" is software to make. The rounds: the plan, the page, its DONE, the
-    // architect's write-up, and then the question after it.
-    Rig rig(script({reply(page_plan().dump()), reply("WRITE: index.html\n```html\n<h1>Todo</h1>\n```"),
-                    reply("DONE: wrote the page"), reply("A todo page, in index.html."),
-                    reply("It is a todo page.")}),
-            quick_builds);
-    if (!rig.ready()) {
-        skipped();
-        return;
-    }
-    const Turn asked = rig.ask("Make me a todo app.");
-    CHECK(!asked.build.empty());
-    CHECK(!asked.failed);
-    CHECK(!asked.route.has_value());   // a build is nobody's to answer
-    CHECK(built(rig));
-
-    // The turn is the build's, and holds what it left.
-    const Snapshot after = rig.snapshot();
-    CHECK(after.cook != nullptr && after.cook->id == asked.build);
-    CHECK_EQ(after.turns.size(), std::size_t{1});
-    if (after.turns.size() == 1) {
-        CHECK_EQ(after.turns[0].build, asked.build);
-        CHECK_EQ(after.turns[0].reply, std::string("A todo page, in index.html.\n\nFiles changed: index.html"));
-    }
-    CHECK(has(read_file(rig.project() / "index.html"), "<h1>Todo</h1>"));
-
-    // The message after it is a question, answered knowing what was built.
-    const Turn next = rig.ask("What did you make?");
-    CHECK(next.build.empty());
-    CHECK_EQ(next.reply, std::string("It is a todo page."));
-    const json messages = rig.requests().back()["messages"];
-    CHECK_EQ(messages.size(), std::size_t{4});
-    if (messages.size() == 4) {
-        CHECK_EQ(text_of(messages[1]), std::string("Make me a todo app."));
-        CHECK(has(text_of(messages[2]), "Files changed: index.html"));
-        CHECK_EQ(text_of(messages[3]), std::string("What did you make?"));
-    }
-}
-
-TEST(a_message_sent_to_be_answered_is_answered_whatever_it_asks_for) {
-    // Create's Test window: a model under test is asked questions, and
-    // "make me a todo app" there is one, not a build.
-    Rig rig(script({reply("Here is a todo app in one file.")}), quick_builds);
-    if (!rig.ready()) {
-        skipped();
-        return;
-    }
-    const std::size_t before = rig.snapshot().turns.size();
-    rig.engine().submit("Make me a todo app.", ExpertId("programming"), {}, /*answer_only=*/true);
-    const auto started = std::chrono::steady_clock::now();
-    while ((rig.snapshot().turns.size() == before || rig.snapshot().turns.back().streaming
-            || rig.engine().is_busy())
-           && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    const Snapshot after = rig.snapshot();
-    CHECK(!rig.engine().cooking());
-    CHECK_EQ(after.turns.size(), before + 1);
-    if (after.turns.size() == before + 1) {
-        CHECK(after.turns.back().build.empty());
-        CHECK_EQ(after.turns.back().reply, std::string("Here is a todo app in one file."));
-    }
-    CHECK(after.cook == nullptr);
-}
-
-TEST(a_message_beside_a_running_build_is_answered_and_not_built) {
-    // Two tasks, so the plan is put to the person and the build waits on the
-    // answer: still running when the next message comes.
-    json plan = page_plan();
-    plan["tasks"].push_back(json{{"title", "Style it"}, {"detail", "Calm colors in style.css."},
-                                 {"files", json::array({"style.css"})}, {"needs", "web page"},
-                                 {"after", json::array()}});
-    Rig rig(script({reply(plan.dump()), reply("Beside it.")}), [](Config& config) {
-        quick_builds(config);
-        config.build.confirm_plan = true;
-    });
-    if (!rig.ready()) {
-        skipped();
-        return;
-    }
-    const Turn asked = rig.ask("Build a todo app.");
-    CHECK(!asked.build.empty());
-    const auto waiting = std::chrono::steady_clock::now();
-    while ((rig.snapshot().cook == nullptr || rig.snapshot().cook->state != CookState::Asking)
-           && std::chrono::steady_clock::now() - waiting < std::chrono::seconds(30)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    CHECK(rig.snapshot().cook != nullptr && rig.snapshot().cook->state == CookState::Asking);
-
-    // Software asked for again while one builds: one build at a time, so it
-    // is answered beside it.
-    const Turn beside = rig.ask("Make me another app.");
-    CHECK(beside.build.empty());
-    CHECK_EQ(beside.reply, std::string("Beside it."));
-
-    // Stopped, the build's turn says so, and nothing else is in its reply.
-    rig.engine().cancel_cook();
-    CHECK(built(rig));
-    const Snapshot after = rig.snapshot();
-    CHECK_EQ(after.turns.size(), std::size_t{2});
-    if (after.turns.size() == 2) {
-        CHECK_EQ(after.turns[0].build, asked.build);
-        CHECK(after.turns[0].reply.rfind("The build stopped. ", 0) == 0);
-        CHECK(!has(after.turns[0].reply, "Files changed"));
     }
 }

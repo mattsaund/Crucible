@@ -7,7 +7,7 @@ project(crucible
 # A pre-release says so after the numbers ("-pre.1"). Crucible's update check
 # ranks it below the release with the same numbers, and the installers
 # workflow makes a tag with a dash a GitHub pre-release. Empty for a release.
-set(CRUCIBLE_VERSION_SUFFIX "-pre.4")
+set(CRUCIBLE_VERSION_SUFFIX "")
 set(CRUCIBLE_VERSION "${PROJECT_VERSION}${CRUCIBLE_VERSION_SUFFIX}")
 
 # ---------------------------------------------------------------------------
@@ -155,9 +155,6 @@ add_library(crucible_core STATIC
     src/session/usage.cpp
     src/session/store.cpp
 
-    # cook: the long-running improvement loop and the record it keeps
-    src/cook/journal.cpp
-
     # lab: making a model rather than running one -- what a custom model is
     # made of, and browsing the hub for the pieces
     src/lab/recipe.cpp
@@ -209,7 +206,6 @@ add_library(crucible_core STATIC
     src/engine/overflow.cpp
     src/engine/state.cpp
     src/engine/engine.cpp
-    src/engine/engine_cook.cpp
     src/engine/engine_chat.cpp
     src/engine/engine_bench.cpp
     src/engine/engine_serve.cpp
@@ -455,7 +451,6 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_routing.cpp
         tests/test_tools.cpp
-        tests/test_cook.cpp
         tests/test_config.cpp
         tests/test_devices.cpp
         tests/test_runtime.cpp
@@ -664,7 +659,10 @@ if(CRUCIBLE_BACKEND_DL)
             # These targets carry a PUBLIC_HEADER list for people who install
             # llama.cpp as a library. Crucible only wants the binary, so clear
             # it rather than scatter llama.cpp's headers through the prefix.
-            set_target_properties(${_lib} PROPERTIES PUBLIC_HEADER "")
+            # mtmd also has a PRIVATE_HEADER (its debug header), which a rule
+            # without a place for it warns about at every configure. Cleared
+            # for the same reason.
+            set_target_properties(${_lib} PROPERTIES PUBLIC_HEADER "" PRIVATE_HEADER "")
             # COMPONENT is repeated per artifact kind on purpose. Everything
             # after LIBRARY/RUNTIME applies to that kind alone, so a single
             # trailing COMPONENT would attach to RUNTIME and leave the LIBRARY

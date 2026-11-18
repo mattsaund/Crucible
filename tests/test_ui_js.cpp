@@ -177,7 +177,7 @@ function clearTimeout() {}
 )JS";
 
 /// A state with something of everything in it: a project, seats in every
-/// phase, a turn of every kind, a cook that is running, an edit waiting.
+/// phase, a turn of every kind, an edit waiting.
 const char* const kBusyState = R"JS(
 state.config = {
   models_dir: '/models', system_prompt: 'Be exact.', reasoning_effort: 'medium',
@@ -229,15 +229,6 @@ state.snapshot = {
       tokens_per_second: 0, prompt_tokens: 0, output_tokens: 0, load_ms: 0 },
   ],
   pending_edit: { path: 'src/calc.py', before: 'a = 1\n', after: 'a = 2\n' },
-  cook: { running: true, id: 'c1', goal: 'make the tests pass', state: 'asking',
-          question: 'Which test runner?', outcome: '', headline: '', iterations: 3, started: 1,
-          ended: 0, seconds: 754, experts: ['physics', 'math'], files: ['src/calc.py'],
-          total: 3, shown_from: 1,
-          steps: [{ iteration: 1, expert: 'physics', kind: 'read', summary: 'read src/calc.py', ok: true, ms: 4 },
-                  { iteration: 2, expert: 'math', kind: 'write', summary: 'wrote src/calc.py', ok: true, ms: 9,
-                    detail: '-a = 1\n+a = 2', changed: ['src/calc.py'] },
-                  { iteration: 3, expert: 'math', kind: 'run', summary: 'pytest failed', ok: false, ms: 900,
-                    detail: 'E assert 1 == 2' }] },
 };
 state.models = { directory: '/models', models: [
   { name: 'physics.gguf', path: '/models/physics.gguf', bytes: 1200000000 },
@@ -276,8 +267,7 @@ state.about = { version: '0.0.0', update: { latest: '9.9.9', available: true, pa
                 files: { config: '/c/config.json', data: '/d', models: '/models', runtimes: '/d/runtimes',
                          projects: '/d/projects', log: '/d/crucible.log' },
                 trusted: ['/home/me/work/demo'] };
-state.history = { sessions: [{ id: 's1', title: 'why is the sky blue', when: 'today', turns: 2 }],
-                  cooks: [{ id: 'c0', goal: 'tidy up', state: 'done', when: 'yesterday', files: 2, steps: 14, seconds: 3700 }] };
+state.history = { sessions: [{ id: 's1', title: 'why is the sky blue', when: 'today', turns: 2 }] };
 var aRecipe = function (stage, more) {
   return Object.assign({ id: 'kitchen-' + stage, name: 'Kitchen ' + stage, purpose: 'kitchen physics',
     base: { source: 'hub', id: 'unsloth/Llama-3.2-1B', label: 'Llama-3.2-1B' },
@@ -451,10 +441,12 @@ TEST(the_page_loads_with_no_browser_under_it) {
     for (const char* view : {"chat", "create", "history", "settings"}) {
         CHECK_EQ(page().eval(std::string("typeof views.") + view), "function");
     }
-    // Cook was folded into Build, and Build into Chat: there is no view for
-    // either, and a cook's journal is drawn by what draws a build's.
+    // Every prompt is worked in one loop, in Chat: there is no view for a
+    // cook or a build, and nothing draws one.
     CHECK_EQ(page().eval("typeof views.cook"), "undefined");
     CHECK_EQ(page().eval("typeof views.build"), "undefined");
+    CHECK_EQ(page().eval("typeof buildTurnView"), "undefined");
+    CHECK_EQ(page().eval("typeof cookBody"), "undefined");
 }
 
 TEST(every_view_draws_before_anything_has_been_fetched) {
@@ -640,7 +632,7 @@ TEST(every_view_draws_a_session_with_everything_in_it) {
         CHECK_EQ(drawn(std::string("(state.chatPane = '") + pane + "', views.chat())"), "ok");
     }
     for (const char* settings_page : {"general", "experts", "providers", "generation", "hardware",
-                                      "runtimes", "training", "tools", "build", "about"}) {
+                                      "runtimes", "training", "tools", "about"}) {
         const std::string result = drawn(std::string("(state.settingsPage = '") + settings_page
                                          + "', views.settings())");
         CHECK_EQ(result, "ok");
@@ -654,7 +646,7 @@ TEST(every_view_draws_a_session_with_everything_in_it) {
                                          + "', views.create())");
         CHECK_EQ(result, "ok");
     }
-    CHECK_EQ(drawn("(state.open.cook = state.snapshot.cook, views.history())"), "ok");
+    CHECK_EQ(drawn("views.history()"), "ok");
 }
 
 TEST(the_top_bar_says_which_folder_the_chat_works_in) {
@@ -676,7 +668,7 @@ TEST(the_top_bar_says_which_folder_the_chat_works_in) {
     CHECK(top.find("9.9.9 is available") != std::string::npos);
     CHECK(top.find("update-link") != std::string::npos);
     // Four tabs, in order, and no Build among them: a message asking for
-    // software becomes a build in the chat.
+    // software is worked in the chat like any other.
     const std::string tabs = page().eval(
         "Array.from(topView().matchAll(/data-act=\"view\" data-view=\"([a-z]+)\"/g)).map(m => m[1]).join(',')");
     CHECK_EQ(tabs, std::string("chat,create,models,bench"));
@@ -708,6 +700,57 @@ TEST(a_newer_version_is_one_button_away_where_it_can_be_installed) {
         " return out; })()");
     CHECK(going.find("Downloading 1.0 MB of 4.0 MB") != std::string::npos);
     CHECK(going.find("data-act=\"update-install\" disabled") != std::string::npos);
+}
+
+TEST(the_pre_releases_box_sits_by_the_version_check_and_asks_again_when_ticked) {
+    // Beside "Check for new versions", off as the configuration has it.
+    const std::string about = page().eval("(state.settingsPage = 'about', views.settings())");
+    const std::size_t check = about.find("Check for new versions");
+    const std::size_t box   = about.find("data-path=\"ui.prereleases\"");
+    CHECK(check != std::string::npos);
+    CHECK(box != std::string::npos && box > check);
+    CHECK(about.find("data-change=\"update-channel\"") != std::string::npos);
+    CHECK(about.find("> Pre-releases</label>") != std::string::npos);
+    CHECK(about.find("data-change=\"update-channel\" checked") == std::string::npos);
+    CHECK_EQ(drawn("(state.settingsPage = 'about', views.settings())"), "ok");
+
+    // Ticked: saved, and asked again at once, since what the last check found
+    // was the newest release and not the newest of everything.
+    const auto tick = [](bool checks, bool on) {
+        page().eval(R"JS(
+          (function (checks, on) {
+            window.__calls = [];
+            window.__kept = { call: call, render: render, config: state.config, about: state.about };
+            render = function () {};
+            call = function (method, params) {
+              window.__calls.push([method, params]);
+              if (method === 'config') {
+                return Promise.resolve(Object.assign({}, window.__kept.config,
+                                                     { ui: { check_updates: checks, prereleases: on } }));
+              }
+              if (method === 'about') return Promise.resolve(window.__kept.about);
+              return Promise.resolve({});
+            };
+            actions['update-channel']({ type: 'checkbox', checked: on, dataset: { path: 'ui.prereleases' },
+                                        getAttribute: function () { return null; } });
+          }))JS" + std::string("(") + (checks ? "true" : "false") + ", " + (on ? "true" : "false") + ")");
+        // Read in an evaluation of its own: the calls after the first are
+        // made as the promises before them settle, once the one above ends.
+        return page().eval("window.__calls.map(function (c) { return c[0]; }).join(',') + ' '"
+                           " + JSON.stringify(window.__calls[0][1])");
+    };
+    const auto restore = [] {
+        page().eval("(function (k) { call = k.call; render = k.render; state.config = k.config; state.about = k.about; })"
+                    "(window.__kept)");
+    };
+    CHECK_EQ(tick(true, true), std::string(R"(config.set,config,update.check,about {"ui":{"prereleases":true}})"));
+    // Drawn ticked once the configuration says so.
+    CHECK(page().eval("views.settings()").find("data-change=\"update-channel\" checked") != std::string::npos);
+    restore();
+    // Checking turned off: nothing is asked of GitHub, and the page is read
+    // again, which knows the last answer is no longer this box's.
+    CHECK_EQ(tick(false, false), std::string(R"(config.set,config,about {"ui":{"prereleases":false}})"));
+    restore();
 }
 
 TEST(an_unlabeled_block_is_colored_in_the_language_its_code_is_in) {
@@ -742,7 +785,7 @@ TEST(an_unlabeled_block_is_colored_in_the_language_its_code_is_in) {
 
 TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
     const std::string drawn = page().eval(
-        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
+        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [],"
         " setup: {running: true, items: ["
         "  {id: 'python', label: 'Python 3.14.9', state: 'done', detail: '', download: 76270309},"
         "  {id: 'runtime-cuda', label: 'CUDA runtime', state: 'working', detail: 'downloading',"
@@ -759,7 +802,7 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
 
     // Stopped halfway: it stays up, says so, and carries on when asked.
     const std::string stopped = page().eval(
-        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
+        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [],"
         " setup: {running: false, items: ["
         "  {id: 'python', label: 'Python 3.14.9', state: 'stopped', detail: '', download: 76270309},"
         "  {id: 'trainer', label: 'Training environment (cuda)', state: 'waiting', detail: '',"
@@ -771,7 +814,7 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
     CHECK(page().eval("typeof actions['setup-stop']") == "function");
 
     const std::string failed = page().eval(
-        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [], cook: null,"
+        "(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was, {turns: [],"
         " setup: {running: false, items: ["
         "  {id: 'python', label: 'Python 3.14.9', state: 'failed',"
         "   detail: 'Python could not be downloaded: no route to host', download: 1}]}});"
@@ -781,7 +824,7 @@ TEST(what_crucible_is_fetching_is_shown_above_the_empty_chat) {
 
     // Finished, it says nothing.
     CHECK(page().eval("(() => { const was = state.snapshot; state.snapshot = Object.assign({}, was,"
-                      " {turns: [], cook: null, setup: {running: false, items: [{id: 'python', label: 'P',"
+                      " {turns: [], setup: {running: false, items: [{id: 'python', label: 'P',"
                       " state: 'done'}]}}); const out = views.chat(); state.snapshot = was;"
                       " return out; })()").find("Getting Crucible ready") == std::string::npos);
 }
@@ -841,7 +884,7 @@ TEST(hardware_has_no_output_card_choice_and_tools_no_edit_checkbox) {
               .find("holds the output") == std::string::npos);
     CHECK(page().eval("(state.settingsPage = 'tools', views.settings())")
               .find("Apply edits without asking") == std::string::npos);
-    // And the box has its Auto button on every pane, a build's included.
+    // And the box has its Auto button on every pane.
     for (const char* pane : {"chat", "code", "source", "preview"}) {
         CHECK(page().eval(std::string("(state.chatPane = '") + pane + "', views.chat())")
                   .find("data-act=\"auto-edits\"") != std::string::npos);
@@ -850,10 +893,8 @@ TEST(hardware_has_no_output_card_choice_and_tools_no_edit_checkbox) {
 }
 
 TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
-    // With the build out of the way: asking, it has the box for its answer.
     const char* const with_tiles =
-        "(function () { var cook = state.snapshot.cook; state.snapshot.cook = null;"
-        " state.attached.chat = ["
+        "(function () { state.attached.chat = ["
         "  { path: '/p/Resume.docx', name: 'Resume.docx', kind: 'document', label: 'DOCX', bytes: 5000 },"
         "  { path: '/p/sky.png', name: 'sky.png', kind: 'image', label: 'PNG',"
         "    thumb: 'data:image/jpeg;base64,AAAA', image: { mime: 'image/png', data: 'AAAA' } },"
@@ -862,7 +903,7 @@ TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
         "  { path: '/p/x.bin', name: 'x.bin', kind: 'file', label: 'BIN', error: 'not text' },"
         "  { path: '/p/late.md', name: 'late.md', kind: 'file', label: 'MD', loading: true }];"
         " state.menu = 'attach:chat';"
-        " var out = views.chat(); state.snapshot.cook = cook; return out; })()";
+        " return views.chat(); })()";
     CHECK_EQ(drawn(with_tiles), "ok");
     const std::string chat = page().eval(with_tiles);
     // The plus, open, with its two items.
@@ -894,65 +935,44 @@ TEST(the_box_draws_what_is_attached_as_tiles_under_a_plus_and_its_menu) {
              "[{\"path\":\"/p/Resume.docx\"},{\"path\":\"/p/sky.png\",\"image\":{\"mime\":\"image/png\",\"data\":\"AAAA\"}}]");
     page().eval("(state.attached.chat = [], state.menu = null)");
 
-    // One box, and one set of tiles: while a build asks, the box is for the
-    // answer, and what was attached waits for the next message unshown.
-    const std::string answering = page().eval(
+    // One box, and one set of tiles: what is attached shows in it and goes
+    // with the next message, whatever that asks for.
+    const std::string with_one = page().eval(
         "(function () { state.attached.chat = [{ path: '/p/a.md', name: 'a.md', kind: 'file', label: 'MD' }];"
         " var out = views.chat(); state.attached.chat = []; return out; })()");
-    CHECK(answering.find("class=\"tiles\"") == std::string::npos);
-    CHECK(answering.find("placeholder=\"answer the question above\"") != std::string::npos);
+    CHECK(with_one.find(">MD<") != std::string::npos);
+    CHECK(with_one.find("placeholder=\"Ask anything\"") != std::string::npos);
     CHECK_EQ(page().eval("JSON.stringify(Object.keys(state.attached))"), std::string("[\"chat\"]"));
     CHECK_EQ(page().eval("JSON.stringify(Object.keys(state.drafts))"), std::string("[\"chat\"]"));
 }
 
-TEST(a_sent_prompt_and_a_build_show_what_was_attached) {
+TEST(a_sent_prompt_shows_what_was_attached) {
     const std::string chat = page().eval(
         "(function () { var t = state.snapshot.turns[0]; t.attachments = ["
         " { path: '/p/a.pdf', name: 'a <b>.pdf', label: 'PDF', kind: 'document' }];"
         " turnCache.clear(); var out = views.chat(); delete t.attachments; turnCache.clear(); return out; })()");
     CHECK(chat.find("class=\"attached\"") != std::string::npos);
     CHECK(chat.find("a &lt;b&gt;.pdf") != std::string::npos);
-    // A message that became a build shows its attachments over the build.
-    const std::string built = page().eval(
-        "(function () { var turns = state.snapshot.turns; state.snapshot.turns = [{ prompt: 'make it from this',"
-        " reply: '', build: 'c1', streaming: false, failed: false, canceled: false, rev: 9,"
-        " attachments: [{ path: '/p/src', name: 'src', label: 'FOLDER', kind: 'folder' }] }];"
-        " var out = views.chat(); state.snapshot.turns = turns; return out; })()");
-    CHECK(built.find(">FOLDER<") != std::string::npos);
-    CHECK(built.find("make it from this") != std::string::npos);
 }
 
 TEST(the_drop_overlay_says_where_a_drop_goes_or_why_it_cannot) {
-    // The busy state has a build running and asking: the box is for its
-    // answer then, and a drop is refused, from whichever view. Working
-    // without asking, the box takes a drop whatever the build is doing.
+    // The box takes a drop from whichever view, whatever a turn is doing.
     const char* const on =
         "(function (view, what) { var was = state.view; state.view = view; var out = what();"
         " state.view = was; return out; })";
-    CHECK_EQ(page().eval(std::string(on) + "('chat', function () { return dropTarget().why; })"),
-             "Answer the build's question first");
-    CHECK(page().eval(std::string(on) + "('chat', function () { return dropView(dropTarget()); })")
-              .find("Answer the build&#39;s question first") != std::string::npos);
-    CHECK_EQ(page().eval(std::string(on)
-                         + "('chat', function () { var s = state.snapshot.cook.state;"
-                           " state.snapshot.cook.state = 'working'; var mode = dropTarget().mode;"
-                           " state.snapshot.cook.state = s; return mode; })"),
-             "chat");
-    const char* const without_cook =
-        "(function (what) { var cook = state.snapshot.cook, view = state.view;"
-        " state.snapshot.cook = null; var out = what();"
-        " state.snapshot.cook = cook; state.view = view; return out; })";
-    CHECK_EQ(page().eval(std::string(without_cook)
-                         + "(function () { state.view = 'chat'; return dropTarget().mode; })"),
-             "chat");
-    const std::string from_history = page().eval(
-        std::string(without_cook) + "(function () { state.view = 'history'; return dropView(dropTarget()); })");
+    CHECK_EQ(page().eval(std::string(on) + "('chat', function () { return dropTarget().mode; })"), "chat");
+    const std::string from_history =
+        page().eval(std::string(on) + "('history', function () { return dropView(dropTarget()); })");
     CHECK(from_history.find("Drop files or folders here") != std::string::npos);
     CHECK(from_history.find("They go in the box on Chat") != std::string::npos);
+    // A dialog is closed first.
+    CHECK_EQ(page().eval("(function () { var m = state.modal; state.modal = { kind: 'confirm' };"
+                         " var why = dropTarget().why; state.modal = m; return why; })()"),
+             "Close the dialog first");
     // With no project open a drop is still taken: what it attaches goes with
     // a prompt, and the prompt goes in the Scratchpad.
-    CHECK_EQ(page().eval(std::string(without_cook)
-                         + "(function () { var open = state.snapshot.project.open;"
+    CHECK_EQ(page().eval(std::string(on)
+                         + "('chat', function () { var open = state.snapshot.project.open;"
                            " state.snapshot.project.open = false; var mode = dropTarget().mode;"
                            " state.snapshot.project.open = open; return mode; })"),
              "chat");
@@ -1037,9 +1057,9 @@ TEST(a_picture_pasted_into_the_box_is_attached_and_text_is_left_to_paste) {
       (function () {
         window.__calls = [];
         window.__keptCall = call; window.__keptRender = render;
-        window.__keptView = state.view; window.__keptCook = state.snapshot.cook;
+        window.__keptView = state.view;
         render = function () {};
-        state.view = 'chat'; state.modal = null; state.snapshot.cook = null; state.error = '';
+        state.view = 'chat'; state.modal = null; state.error = '';
         if (typeof btoa === 'undefined') {
           window.btoa = function (text) {
             var a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = '';
@@ -1121,7 +1141,7 @@ TEST(a_picture_pasted_into_the_box_is_attached_and_text_is_left_to_paste) {
     CHECK_EQ(page().eval("String(state.attached.chat.length)"), "4");
 
     page().eval("(call = window.__keptCall, render = window.__keptRender, state.view = window.__keptView,"
-                " state.snapshot.cook = window.__keptCook, state.modal = null, state.error = '',"
+                " state.modal = null, state.error = '',"
                 " state.attached.chat = [])");
 }
 
@@ -1135,9 +1155,9 @@ TEST(files_copied_in_a_file_manager_paste_as_the_files_where_the_window_says_whi
       (function () {
         window.__calls = [];
         window.__keptCall = call; window.__keptRender = render;
-        window.__keptView = state.view; window.__keptCook = state.snapshot.cook;
+        window.__keptView = state.view;
         render = function () {};
-        state.view = 'chat'; state.modal = null; state.snapshot.cook = null; state.error = '';
+        state.view = 'chat'; state.modal = null; state.error = '';
         call = function (method, params) {
           window.__calls.push([method, params]);
           if (method === 'attach.inspect') {
@@ -1212,18 +1232,18 @@ TEST(files_copied_in_a_file_manager_paste_as_the_files_where_the_window_says_whi
     CHECK_EQ(page().eval("String(__pasteText('/home/me/a b.txt'))"), "false");
 
     page().eval("(call = window.__keptCall, render = window.__keptRender, state.view = window.__keptView,"
-                " state.snapshot.cook = window.__keptCook, state.modal = null, state.error = '',"
+                " state.modal = null, state.error = '',"
                 " state.attached.chat = [])");
 }
 
 TEST(the_empty_chat_suggests_what_fits_where_it_is) {
     const char* const empty =
-        "(function (project) { var cook = state.snapshot.cook, was = state.snapshot.project,"
+        "(function (project) { var was = state.snapshot.project,"
         " runtimes = state.runtimes, turns = state.snapshot.turns;"
-        " state.snapshot.cook = null; state.snapshot.project = project; state.snapshot.turns = [];"
+        " state.snapshot.project = project; state.snapshot.turns = [];"
         " state.runtimes = { loadable: true, runtimes: [{ installed: true }] };"
         " var out = views.chat();"
-        " state.snapshot.cook = cook; state.snapshot.project = was; state.runtimes = runtimes;"
+        " state.snapshot.project = was; state.runtimes = runtimes;"
         " state.snapshot.turns = turns; return out; })";
     // A project open: something to ask about it.
     const std::string project =
@@ -1279,19 +1299,20 @@ TEST(the_line_beside_an_expert_says_how_it_was_routed_only_when_unusual) {
 
 TEST(with_no_project_the_box_is_open_and_nothing_is_said_about_it) {
     const std::string chat = page().eval(
-        "(function () { var cook = state.snapshot.cook, project = state.snapshot.project,"
+        "(function () { var project = state.snapshot.project,"
         " runtimes = state.runtimes, turns = state.snapshot.turns;"
-        " state.snapshot.cook = null; state.snapshot.project = { open: false }; state.snapshot.turns = [];"
+        " state.snapshot.project = { open: false }; state.snapshot.turns = [];"
         " state.runtimes = { loadable: true, runtimes: [{ installed: true }] };"
         " var out = views.chat();"
-        " state.snapshot.cook = cook; state.snapshot.project = project; state.runtimes = runtimes;"
+        " state.snapshot.project = project; state.runtimes = runtimes;"
         " state.snapshot.turns = turns; return out; })()");
     CHECK(chat.find("Ask anything") != std::string::npos);
     CHECK(chat.find("This chat gets a scratch folder") == std::string::npos);
-    CHECK(chat.find("placeholder=\"Ask or build anything\"") != std::string::npos);
+    CHECK(chat.find("placeholder=\"Ask anything\"") != std::string::npos);
     CHECK(chat.find("id=\"prompt\" data-draft data-sized data-key=\"composer-key\" data-input=\"composer-grow\"") != std::string::npos);
     CHECK(chat.find("open a project to start") == std::string::npos);
-    // Somewhere to start, a build among it: the box builds as well as answers.
+    // Somewhere to start, a small app among it: the box makes software as
+    // well as answers questions.
     CHECK(chat.find(">Build a small web app<") != std::string::npos);
     // No folder yet, so nothing beside the conversation either.
     CHECK(chat.find("class=\"pane-nav\"") == std::string::npos);
@@ -1458,6 +1479,38 @@ TEST(an_mlx_model_is_offered_to_an_expert_and_to_the_delegator_where_mlx_runs) {
     CHECK(routing_here.find("cannot run here") != std::string::npos);
 }
 
+TEST(a_seat_on_a_providers_model_shows_it_before_the_providers_are_read) {
+    // Settings opens before its read of the providers lands, and a provider
+    // can be gone from the list a seat was given from. The seat's menu still
+    // shows its model, by whose it is, rather than "(none)".
+    const char* const with =
+        "(function (providers, names) { var p = state.providers, c = state.config.providers;"
+        " state.providers = providers; state.config.providers = names;"
+        " var out = modelSelect('claude-opus-5-5', 'anthropic', { 'aria-label': 'Model' });"
+        " state.providers = p; state.config.providers = c; return out; })";
+    const std::string saved = "[{ id: 'anthropic', name: 'Anthropic', kind: 'anthropic' }]";
+    for (const std::string& providers : {std::string("null"), std::string("{ providers: [], known: [] }")}) {
+        CHECK_EQ(drawn(std::string(with) + "(" + providers + ", " + saved + ")"), "ok");
+        const std::string unread = page().eval(std::string(with) + "(" + providers + ", " + saved + ")");
+        CHECK(unread.find("<option value=\"anthropic|claude-opus-5-5\" selected>claude-opus-5-5  (Anthropic)</option>")
+              != std::string::npos);
+    }
+    // A provider the config has no name for is called by its id.
+    CHECK(page().eval(std::string(with) + "(null, [])").find(">claude-opus-5-5  (anthropic)</option>")
+          != std::string::npos);
+    // Listed, it is offered once, under its provider.
+    const std::string listed = page().eval(
+        std::string(with) + "({ providers: [{ id: 'anthropic', name: 'Anthropic', models: ['claude-opus-5-5'],"
+                            " on_your_network: false }], known: [] }, " + saved + ")");
+    int offered = 0;
+    for (std::size_t at = listed.find("value=\"anthropic|claude-opus-5-5\""); at != std::string::npos;
+         at = listed.find("value=\"anthropic|claude-opus-5-5\"", at + 1)) {
+        ++offered;
+    }
+    CHECK_EQ(offered, 1);
+    CHECK(listed.find("claude-opus-5-5  (Anthropic)") == std::string::npos);
+}
+
 namespace {
 
 /// Settings' General page with the calls it makes kept in window.__calls and
@@ -1574,6 +1627,34 @@ TEST(a_weaker_delegator_is_offered_a_better_one_the_cards_hold) {
     page().eval("state.models.models.push({ name: 'unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',"
                 " path: '/m/q.gguf', bytes: 2.5e9, format: 'gguf' }); seatWantedDelegator()");
     CHECK_EQ(seated(), R"(["unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])");
+    delegator_page_restored();
+
+    // Fetched in another quantization than the one offered, it is seated all
+    // the same.
+    CHECK_EQ(delegator_page(std::string("[") + lfm + "]", "LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-F16.gguf",
+                            "[12e9, 16e9, 12e9]"),
+             "set");
+    page().eval("actions['delegator-get']()");
+    CHECK_EQ(page().eval("market().selected"), "unsloth/Qwen3-4B-Instruct-2507-GGUF");
+    page().eval("state.models.models.push({ name: 'unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q8_0.gguf',"
+                " path: '/m/q8.gguf', bytes: 4.3e9, format: 'gguf' }); seatWantedDelegator()");
+    CHECK_EQ(seated(), R"(["unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q8_0.gguf"])");
+    delegator_page_restored();
+
+    // One the folder holds already, from anybody's upload, is seated at once
+    // and nothing is fetched. Not an MLX copy beside it, since what the list
+    // offers is a GGUF.
+    const char* const mlx = "{ name: 'mlx-community/Qwen3-4B-Instruct-2507-4bit', path: '/m/mlx', bytes: 2.3e9, format: 'mlx' }";
+    const char* const bartowski = "{ name: 'bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',"
+                                  " path: '/m/b.gguf', bytes: 2.5e9, format: 'gguf' }";
+    CHECK_EQ(delegator_page(std::string("[") + lfm + ", " + mlx + ", " + bartowski + "]",
+                            "LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-F16.gguf", "[12e9, 16e9, 12e9]"),
+             "set");
+    CHECK(offered());
+    page().eval("actions['delegator-get']()");
+    CHECK_EQ(seated(), R"(["bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])");
+    CHECK(page().eval("state.view") != "models");
+    CHECK_EQ(page().eval("market().selected"), "");
     delegator_page_restored();
 
     // Not when the cards are too small for it (a quarter of them at most),
@@ -1724,6 +1805,12 @@ TEST(a_model_moved_into_a_subfolder_is_shown_as_itself_not_as_missing) {
     CHECK(moved.find("value=\"Huggingface/GGUF/gpt-oss-20b.gguf\" selected") != std::string::npos);
     CHECK(moved.find("not in the models folder") == std::string::npos);
     CHECK(gone.find("not in the models folder") != std::string::npos);
+    // Before the folder has been read, nothing is said to be missing from it.
+    const std::string unread = page().eval(
+        "(function () { var m = state.models; state.models = null;"
+        "  var out = modelSelect('gone.gguf', '', {}); state.models = m; return out; })()");
+    CHECK(unread.find("value=\"gone.gguf\" selected>gone.gguf</option>") != std::string::npos);
+    CHECK(unread.find("not in the models folder") == std::string::npos);
 }
 
 TEST(a_load_that_does_not_say_how_far_along_it_is_turns_rather_than_counts) {
@@ -1735,10 +1822,10 @@ TEST(a_load_that_does_not_say_how_far_along_it_is_turns_rather_than_counts) {
 
 TEST(the_box_has_who_answers_how_hard_it_thinks_auto_and_an_arrow) {
     const char* const open_box =
-        "(function (menu) { var cook = state.snapshot.cook, busy = state.snapshot.busy, m = state.menu;"
-        " state.snapshot.cook = null; state.snapshot.busy = false; state.menu = menu;"
+        "(function (menu) { var busy = state.snapshot.busy, m = state.menu;"
+        " state.snapshot.busy = false; state.menu = menu;"
         " state.snapshot.reasoning_effort = 'high';"
-        " var out = views.chat(); state.snapshot.cook = cook; state.snapshot.busy = busy; state.menu = m;"
+        " var out = views.chat(); state.snapshot.busy = busy; state.menu = m;"
         " return out; })";
     const std::string shut = page().eval(std::string(open_box) + "(null)");
     CHECK(shut.find("data-act=\"route-menu\"") != std::string::npos);
@@ -2355,42 +2442,13 @@ TEST(a_file_too_large_to_diff_says_so_instead_of_hanging) {
                     "Array(3000).fill('y').join('\\n'))[0].kind"), "note");
 }
 
-// --- a build -------------------------------------------------------------
+// --- the panes ------------------------------------------------------------
 //
-// A message that became a build: a plan, an agent per task, drawn in the
-// conversation where the reply would be, the agents down one side and the
-// chosen one's work on the other; and the code, source and preview panes
-// beside the conversation. Set up last, over the busy state, and put back
-// afterwards so that nothing above sees it.
+// The code, source and preview panes beside the conversation, with a project
+// open: a tree, a file, what git says, a page with an element picked. Set up
+// over the busy state.
 
-const char* const kBuildState = R"JS(
-window.__cookWas = state.snapshot.cook;
-if (!window.__turnsWas) window.__turnsWas = state.snapshot.turns;
-state.snapshot.turns = window.__turnsWas.concat([{ prompt: 'a todo CLI in Python', reply: '', build: 'b1',
-  rev: 41, streaming: false, failed: false, canceled: false, tokens_per_second: 0, prompt_tokens: 0,
-  output_tokens: 0, load_ms: 0 }]);
-state.snapshot.cook = {
-  running: true, id: 'b1', kind: 'build', goal: 'a todo CLI in Python', state: 'working', question: '',
-  outcome: '', headline: '', iterations: 2, started: 1, ended: 0, seconds: 340, experts: ['physics'],
-  files: ['todo.py'], total: 4, shown_from: 0,
-  plan: { summary: 'A **Python** CLI.', run: 'python todo.py', check: 'pytest -q', ship: 'make dist' },
-  tasks: [
-    { index: 0, title: 'Write todo.py', detail: 'adds and lists', needs: 'Python back end', files: ['todo.py'],
-      after: [], expert: 'physics', state: 'done', outcome: 'wrote it', started: 1, ended: 2 },
-    { index: 1, title: 'Tests', detail: 'pytest', needs: 'testing', files: ['test_todo.py'], after: [0],
-      expert: 'math', state: 'working', outcome: '', started: 2, ended: 0 },
-    { index: 2, title: 'README', detail: 'how to run it', needs: 'technical writing', files: [], after: [0, 1],
-      expert: '', state: 'waiting', outcome: '', started: 0, ended: 0 },
-  ],
-  steps: [
-    { iteration: 1, task: -1, expert: 'claude', kind: 'plan', summary: 'planned 3 tasks', ok: true, ms: 4, detail: '{}' },
-    { iteration: 1, task: 0, expert: 'physics', kind: 'write', summary: 'created todo.py', ok: true, ms: 9,
-      detail: '@@ line 1 @@\n+print(1)', changed: ['todo.py'] },
-    { iteration: 1, task: 0, expert: 'physics', kind: 'screenshot', summary: 'took a screenshot', ok: true, ms: 9,
-      picture: '/tmp/shot.png' },
-    { iteration: 2, task: 1, expert: 'math', kind: 'run', summary: 'pytest failed', ok: false, ms: 900, detail: 'E' },
-  ],
-};
+const char* const kPaneState = R"JS(
 state.tree = { root: '~/demo', cut: false, entries: [
   { path: 'src', name: 'src', dir: true, depth: 0, bytes: 0 },
   { path: 'src/todo.py', name: 'todo.py', dir: false, depth: 1, bytes: 120 } ] };
@@ -2408,95 +2466,23 @@ state.processes = [{ name: 'p1', command: 'npm run dev', running: true, status: 
 'ok';
 )JS";
 
-TEST(a_message_that_became_a_build_is_drawn_as_the_build_where_its_reply_would_be) {
-    CHECK_EQ(page().eval(kBuildState), "ok");
-    CHECK_EQ(drawn("(state.chatPane = 'chat', state.open.task = null, state.open.taskOf = '', views.chat())"), "ok");
-    // The side menu folded: then the turn lists the agents itself.
+TEST(a_turn_from_before_that_became_a_build_is_drawn_as_what_it_left) {
+    // A conversation from when a message could become a build: its turn is
+    // the message and what the build left, drawn as any turn is.
     const std::string chat = page().eval(
-        "(function () { var w = state.sidebar; state.sidebar = 0; var out = views.chat(); state.sidebar = w;"
-        " return out; })()");
-    // The message, then the build: how far it is, and one row per task after
-    // the architect's, each saying who has it.
-    const std::size_t said = chat.find("<div class=\"said\">a todo CLI in Python</div>");
-    CHECK(said != std::string::npos);
-    CHECK(chat.find("◆ build", said) != std::string::npos);
-    CHECK(chat.find("1 of 3 tasks done", said) != std::string::npos);
-    CHECK(chat.find("1. Write todo.py", said) != std::string::npos);
-    CHECK(chat.find("3. README", said) != std::string::npos);
-    CHECK(chat.find("Architect", said) != std::string::npos);
-    CHECK(chat.find("id=\"build-b1\"") != std::string::npos);
-    // The working task is the one opened when none was chosen, and its
-    // steps are the ones shown: the failed run, not the first task's write.
-    CHECK(chat.find("TASK 2") != std::string::npos);
-    CHECK(chat.find("pytest failed") != std::string::npos);
-    CHECK(chat.find("created todo.py") == std::string::npos);
-    // The first task, chosen, shows its file as something to open, and its
-    // screenshot as a picture to look at.
-    const std::string first = page().eval("(state.open.task = 0, state.open.taskOf = 'b1', views.chat())");
-    CHECK(first.find("data-act=\"file-open\" data-path=\"todo.py\"") != std::string::npos);
-    CHECK(first.find("data-act=\"picture-open\"") != std::string::npos);
-    // The architect's row shows the plan with the commands it named.
-    const std::string plan = page().eval("(state.open.task = -1, views.chat())");
-    CHECK(plan.find("THE PLAN") != std::string::npos);
-    CHECK(plan.find("pytest -q") != std::string::npos);
-    // A choice is of one build's task: another build's turn goes on showing
-    // whichever of its own is at work.
-    CHECK(page().eval("(state.open.taskOf = 'another', views.chat())").find("TASK 2") != std::string::npos);
-    page().eval("state.open.task = null; state.open.taskOf = ''");
-    // Its two stops, in the box whichever pane is up, and Stop now on the
-    // turn: the first finishes cleanly, the second is the build's own Stop,
-    // not the chat's. The box is not shut by it: it takes a message.
-    CHECK(chat.find("data-act=\"cook-stop\"") != std::string::npos);
-    CHECK(chat.find("data-act=\"build-cancel\"") != std::string::npos);
-    for (const char* pane : {"code", "source", "preview"}) {
-        const std::string other = page().eval(std::string("(state.chatPane = '") + pane + "', views.chat())");
-        CHECK(other.find("Stop and finish") != std::string::npos);
-        CHECK(other.find("data-act=\"build-cancel\"") != std::string::npos);
-    }
-    page().eval("state.chatPane = 'chat'");
-    CHECK(chat.find("id=\"prompt\" data-draft") != std::string::npos);
-    CHECK(chat.find("placeholder=\"Ask or build anything\"") != std::string::npos);
-    CHECK(chat.find("<textarea id=\"prompt\" data-draft data-sized") != std::string::npos);
-    // Asking: the question in its turn, and the box is for the answer.
-    const std::string asking = page().eval(
-        "(function () { var c = state.snapshot.cook; c.state = 'asking'; c.question = 'Which runner?';"
-        " var out = views.chat(); c.state = 'working'; c.question = ''; return out; })()");
-    CHECK(asking.find("IT IS ASKING") != std::string::npos);
-    CHECK(asking.find("Which runner?") != std::string::npos);
-    CHECK(asking.find("placeholder=\"answer the question above\"") != std::string::npos);
-    CHECK(asking.find("aria-label=\"Answer\"") != std::string::npos);
-}
-
-TEST(a_build_that_ran_before_is_read_for_its_turn) {
-    // A conversation opened again: its build is not the one the snapshot
-    // carries, so its journal is read from the project's history, and the
-    // turn says so until it is. Read, it is drawn whole, its agents in the
-    // turn whatever the side menu holds; gone, it is what it left.
-    const char* const with =
-        "(function (kept) { var turns = state.snapshot.turns, builds = state.builds;"
+        "(function () { var turns = state.snapshot.turns;"
         " state.snapshot.turns = [{ prompt: 'a calculator', reply: 'It is built.\\n\\nFiles changed: calc.html',"
         "   build: 'old1', rev: 50, streaming: false, failed: false, canceled: false }];"
-        " state.builds = kept ? { old1: kept } : {}; var out = views.chat();"
-        " state.snapshot.turns = turns; state.builds = builds; return out; })";
-    const std::string journal =
-        "{ journal: { id: 'old1', kind: 'build', goal: 'a calculator', state: 'done', running: false,"
-        " outcome: 'A **calculator**.', files: ['calc.html'], seconds: 90, total: 2, plan: { summary: 'One page.' },"
-        " tasks: [{ index: 0, title: 'Write calc.html', detail: 'd', expert: 'math', state: 'done', outcome: 'ok',"
-        "   after: [] }], steps: [] } }";
-    CHECK(page().eval(std::string(with) + "(null)").find("Reading...") != std::string::npos);
-    CHECK_EQ(drawn(std::string(with) + "(" + journal + ")"), "ok");
-    const std::string read = page().eval(std::string(with) + "(" + journal + ")");
-    CHECK(read.find("1. Write calc.html") != std::string::npos);
-    CHECK(read.find("<strong>calculator</strong>") != std::string::npos);
-    CHECK(read.find("data-act=\"file-open\" data-path=\"calc.html\"") != std::string::npos);
-    CHECK(read.find("id=\"build-old1\"") != std::string::npos);
-    const std::string gone = page().eval(std::string(with) + "({ error: 'no cook called old1' })");
-    CHECK(gone.find("Files changed: calc.html") != std::string::npos);
+        " turnCache.clear(); var out = views.chat(); state.snapshot.turns = turns; turnCache.clear();"
+        " return out; })()");
+    CHECK(chat.find("a calculator") != std::string::npos);
+    CHECK(chat.find("Files changed: calc.html") != std::string::npos);
+    CHECK(chat.find("build-old1") == std::string::npos);
 }
 
 TEST(a_scratch_folder_shows_its_panes_once_it_has_files) {
     // A chat with no project has its own folder: nothing to show beside the
-    // conversation until a turn or a build has put something in it.
+    // conversation until a turn has put something in it.
     const std::string shown = page().eval(
         "(function () { var p = state.snapshot.project, tree = state.tree;"
         " state.snapshot.project = { open: true, scratchpad: true, root: '/s/1', name: 'Scratchpad' };"
@@ -2508,13 +2494,15 @@ TEST(a_scratch_folder_shows_its_panes_once_it_has_files) {
         " return empty + '|' + full; })()");
     CHECK_EQ(shown, std::string("false,chat,true|true,code,true"));
     // On another pane, the conversation's tab says when it wants somebody:
-    // the build asking, or an edit waiting.
+    // an edit waiting.
     const std::string marked = page().eval(
-        "(function () { var c = state.snapshot.cook, e = state.snapshot.pending_edit;"
-        " state.snapshot.pending_edit = null; c.state = 'asking'; state.chatPane = 'code';"
-        " var asking = paneNav(); c.state = 'working'; var quiet = paneNav();"
-        " state.chatPane = 'chat'; var here = (c.state = 'asking', paneNav());"
-        " c.state = 'working'; state.snapshot.pending_edit = e; return [asking, quiet, here].join('|'); })()");
+        "(function () { var e = state.snapshot.pending_edit, tree = state.tree;"
+        " state.tree = { entries: [{ path: 'a.py', name: 'a.py', dir: false, depth: 0, bytes: 1 }] };"
+        " state.snapshot.pending_edit = { path: 'a.py', before: '', after: 'x' }; state.chatPane = 'code';"
+        " var waiting = paneNav(); state.snapshot.pending_edit = null; var quiet = paneNav();"
+        " state.chatPane = 'chat'; state.snapshot.pending_edit = { path: 'a.py', before: '', after: 'x' };"
+        " var here = paneNav(); state.snapshot.pending_edit = e; state.tree = tree;"
+        " return [waiting, quiet, here].join('|'); })()");
     const std::size_t first = marked.find('|');
     const std::size_t second = marked.find('|', first + 1);
     CHECK(marked.substr(0, first).find(">Chat<span class=\"pip\">") != std::string::npos);
@@ -2522,28 +2510,25 @@ TEST(a_scratch_folder_shows_its_panes_once_it_has_files) {
     CHECK(marked.substr(second + 1).find("pip") == std::string::npos);
 }
 
-TEST(the_box_answers_a_build_that_asks_and_is_a_message_otherwise) {
-    // What the box sends, by what is going on: an answer to the build's
-    // question while it asks, a message (decided by the orchestrator) else.
-    // Sizing the box needs a document, which this has none of; it is not
-    // what is being asked about here.
+TEST(what_is_typed_is_sent_as_a_prompt_and_the_tester_sends_one_too) {
+    // Whatever it asks for, a message is a prompt: there is nothing else for
+    // it to become. Sizing the box needs a document, which this has none of;
+    // it is not what is being asked about here.
     const char* const send =
-        "(function (cookState, text) { var sent = [], c = state.snapshot.cook, busy = state.snapshot.busy;"
+        "(function (text) { var sent = [], busy = state.snapshot.busy;"
         " var was = call; call = function (m, p) { sent.push(m + ' ' + JSON.stringify(p)); return Promise.resolve({}); };"
         " var grow = growComposer; growComposer = function () {};"
-        " c.state = cookState; state.snapshot.busy = false;"
+        " state.snapshot.busy = false;"
         " var box = { value: text, style: {} };"
         " actions.send({ querySelector: function () { return box; }, dataset: { mode: 'chat' } });"
-        " call = was; growComposer = grow; c.state = 'working'; state.snapshot.busy = busy; return sent.join('|'); })";
-    CHECK_EQ(page().eval(std::string(send) + "('asking', 'pytest')"),
-             std::string("cook.answer {\"answer\":\"pytest\"}"));
-    const std::string message = page().eval(std::string(send) + "('working', 'now add dark mode')");
-    CHECK(message.rfind("submit {\"prompt\":\"now add dark mode\"", 0) == 0);
-    CHECK(message.find("\"answer\"") == std::string::npos);   // decided, not chosen
-    // Nothing to answer with, nothing is sent.
-    CHECK_EQ(page().eval(std::string(send) + "('asking', '')"), std::string());
-    // A model under test in Create is asked questions, never set to work:
-    // what is sent there is answered whatever it asks for.
+        " call = was; growComposer = grow; state.snapshot.busy = busy; return sent.join('|'); })";
+    const std::string message = page().eval(std::string(send) + "('make me a todo app')");
+    CHECK(message.rfind("submit {\"prompt\":\"make me a todo app\"", 0) == 0);
+    CHECK(message.find("\"answer\"") == std::string::npos);
+    // Nothing typed and nothing attached, nothing is sent.
+    CHECK_EQ(page().eval(std::string(send) + "('')"), std::string());
+    // A model under test in Create is sent a prompt by name, as the box
+    // sends one with a slash and a seat's name.
     const std::string tested = page().eval(
         "(function () { var sent = [], was = call, modal = state.modal, busy = state.snapshot.busy;"
         " call = function (m, p) { sent.push(m + ' ' + JSON.stringify(p)); return Promise.resolve({}); };"
@@ -2551,29 +2536,55 @@ TEST(the_box_answers_a_build_that_asks_and_is_a_message_otherwise) {
         " var input = { value: 'make me a todo app' };"
         " actions['test-send']({ querySelector: function () { return input; } });"
         " call = was; state.modal = modal; state.snapshot.busy = busy; return sent.join('|'); })()");
-    CHECK_EQ(tested, std::string("submit {\"prompt\":\"make me a todo app\",\"expert\":\"lab-kitchen\",\"answer\":true}"));
+    CHECK_EQ(tested, std::string("submit {\"prompt\":\"make me a todo app\",\"expert\":\"lab-kitchen\"}"));
 }
 
-TEST(a_thought_opens_from_its_step_as_prose_rather_than_as_output) {
-    // A THINK step's line is cut where a word ends, and the whole thought is
-    // its detail: opened, it reads as a turn's thinking does.
-    const std::string step =
-        "({ iteration: 7, expert: 'physics', kind: 'think', ok: true, ms: 120,"
-        "   summary: '(only thought) We need to find the header...',"
-        "   detail: 'We need to find the header.\\n\\nIt is styled in `style.css`.' })";
-    CHECK_EQ(drawn("cookSteps([" + step + "], 0)"), "ok");
-    const std::string shut = page().eval("cookSteps([" + step + "], 0)");
-    CHECK(shut.find("<details class=\"step\"") != std::string::npos);
-    CHECK(shut.find("step-thought") == std::string::npos);   // laid out only when open
-    const std::string open = page().eval(
-        "(function () { var s = " + step + "; stepsOpen.add(stepKey(s));"
-        " var html = cookSteps([s], 0); stepsOpen.delete(stepKey(s)); return html; })()");
-    CHECK(open.find("class=\"md step-thought\"") != std::string::npos);
-    CHECK(open.find("<code>style.css</code>") != std::string::npos);
-    CHECK(open.find("class=\"code") == std::string::npos);
+TEST(applying_a_tuned_page_to_its_source_is_a_prompt) {
+    // The changes picked in the preview go to an expert as a prompt like any
+    // other, and the person stays on the page, which is read again once the
+    // change has been written.
+    page().eval(
+        "window.__sent = []; window.__kept = { call: call, busy: state.snapshot.busy, preview: state.preview };"
+        " state.preview = { pages: ['index.html'], page: 'index.html', url: '', html: '<p>x</p>', inlined: [],"
+        "   skipped: [], picked: null, changes: [{ selector: '#t', prop: 'color', value: 'blue' }] };"
+        " call = function (m, p) { window.__sent.push(m + ' ' + JSON.stringify(p)); return Promise.resolve({}); };"
+        " state.snapshot.busy = false; state.chatPane = 'preview';"
+        " actions['tune-apply'](); 'ok'");
+    const std::string sent = page().eval(
+        "window.__sent.join('|') + '|' + state.chatPane + '|' + state.preview.changes.length");
+    page().eval("call = window.__kept.call; state.snapshot.busy = window.__kept.busy;"
+                " state.preview = window.__kept.preview; state.chatPane = 'chat'; 'ok'");
+    CHECK(sent.rfind("submit {\"prompt\":\"Edit the project so that index.html shows these style changes.", 0) == 0);
+    CHECK(sent.find("build.start") == std::string::npos);
+    CHECK(sent.find("|preview|0") != std::string::npos);
+}
+
+TEST(an_action_a_turn_takes_reads_the_pane_on_screen_again) {
+    // A write lands while the preview is up: the page is read again, and
+    // what git says is read again when its pane next opens.
+    const std::string got = page().eval(
+        "(function () { var asked = [], keep = loadPreview, source = state.source, turns = state.snapshot.turns,"
+        " view = state.view, pane = state.chatPane, preview = state.preview;"
+        " loadPreview = function (p) { asked.push('page ' + p); };"
+        " state.view = 'chat'; state.chatPane = 'preview';"
+        // The hooks see the project as it is first, as they would have: one
+        // left by another case would otherwise empty the preview here.
+        " onSnapshot.forEach(function (job) { job(); });"
+        " state.preview = { pages: ['index.html'], page: 'index.html', url: '', html: '<p>x</p>', inlined: [],"
+        "   skipped: [], picked: null, changes: [] };"
+        " var turn = { prompt: 'make it blue', reply: '', streaming: true, actions: [] };"
+        " state.snapshot.turns = turns.concat([turn]); onSnapshot.forEach(function (job) { job(); });"
+        " turn.actions = [{ summary: 'edited index.html', body: '-a\\n+b', language: 'index.html' }];"
+        " onSnapshot.forEach(function (job) { job(); });"
+        " var out = asked.join(',') + '|' + (state.source === null);"
+        " loadPreview = keep; state.source = source; state.snapshot.turns = turns; state.view = view;"
+        " state.chatPane = pane; state.preview = preview;"
+        " onSnapshot.forEach(function (job) { job(); }); return out; })()");
+    CHECK_EQ(got, std::string("page index.html|true"));
 }
 
 TEST(the_code_source_and_preview_panes_draw_what_was_read) {
+    CHECK_EQ(page().eval(kPaneState), "ok");
     // Beside the conversation, switched above it, with a project open.
     const std::string nav = page().eval("(state.chatPane = 'code', views.chat())");
     CHECK(nav.find("class=\"pane-nav\"") != std::string::npos);
@@ -2616,7 +2627,7 @@ TEST(the_code_source_and_preview_panes_draw_what_was_read) {
     CHECK(source.find("data-submit=\"git-commit\"") != std::string::npos);
     CHECK(source.find("Publish to GitHub") != std::string::npos);   // gh is there and there is no remote
     CHECK(source.find("abc1234") != std::string::npos);
-    CHECK(source.find("make dist") != std::string::npos);           // the plan's ship command, offered
+    CHECK(source.find("data-submit=\"ship-package\"") != std::string::npos);
 
     CHECK_EQ(drawn("(state.chatPane = 'preview', views.chat())"), "ok");
     const std::string preview = page().eval("views.chat()");
@@ -2635,7 +2646,7 @@ TEST(the_code_source_and_preview_panes_draw_what_was_read) {
 }
 
 TEST(the_code_pane_is_an_editor) {
-    CHECK_EQ(page().eval(kBuildState), "ok");
+    CHECK_EQ(page().eval(kPaneState), "ok");
     page().eval("state.chatPane = 'code';"
                 "state.tree = { root: '~/demo', cut: false, entries: ["
                 "  { path: 'src', name: 'src', dir: true, depth: 0, bytes: 0 },"
@@ -2671,7 +2682,7 @@ TEST(the_code_pane_is_an_editor) {
     CHECK(page().eval("views.chat()").find("of 3") != std::string::npos);
     page().eval("state.code.find = null");
 
-    // A file an agent changed while it was being edited says so.
+    // A file an expert changed while it was being edited says so.
     page().eval("state.code.tabs[0].conflict = true");
     CHECK(page().eval("views.chat()").find("Changed on disk") != std::string::npos);
     page().eval("state.code.tabs[0].conflict = false");
@@ -2752,89 +2763,16 @@ TEST(closing_the_window_over_unsaved_code_asks_first) {
     page().eval("delete window.unsavedWork; delete window.closeWindow; state.code.tabs = []; 'ok'");
 }
 
-TEST(a_seat_at_work_in_the_build_opens_its_work) {
-    // The build fixture has task 2 being worked by Mathematics: its seat is
-    // lit, says so, and opens the build's turn in the chat on that task,
-    // from whichever view it is clicked in.
+TEST(a_seat_opens_its_settings) {
+    // There are no agents beside the experts: a seat is an expert, and
+    // clicking one opens the experts' settings.
     const std::string side = page().eval("sideView()");
     CHECK(side.find("data-act=\"seat-open\"") != std::string::npos);
-    const std::string opened = page().eval(
-        "(function () { var t = (state.snapshot.cook.tasks || []).find(function (x) { return x.state === 'working'; });"
-        " var view = state.view; state.view = 'models'; state.chatPane = 'code';"
-        " var was = enter; var went = ''; enter = function (v) { went = v; };"
-        " actions['seat-open']({ dataset: { expert: t.expert } }); enter = was;"
-        " var out = [went, state.open.task === t.index, state.open.taskOf, state.chatPane, state.revealBuild].join(':');"
-        " state.view = view; state.revealBuild = ''; return out; })()");
-    CHECK_EQ(opened, std::string("chat:true:b1:chat:b1"));
-    // A seat with nothing to do opens its settings.
-    const std::string idle = page().eval(
-        "(function () { var was = enter; var went = ''; enter = function (v, p) { went = v + '/' + p; };"
-        " actions['seat-open']({ dataset: { expert: 'nobody-at-all' } }); enter = was; return went; })()");
-    CHECK_EQ(idle, "settings/experts");
-}
-
-TEST(the_agents_are_in_the_side_menu_under_the_experts) {
-    // With the side menu open the build's agents are in it, under the
-    // experts, where they are in sight from every view; the build's turn
-    // then leaves its own list out rather than draw them twice.
-    page().eval("window.__sideWas = state.sidebar; window.__viewWas = state.view; state.sidebar = 15;"
-                " state.view = 'chat'; state.chatPane = 'chat'; state.open.task = null; state.open.taskOf = ''");
-    const std::string side = page().eval("sideView()");
-    const std::size_t experts = side.find(">EXPERTS<");
-    const std::size_t agents  = side.find(">AGENTS<");
-    CHECK(experts != std::string::npos);
-    CHECK(agents != std::string::npos);
-    CHECK(experts < agents);
-    CHECK(side.find("Architect", agents) != std::string::npos);
-    CHECK(side.find("data-act=\"agent-open\" data-index=\"1\" data-build=\"b1\"", agents) != std::string::npos);
-    CHECK(side.find("2. Tests", agents) != std::string::npos);
-    // At work, it says so in orange: the status line at the top, and under
-    // the agent working. Waiting on an answer is not working. The one the
-    // conversation shows is marked as open.
-    CHECK(side.find("side-status busy") != std::string::npos);
-    CHECK(side.find("<span class=\"working\">working</span>") != std::string::npos);
-    CHECK(side.find("agent seat here at-work") != std::string::npos);
-    const std::string waiting = page().eval(
-        "(function () { var was = state.snapshot.cook.state, busy = state.snapshot.busy;"
-        " state.snapshot.cook.state = 'asking'; state.snapshot.busy = false;"
-        " var out = sideView(); state.snapshot.cook.state = was; state.snapshot.busy = busy; return out; })()");
-    CHECK(waiting.find("class=\"working\"") == std::string::npos);
-    CHECK(waiting.find("side-status busy") == std::string::npos);
-    const auto times = [](const std::string& text, const std::string& needle) {
-        std::size_t n = 0;
-        for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
-            ++n;
-        }
-        return n;
-    };
-    const std::string open = page().eval("views.chat()");
-    CHECK_EQ(times(open, "1. Write todo.py</span>"), std::size_t{1});
-    CHECK(open.find("build-split solo") != std::string::npos);
-    CHECK(open.find("TASK 2") != std::string::npos);
-    // On another pane, nothing of an agent's shows: none is marked.
-    CHECK(page().eval("(state.chatPane = 'code', sideView())").find("agent seat here") == std::string::npos);
-    page().eval("state.chatPane = 'chat'");
-
-    // Folded, the turn draws them itself, and the rail has a dot for the one
-    // at work.
-    page().eval("state.sidebar = 0");
-    const std::string folded = page().eval("views.chat()");
-    CHECK_EQ(times(folded, "1. Write todo.py</span>"), std::size_t{1});
-    CHECK(folded.find("build-split solo") == std::string::npos);
-    CHECK(folded.find("data-act=\"agent-open\" data-index=\"1\" data-build=\"b1\" data-phase=\"active\"") != std::string::npos);
-    CHECK(folded.find("data-act=\"agent-open\" data-index=\"1\" data-phase=\"active\"") != std::string::npos);
-
-    // Clicked from another view, an agent opens its work in the chat, on the
-    // conversation, and its turn is brought into sight.
+    CHECK(side.find(">AGENTS<") == std::string::npos);
     const std::string went = page().eval(
-        "(function () { state.view = 'models'; state.chatPane = 'source';"
-        " var was = enter; var to = ''; enter = function (v) { to = v; };"
-        " actions['agent-open']({ dataset: { index: '0', build: 'b1' } }); enter = was;"
-        " var out = [to, state.open.task, state.open.taskOf, state.chatPane, state.revealBuild].join(':');"
-        " state.revealBuild = ''; return out; })()");
-    CHECK_EQ(went, "chat:0:b1:chat:b1");
-    page().eval("state.sidebar = window.__sideWas; state.view = window.__viewWas; state.open.task = null;"
-                " state.open.taskOf = ''");
+        "(function () { var was = enter; var went = ''; enter = function (v, p) { went = v + '/' + p; };"
+        " actions['seat-open']({ dataset: { expert: 'physics' } }); enter = was; return went; })()");
+    CHECK_EQ(went, "settings/experts");
 }
 
 TEST(the_preview_gives_a_page_its_data_calls_and_makes_it_an_app) {
@@ -2946,12 +2884,13 @@ TEST(the_storage_stand_in_behaves_as_a_browsers_own) {
                         " localStorage.removeItem('never'); String(localStorage.length)"),
              "5");
 
-    // Handed over to be kept once a run of changes is over, and only when
-    // something changed.
+    // Handed over to be kept at once, and again once a run of changes is
+    // over, and only when something changed: two for the run, not three.
     CHECK_EQ(frame.eval("handed = []; localStorage.setItem('a', '1'); localStorage.setItem('b', '2');"
                         " localStorage.removeItem('a'); String(handed.length)"),
-             "0");
+             "1");
     CHECK_EQ(frame.eval("handed.join('|')"),
+             R"(local {"theme":"dark","count":"3","n":"5","o":"[object Object]","u":"undefined","a":"1"}|)"
              R"(local {"theme":"dark","count":"3","n":"5","o":"[object Object]","u":"undefined","b":"2"})");
     CHECK_EQ(frame.eval("handed = []; localStorage.setItem('b', '2'); localStorage.removeItem('a'); 'ok'"), "ok");
     CHECK_EQ(frame.eval("String(handed.length)"), "0");
@@ -2989,7 +2928,20 @@ TEST(the_storage_stand_in_behaves_as_a_browsers_own) {
     CHECK_EQ(frame.eval("handed = []; localStorage.clear(); localStorage.setItem('__proto__', 'p');"
                         " localStorage.getItem('__proto__') + ' ' + localStorage.length"),
              "p 1");
-    CHECK_EQ(frame.eval("handed.join('|')"), R"(local {"__proto__":"p"})");
+    CHECK_EQ(frame.eval("handed.join('|')"), R"(local {}|local {"__proto__":"p"})");
+
+    // A page that is going hands over what it has not yet, then and there:
+    // saved and reloaded in one click, the second change was handed over
+    // after the reload began, and an app on Windows lost it.
+    Engine going({"var window = this; var handed = [], heard = {};"
+                  " window.addEventListener = function (event, then) { heard[event] = then; };",
+                  "(" + std::string(crucible::tools::kPageStorage) + ")('{}', function (kind, items) {"
+                  " handed.push(kind + ' ' + JSON.stringify(items)); });"});
+    CHECK(going.load_error().empty());
+    CHECK_EQ(going.eval("localStorage.setItem('a', '1'); localStorage.setItem('b', '2'); heard.beforeunload();"
+                        " handed.join('|')"),
+             R"(local {"a":"1"}|local {"a":"1","b":"2"})");
+    CHECK_EQ(going.eval("String(typeof heard.pagehide)"), "function");
 
     // Nothing kept that can be read: an empty one, not a broken page.
     Engine fresh(stand_in("not json"));
@@ -3080,6 +3032,13 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
         "tunedDocument('<!doctype html><header>H</header><script>mine()<\\/script>', state.preview.kept)");
     CHECK(headless.rfind("<!doctype html><script>", 0) == 0);
     CHECK(headless.find("what: 'hello'") < headless.find("<header>"));
+    // Nor is a "<head>" once the body has begun, in a script's string say, as
+    // with_script_first has it: they go after the doctype, and the script is
+    // left as it was.
+    const std::string late = page().eval(
+        "tunedDocument('<!doctype html><body><script>var t = \"<head>\";<\\/script></body>', '{}')");
+    CHECK(late.rfind("<!doctype html><script>", 0) == 0);
+    CHECK(late.find("<script>var t = \"<head>\";</script>") != std::string::npos);
 
     // The frame run: what the page puts in its storage comes back, after the
     // word that it has started.
@@ -3184,6 +3143,141 @@ TEST(the_preview_keeps_what_a_page_puts_in_its_storage_per_project_and_page) {
                 " delete window.cruciblePageStorage)");
 }
 
+namespace {
+
+/// The page with what it asks for kept in window.__asked, preview.page and
+/// preview.candidates waiting in window.__pending by method and path until a
+/// test answers them, and everything else refused, as it is with no window
+/// under the page. window.__open(root) pushes a snapshot with that project
+/// open and nothing else the page acts on. Undone by held_calls_restored.
+std::string held_calls() {
+    return page().eval(R"JS(
+      (function () {
+        window.__was = { call: call, render: render, snapshot: state.snapshot, view: state.view,
+                         pane: state.chatPane, error: state.error, history: state.history,
+                         preview: Object.assign({}, state.preview) };
+        window.__asked = [];
+        window.__pending = {};
+        render = function () {};
+        call = function (method, params) {
+          __asked.push(method + ' ' + JSON.stringify(params || {}));
+          if (method === 'preview.page' || method === 'preview.candidates') {
+            return new Promise(function (done, fail) {
+              __pending[method + ' ' + ((params && params.path) || '')] = { done: done, fail: fail };
+            });
+          }
+          if (method === 'preview.kept') return Promise.resolve({});
+          return Promise.reject(new Error('no window'));
+        };
+        window.__open = function (root) {
+          window.crucibleSnapshot(Object.assign({}, __was.snapshot, { turns: [], cook: null,
+            project: { open: true, root: root, display: root, name: root.split('/').pop() } }));
+        };
+        state.view = 'chat';
+        state.chatPane = 'chat';
+        Object.assign(state.preview, previewBlank());
+        return 'set';
+      })())JS");
+}
+
+void held_calls_restored() {
+    page().eval("(function (w) { call = w.call; render = w.render; state.snapshot = w.snapshot; state.view = w.view;"
+                " state.chatPane = w.pane; state.error = w.error; state.history = w.history;"
+                " Object.assign(state.preview, previewBlank(), w.preview); })(window.__was)");
+}
+
+}  // namespace
+
+TEST(a_page_still_being_read_when_another_project_opens_is_not_drawn_in_it) {
+    // A page of one project asked for, and another project opened from the
+    // right-hand panel before it arrives: it is dropped when it does, and
+    // the new project's preview starts as empty as the window's first.
+    CHECK_EQ(held_calls(), "set");
+    page().eval("__open('/work/a'); loadPreview('index.html');"
+                "Object.assign(state.preview, { url: 'http://localhost:3000', stale: true, error: 'old',"
+                "  making: { name: 'A', busy: true, can: true }, made: { name: 'A', where: 'here', launch: '/a' } });"
+                "'asked'");
+    CHECK_EQ(page().eval("String(state.preview.loading)"), "true");
+    page().eval("__open('/work/b');"
+                "__pending['preview.page index.html'].done({ inlined: ['a.css'], skipped: [],"
+                "  html: '<html><body><p>A page</p></body></html>' }); 'landed'");
+    CHECK_EQ(page().eval("String(state.preview.html === '')"), "true");
+    // Whatever of the old project's was there: none of it differs from blank.
+    CHECK_EQ(page().eval("(function () { var blank = previewBlank(); return Object.keys(blank).filter(function (k) {"
+                         " return JSON.stringify(state.preview[k]) !== JSON.stringify(blank[k]); }).join(); })()"),
+             "");
+    CHECK_EQ(drawn("previewView()"), "ok");
+    const std::string shown = page().eval("previewView()");
+    CHECK(shown.find("<iframe") == std::string::npos);
+    CHECK(shown.find("Reading...") == std::string::npos);
+    CHECK(shown.find("A page") == std::string::npos);
+
+    // The pages of the old project, listed after the new one was opened, are
+    // not offered in it, and nothing of theirs is read; nor is its failure.
+    page().eval("enterPreview(); __open('/work/c');"
+                "__pending['preview.candidates '].done({ pages: ['b.html'] }); 'listed'");
+    CHECK_EQ(page().eval("String(state.preview.pages)"), "null");
+    CHECK_EQ(page().eval("String(__asked.some(function (a) { return a.indexOf('b.html') >= 0; }))"), "false");
+    page().eval("enterPreview(); __open('/work/d');"
+                "__pending['preview.candidates '].fail(new Error('c is gone')); 'failed'");
+    CHECK_EQ(page().eval("state.preview.error"), "");
+    held_calls_restored();
+}
+
+TEST(no_page_chosen_while_one_is_read_stops_the_reading_and_an_old_failure_says_nothing) {
+    CHECK_EQ(held_calls(), "set");
+    // A page shown, with a stylesheet put inside it.
+    page().eval("loadPreview('first.html');"
+                "__pending['preview.page first.html'].done({ inlined: ['a.css'], skipped: [], html: '<p>first</p>' });"
+                "'shown'");
+    CHECK(page().eval("previewView()").find("1 file inlined") != std::string::npos);
+
+    // Another asked for, and then "Choose a page" before it came: nothing is
+    // being read any more, and what the first page had is not said of none.
+    page().eval("loadPreview('slow.html'); loadPreview(''); 'chosen'");
+    CHECK_EQ(page().eval("String(state.preview.loading)"), "false");
+    const std::string none = page().eval("previewView()");
+    CHECK(none.find("Reading...") == std::string::npos);
+    CHECK(none.find("inlined") == std::string::npos);
+    page().eval("__pending['preview.page slow.html'].done({ inlined: [], skipped: [], html: '<p>slow</p>' }); 'landed'");
+    CHECK_EQ(page().eval("state.preview.html + '|' + state.preview.loading"), "|false");
+
+    // A page that fails after another was asked for says nothing over it,
+    // and leaves it reading until it comes.
+    page().eval("loadPreview('bad.html'); loadPreview('good.html');"
+                "__pending['preview.page bad.html'].fail(new Error('bad.html is gone')); 'failed'");
+    CHECK_EQ(page().eval("state.preview.error + '|' + state.preview.loading"), "|true");
+    CHECK(page().eval("previewView()").find("Reading...") != std::string::npos);
+    page().eval("__pending['preview.page good.html'].done({ inlined: [], skipped: [], html: '<p>good</p>' }); 'landed'");
+    CHECK_EQ(page().eval("state.preview.html + '|' + state.preview.loading + '|' + state.preview.error"),
+             "<p>good</p>|false|");
+    held_calls_restored();
+}
+
+TEST(history_reads_the_list_again_when_a_project_is_opened_beside_it) {
+    // History shows one project's list, and the panel beside it opens
+    // another: the list is read again for that one, and the old one's is not
+    // there to click on meanwhile.
+    CHECK_EQ(held_calls(), "set");
+    page().eval("state.view = 'models'; __open('/work/a'); state.view = 'history'; state.open.cook = null;"
+                "state.history = { cooks: [], sessions: [{ id: 'a1', title: 'about A', when: 'today', turns: 3 }] };"
+                "'shown'");
+    CHECK(page().eval("views.history()").find("about A") != std::string::npos);
+    const std::string meanwhile = page().eval(
+        "__asked = [];"
+        "call = function (method) { __asked.push(method); return method !== 'history'"
+        "  ? Promise.reject(new Error('no window'))"
+        "  : Promise.resolve({ cooks: [], sessions: [{ id: 'b1', title: 'about B', when: 'today', turns: 1 }] }); };"
+        "__open('/work/b'); views.history()");
+    CHECK(meanwhile.find("Reading...") != std::string::npos);
+    CHECK(meanwhile.find("about A") == std::string::npos);
+    CHECK_EQ(page().eval("String(__asked.filter(function (m) { return m === 'history'; }).length)"), "1");
+    const std::string listed = page().eval("views.history()");
+    CHECK(listed.find("about B") != std::string::npos);
+    CHECK(listed.find("about A") == std::string::npos);
+    held_calls_restored();
+}
+
 TEST(about_offers_crucibles_own_source_as_a_project) {
     page().eval("state.about = state.about || { version: '0.9.0', update: {}, files: {}, trusted: [] };"
                 "state.self = { found: true, root: '/src/crucible', build: '/src/crucible/build',"
@@ -3200,22 +3294,15 @@ TEST(about_offers_crucibles_own_source_as_a_project) {
     page().eval("state.self = null");
 }
 
-TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
-    CHECK_EQ(drawn("(state.open.cook = state.snapshot.cook, views.history())"), "ok");
-    const std::string opened = page().eval("views.history()");
-    CHECK(opened.find("DIRECTIVE") != std::string::npos);
-    CHECK(opened.find("1. Write todo.py") != std::string::npos);
-    page().eval("state.history.cooks.push({ id: 'b0', kind: 'build', tasks: 3, goal: 'a build', state: 'done', when: 'today', files: 2, steps: 9, seconds: 100 })");
-    const std::string listed = page().eval("(state.open.cook = null, views.history())");
-    CHECK(listed.find("3 tasks") != std::string::npos);
-    CHECK(listed.find("<h2>BUILDS</h2>") != std::string::npos);
-    // One left asking when Crucible closed was interrupted; the one running
-    // now is still working.
-    page().eval("state.history.cooks.push({ id: 'b9', kind: 'build', tasks: 8, goal: 'left', state: 'asking',"
-                " when: 'yesterday', files: 0, steps: 2, seconds: 0 })");
-    const std::string left = page().eval("views.history()");
-    CHECK(left.find("<span class=\"part\">interrupted</span>") != std::string::npos);
-    CHECK_EQ(page().eval("settled({ id: state.snapshot.cook.id, state: 'working' })"), std::string("working"));
+TEST(history_lists_conversations_and_settings_know_the_computer_switch) {
+    // History is the project's conversations, and nothing else.
+    page().eval("state.history = { sessions: [{ id: 's1', title: 'why is the sky blue', when: 'today',"
+                " turns: 2 }] }; 'set'");
+    CHECK_EQ(drawn("views.history()"), "ok");
+    const std::string listed = page().eval("views.history()");
+    CHECK(listed.find("<h2>CONVERSATIONS</h2>") != std::string::npos);
+    CHECK(listed.find("why is the sky blue") != std::string::npos);
+    CHECK(listed.find("BUILDS") == std::string::npos);
 
     page().eval("state.kit = { folder: '/k', pieces: ["
                 "{ id: 'gh', label: 'GitHub\\'s command line', why: 'releases', fetched: true, missing: false },"
@@ -3246,16 +3333,13 @@ TEST(history_and_settings_know_about_builds_and_the_computer_switch) {
     CHECK(tools.find("tools-computer_control") != std::string::npos);
     CHECK(tools.find("DuckDuckGo") != std::string::npos);
     CHECK(tools.find("data-act=\"process-stop\"") != std::string::npos);
+    // And no page for builds: none is listed, and one asked for by name is
+    // General's.
     const std::string build = page().eval("(state.settingsPage = 'build', views.settings())");
-    CHECK(build.find("build.architect") != std::string::npos);
-    CHECK(build.find("id=\"worker-model\"") != std::string::npos);
-    CHECK(build.find("build-rounds_per_task") != std::string::npos);
-    CHECK(build.find("build-agents") != std::string::npos);
-    CHECK(build.find("Agents at once") != std::string::npos);
-
-    // Put back, for anything that runs after.
-    page().eval("state.snapshot.cook = window.__cookWas; state.open.task = null;"
-                " state.snapshot.turns = window.__turnsWas || state.snapshot.turns;");
+    CHECK(build.find("data-page=\"build\"") == std::string::npos);
+    CHECK(build.find("build.architect") == std::string::npos);
+    CHECK(build.find("Agents at once") == std::string::npos);
+    page().eval("state.settingsPage = 'general'");
 }
 
 TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
@@ -3338,6 +3422,25 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(far.find("<span class=\"tag\">needs a key</span>") != std::string::npos);
     page().eval("state.config.server.api_key = 'sk-local'");
     CHECK(page().eval("views.settings()").find("needs a key") == std::string::npos);
+    // Before the providers are read, and once its provider is gone, it is
+    // still the provider's model, not a file missing from the folder.
+    for (const char* providers : {"null", "{ providers: [], known: [] }"}) {
+        page().eval(std::string("state.providers = ") + providers);
+        CHECK_EQ(drawn("serverModelSelect(state.config)"), "ok");
+        const std::string unread = page().eval("serverModelSelect(state.config)");
+        CHECK(unread.find("not in the models folder") == std::string::npos);
+        CHECK(unread.find("<option value=\"anthropic|claude-opus-5-5\" selected>claude-opus-5-5 (anthropic)</option>")
+              != std::string::npos);
+    }
+    // Nor is a file said to be missing from a folder not read yet.
+    page().eval("window.__modelsWasServer = state.models; state.models = null;"
+                "state.config.server = { enabled: true, model: 'other.gguf', embeddings: 'nomic.gguf', port: 8338,"
+                "  network: false, api_key: '' }");
+    const std::string folder = page().eval("serverModelSelect(state.config) + serverEmbeddingsSelect(state.config)");
+    CHECK(folder.find("not in the models folder") == std::string::npos);
+    CHECK(folder.find("<option value=\"other.gguf\" selected>other.gguf</option>") != std::string::npos);
+    CHECK(folder.find("<option value=\"nomic.gguf\" selected>nomic.gguf</option>") != std::string::npos);
+    page().eval("state.models = window.__modelsWasServer");
     page().eval("state.providers = window.__providersWas;"
                 "state.config.server = { enabled: true, model: 'physics.gguf', port: 8338, network: true,"
                 "  api_key: 'sk-local' }");
@@ -3370,14 +3473,29 @@ TEST(the_server_page_says_where_it_is_and_what_it_has_answered) {
     CHECK(secure.find("SHA-256 <code class=\"wrap\">AB:CD:EF</code>") != std::string::npos);
     CHECK(secure.find("File <code class=\"wrap\">/home/x/.local/share/crucible/https/certificate.pem</code>")
           != std::string::npos);
+    // Crucible's own can be made anew, as the API key can: asked first, since
+    // a client given the old one stops trusting the server.
+    CHECK(secure.find("data-act=\"server-certificate-new\">New</button>") != std::string::npos);
+    const char* const renewing =
+        "(function (sure) { var was = [confirmIt, call], asked = [];"
+        " confirmIt = function () { return Promise.resolve(sure); };"
+        " call = function (method) { asked.push(method); return Promise.resolve({}); };"
+        " window.__renewed = asked; window.__renewWas = was;"
+        " actions['server-certificate-new'](); return 'asked'; })";
+    CHECK_EQ(page().eval(std::string(renewing) + "(false)"), "asked");
+    CHECK_EQ(page().eval("confirmIt = window.__renewWas[0]; call = window.__renewWas[1]; window.__renewed.join()"), "");
+    CHECK_EQ(page().eval(std::string(renewing) + "(true)"), "asked");
+    CHECK_EQ(page().eval("confirmIt = window.__renewWas[0]; call = window.__renewWas[1]; window.__renewed.join()"),
+             "server.certificate.new");
     // The person's own certificate: its key named beside it, and no file of
-    // Crucible's to give out.
+    // Crucible's to give out or make anew.
     page().eval("state.config.server.certificate = '/etc/ssl/server.crt';"
                 "state.snapshot.server.own_certificate = false");
     const std::string theirs = page().eval("views.settings()");
     CHECK(theirs.find("value=\"/etc/ssl/server.crt\"") != std::string::npos);
     CHECK(theirs.find("placeholder=\"Same file\"") != std::string::npos);
     CHECK(theirs.find("File <code") == std::string::npos);
+    CHECK(theirs.find("server-certificate-new") == std::string::npos);
     // One that will not serve says why, where the server says it is on.
     page().eval("var s = state.snapshot.server; s.listening = false; s.https = false; s.fingerprint = '';"
                 "s.error = 'The key does not match the certificate'; s.addresses = {}");
@@ -3509,8 +3627,16 @@ TEST(the_bench_tab_runs_compares_and_posts) {
                 " started: Date.now() / 1000 - 1000, current: 'mmlu_pro', benchmarks: { mmlu_pro: { done: 10, n: 50, correct: 8 } } }] }");
     CHECK(page().eval("views.bench()").find("about 2h 30m left") != std::string::npos);
     CHECK(live.find("data-act=\"bench-stop\"") != std::string::npos);
-    page().eval("state.snapshot.bench.fetching = 'truthfulqa'");
-    CHECK(page().eval("views.bench()").find("Fetching TruthfulQA") != std::string::npos);
+    // Fetching the rows: how many items have theirs, so the count moves
+    // while the datasets server is slow, in place of answers there are none of.
+    page().eval("state.snapshot.bench.fetching = { done: 120, of: 450 }");
+    const std::string fetching = page().eval("views.bench()");
+    const std::size_t count = fetching.find("Fetching 120 of 450");
+    CHECK(count != std::string::npos);
+    if (count != std::string::npos) {
+        const std::string line = fetching.substr(count, fetching.find("</div>", count) - count);
+        CHECK(line.find("questions") == std::string::npos);
+    }
     page().eval("delete state.snapshot.bench.fetching");
     page().eval("state.snapshot.bench.running = false; state.snapshot.bench.stopped = true;"
                 "state.snapshot.bench.ended = state.snapshot.bench.started + 60");
@@ -3990,20 +4116,20 @@ TEST(the_page_puts_back_the_turns_it_was_sent_as_stubs) {
 }
 
 TEST(the_page_keeps_a_part_the_window_left_out_as_the_same) {
-    // A build's journal named in "same" is the one the page has; one the
+    // A benchmark run named in "same" is the one the page has; one the
     // window neither sends nor names is gone.
     CHECK_EQ(page().eval(R"JS((function () {
-      var was = state.snapshot, keepRender = render, journal = { id: 'j1', steps: [] };
+      var was = state.snapshot, keepRender = render, run = { running: false, models: [] };
       render = function () {};
-      window.crucibleSnapshot(Object.assign({}, was, { cook: journal, turns: [] }));
-      var same = Object.assign({}, was, { turns: [], same: ['cook'] });
-      delete same.cook;
+      window.crucibleSnapshot(Object.assign({}, was, { bench: run, turns: [] }));
+      var same = Object.assign({}, was, { turns: [], same: ['bench'] });
+      delete same.bench;
       window.crucibleSnapshot(same);
-      var kept = state.snapshot.cook === journal && !('same' in state.snapshot);
+      var kept = state.snapshot.bench === run && !('same' in state.snapshot);
       var gone = Object.assign({}, was, { turns: [] });
-      delete gone.cook;
+      delete gone.bench;
       window.crucibleSnapshot(gone);
-      var out = kept + ',' + (state.snapshot.cook === undefined);
+      var out = kept + ',' + (state.snapshot.bench === undefined);
       state.snapshot = was; render = keepRender;
       return out; })())JS"),
              std::string("true,true"));

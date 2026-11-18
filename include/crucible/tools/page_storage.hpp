@@ -40,6 +40,7 @@ inline constexpr std::string_view kPageStorage = R"JS(function (kept, keep) {
   // values together. A page that wants more is told so, as it would be there,
   // rather than filling the file it is kept in.
   var QUOTA = 5000000;
+  var handers = [];   // each one's handing over of what it has not handed over yet
   var held = {};
   try { held = JSON.parse(kept) || {}; } catch (e) { /* nothing kept yet */ }
 
@@ -69,18 +70,27 @@ inline constexpr std::string_view kPageStorage = R"JS(function (kept, keep) {
     }
     function has(name) { return Object.prototype.hasOwnProperty.call(items, name); }
 
-    // Handed over once whatever is changing it has finished: a loop of
-    // setItem calls is one handing over, not one per call.
-    function changed() {
-      if (due) return;
-      due = true;
-      Promise.resolve().then(function () {
-        due = false;
-        var all = Object.create(null);
-        names.forEach(function (name) { all[name] = items[name]; });
-        try { keep(kind, all); } catch (e) { /* kept in the page, at least */ }
-      });
+    // Handed over at once, and again once whatever is changing it has
+    // finished: a loop of setItem calls is two handings over, not one per
+    // call. Not only at the end, because a page may be going by then: an app
+    // that saved and reloaded in one click lost its sessionStorage on
+    // Windows, handed over after the reload had begun.
+    function hand() {
+      if (!due) return;
+      due = false;
+      var all = Object.create(null);
+      names.forEach(function (name) { all[name] = items[name]; });
+      try { keep(kind, all); } catch (e) { /* kept in the page, at least */ }
     }
+    var later = false;
+    function changed() {
+      due = true;
+      if (later) return;
+      later = true;
+      hand();
+      Promise.resolve().then(function () { later = false; hand(); });
+    }
+    handers.push(hand);
 
     var methods = Object.create(typeof Storage === 'function' ? Storage.prototype : Object.prototype);
     methods.getItem = function (name) {
@@ -154,6 +164,13 @@ inline constexpr std::string_view kPageStorage = R"JS(function (kept, keep) {
 
   // In place of the window's own, which only throw here.
   var stores = { localStorage: storage('local', held.local), sessionStorage: storage('session', held.session) };
+  // A page that is going, reloaded or led elsewhere, hands over what it has
+  // not yet, then and there.
+  if (typeof window.addEventListener === 'function') {
+    ['beforeunload', 'pagehide'].forEach(function (event) {
+      window.addEventListener(event, function () { handers.forEach(function (hand) { hand(); }); });
+    });
+  }
   Object.keys(stores).forEach(function (name) {
     try {
       Object.defineProperty(window, name, {

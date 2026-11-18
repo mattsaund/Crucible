@@ -10,12 +10,14 @@ result from another; that is what the public board is for
 What the core does for this, and only the core can: load the model under
 test (bench.load), answer (bench.ask queues items, bench.answers hands back
 the answers as they finish, as many decoded at once as the cards hold), fetch
-dataset pages from Hugging Face (bench.rows, cached), fingerprint the model
-file (bench.hash), say what the machine is (bench.machine), show progress
-(bench.publish) and keep the result (bench.save). Everything else, from which
-items to ask to whether an answer was right, is here and in bench_score.
+dataset pages from Hugging Face (bench.rows, kept on disk and listed by
+bench.cached), fingerprint the model file (bench.hash), say what the machine
+is (bench.machine), show progress (bench.publish) and keep the result
+(bench.save). Everything else, from which items to ask to whether an answer
+was right, is here and in bench_score.
 """
 
+import bisect
 import collections
 import concurrent.futures
 import hashlib
@@ -250,21 +252,217 @@ def ask(bench, row, index):
 # longer than that gets two more chances, a minute apart.
 FETCH_WAITS = (20, 60)
 
+# The most rows the datasets server gives in one answer.
+PAGE = 100
 
-def fetch(core, bench, indices):
-    """The rows at `indices`, by index, fetched a page of a hundred at a time."""
-    rows = {}
-    for page in sorted({i // 100 * 100 for i in indices}):
-        for wait in tuple(FETCH_WAITS) + (None,):
-            got = core.call("bench.rows", {"dataset": bench["dataset"], "config": bench["config"],
-                                           "split": bench["split"], "offset": page, "length": 100}) or {}
-            if not got.get("error"):
+# Requests to the datasets server at once, as many as a browser opens to one
+# host. It answers most in a quarter of a second and a few in 14, and with
+# four at once a handful of slow ones held the rest up for half a minute. It
+# also refuses an address that asks too fast (HTTP 429) until about a minute
+# after the asking stops, however many are open: 65 pages asked back to back
+# were answered and the rest refused. So as fast as it answers, and when it
+# refuses, every request waits (_Gate). Measured 2026-11-17: a Quick run with
+# nothing on disk took 162 seconds this way, 100 of them waiting out a
+# refusal near the end, where it had taken 4.5 minutes.
+FETCH_AT_ONCE = 6
+
+# After a refusal, one request every this many seconds to see whether it is
+# over, at most this many times in a row: five minutes of refusals and the
+# run gives up on what it has not got.
+REFUSED_WAIT = 15
+REFUSED_TRIES = 20
+
+
+def plan(indices, kept=()):
+    """The requests that bring the rows at `indices`, as (offset, length,
+    items), `items` being how many of `indices` each brings.
+
+    A page already on this machine (`kept`, as bench.cached lists them) is
+    read back for every index it holds, whichever run of whichever size kept
+    it. The rest go in windows of up to a page, each from the first index not
+    yet covered to the last within a page of it: for a Quick run 116 requests
+    where whole pages were 138, and a third of the rows. Which items a size
+    asks is pick's alone; this only decides how their rows arrive."""
+    pages = sorted({(int(p[0]), int(p[1])) for p in kept
+                    if isinstance(p, (list, tuple)) and len(p) == 2 and int(p[1]) > 0})
+    starts = [offset for offset, _ in pages]
+    on_disk = {}
+    rest = []
+    for i in sorted(set(indices)):
+        # A page holding i starts less than a page before it.
+        at, page = bisect.bisect_right(starts, i), None
+        while at > 0 and starts[at - 1] > i - PAGE:
+            at -= 1
+            if i < pages[at][0] + pages[at][1]:
+                page = pages[at]
                 break
-            if wait is None or not _pause(core, wait):
-                raise RuntimeError(got["error"])
-        for n, item in enumerate(got.get("rows") or []):
-            rows[item.get("row_idx", page + n)] = item.get("row") or {}
-    return rows
+        if page is None:
+            rest.append(i)
+        else:
+            on_disk[page] = on_disk.get(page, 0) + 1
+    out = [[offset, length, items] for (offset, length), items in sorted(on_disk.items())]
+    window = None
+    for i in rest:
+        if window is not None and i < window[0] + PAGE:
+            window[1] = i - window[0] + 1
+            window[2] += 1
+        else:
+            window = [i, 1, 1]
+            out.append(window)
+    return [tuple(request) for request in out]
+
+
+class _Stopped(Exception):
+    """The run was stopped while its rows were being fetched."""
+
+
+class _Gate:
+    """When a request may go to the datasets server: at once, until the
+    server refuses one. It then refuses this address whatever is asked, so
+    every request waits, one goes every REFUSED_WAIT seconds to see whether
+    the refusal is over, and the rest follow once that one is answered."""
+
+    def __init__(self, core):
+        self.core = core
+        self.lock = threading.Lock()
+        self.until = 0.0       # nothing goes before this
+        self.refusals = 0      # waits in a row, since the last answer
+        self.trying = False    # one request is out to see whether it is over
+        self.closed = None     # the last refusal, once there have been too many
+
+    def turn(self):
+        """Wait for this request's turn. Raises _Stopped when the run is
+        stopped meanwhile, and the refusal once the server has refused for
+        all of REFUSED_TRIES."""
+        while True:
+            with self.lock:
+                if self.closed is not None:
+                    raise RuntimeError(self.closed)
+                now = time.time()
+                if now >= self.until and not self.trying:
+                    self.trying = self.refusals > 0
+                    return
+                wait = self.until - now if now < self.until else 0.25
+            if not _pause(self.core, min(wait, 1.0)):
+                raise _Stopped()
+
+    def answered(self):
+        """The server answered, rows or not: it is not refusing."""
+        with self.lock:
+            self.refusals = 0
+            self.trying = False
+
+    def refused(self, error):
+        """A request was refused: it is asked again in its turn, or, once
+        the server has refused too long, raises why."""
+        with self.lock:
+            now = time.time()
+            if now < self.until:
+                return   # out before the refusal began: the wait under way covers it
+            self.trying = False
+            if self.refusals >= REFUSED_TRIES:
+                self.closed = error
+                raise RuntimeError(error)
+            self.refusals += 1
+            self.until = now + REFUSED_WAIT
+
+
+def _rows(core, gate, bench, offset, length):
+    """One request's answer: asked again while the server refuses, after
+    FETCH_WAITS when it fails, and never again when it says no for good."""
+    failures = 0
+    while True:
+        gate.turn()
+        got = core.call("bench.rows", {"dataset": bench["dataset"], "config": bench["config"],
+                                       "split": bench["split"], "offset": offset, "length": length}) or {}
+        if not got.get("error"):
+            gate.answered()
+            return got
+        status = got.get("status") or 0
+        if status == 429:
+            gate.refused(got["error"])
+            continue
+        gate.answered()
+        # A dataset gone or a request it will never take: waiting changes nothing.
+        if 400 <= status < 500 or failures >= len(FETCH_WAITS):
+            raise RuntimeError(got["error"])
+        if not _pause(core, FETCH_WAITS[failures]):
+            raise _Stopped()
+        failures += 1
+
+
+def fetch_all(core, benches, size, heard=None):
+    """The rows every benchmark asks at `size`, {id: {index: row}}, and why
+    for each that could not be fetched, {id: error}.
+
+    Planned against what is on disk (plan), then asked FETCH_AT_ONCE at a
+    time, from each benchmark in turn, so a small one does not wait behind a
+    large one. `heard(done, of)` is told how many items have their rows, from
+    this thread, as they arrive."""
+    rows_of = {bench["id"]: {} for bench in benches}
+    errors = {}
+    each = []
+    total = 0
+    for bench in benches:
+        indices = pick(bench, size)
+        total += len(indices)
+        try:
+            kept = (core.call("bench.cached", {"dataset": bench["dataset"], "config": bench["config"],
+                                               "split": bench["split"]}) or {}).get("ranges") or []
+        except Exception:   # not knowing what is here costs requests, not the run
+            kept = []
+        each.append(collections.deque((bench,) + request for request in plan(indices, kept)))
+    queue = collections.deque()
+    while any(each):
+        for requests in each:
+            if requests:
+                queue.append(requests.popleft())
+
+    lock = threading.Lock()
+    done = [0]
+    stop = threading.Event()
+    gate = _Gate(core)
+
+    def work():
+        while not stop.is_set():
+            with lock:
+                if not queue:
+                    return
+                bench, offset, length, items = queue.popleft()
+                if bench["id"] in errors:
+                    continue
+            try:
+                got = _rows(core, gate, bench, offset, length)
+            except _Stopped:
+                stop.set()
+                return
+            except Exception as error:   # refused too long, a dataset moved, no network
+                with lock:
+                    errors.setdefault(bench["id"], str(error))
+                continue
+            with lock:
+                for n, item in enumerate(got.get("rows") or []):
+                    rows_of[bench["id"]][item.get("row_idx", offset + n)] = item.get("row") or {}
+                done[0] += items
+
+    if heard:
+        heard(0, total)
+    workers = [threading.Thread(target=work, daemon=True) for _ in range(min(FETCH_AT_ONCE, len(queue)))]
+    for worker in workers:
+        worker.start()
+    told = 0
+    while True:
+        alive = False
+        for worker in workers:
+            worker.join(0.1)
+            alive = alive or worker.is_alive()
+        with lock:
+            now = done[0]
+        if heard and now != told:
+            told = now
+            heard(now, total)
+        if not alive:
+            return rows_of, errors
 
 
 def _stopped(core):
@@ -427,17 +625,14 @@ def run(core, params):
 
     publish()
     # Every page the run needs, before any model is loaded: a network that
-    # fails says so at once, and nothing holds the cards while it waits.
-    rows_of, errors = {}, {}
-    for bench in benches:
-        if _stopped(core):
-            break
-        state["fetching"] = bench["id"]
-        publish()
-        try:
-            rows_of[bench["id"]] = fetch(core, bench, pick(bench, size))
-        except Exception as error:   # no network, or a dataset moved
-            errors[bench["id"]] = str(error)
+    # fails says so at once, and nothing holds the cards while it waits. How
+    # many items have their rows is said as they come, so the count moves
+    # while the server is slow.
+
+    def fetched(done, of):
+        state["fetching"] = {"done": done, "of": of}
+        publish(soon=done > 0)
+    rows_of, errors = fetch_all(core, benches, size, fetched)
     state.pop("fetching", None)
     if errors:
         state["errors"] = errors
@@ -488,7 +683,7 @@ def run(core, params):
             progress = {"done": 0, "n": len(indices), "correct": 0}
             entry["benchmarks"][bench["id"]] = progress
             rows = rows_of.get(bench["id"])
-            if rows is None:
+            if rows is None or bench["id"] in errors:
                 progress["error"] = errors.get(bench["id"], "not fetched")
                 continue
             missing = next((i for i in indices if rows.get(i) is None), None)

@@ -117,6 +117,7 @@ json turn_to_json(const Turn& turn) {
     json entry{
         {"prompt", turn.prompt},
         {"reply", turn.reply},
+        {"prompt_tokens", turn.prompt_tokens},
         {"output_tokens", turn.output_tokens},
         {"tokens_per_second", turn.tokens_per_second},
         {"load_ms", turn.load_ms},
@@ -127,11 +128,6 @@ json turn_to_json(const Turn& turn) {
     // opened again. Never sent back to the model: see Turn::reasoning.
     if (!turn.reasoning.empty()) {
         entry["reasoning"] = turn.reasoning;
-    }
-    // A message that became a build, so the conversation opened again draws
-    // the build where the message was.
-    if (!turn.build.empty()) {
-        entry["build"] = turn.build;
     }
     if (!turn.attachments.empty()) {
         json attachments = json::array();
@@ -157,7 +153,11 @@ Turn turn_from_json(const json& entry) {
     turn.prompt            = entry.value("prompt", "");
     turn.reply             = entry.value("reply", "");
     turn.reasoning         = entry.value("reasoning", "");
-    turn.build             = entry.value("build", "");
+    // A "build" a turn may still carry, from when a message could become one,
+    // is read by nothing: the turn opens as what the build left, its reply.
+    // Absent from chats saved before it was kept, which read as none: the
+    // line under such a reply says nothing of what went in, as it did.
+    turn.prompt_tokens     = entry.value("prompt_tokens", 0);
     turn.output_tokens     = entry.value("output_tokens", 0);
     turn.tokens_per_second = entry.value("tokens_per_second", 0.0);
     turn.load_ms           = entry.value("load_ms", 0L);
@@ -533,13 +533,12 @@ namespace {
 
 /// The turns worth keeping, as they are written. A reply still arriving is
 /// not resumable, and a failed turn is noise -- its "reply" is the error
-/// that stopped it. A build still running is kept with no reply yet: its
-/// journal is on disk, and the conversation opened again draws it.
+/// that stopped it.
 template <typename Turns>
 json stored_turns_of(const Turns& turns) {
     json stored = json::array();
     for (const Turn& turn : turns) {
-        if (turn.streaming || turn.failed || (turn.reply.empty() && turn.build.empty())) {
+        if (turn.streaming || turn.failed || turn.reply.empty()) {
             continue;
         }
         stored.push_back(turn_to_json(turn));

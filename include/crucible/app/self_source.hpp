@@ -2,10 +2,9 @@
 //
 // Crucible, working on itself.
 //
-// A build is a directive and a project, and Crucible's own source is a
-// project like any other: open it, say what to change -- "add a dark theme to
-// the settings screen" -- and the architect plans it and the agents make it.
-// What is particular about this project is the end: the program that made
+// Crucible's own source is a project like any other: open it, say what to
+// change -- "add a dark theme to the settings screen" -- and an expert makes
+// it. What is particular about this project is the end: the program that made
 // the change is the program changed, so it is rebuilt and started again, and
 // the new one is what you are looking at.
 //

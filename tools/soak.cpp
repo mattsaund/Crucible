@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // crucible-soak -- the engine run for a long while, with no window, the way a
 // person uses it: many turns, the seats swapped, a seat picked in the box,
-// Stop pressed mid-reply, pictures attached, a build now and then, Eject, the
-// orchestrator killed in the middle of a turn, and the API server asked all
-// the while. Each turn is a line of what happened and what the
-// process held after it, so a leak shows as a column that climbs and a hang
-// as a turn that never ends.
+// Stop pressed mid-reply, pictures attached, Eject, the orchestrator killed in
+// the middle of a turn, and the API server asked all the while. Each turn is
+// a line of what happened and what the process held after it, so a leak
+// shows as a column that climbs and a hang as a turn that never ends.
 //
 //   crucible-soak --model a.gguf [--second b.gguf] [--delegator d.gguf]
 //                 [--minutes 30] [--picture p.png] [--gpu-layers 0] [--threads 0]
@@ -36,7 +35,6 @@
 
 #include "crucible/config/config.hpp"
 #include "crucible/config/paths.hpp"
-#include "crucible/cook/journal.hpp"
 #include "crucible/engine/engine.hpp"
 #include "crucible/engine/state.hpp"
 #include "crucible/serve/server.hpp"
@@ -134,9 +132,6 @@ std::string start_of(const std::string& text, std::size_t most) {
 
 /// How a turn ended, as the transcript has it.
 std::string outcome_of(const Turn& turn) {
-    if (!turn.build.empty()) {
-        return "build";
-    }
     return turn.failed ? "failed" : turn.canceled ? "canceled" : "finished";
 }
 
@@ -168,9 +163,6 @@ int main(int argc, char** argv) {
     }
     config.routing.keep_delegator_loaded = false;   // freed and loaded again around every route
     config.tools.auto_edits   = true;
-    config.build.confirm_plan = false;
-    config.build.agents       = 2;
-    config.build.rounds_per_task = 6;
     std::string error;
     for (const auto& [name, blurb] :
          {std::pair<const char*, const char*>{"Mathematics", "Arithmetic, algebra, calculus and proofs"},
@@ -208,7 +200,7 @@ int main(int argc, char** argv) {
     AppState state;
     state.configure_seats(config);
     Engine engine(config, state, [] {});
-    engine.set_project(project, paths::data_dir() / "soak-history");
+    engine.set_project(project);
     engine.start();
 
     const auto started  = Clock::now();
@@ -276,18 +268,6 @@ int main(int argc, char** argv) {
             action = "picture";
         }
 
-        // A build every so often, with the chat asked beside it.
-        const bool build = turn % 24 == 23;
-        if (build) {
-            action = "build";
-            const std::string refused = engine.start_cook(
-                "Make a single index.html page that shows the current time, updated every second.", 0,
-                project, {}, std::nullopt, "build");
-            if (!refused.empty()) {
-                std::printf("# build refused: %s\n", refused.c_str());
-            }
-        }
-
         const std::size_t before = state.snapshot().turns.size();
         const auto        asked  = Clock::now();
         engine.submit(kQuestions[static_cast<std::size_t>(turn) % std::size(kQuestions)], pinned,
@@ -308,19 +288,13 @@ int main(int argc, char** argv) {
                     acted = true;
                 }
             }
-            const bool cooking = build && engine.cooking();
-            if (begun && !now.turns.back().streaming && !engine.is_busy() && !cooking) {
+            if (begun && !now.turns.back().streaming && !engine.is_busy()) {
                 break;
             }
-            // A build is stopped after a few minutes; a turn that has not
-            // ended in ten is a hang.
-            if (cooking && Clock::now() - asked > std::chrono::minutes(4)) {
-                engine.cancel_cook();
-            }
+            // A turn that has not ended in ten minutes is a hang.
             if (Clock::now() - asked > std::chrono::minutes(10)) {
-                std::printf("# HANG at turn %d (%s): busy %d, cooking %d, mood status '%s'\n", turn,
-                            action.c_str(), engine.is_busy() ? 1 : 0, engine.cooking() ? 1 : 0,
-                            now.status.c_str());
+                std::printf("# HANG at turn %d (%s): busy %d, mood status '%s'\n", turn,
+                            action.c_str(), engine.is_busy() ? 1 : 0, now.status.c_str());
                 ++hangs;
                 break;
             }
@@ -331,13 +305,6 @@ int main(int argc, char** argv) {
         ++tally[action + ":" + outcome];
         if (last.failed) {
             std::printf("# turn %d failed: %s\n", turn, start_of(last.reply, 200).c_str());
-        }
-        // The turn of a build is the question asked beside it; the build
-        // says how it went in its journal.
-        if (build && after.cook) {
-            const std::string how(cook_state_name(after.cook->state));
-            ++tally["build-journal:" + how];
-            std::printf("# build %s: %s\n", how.c_str(), start_of(after.cook->outcome, 200).c_str());
         }
         const long heap = status_field("RssAnon") / 1024;
         heap_first = heap_first < 0 ? heap : heap_first;

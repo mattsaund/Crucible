@@ -615,6 +615,19 @@ std::vector<std::uint64_t> usage_of(const std::vector<int>& counts,
     return used;
 }
 
+/// Whether `counts` hands any card more than its capacity.
+bool overfills(const std::vector<int>& counts,
+               const std::vector<std::uint64_t>& units,
+               const std::vector<std::uint64_t>& capacity) {
+    const std::vector<std::uint64_t> used = usage_of(counts, units);
+    for (std::size_t device = 0; device < used.size() && device < capacity.size(); ++device) {
+        if (used[device] > capacity[device]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Move units off any card that is over its capacity.
 ///
 /// The greedy pass has to put every unit somewhere -- llama.cpp's split always
@@ -841,9 +854,13 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
     for (int pass = 0; pass < 2; ++pass) {
         targets.assign(width, 0);
         capacity.assign(width, 0);
+        // A card's own buffers where a dry run measured them, and otherwise
+        // the figure every card gets.
         const auto reserve_for = [&](const ComputeDevice& gpu) {
             const auto index = static_cast<std::size_t>(gpu.index);
-            return fit.per_card + kCardHeadroom +
+            const std::uint64_t buffers =
+                index < fit.per_device.size() && fit.per_device[index] > 0 ? fit.per_device[index] : fit.per_card;
+            return buffers + fit.headroom +
                    (index == output_device ? fit.output_extra : 0) +
                    (display_room && gpu.display ? kDisplayRoom : 0);
         };
@@ -926,6 +943,20 @@ GpuPlan plan_gpu_split(GpuSplitMode mode,
 
     if (!fit.units.empty()) {
         plan.units = place_units(gpus, targets, capacity, fit.units, width);
+        // Beside the room the model fits in whole layers, not in bytes. The
+        // bytes can fit while the layers do not, since each card stops short
+        // of its target by part of a layer and the last card in index order
+        // takes those parts, more than it holds. Kept, the room overfilled
+        // that card, and a dry run refused a count of flint's layers that
+        // fitted without it, 43 on the cards rather than 44. So the plan is
+        // made again as if no card drew the desktop.
+        if (display_room && overfills(plan.units, fit.units, capacity)) {
+            std::vector<ComputeDevice> bare = gpus;
+            for (ComputeDevice& gpu : bare) {
+                gpu.display = false;
+            }
+            return plan_gpu_split(mode, bare, order, main_gpu, fit);
+        }
         plan.split = split_from_counts(plan.units);
         if (!plan.split.empty()) {
             return plan;
@@ -954,11 +985,11 @@ std::vector<float> compute_tensor_split(GpuSplitMode mode,
 }
 
 ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
-                        const std::vector<CardNeed>& need, std::uint64_t runtime) {
+                        const std::vector<CardNeed>& need, std::uint64_t runtime, std::size_t first) {
     // What the header said each card would hold of the layers, and which card
     // ends up with the output: the last one in index order that holds any.
     std::vector<std::uint64_t> said(counts.size(), 0);
-    std::size_t unit   = 0;
+    std::size_t unit   = first;
     std::size_t output = counts.size();
     for (std::size_t device = 0; device < counts.size(); ++device) {
         for (int i = 0; i < counts[device] && unit < fit.units.size(); ++i, ++unit) {
@@ -968,15 +999,17 @@ ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
             output = device;
         }
     }
-    if (fit.units.empty() || unit < fit.units.size() || output >= need.size()) {
+    if (fit.units.empty() || first >= fit.units.size() || unit < fit.units.size() || output >= counts.size()
+        || output >= need.size()) {
         return fit;
     }
 
     // The worst the header did on any card, as a factor on every unit: right
     // to the byte on the card that set it and conservative on the rest.
-    double        scale   = 0.0;
-    std::uint64_t compute = 0;     // the largest buffer on a card without the output
-    bool          others  = false;
+    double        scale  = 0.0;
+    std::uint64_t most   = 0;      // the largest buffers on a card without the output
+    std::uint64_t least  = 0;      // and the smallest
+    bool          others = false;
     for (std::size_t device = 0; device < counts.size(); ++device) {
         if (counts[device] == 0) {
             continue;
@@ -989,8 +1022,9 @@ ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
                                         static_cast<double>(said[device]));
         }
         if (device != output) {
-            compute = std::max(compute, need[device].compute);
-            others  = true;
+            most   = std::max(most, need[device].compute);
+            least  = others ? std::min(least, need[device].compute) : need[device].compute;
+            others = true;
         }
     }
     if (scale <= 0.0) {
@@ -1000,7 +1034,7 @@ ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
     if (!others) {
         // The whole model on one card: its buffer less the logits the header
         // puts there is the best word on what a card without them needs.
-        compute = at_output > fit.output_extra ? at_output - fit.output_extra : 0;
+        most = least = at_output > fit.output_extra ? at_output - fit.output_extra : 0;
     }
 
     ModelFit out;
@@ -1009,8 +1043,26 @@ ModelFit calibrated_fit(const ModelFit& fit, const std::vector<int>& counts,
         out.units.push_back(static_cast<std::uint64_t>(std::ceil(static_cast<double>(bytes) * scale)));
         out.resident += out.units.back();
     }
-    out.per_card     = compute + runtime;
-    out.output_extra = at_output > compute ? at_output - compute : 0;
+    // The output's own cost is what its card measured over the card that
+    // needed least, the one likeliest to be doing no more than its layers.
+    // The first card of a load partly on the processor does the processor's
+    // work on a long prompt as well.
+    out.output_extra = at_output > least ? at_output - least : 0;
+    out.per_card     = most + runtime;
+    out.headroom     = kMeasuredHeadroom;
+    // Every card the dry run measured buffers on gets its own figure. The
+    // output's card gets its buffers less the output's cost, which is charged
+    // to whichever card the plan puts the output on. A card that held no
+    // layers and still had buffers gets them too, as the first card does when
+    // the processor's share of a long prompt is sent to it.
+    out.per_device.assign(counts.size(), 0);
+    for (std::size_t device = 0; device < counts.size() && device < need.size(); ++device) {
+        if (counts[device] == 0 && need[device].compute == 0) {
+            continue;
+        }
+        const std::uint64_t own = device == output ? at_output - out.output_extra : need[device].compute;
+        out.per_device[device]  = own + runtime;
+    }
     return out;
 }
 

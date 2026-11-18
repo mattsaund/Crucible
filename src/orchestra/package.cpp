@@ -22,20 +22,16 @@ extern const unsigned char kOrchestratorRpc[];
 extern const unsigned int  kOrchestratorRpc_size;
 extern const unsigned char kOrchestratorRouting[];
 extern const unsigned int  kOrchestratorRouting_size;
-extern const unsigned char kOrchestratorCook[];
-extern const unsigned int  kOrchestratorCook_size;
 extern const unsigned char kOrchestratorNaming[];
 extern const unsigned int  kOrchestratorNaming_size;
-extern const unsigned char kOrchestratorBuild[];
-extern const unsigned int  kOrchestratorBuild_size;
 extern const unsigned char kOrchestratorChat[];
 extern const unsigned int  kOrchestratorChat_size;
 extern const unsigned char kOrchestratorBench[];
 extern const unsigned int  kOrchestratorBench_size;
 extern const unsigned char kOrchestratorBenchScore[];
 extern const unsigned int  kOrchestratorBenchScore_size;
-extern const unsigned char kOrchestratorIntent[];
-extern const unsigned int  kOrchestratorIntent_size;
+extern const unsigned char kOrchestratorSteps[];
+extern const unsigned int  kOrchestratorSteps_size;
 }  // namespace embedded
 
 namespace {
@@ -52,13 +48,11 @@ const File kFiles[] = {
     {"main.py", embedded::kOrchestratorMain, &embedded::kOrchestratorMain_size},
     {"rpc.py", embedded::kOrchestratorRpc, &embedded::kOrchestratorRpc_size},
     {"routing.py", embedded::kOrchestratorRouting, &embedded::kOrchestratorRouting_size},
-    {"cook.py", embedded::kOrchestratorCook, &embedded::kOrchestratorCook_size},
     {"naming.py", embedded::kOrchestratorNaming, &embedded::kOrchestratorNaming_size},
-    {"build.py", embedded::kOrchestratorBuild, &embedded::kOrchestratorBuild_size},
     {"chat.py", embedded::kOrchestratorChat, &embedded::kOrchestratorChat_size},
     {"bench.py", embedded::kOrchestratorBench, &embedded::kOrchestratorBench_size},
     {"bench_score.py", embedded::kOrchestratorBenchScore, &embedded::kOrchestratorBenchScore_size},
-    {"intent.py", embedded::kOrchestratorIntent, &embedded::kOrchestratorIntent_size},
+    {"steps.py", embedded::kOrchestratorSteps, &embedded::kOrchestratorSteps_size},
 };
 
 }  // namespace

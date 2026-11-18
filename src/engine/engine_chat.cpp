@@ -23,14 +23,18 @@
 // drop or refuse is the orchestrator's.
 #include "crucible/engine/engine.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <stdexcept>
 
+#include "crucible/config/paths.hpp"
 #include "crucible/engine/overflow.hpp"
+#include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
 #include "crucible/tools/web_search.hpp"
 #include "crucible/tools/workshop.hpp"
+#include "crucible/util/text.hpp"
 
 namespace crucible {
 namespace {
@@ -50,6 +54,22 @@ tools::SearchSettings search_settings(const Config& config) {
     return settings;
 }
 
+tools::ToolKind tool_kind_from_name(const std::string& name) {
+    for (const tools::ToolKind kind :
+         {tools::ToolKind::List, tools::ToolKind::Read, tools::ToolKind::Write, tools::ToolKind::Edit,
+          tools::ToolKind::Find, tools::ToolKind::Render, tools::ToolKind::Mcp, tools::ToolKind::Run,
+          tools::ToolKind::Search, tools::ToolKind::Ask, tools::ToolKind::Note, tools::ToolKind::Done,
+          tools::ToolKind::Handoff, tools::ToolKind::Fetch, tools::ToolKind::Git, tools::ToolKind::Gh,
+          tools::ToolKind::Python, tools::ToolKind::Start, tools::ToolKind::Stop, tools::ToolKind::Logs,
+          tools::ToolKind::Screenshot, tools::ToolKind::Click, tools::ToolKind::Move,
+          tools::ToolKind::Type, tools::ToolKind::Key, tools::ToolKind::Scroll}) {
+        if (tools::tool_kind_name(kind) == name) {
+            return kind;
+        }
+    }
+    return tools::ToolKind::None;
+}
+
 Mood mood_named(const std::string& mood) {
     return mood == "thinking" ? Mood::Thinking
          : mood == "loading"  ? Mood::Loading
@@ -58,23 +78,86 @@ Mood mood_named(const std::string& mood) {
                               : Mood::Idle;
 }
 
-/// Whether `root` has anything in it a person put there: a file or a folder
-/// whose name does not start with a dot. The first one found is enough.
-bool has_files(const std::filesystem::path& root) {
-    std::error_code ec;
-    if (root.empty() || !std::filesystem::is_directory(root, ec)) {
-        return false;
-    }
-    for (std::filesystem::directory_iterator it{root, ec}, end; it != end && !ec; it.increment(ec)) {
-        const std::string name = it->path().filename().string();
-        if (!name.empty() && name.front() != '.') {
-            return true;
-        }
-    }
-    return false;
-}
+/// The most context a turn with the tools is given, when the cards hold it.
+/// Its rounds are long: the request, an account of what was done, the tools,
+/// the last few exchanges with the files they read, and the thinking before
+/// the next action, all in one context. A ceiling, not a demand:
+/// ModelHost::load gives what the cards hold of it and never less than the
+/// seat's own context. gpt-oss-20b at 32K is 13.1 GB on a card by its header,
+/// against 12.0 at 8K.
+constexpr int kWorkContext = 32768;
+
+/// How often, in pieces of output, a round looks at whether its reply has
+/// started going round in a loop. Often enough to stop one early, and rarely
+/// enough to cost nothing.
+constexpr std::size_t kLoopLook = 16;
 
 }  // namespace
+
+tools::ToolCall Engine::call_from(const json& params) {
+    tools::ToolCall call;
+    call.kind     = tool_kind_from_name(params.value("kind", ""));
+    call.argument = params.value("argument", "");
+    call.content  = params.value("content", "");
+    call.shell    = params.value("shell", "");
+    call.unrun    = params.value("unrun", "");
+    return call;
+}
+
+json Engine::parse_reply(const json& params) {
+    const std::string answer    = params.value("answer", "");
+    const std::string reasoning = params.value("reasoning", "");
+    const std::optional<tools::ToolCall> call = tools::parse_tool_call(answer, reasoning);
+    // And what it asked to look up, if anything. A search is asked for in a
+    // way of its own -- a SEARCH line, or a tool-trained model's own call on
+    // its reasoning channel -- and has bookkeeping of its own. See
+    // web_search.hpp.
+    const std::string search = tools::search_request(answer, reasoning);
+    if (!call) {
+        return json{{"call", nullptr},
+                    {"attempted", std::string(tools::tool_kind_name(
+                                      tools::attempted_tool_call(answer, reasoning)))},
+                    {"search", search}};
+    }
+    // All of it, because the orchestrator hands the call straight back to
+    // turn.tool: without the shell, "RUN powershell:" ran under cmd, and
+    // without `unrun` a second call in the answer went unmentioned.
+    return json{{"call", {{"kind", std::string(tools::tool_kind_name(call->kind))},
+                          {"argument", call->argument},
+                          {"content", call->content},
+                          {"shell", call->shell},
+                          {"unrun", call->unrun}}},
+                {"attempted", "none"},
+                {"search", search}};
+}
+
+void Engine::set_project(std::filesystem::path root) {
+    project_root_ = std::move(root);
+}
+
+tools::WorkshopSettings Engine::workshop_for(const std::filesystem::path& root) const {
+    tools::WorkshopSettings workshop;
+    // Having a root is the permission. It is only ever set to a folder the user
+    // answered the trust question for, and that question is asked in the terms
+    // this is actually about: read, write, run, inside this directory.
+    workshop.enabled             = !root.empty();
+    workshop.root                = root;
+    workshop.allow_run           = !root.empty();
+    {
+        // Under the lock: Settings can be applied while a turn reads these.
+        const std::lock_guard<std::mutex> lock(config_mutex_);
+        workshop.run_timeout_seconds = config_.tools.workshop_timeout;
+        // The rest of what an expert can reach, each behind its own switch.
+        workshop.web              = config_.tools.web_search;
+        workshop.computer_control = config_.tools.computer_control;
+    }
+    workshop.python           = lab::python::installed() ? lab::python::interpreter()
+                                                         : std::filesystem::path();
+    workshop.scratch          = paths::scratch_dir();
+    workshop.processes        = const_cast<tools::Processes*>(&processes_);
+    workshop.mcp              = const_cast<tools::mcp::Hub*>(&mcp_);
+    return workshop;
+}
 
 /// What the core keeps of the chat turn being answered, between the calls the
 /// orchestrator makes of it.
@@ -82,12 +165,11 @@ struct Engine::ChatTurn {
     std::size_t                     index = 0;   ///< the turn, in the transcript
     std::string                     prompt;
     std::vector<attach::Attachment> attachments;
-    std::optional<ExpertId>         pinned;      ///< sent to one seat, for a build it becomes
+    std::optional<ExpertId>         pinned;      ///< sent to one seat
 
     /// The settings as they are when the turn starts, kept for the whole of
-    /// it: a build running beside it can add a seat to the engine's own copy
-    /// at any moment, and a turn read halfway through a change is a turn
-    /// answered by half of two configurations.
+    /// it: Settings can be applied while it runs, and a turn read halfway
+    /// through a change is a turn answered by half of two configurations.
     Config config;
 
     // Who answers, once the turn is routed and the expert seated.
@@ -177,14 +259,10 @@ void Engine::handle(const Request& request) {
     asked["effort"]        = chat->config.reasoning_effort;
     asked["web_search"]    = chat->config.tools.web_search;
     asked["search_rounds"] = chat->config.tools.search_rounds;
+    asked["actions"]       = chat->config.tools.actions;
+    asked["root"]          = project_root_.string();
     asked["search_tools"]  = tools::tool_instructions();
     asked["overflow"]      = chat->config.tools.overflow;
-    // Whether this message may become a build (see the orchestrator's
-    // intent.py), and whether the folder it would be built in has anything
-    // in it yet. Not while a build runs: one at a time, and a message typed
-    // beside one is answered. Nor one sent to be answered whatever it asks.
-    asked["can_build"] = !request.answer_only && !cooking() && !project_root_.empty();
-    asked["files"]     = has_files(project_root_);
 
     {
         const std::lock_guard<std::mutex> lock(chat_mutex_);
@@ -238,25 +316,6 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             || orchestra_.ended(asker);
     };
 
-    // --- or a build ------------------------------------------------------------
-    if (method == "turn.build") {
-        // The message is a build: started now, on its own words and what came
-        // with them, in the folder this turn is about, and sent to the seat
-        // it was sent to when it was. The turn is the build's from here (see
-        // Turn::build), and over for the chat; the build's end is its reply.
-        std::string id;
-        const std::string refused =
-            start_cook(chat->prompt, 0, project_root_, chat->attachments, chat->pinned, "build", &id);
-        if (!refused.empty()) {
-            return json{{"ok", false}, {"error", refused}};
-        }
-        state_.set_build(turn, id);
-        if (wake_) {
-            wake_();
-        }
-        return json{{"ok", true}, {"id", id}};
-    }
-
     // --- who answers ---------------------------------------------------------
     if (method == "turn.route") {
         const json decided = params.value("decision", json::object());
@@ -287,22 +346,31 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // to the raw id on its own.
         chat->name   = expert_label(chat->config.roster, chat->expert);
         chat->params = chat->config.expert(chat->expert);
+        // The tools a turn gets, in a folder the person has trusted. An empty
+        // root is a workshop with nothing in it to offer. A turn that has them
+        // may work for a while, and is given the room for it.
+        chat->workshop = workshop_for(project_root_);
+        if (chat->workshop.enabled) {
+            chat->params.n_ctx_most = std::max(chat->params.n_ctx, kWorkContext);
+        }
+        // A turn changing hands lets go of the model it had first. Held, that
+        // model is in use, and the next expert's load waits for the room it
+        // takes up until the turn ends, which it never would: flint, on all
+        // three cards, kept GPT OSS from loading for half an hour.
+        chat->held = HeldModel{};
         std::string error;
-        // Held for the whole turn: the lease is what keeps a build's thread
-        // from freeing this model while the turn is answering with it.
+        // Held for the whole turn: the lease is what keeps anybody else from
+        // freeing this model while the turn is answering with it.
         chat->held = hold_model(chat->expert, chat->params, chat->name, cancel, chat->load_ms, error);
         if (chat->held.model == nullptr) {
             return json{{"ok", false}, {"error", error}};
         }
-        const ChatModel& model = *chat->held.model;
-        // The tools a cook gets, in a folder the person has trusted. An empty
-        // root is a workshop with nothing in it to offer.
-        chat->workshop               = workshop_for(project_root_);
+        const ChatModel& model       = *chat->held.model;
         chat->workshop.sees_pictures = model.sees_images();
         return json{{"ok", true}, {"remote", chat->params.remote()},
                     {"sees_images", model.sees_images()}, {"takes_effort", model.takes_effort()},
                     {"workshop", chat->workshop.enabled},
-                    {"tools", tools::workshop_instructions(chat->workshop, tools::ToolAudience::Chat)}};
+                    {"tools", tools::workshop_instructions(chat->workshop)}};
     }
 
     if (chat->held.model == nullptr && method != "turn.end" && method != "turn.show") {
@@ -372,6 +440,13 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // A paragraph between what the rounds before this one left on screen
         // and what this one says, rather than one run into the other.
         const bool        paragraph    = params.value("paragraph", false);
+        // A round the person does not see: the loop asking the expert what the
+        // next step is, so the delegator can choose who takes it.
+        const bool        quiet        = params.value("quiet", false);
+        // Set once the reply has started going round, a few words or a dot
+        // again and again. Stopped there rather than run to the end of the
+        // context: gpt-oss once wrote 7177 dots.
+        bool              looped       = false;
         bool              first_answer = true;
         std::string       answer;
         std::string       reasoning;
@@ -387,18 +462,27 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             }
             if (!thought.empty()) {
                 reasoning += thought;
-                state_.append_reasoning(turn, thought);
+                if (!quiet) {
+                    state_.append_reasoning(turn, thought);
+                }
             }
             if (!said.empty()) {
                 if (first_answer) {
                     first_answer = false;
-                    state_.set_mood(Mood::Talking, name + " is answering");
-                    if (paragraph) {
-                        state_.append_reply(turn, "\n\n");
+                    if (!quiet) {
+                        state_.set_mood(Mood::Talking, name + " is answering");
+                        if (paragraph) {
+                            state_.append_reply(turn, "\n\n");
+                        }
                     }
                 }
                 answer += said;
-                state_.append_reply(turn, said);
+                if (!quiet) {
+                    state_.append_reply(turn, said);
+                }
+            }
+            if (chat->streamed_chunks % kLoopLook == 0 && !looped) {
+                looped = detail::ends_in_loop(answer) || detail::ends_in_loop(reasoning);
             }
 
             // Recomputing the rate on every token would be noise on screen
@@ -417,7 +501,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         };
 
         ChatSink sink;
-        sink.cancel = cancel;
+        sink.cancel = [&cancel, &looped] { return looped || cancel(); };
         if (model.reasons_inline()) {
             // A reasoning model writes its working before its answer, and on
             // some of them the markers between the two are ordinary visible
@@ -439,8 +523,10 @@ json Engine::serve_turn(const std::string& method, const json& params) {
 
         // Whatever was still held back, waiting to see if it was a marker.
         if (const ResponseFilter::Piece last = filter.flush(); !last.answer.empty() || !last.reasoning.empty()) {
-            state_.append_reasoning(turn, last.reasoning);
-            state_.append_reply(turn, last.answer);
+            if (!quiet) {
+                state_.append_reasoning(turn, last.reasoning);
+                state_.append_reply(turn, last.answer);
+            }
             reasoning += last.reasoning;
             answer += last.answer;
         }
@@ -452,7 +538,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             stats.output_tokens += pass.output_tokens;
             stats.prompt_ms     += pass.prompt_ms;
             stats.output_ms     += pass.output_ms;
-            stats.canceled       = pass.canceled;
+            stats.canceled       = pass.canceled && !looped;
             stats.hit_limit      = pass.hit_limit;
         }
         const Snapshot now = state_.snapshot();
@@ -461,7 +547,8 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                     {"error", outcome.error},
                     {"discard", outcome.discard_partial},
                     {"notes", outcome.notes},
-                    {"canceled", pass.canceled},
+                    {"canceled", pass.canceled && !looped},
+                    {"looped", looped},
                     {"hit_limit", pass.hit_limit},
                     {"output_tokens", pass.output_tokens},
                     {"reply", turn < now.turns.size() ? now.turns[turn].reply : std::string()}};

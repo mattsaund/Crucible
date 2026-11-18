@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
-// History: every cook and every conversation this project has had.
+// History: every conversation this project has had.
 
 // With the right-hand panel beside it, as Chat has: History is opened from
-// there, and a project picked in it shows that project's. A build a message
-// became is one of its builds, and opens here as any build does.
+// there, and a project picked in it shows that project's.
 views.history = () => historyPane() + recentsView();
 
 function historyPane() {
@@ -13,21 +12,8 @@ function historyPane() {
     return sideView() + `<div class="pane"><div class="empty">
         <div class="empty-label">No project open.</div></div></div>`;
   }
-  if (state.open.cook) {
-    return sideView() + `<div class="pane"><div id="transcript">
-        <button class="action" data-act="history-back" style="margin-bottom:1.2rem">All history</button>
-        ${cookBody(state.open.cook, false)}
-      </div></div>`;
-  }
   const h = state.history;
   if (!h) return sideView() + '<div class="pane"><div class="empty">Reading...</div></div>';
-
-  const cooks = h.cooks.length ? h.cooks.map((c) => `
-    <button class="card pick" data-act="history-cook" data-id="${escape(c.id)}">
-      <div class="title"><strong>${escape(c.goal)}</strong><span class="tag">${c.kind === 'build' ? 'build' : 'cook'}</span></div>
-      <div class="hint">${apart(escape(c.when), c.kind === 'build' ? count(c.tasks || 0, 'task') : '',
-        count(c.files, 'file'), count(c.steps, 'step'), span(c.seconds), escape(settled(c)))}</div>
-    </button>`).join('') : '<p class="lede">No builds yet.</p>';
 
   const sessions = h.sessions.length ? h.sessions.map((c) => `
     <button class="card pick" data-act="history-session" data-id="${escape(c.id)}">
@@ -37,21 +23,27 @@ function historyPane() {
 
   return sideView() + `<div class="pane"><div class="settings-page">
       <h1>History</h1>
-      <h2>BUILDS</h2>${cooks}
-      <h2 style="margin-top:1.8rem">CONVERSATIONS</h2>${sessions}
+      <h2>CONVERSATIONS</h2>${sessions}
     </div></div>`;
 }
 
 entering.history = () => {
-  state.open.cook = null;
   if ((state.snapshot.project || {}).open) need('history', 'history', true);
 };
 
-actions['history-back'] = () => { state.open.cook = null; render(); };
-actions['history-cook'] = (e) => guard(async () => {
-  state.open.cook = await call('history.cook', { id: e.dataset.id });
-});
 actions['history-session'] = (e) => guard(async () => {
   await call('history.open', { id: e.dataset.id });
   enter('chat');
+});
+
+/// The right-hand panel beside History opens projects too, and the list is
+/// then the old project's, whose conversations would open in the new one. It
+/// is read again for the project open now, and until then is not shown.
+let historyRoot = '';
+onSnapshot.push(() => {
+  const project = state.snapshot.project || {};
+  if ((project.root || '') === historyRoot) return;
+  historyRoot = project.root || '';
+  state.history = null;
+  if (state.view === 'history' && project.open) need('history', 'history', true);
 });

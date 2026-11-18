@@ -14,19 +14,20 @@ Three shapes:
 A message with a "method" is a request, whichever side sent it; one without is
 an answer to the receiver's own request of that id. Each side numbers its own.
 
-Calls nest, and many are outstanding at once. The core asks for a route and,
-while that is being answered, for a build; the build's agents each ask the core
-for their own rounds. So every request the core makes is answered on a thread
-of its own, and a call from any thread waits for the answer with its own id.
+Calls nest, and many are outstanding at once. The core asks for a chat turn
+and, while that is being answered, for a benchmark run or a conversation's
+name, and each of them asks the core for things of its own. So every request
+the core makes is answered on a thread of its own, and a call from any thread
+waits for the answer with its own id.
 Somebody has to read the pipe while they wait: serve() does, for the life of
 the process, and before it runs -- in the tests, which drive a channel by hand
 -- the first caller to find nobody reading reads for everyone.
 
-Whose a request is travels with it. The core says "context": "build" or
+Whose a request is travels with it. The core says "context": "bench" or
 "chat" on what it asks, the thread answering takes that on, and every call it
-makes says the same -- which is how the core knows whether the build's Stop or
-the chat's applies to an agent's round. A thread a handler starts keeps its
-context when started through spawn().
+makes says the same -- which is how the core knows whether the benchmark's Stop
+or the chat's applies to a call. A thread a handler starts keeps its context
+when started through spawn().
 """
 
 import json
