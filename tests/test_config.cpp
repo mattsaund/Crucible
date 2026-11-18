@@ -389,6 +389,23 @@ TEST(a_seat_whose_file_is_gone_is_not_shown_as_ready) {
           == SeatPhase::Unconfigured);
 }
 
+TEST(what_a_notice_put_on_the_status_line_goes_when_the_notices_are_cleared) {
+    // Opening a project clears what was said about the one before. The line
+    // kept "not trusted: choose a folder to work in" after one was opened.
+    AppState state;
+    state.add_notice("not trusted: choose a folder to work in");
+    CHECK_EQ(state.snapshot().status, std::string("not trusted: choose a folder to work in"));
+    state.clear_notices();
+    CHECK(state.snapshot().status.empty());
+    CHECK(state.snapshot().notices.empty());
+
+    // Something said since is not a notice's, and stays.
+    state.add_notice("not trusted: choose a folder to work in");
+    state.set_mood(Mood::Idle, "settings applied");
+    state.clear_notices();
+    CHECK_EQ(state.snapshot().status, std::string("settings applied"));
+}
+
 // ---------------------------------------------------------------------------
 // Saving the config (what the in-app settings screen does)
 // ---------------------------------------------------------------------------
