@@ -20,7 +20,7 @@ add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
-![A request worked in the chat: the expert's actions above its answer, the model at work in the corner](docs/images/build.png)
+![A question answered in the chat: the expert reads app.js, then answers, with the models in memory in the corner](docs/images/ask.png)
 
 ___
 ## Install
@@ -229,7 +229,7 @@ Every model, local or not, gets the same tools in a trusted folder:
 - Chats keep working while it serves. A request waits its turn.
 - It listens only while it is on.
 
-![The local server: on, its address, and the last requests](docs/images/server.png)
+![The local server over HTTPS: its certificate's SHA-256, its addresses on this machine and the network, and the last requests](docs/images/server.png)
 
 ### Hardware
 
