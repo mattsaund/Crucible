@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     1.0.0
-    DESCRIPTION "An all in one local AI workshop: build software with agents, chat with experts, and get, make and measure local models"
+    VERSION     1.0.1
+    DESCRIPTION "An all in one local AI workshop: build software and chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
 # A pre-release says so after the numbers ("-pre.1"). Crucible's update check
