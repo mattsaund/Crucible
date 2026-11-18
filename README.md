@@ -20,7 +20,7 @@ add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
-![A question answered in the chat: the expert reads app.js, then answers, with the models in memory in the corner](docs/images/ask.png)
+![One prompt, two experts: Qwen writes summary.html, then GPT OSS takes over for the README note](docs/images/ask.png)
 
 ___
 ## Install
