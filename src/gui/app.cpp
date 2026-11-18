@@ -58,10 +58,10 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     // Poked whenever the engine's state moves. Nothing is listening until
     // run() opens a window and says what a poke should do.
     engine_ = std::make_unique<Engine>(config_, state_, [this] { wake(); });
-    // No project, so no root and no history folder. The root is the permission
-    // an expert acts under, and there is nothing to act on yet: a WRITE in this
-    // state is refused, which is the right answer to "before you opened one".
-    engine_->set_project({}, {});
+    // No project, so no root. The root is the permission an expert acts
+    // under, and there is nothing to act on yet: a WRITE in this state is
+    // refused, which is the right answer to "before you opened one".
+    engine_->set_project({});
 }
 
 
@@ -122,7 +122,6 @@ void App::housekeeping() {
     name_sessions();
     name_old_session();
     absorb_starter_model();
-    absorb_made_seats();
     absorb_written_examples();
     absorb_finished_run();
     absorb_finished_build();
@@ -267,31 +266,8 @@ void App::absorb_starter_model() {
         return;
     }
     update_config([&file](Config& config) { starter::seat(config, *file); });
-    state_.add_notice(*file + " is ready, as Programming: the expert prompts and builds go to");
+    state_.add_notice(*file + " is ready, as Programming: the expert prompts go to");
     wake();
-}
-
-void App::absorb_made_seats() {
-    const std::vector<Engine::MadeSeat> made = engine_->take_made_seats();
-    if (made.empty()) {
-        return;
-    }
-    update_config([&made](Config& config) {
-        for (const Engine::MadeSeat& seat : made) {
-            if (config.roster.find(seat.expert.id)) {
-                continue;   // kept already, or added by hand meanwhile
-            }
-            std::string error;
-            config.roster.add(seat.expert, error);
-            config.experts[seat.expert.id] = seat.params;
-        }
-    });
-    for (const Engine::MadeSeat& seat : made) {
-        // So the delegator can route to it by more than its name, for the
-        // tasks and questions that come after this build.
-        engine_->write_examples(seat.expert.id);
-        say(seat.expert.name + " has joined the experts (a build made it)");
-    }
 }
 
 std::string App::open_project(const std::filesystem::path& root) {
@@ -299,10 +275,10 @@ std::string App::open_project(const std::filesystem::path& root) {
     if (!std::filesystem::is_directory(root, ec)) {
         return root.string() + " is not a directory";
     }
-    if (engine_->cooking() || engine_->is_busy()) {
-        // A cook is about the directory it started in, and its journal is keyed
-        // to it. Moving the ground under it would produce a record of work done
-        // somewhere it was not. The same goes for a turn still being written.
+    if (engine_->is_busy()) {
+        // A turn still being written is about the directory it started in.
+        // Moving the ground under it would have it work somewhere it was not
+        // asked to.
         return "finish or stop what is running before opening another project";
     }
 
@@ -317,12 +293,11 @@ std::string App::open_project(const std::filesystem::path& root) {
     persist_session();
 
     store_ = std::make_unique<SessionStore>(project);
-    engine_->set_project(project.root, project.dir);
+    engine_->set_project(project.root);
     engine_->reset_history();
     state_.clear_turns();
     state_.set_session_usage({});
     state_.clear_notices();
-    state_.set_cook(nullptr);
     state_.set_project_usage(store_->project_usage());
     persisted_turns_ = 0;
 
@@ -364,7 +339,7 @@ std::string App::open_scratchpad() {
 void App::close_project() {
     persist_session();
     store_.reset();
-    engine_->set_project({}, {});
+    engine_->set_project({});
     engine_->reset_history();
     state_.clear_turns();
     state_.set_session_usage({});
@@ -468,7 +443,7 @@ void App::name_old_session() {
         }
     }
     // Between prompts, with the delegator in memory already.
-    if (engine_->is_busy() || engine_->cooking() || !delegator_in_memory(state_)) {
+    if (engine_->is_busy() || !delegator_in_memory(state_)) {
         return;
     }
     {
@@ -535,7 +510,7 @@ std::string App::session_name() const {
 }
 
 std::string App::new_session() {
-    if (engine_->is_busy() || engine_->cooking()) {
+    if (engine_->is_busy()) {
         return "finish what is running before starting a new conversation";
     }
     // A new chat belongs to no project: the one on screen is put away, and
@@ -626,7 +601,7 @@ std::string App::open_session(const std::string& id) {
     if (!store_) {
         return "no project is open, and conversations are kept per project";
     }
-    if (engine_->is_busy() || engine_->cooking()) {
+    if (engine_->is_busy()) {
         return "finish what is running before opening another conversation";
     }
 
@@ -661,7 +636,7 @@ std::string App::open_session(const std::string& id) {
 }
 
 std::string App::delete_session(const std::string& id, const std::filesystem::path& root) {
-    if (engine_->is_busy() || engine_->cooking()) {
+    if (engine_->is_busy()) {
         return "finish what is running first";
     }
     const Project project = Project::at(root);
@@ -727,7 +702,7 @@ std::string App::test_begin(const std::string& recipe_id) {
         return "the trained file is not where the recipe says it is:\n"
                + recipe->trained_path;
     }
-    if (engine_->is_busy() || engine_->cooking()) {
+    if (engine_->is_busy()) {
         return "finish what is running first";
     }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// The conversation: what was asked, who answered and how, the builds that
-// messages became, and the one box the next message goes in.
+// The conversation: what was asked, who answered and how, and the one box
+// the next message goes in.
 
 // --- one turn -------------------------------------------------------------------
 
@@ -185,11 +185,6 @@ function transcriptStart(turns) {
     w.session = session;
     w.from = drawnFrom(turns, turns.length);
   }
-  // A build an agent was opened for is brought into sight, so it is drawn.
-  if (state.revealBuild) {
-    const asked = turns.findIndex((t) => t.build === state.revealBuild);
-    if (asked >= 0 && asked < w.from) w.from = asked;
-  }
   return w.from;
 }
 
@@ -201,14 +196,6 @@ function turnsView(turns, from, where) {
   const out = [];
   for (let index = first; index < turns.length; index += 1) {
     const turn = turns[index];
-    if (turn.build) {
-      // A message that became a build: its journal changes while the build
-      // runs and is read later for one that ran, so it is kept by what it
-      // came to rather than by what went into it (see region).
-      out.push(region(`build-${turn.build}`, `<div class="turn build-turn" data-key="t${index}" id="build-${
-        escape(turn.build)}">${buildTurnView(turn, index, busy)}</div>`));
-      continue;
-    }
     if (turn.streaming) {
       // Changing with every push, so drawn a block at a time instead.
       out.push(`<div class="turn" data-key="t${index}">${
@@ -311,8 +298,8 @@ afterDraw.push(() => readShown(blocksShown));
 
 /// Somewhere to start: about the project, when one is open. A chat with no
 /// project, or only its scratch folder with nothing in it yet, has no files
-/// to ask about, and is offered things that need none, a build among them:
-/// the same box makes software as answers questions.
+/// to ask about, and is offered things that need none, a small app among
+/// them: the same box makes software as answers questions.
 const OPENERS = ['What is in this project?', 'Explain a file to me', 'Find and fix a failing test'];
 const SCRATCH_OPENERS = ['Explain something to me', 'Summarize a document', 'Build a small web app'];
 
@@ -415,10 +402,8 @@ function tallyView() {
 // Two menus beside the plus, opening upward like it. The first is where a
 // prompt goes: to the delegator, which picks an expert for each one, or
 // straight to one expert -- what `/physics` does for a single prompt, kept
-// until it is changed back; a build sent to one is that expert's to plan and
-// work. The second is how hard a reasoning model thinks in a chat turn; a
-// model with no such setting is never sent it, and a build's rounds are sent
-// none (engine_cook.cpp, cook_round).
+// until it is changed back. The second is how hard a reasoning model thinks;
+// a model with no such setting is never sent it.
 
 const PICK = {
   route: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
@@ -451,10 +436,10 @@ function routeTarget() {
   return id && pickableExperts().some((e) => e.id === id) ? id : '';
 }
 
-function pickerButton(which, mode, icon, label, title, disabled) {
-  const open = state.menu === `${which}:${mode}` && !disabled;
+function pickerButton(which, mode, icon, label, title) {
+  const open = state.menu === `${which}:${mode}`;
   return `<button type="button" class="picker" data-act="${which}-menu" aria-haspopup="menu"
-      aria-expanded="${open}"${title ? ` title="${escape(title)}"` : ''} ${disabled ? 'disabled' : ''}>${icon}<span class="label">${
+      aria-expanded="${open}"${title ? ` title="${escape(title)}"` : ''}>${icon}<span class="label">${
       escape(label)}</span>${PICK.chevron}</button>`;
 }
 
@@ -464,10 +449,10 @@ function menuItem(act, value, label, hint, chosen, extra) {
       hint ? `<span class="mi-hint">${escape(hint)}</span>` : ''}<span class="mi-check">${chosen ? PICK.check : ''}</span></button>`;
 }
 
-function routePicker(mode, disabled) {
+function routePicker(mode) {
   const target = routeTarget();
   const label = target ? expertName(target) : 'Delegator';
-  const open = state.menu === `route:${mode}` && !disabled;
+  const open = state.menu === `route:${mode}`;
   const experts = pickableExperts();
   const menu = open ? `<div class="popmenu picks" role="menu">
       ${menuItem('route-pick', '', 'Delegator', '', !target, PICK.route)}
@@ -477,21 +462,20 @@ function routePicker(mode, disabled) {
         : '<div class="mi-empty">None with a model.</div>'}
     </div>` : '';
   return `<div class="menu-wrap">${pickerButton('route', mode, target ? PICK.seat : PICK.route, label,
-      target ? `Everything goes to ${label}` : 'The delegator picks the expert',
-      disabled)}${menu}</div>`;
+      target ? `Everything goes to ${label}` : 'The delegator picks the expert')}${menu}</div>`;
 }
 
-function effortPicker(mode, disabled) {
+function effortPicker(mode) {
   const current = state.snapshot.reasoning_effort || '';
   const chosen = EFFORTS.find((e) => e[0] === current) || EFFORTS[0];
-  const open = state.menu === `effort:${mode}` && !disabled;
+  const open = state.menu === `effort:${mode}`;
   const menu = open ? `<div class="popmenu picks" role="menu">
       <div class="mi-caption">REASONING EFFORT</div>
       ${EFFORTS.map(([value, label]) => menuItem('effort-pick', value, label, '', value === current)).join('')}
       <div class="mi-note">Reasoning models only</div>
     </div>` : '';
   return `<div class="menu-wrap">${pickerButton('effort', mode, PICK.effort, `${chosen[1]} effort`,
-      '', disabled)}${menu}</div>`;
+      '')}${menu}</div>`;
 }
 
 actions['route-menu']  = () => toggleMenu('route');
@@ -512,45 +496,28 @@ actions['effort-pick'] = (item) => {
   configure({ reasoning_effort: item.dataset.value || '' });
 };
 
-/// The box everything is typed into: a question, something to build, or the
-/// answer to what a build is asking.
+/// The box everything is typed into.
 ///
-/// One box, because what a message becomes is decided rather than chosen
-/// (the orchestrator's intent.py): a question is answered, a request for
-/// software becomes a build drawn in the conversation. While a build asks
-/// something, the box is for the answer. Otherwise it is never shut by one:
-/// a message typed while a build works is answered beside its agents, by the
-/// same experts, one model at a time each.
+/// One box, because there is one way a message is worked: whatever it asks,
+/// the expert it is routed to works on it with the tools until it is done,
+/// and the delegator brings in another when the next step needs one.
 function composerView() {
   const s = state.snapshot;
-  const cook = s.cook && s.cook.running ? s.cook : null;
-  const asking = !!cook && cook.state === 'asking';
-  const finishing = !!cook && cook.state === 'finishing';
   const auto_ = !!s.auto_edits;
-  const hint = asking ? 'answer the question above' : 'Ask or build anything';
 
   // Auto sits beside the box rather than in Settings because whether you are
   // watching an expert edit your files is a decision that changes between one
   // prompt and the next, and a switch you have to go and find is a switch that
-  // stays wherever it was last left. A build asks too, when it is off, and the
-  // switch takes effect from its next write -- so it is here while one runs.
+  // stays wherever it was last left. It takes effect from the next write, so
+  // it is here while a prompt works.
   const autoButton = `<button type="button" class="action toggle" data-act="auto-edits"
       aria-pressed="${auto_}">${auto_ ? 'Auto on' : 'Auto off'}</button>`;
 
-  // A build's two stops stay at hand while it runs, whichever pane is up,
-  // because they are different things: the first makes a finishing pass so
-  // the project is left in a state that runs, the second is a cancel and
-  // leaves it wherever it got to.
-  const stops = cook ? `${finishing ? '<span class="status composer-note">finishing up</span>' : ''}
-      <button type="button" class="action" data-act="cook-stop" ${finishing ? 'disabled' : ''}
-              title="Finish the build cleanly, then stop">Stop and finish</button>
-      <button type="button" class="action" data-act="build-cancel" title="Stop the build at once">Stop now</button>` : '';
-  const send = asking ? 'Answer' : 'Send';
-  const buttons = `${stops}${autoButton}
-      ${s.busy && !asking
+  const buttons = `${autoButton}
+      ${s.busy
         ? `<button type="button" class="send stop" data-act="stop" aria-label="${
              s.status === 'stopping' ? 'Stopping' : 'Stop'}">${PICK.stop}</button>`
-        : `<button class="send" aria-label="${escape(send)}">${PICK.up}</button>`}`;
+        : `<button class="send" aria-label="Send">${PICK.up}</button>`}`;
 
   // One rounded box: what is attached, then the text, then a row along the
   // bottom with the plus at one end and the buttons at the other. More can
@@ -559,15 +526,15 @@ function composerView() {
       <div class="splitter-y" id="composer-splitter" title="Drag to resize"></div>
       <form class="composer" data-submit="send" data-mode="chat">
         <div class="box">
-          ${asking ? '' : attachTiles('chat')}
+          ${attachTiles('chat')}
           <textarea id="prompt" data-draft data-sized data-key="composer-key" data-input="composer-grow"
                     data-paste="composer-paste"
-                    rows="${state.composerRows}" placeholder="${escape(hint)}" autocomplete="off"
+                    rows="${state.composerRows}" placeholder="Ask anything" autocomplete="off"
                     spellcheck="false">${escape(state.drafts.chat || '')}</textarea>
           <div class="box-bar">
-            ${attachButton('chat', asking)}
-            ${routePicker('chat', asking)}
-            ${effortPicker('chat', asking)}
+            ${attachButton('chat')}
+            ${routePicker('chat')}
+            ${effortPicker('chat')}
             <span class="spacer"></span>
             ${buttons}
           </div>
@@ -579,8 +546,7 @@ function composerView() {
 
 // --- the view -------------------------------------------------------------------------
 
-/// The conversation: every turn, those that became builds drawn as their
-/// builds, or somewhere to start when there are none.
+/// The conversation: every turn, or somewhere to start when there are none.
 ///
 /// No notices here: the transcript is the conversation and nothing else.
 /// What the program has to say goes to the side menu's status line, and a
@@ -593,7 +559,7 @@ function conversationView() {
 
 views.chat = () => {
   // The panes beside the conversation, once there is a folder to show (see
-  // build.js). The switcher sits above the scroller, not inside it: a long
+  // panes.js). The switcher sits above the scroller, not inside it: a long
   // conversation scrolled it out of reach. Only the conversation keeps to
   // its bottom as it grows; the other panes are read from the top, and a
   // tree or a preview toolbar scrolled out of sight is a pane with nothing
@@ -635,16 +601,7 @@ async function sending(box, text, work) {
 actions.send = (form) => {
   const box = form.querySelector('textarea');
   const text = box.value.trim();
-  const s = state.snapshot;
-  // While a build asks something, what is typed is the answer to it: the
-  // question is on screen, and the box under it answers it. What is
-  // attached stays where it is for the next prompt.
-  if (s.cook && s.cook.running && s.cook.state === 'asking') {
-    if (!text) return;
-    state.follow = true;
-    return guard(() => sending(box, text, () => call('cook.answer', { answer: text })));
-  }
-  if (s.busy) return;
+  if (state.snapshot.busy) return;
   // A question can be only its attachments: "here" and a PDF says enough.
   if (!text && !(state.attached.chat || []).length) return;
   const attachments = attachmentsFor('chat');
@@ -653,9 +610,6 @@ actions.send = (form) => {
     return render();
   }
   state.follow = true;
-  // A build this becomes opens on whichever of its agents is at work.
-  state.open.task = null;
-  state.open.taskOf = '';
   return guard(() => sending(box, text, async () => {
     // A slash and a name for this prompt wins over the menu's choice.
     const asked = pinned(text);
@@ -750,12 +704,10 @@ actions.opener = (chip) => {
 
 actions.stop = () => {
   // Said at once. Stopping a model mid-thought can take a moment, and a
-  // button that does nothing visible gets pressed again. The chat's turn
-  // only: a build running beside it has two stops of its own.
+  // button that does nothing visible gets pressed again.
   state.snapshot.status = 'stopping';
   guard(() => call('cancel'));
 };
-actions['build-cancel'] = () => guard(() => call('cook.cancel'));
 actions['turn-retry']  = (e) => guard(() => call('turn.retry',  { index: Number(e.dataset.index) }));
 actions['turn-delete'] = (e) => guard(() => call('turn.delete', { index: Number(e.dataset.index) }));
 actions['edit-allow']  = () => guard(() => call('edit.approve', { approved: true }));

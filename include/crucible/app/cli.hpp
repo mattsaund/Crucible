@@ -26,7 +26,7 @@ struct Options {
     bool runtime_status   = false;  ///< --runtime-status
 
     /// --install-python: fetch Crucible's own Python and exit. Routing and
-    /// cooks run on it; the window fetches it on first start otherwise.
+    /// the chat run on it; the window fetches it on first start otherwise.
     bool install_python = false;
 
     /// --install-kit: fetch the programs an expert reaches for that this

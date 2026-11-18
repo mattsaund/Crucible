@@ -739,7 +739,7 @@ Visual Studio Build Tools, then run this again:
         [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
         $addedToPath = $true
     }
-    # Crucible's own Python, which routing and cooks run on and the trainer is
+    # Crucible's own Python, which routing and the chat run on and the trainer is
     # built from. Always, -NoTrainer or not: without it no prompt is routed.
     # Never fatal: the window fetches it on first start if this could not.
     Stop-Progress

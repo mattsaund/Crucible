@@ -155,7 +155,6 @@ TEST(a_starter_is_seated_as_programming_and_everything_falls_back_to_it) {
     const ExpertId id = config.roster.experts().front().id;
     CHECK_EQ(config.roster.experts().front().name, std::string("Programming"));
     CHECK(config.has_expert(id));
-    CHECK_EQ(config.build.worker_model, std::string("coder.gguf"));
     CHECK_EQ(config.routing.default_expert, id);
 
     // Seats that were there keep their models; only the empty ones are filled.

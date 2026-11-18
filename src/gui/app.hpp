@@ -135,10 +135,6 @@ private:
 
     /// Fold in the worked examples the delegator wrote for new seats.
     void absorb_written_examples();
-
-    /// Keep the seats a build made for itself: into the config file, with
-    /// examples asked for, like a seat added by hand.
-    void absorb_made_seats();
     void absorb_starter_model();
 
     /// Ask for the conversation on screen to be named, once it has had an
@@ -276,8 +272,8 @@ private:
 
     std::size_t persisted_turns_ = 0;
     /// The newest revision among the finished turns last saved: a turn can
-    /// change after it finished (a build's reply arrives when it ends), and
-    /// that is a change to save as much as a new turn is.
+    /// change after it finished, and that is a change to save as much as a
+    /// new turn is.
     std::uint64_t persisted_revision_ = 0;
     std::string save_error_;   ///< the last save that failed, said once
 

@@ -4,7 +4,7 @@
 //
 // The suite itself -- which items, how each is asked, how an answer is
 // checked -- is Python, in the orchestrator (bench.py and bench_score.py),
-// for the reason the build loop is: it is orchestration, and checking an
+// for the reason a prompt's loop is: it is orchestration, and checking an
 // answer means regular expressions, LaTeX and running the code a model wrote,
 // each of which Python does in a line. What it asks of the core is what only
 // the core has: a model loaded on this machine's cards, its answers, the
@@ -354,12 +354,13 @@ std::vector<std::pair<int, int>> bench_rows::kept(const std::filesystem::path& f
     return pages;
 }
 
-/// The model under test: the seat that holds it, and the answers it is
-/// giving, each kept until the orchestrator takes it. The questions in
-/// flight are the batch's, and it goes first: declared last.
+/// The model under test: how it was loaded, the lease that holds it, and
+/// the answers it is giving, each kept until the orchestrator takes it. The
+/// questions in flight are the batch's, and it goes first: declared last.
 struct Engine::BenchModel {
-    std::shared_ptr<AgentSeat> seat;
-    LoadedModel*               model = nullptr;
+    ModelParams  params;
+    HeldModel    held;
+    LoadedModel* model = nullptr;
 
     std::mutex              mutex;
     std::condition_variable answered;
@@ -414,8 +415,8 @@ int Engine::bench_at_once(const ModelParams& model, int context) {
 }
 
 std::string Engine::start_bench(json request) {
-    if (cooking() || is_busy()) {
-        return "wait for the build or the reply to finish: a benchmark wants the cards to itself";
+    if (is_busy()) {
+        return "wait for the reply to finish: a benchmark wants the cards to itself";
     }
     if (benching_.exchange(true)) {
         return "a benchmark is already running";
@@ -445,7 +446,7 @@ std::string Engine::start_bench(json request) {
         if (wake_) {
             wake_();
         }
-        if (!busy_.load(std::memory_order_relaxed) && !cooking()) {
+        if (!busy_.load(std::memory_order_relaxed)) {
             tidy_models();
         }
     });
@@ -553,9 +554,7 @@ json Engine::serve_bench(const std::string& method, const json& params) {
             }
             at_once = at_once * 3 / 4;
         }
-        auto seat  = std::make_shared<AgentSeat>();
-        seat->id   = "bench";
-        seat->name = name;
+        auto bench = std::make_shared<BenchModel>();
         long        load_ms = 0;
         std::string error;
         state_.set_mood(Mood::Loading, "loading " + name + " for the benchmarks");
@@ -563,24 +562,22 @@ json Engine::serve_bench(const std::string& method, const json& params) {
             wake_();
         }
         if (at_once > 1) {
-            seat->params = many;
-            seat->held   = hold_model("bench", many, name, stopped, load_ms, error);
-            if (seat->held.model == nullptr && !stopped()) {
+            bench->params = many;
+            bench->held   = hold_model("bench", many, name, stopped, load_ms, error);
+            if (bench->held.model == nullptr && !stopped()) {
                 at_once = 1;   // one at a time, as it would load for a chat
                 error.clear();
             }
         }
         if (at_once <= 1) {
-            at_once      = 1;
-            seat->params = model;
-            seat->held   = hold_model("bench", model, name, stopped, load_ms, error);
+            at_once       = 1;
+            bench->params = model;
+            bench->held   = hold_model("bench", model, name, stopped, load_ms, error);
         }
-        auto* loaded = dynamic_cast<LoadedModel*>(seat->held.model);
+        auto* loaded = dynamic_cast<LoadedModel*>(bench->held.model);
         if (loaded == nullptr) {
             return json{{"ok", false}, {"error", error.empty() ? name + " could not be loaded" : error}};
         }
-        auto bench   = std::make_shared<BenchModel>();
-        bench->seat  = std::move(seat);
         bench->model = loaded;
         bench->batch = std::make_unique<BatchChat>(*loaded, at_once);
         at_once      = bench->batch->slots();
@@ -620,7 +617,7 @@ json Engine::serve_bench(const std::string& method, const json& params) {
         // Greedy and repeatable: the same item asked twice gets the same
         // answer, so two runs of one model agree and a difference between two
         // models is the models'.
-        ModelParams asked    = bench->seat->params;
+        ModelParams asked    = bench->params;
         asked.temperature    = 0.0F;
         asked.top_k          = 1;
         asked.top_p          = 1.0F;

@@ -155,7 +155,7 @@ CUDA runtime removes them too.
 
 ## Crucible's own Python
 
-Routing, the cook loop and the training environment run on a Python that
+Routing, the chat and the training environment run on a Python that
 Crucible fetches on its first start (or with `crucible --install-python`):
 a [CPython](https://www.python.org/) 3.14 build from the
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Talking to an expert, setting one to work, and what has been said before.
+// Talking to an expert, and what has been said before.
 #include "methods.hpp"
 
-#include "crucible/cook/journal.hpp"
 #include "crucible/session/store.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/tools/attachments.hpp"
@@ -81,8 +80,8 @@ Reply submit(const json& params, Host& host) {
     if (prompt.empty() && attachments.empty()) {
         return bad("submit needs a prompt");
     }
-    // Refused while a benchmark runs, as a build is (Engine::start_cook), and
-    // before anything else here is done for a turn that is not going to be.
+    // Refused while a benchmark runs, before anything else here is done for
+    // a turn that is not going to be.
     if (host.engine()->benching()) {
         return bad("benchmark running");
     }
@@ -103,11 +102,10 @@ Reply submit(const json& params, Host& host) {
     }
     // An expert named here skips routing, which is what `/physics ...` does.
     // An empty one is not an error: it is the normal case, and it means "let
-    // the delegator decide". "answer" keeps the prompt from becoming a build,
-    // whatever it asks for: see Engine::submit.
+    // the delegator decide".
     const auto expert = params.value("expert", std::string{});
     host.engine()->submit(prompt, expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
-                          std::move(attachments), params.value("answer", false));
+                          std::move(attachments));
     return good();
 }
 
@@ -242,118 +240,6 @@ Reply edit_approve(const json& params, Host& host) {
 }
 
 // ---------------------------------------------------------------------------
-// A cook
-// ---------------------------------------------------------------------------
-
-/// A cook or a build, started; `started` is told the journal's id.
-Reply start_work(const json& params, Host& host, std::string* started) {
-    if (host.engine() == nullptr) {
-        return no_engine();
-    }
-    const auto goal = params.value("goal", std::string{});
-    if (goal.empty()) {
-        return bad("cook.start needs a goal");
-    }
-    // Said here as well as by start_cook, before a Scratchpad folder is made
-    // for a build that is not going to start.
-    if (host.engine()->benching()) {
-        return bad("benchmark running");
-    }
-    // A cook reads and writes files, so it needs somewhere it is allowed to:
-    // the project, or the Scratchpad when none is open.
-    if (host.project_root().empty()) {
-        if (const std::string refused = host.open_scratchpad(); !refused.empty()) {
-            return bad(refused);
-        }
-    }
-    const std::filesystem::path root = host.project_root();
-    if (root.empty()) {
-        return bad("no project is open, and a cook works on a project");
-    }
-    std::vector<attach::Attachment> attachments;
-    std::string error;
-    if (!read_attachments(params, attachments, error)) {
-        return bad(error);
-    }
-    // An expert named here starts the cook, as on submit; empty lets the
-    // delegator choose.
-    const auto expert = params.value("expert", std::string{});
-    const std::string refused =
-        host.engine()->start_cook(goal, params.value("seconds", 0), root, std::move(attachments),
-                                  expert.empty() ? std::nullopt : std::optional<ExpertId>(expert),
-                                  params.value("kind", std::string("cook")) == "build" ? "build" : "cook",
-                                  started);
-    if (!refused.empty()) {
-        return bad(refused);
-    }
-    return good();
-}
-
-Reply cook_start(const json& params, Host& host) { return start_work(params, host, nullptr); }
-
-/// A build: a directive the architect plans and the agents carry out. The
-/// same door as a cook with the kind set, so the two cannot drift apart.
-///
-/// And a turn of the conversation on screen, as a build a message became is
-/// (Turn::build): the window draws it there, and what it leaves is
-/// remembered. Opened here, since nobody typed it into the box: Apply to
-/// source in the preview asks for one.
-Reply build_start(const json& params, Host& host) {
-    json as_cook = params;
-    if (params.contains("directive") && !params.contains("goal")) {
-        as_cook["goal"] = params["directive"];
-    }
-    as_cook["kind"] = "build";
-    if (as_cook.value("goal", std::string{}).empty()) {
-        return bad("build.start needs a directive");
-    }
-    std::string id;
-    Reply started = start_work(as_cook, host, &id);
-    if (started.error.empty() && host.state() != nullptr && !id.empty()) {
-        std::vector<attach::Attachment> attachments;
-        std::string                     error;
-        read_attachments(as_cook, attachments, error);
-        Turn turn;
-        turn.prompt = as_cook.value("goal", std::string{});
-        turn.build  = id;
-        for (const attach::Attachment& one : attachments) {
-            turn.attachments.push_back(attach::tile_of(one));
-        }
-        host.state()->restore_turn(std::move(turn));
-        host.wake();
-    }
-    return started;
-}
-
-Reply cook_stop(const json&, Host& host) {
-    if (host.engine() == nullptr) {
-        return no_engine();
-    }
-    // Not a cancel: the cook stops taking new work and makes a finishing
-    // pass. The distinction is the whole reason stop_cook exists.
-    host.engine()->stop_cook();
-    return good();
-}
-
-/// Stop now, for the build: its agents stop mid-round. The chat's Stop is
-/// `cancel`, and the two leave each other alone.
-Reply cook_cancel(const json&, Host& host) {
-    if (host.engine() == nullptr) {
-        return no_engine();
-    }
-    host.engine()->cancel_cook();
-    return good();
-}
-
-Reply cook_answer(const json& params, Host& host) {
-    if (host.engine() == nullptr) {
-        return no_engine();
-    }
-    host.engine()->answer_cook(params.value("answer", std::string{}));
-    return good();
-}
-
-// ---------------------------------------------------------------------------
 // What has been done before
 // ---------------------------------------------------------------------------
 
@@ -363,58 +249,15 @@ Reply history(const json&, const Scene& scene) {
     }
     const Project project = Project::at(scene.project);
 
+    // Conversations only. A project's folder may still hold the records of
+    // builds from before every prompt was worked in one loop; nothing lists
+    // them, and they are left where they are.
     json sessions = json::array();
     for (const SessionSummary& one : SessionStore(project).list()) {
         sessions.push_back(json{{"id", one.id}, {"title", one.name.empty() ? one.title : one.name},
                                 {"when", one.when()}, {"turns", one.turns}});
     }
-    json cooks = json::array();
-    for (const CookSummary& one : CookLog(project.dir).list()) {
-        cooks.push_back(json{{"id", one.id}, {"goal", one.goal}, {"kind", one.kind},
-                             {"tasks", one.tasks},
-                             {"state", std::string(cook_state_name(one.state))},
-                             {"when", one.when()},
-                             {"files", one.files},
-                             {"steps", one.steps},
-                             {"seconds", static_cast<long long>(one.duration.count())}});
-    }
-    return good(json{{"sessions", sessions}, {"cooks", cooks}});
-}
-
-/// One cook's journal, whole. Read rather than reopened: a finished cook is a
-/// record of what was done, and there is nothing in it to resume.
-Reply history_cook(const json& params, const Scene& scene) {
-    const auto what = params.value("id", std::string{});
-    if (what.empty()) {
-        return bad("history.cook needs an id");
-    }
-    if (scene.project.empty()) {
-        return bad("no project is open");
-    }
-    const std::optional<Cook> cook = CookLog(Project::at(scene.project).dir).load(what);
-    if (!cook) {
-        return bad("no cook called " + what);
-    }
-    json steps = json::array();
-    for (const CookStep& step : cook->steps) {
-        steps.push_back(cook_step_json(step));
-    }
-    json tasks = json::array();
-    for (const CookTask& task : cook->tasks) {
-        tasks.push_back(cook_task_json(task));
-    }
-    return good(json{{"id", what}, {"goal", cook->goal}, {"outcome", cook->outcome},
-                     {"kind", cook->kind},
-                     {"plan", json{{"summary", cook->plan.summary}, {"run", cook->plan.run},
-                                   {"check", cook->plan.check}, {"ship", cook->plan.ship}}},
-                     {"tasks", std::move(tasks)},
-                     {"attachments", attachments_json(cook->attachments)},
-                     {"state", std::string(cook_state_name(cook->state))},
-                     {"headline", cook->headline()},
-                     {"files", cook->files_touched()},
-                     {"experts", cook->experts_used()},
-                     {"seconds", static_cast<long long>(cook->duration().count())},
-                     {"steps", std::move(steps)}});
+    return good(json{{"sessions", sessions}});
 }
 
 /// Open a stored conversation -- in another project, when `project` names
@@ -504,13 +347,7 @@ void conversation_methods(std::vector<Method>& table) {
     table.push_back({"turn.retry",   nullptr, turn_retry});
     table.push_back({"turn.delete",  nullptr, turn_delete});
     table.push_back({"edit.approve", nullptr, edit_approve});
-    table.push_back({"cook.start",   nullptr, cook_start});
-    table.push_back({"build.start",  nullptr, build_start});
-    table.push_back({"cook.stop",    nullptr, cook_stop});
-    table.push_back({"cook.cancel",  nullptr, cook_cancel});
-    table.push_back({"cook.answer",  nullptr, cook_answer});
     table.push_back({"history",      history, nullptr});
-    table.push_back({"history.cook", history_cook, nullptr});
     table.push_back({"history.open", nullptr, history_open});
     table.push_back({"session.new",  nullptr, session_new});
     table.push_back({"session.delete", nullptr, session_delete});

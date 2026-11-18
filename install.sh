@@ -1636,7 +1636,7 @@ path_advice() {
 # --------------------------------------------------------------------------
 # What the program fetches for itself: its Python, the runtimes, the trainer
 # --------------------------------------------------------------------------
-# Crucible's own Python, which routing and cooks run on -- and the trainer is
+# Crucible's own Python, which routing and the chat run on -- and the trainer is
 # built from. Always, --no-trainer or not: without it no prompt is routed.
 # Tens of megabytes, so it goes first. Never fatal: the window fetches it on
 # first start if this could not.

@@ -215,9 +215,8 @@ const aligned = (align, i) =>
 /// An opening fence: the mark, and the language when one is named.
 const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+#.-]*)/;
 
-/// Text already drawn, by itself: what draws a build's plan, a task's
-/// outcome or a README runs on every push, and the text is the same for as
-/// long as it is on screen.
+/// Text already drawn, by itself: what draws a reply or a README runs on
+/// every push, and the text is the same for as long as it is on screen.
 const markdownDrawn = new Map();
 
 function markdown(src) {

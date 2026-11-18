@@ -89,7 +89,7 @@ public:
     /// The experts `keep` holds stay, and the new one is loaded beside them
     /// when it fits. When it does not, `crowded` is set and nothing is
     /// loaded -- the caller waits for a lease to end and asks again, rather
-    /// than this freeing a model an agent is generating with.
+    /// than this freeing a model somebody is generating with.
     ///
     /// The delegator is not freed here: the engine does that, between
     /// routes, when needs_router_room says the expert needs its room.

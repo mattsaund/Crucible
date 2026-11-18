@@ -92,9 +92,9 @@ struct ModelParams {
     bool own_caches = false;
 
     /// The most context a load may take beyond `n_ctx` when the cards hold
-    /// it, or 0 for `n_ctx` exactly. A build's agent asks for more: it reads
-    /// whole files and thinks before every action, and a reply with no cap
-    /// stops where the context ends. Never written to the config. See
+    /// it, or 0 for `n_ctx` exactly. A turn with the tools asks for more: it
+    /// reads whole files and thinks before every action, and a reply with no
+    /// cap stops where the context ends. Never written to the config. See
     /// ModelHost::with_room.
     int n_ctx_most = 0;
 
@@ -361,12 +361,6 @@ struct ToolsConfig {
     /// not a rare event -- it is a Tuesday. The toggle is in the chat bar rather
     /// than buried here, because whether you are watching is a decision that
     /// changes between one prompt and the next.
-    ///
-    /// A cook ignores this and always applies. A cook is an hour of work you
-    /// started and walked away from; stopping it on the first write to ask a
-    /// question nobody is there to answer would mean it never gets past the
-    /// first write. Its record is the journal, and every step in it expands to
-    /// the diff that step made.
     bool auto_edits = false;
 
     /// What to do when the conversation outgrows the context. See Overflow.
@@ -376,9 +370,9 @@ struct ToolsConfig {
     /// integer happened to be written.
     std::string overflow = "rolling";
 
-    /// Seconds a single command may take before it is killed. A build is
-    /// minutes; a command still going after this is stuck, and a cook waiting
-    /// on it has stopped cooking.
+    /// Seconds a single command may take before it is killed. A build of a
+    /// project is minutes; a command still going after this is stuck, and a
+    /// prompt waiting on it has stopped working.
     ///
     /// The last of what used to be three switches here. Reading, writing and
     /// running in the project directory were each a setting of their own, on
@@ -403,47 +397,6 @@ struct ToolsConfig {
 
     /// MCP servers whose tools every expert is offered, through TOOL.
     std::vector<McpServer> mcp;
-};
-
-/// How a build is run: who plans it, what a seat made for it runs on, and
-/// what is done between its tasks. See scripts/orchestrator's build.py.
-struct BuildConfig {
-    /// The seat that writes the plan and the write-up. Empty lets the
-    /// delegator pick for the directive, which is right until a roster has a
-    /// seat that is plainly the architect -- a frontier model, usually.
-    ExpertId architect;
-
-    /// The model a seat the build makes for itself runs on -- "CSS layout",
-    /// "SQL schema" -- when nobody on the roster fits a task. A file in the
-    /// models folder or a provider's model, as a seat's. Empty makes none:
-    /// every task then goes to whoever fits best among the seats there are.
-    std::string worker_model;
-    std::string worker_provider;
-
-    /// Commit after each task that finishes, starting a repository when the
-    /// project has none. The record of a build in the project's own history,
-    /// a task at a time, which is also what makes a bad task undoable.
-    bool auto_commit = true;
-
-    /// Put the plan to the person before the first task starts.
-    bool confirm_plan = true;
-
-    /// Rounds a task may take before the build moves on without it.
-    int rounds_per_task = 40;
-
-    /// How many agents may work at once. Tasks the plan says do not wait on
-    /// each other, and that touch different files, are worked side by side:
-    /// a provider's model answers any number at a time, and each model on
-    /// this machine has one agent at a time, since two agents on one model
-    /// take turns at it and throw away each other's cache.
-    int agents = 3;
-
-    /// Frontier models for the heavy lifting, local ones for the small tasks,
-    /// when the roster has both: a task the plan calls large goes to a
-    /// provider's model, and a small one to a model on this machine, each the
-    /// best of its kind for the work. Saves a provider's tokens on what a
-    /// local model does as well.
-    bool split = true;
 };
 
 /// What to do when a conversation no longer fits in the context.
@@ -591,7 +544,6 @@ struct Config {
     RoutingConfig routing;
     GpuConfig     gpu;
     ToolsConfig   tools;
-    BuildConfig   build;
     UiConfig      ui;
     ServerConfig  server;
 

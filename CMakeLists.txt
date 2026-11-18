@@ -155,9 +155,6 @@ add_library(crucible_core STATIC
     src/session/usage.cpp
     src/session/store.cpp
 
-    # cook: the long-running improvement loop and the record it keeps
-    src/cook/journal.cpp
-
     # lab: making a model rather than running one -- what a custom model is
     # made of, and browsing the hub for the pieces
     src/lab/recipe.cpp
@@ -209,7 +206,6 @@ add_library(crucible_core STATIC
     src/engine/overflow.cpp
     src/engine/state.cpp
     src/engine/engine.cpp
-    src/engine/engine_cook.cpp
     src/engine/engine_chat.cpp
     src/engine/engine_bench.cpp
     src/engine/engine_serve.cpp
@@ -455,7 +451,6 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_routing.cpp
         tests/test_tools.cpp
-        tests/test_cook.cpp
         tests/test_config.cpp
         tests/test_devices.cpp
         tests/test_runtime.cpp

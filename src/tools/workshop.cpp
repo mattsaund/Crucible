@@ -21,8 +21,8 @@
 //     model that means its text as a description will otherwise get a file
 //     named after it. See plausible_path.
 //   - attempted_tool_call spots the near-misses -- the right verb in the wrong
-//     shape -- so the cook loop can answer with the syntax instead of treating
-//     a malformed call as an answer.
+//     shape -- so the loop can answer with the syntax instead of treating a
+//     malformed call as an answer.
 //
 // The containment itself is resolve_in_root, and its order is the point:
 // weakly_canonical runs first, so a symlink is followed before anything is
@@ -149,8 +149,9 @@ std::string unquote(std::string_view text) {
 /// that means the text as a description, and obeying it would put the
 /// description into the file in place of the code.
 ///
-/// The cook loop notices the colon-less form of the strict verbs and replies
-/// with the syntax rather than guessing -- see engine_cook.cpp.
+/// The loop notices the colon-less form of the strict verbs and replies with
+/// the syntax rather than guessing -- see nudge_for in the orchestrator's
+/// steps.py.
 bool colon_optional(ToolKind kind) {
     return kind == ToolKind::List || kind == ToolKind::Read;
 }
@@ -2795,7 +2796,7 @@ ToolResult run_tool(const ToolCall& call, const WorkshopSettings& settings,
     // Whatever a tool brought in -- a Latin-1 file, a listing of names that
     // are bytes, output cut at the size limit in the middle of a character --
     // leaves here as UTF-8, because it is about to be kept as JSON: in the
-    // session, in a cook's journal, and in what the window is sent.
+    // session, and in what the window is sent.
     ToolResult result = run_tool_as_is(call, settings, search, cancel);
     if (!call.unrun.empty()) {
         result.output += "\n\nOne call per reply: \"" + call.unrun + "\" after it was not run. "
@@ -2853,15 +2854,14 @@ ToolResult run_tool_as_is(const ToolCall& call, const WorkshopSettings& settings
         case ToolKind::None:
             break;
     }
-    // Ask, Done and Handoff are answers to the cook loop rather than actions,
-    // and it handles them before ever reaching here.
+    // Ask, Done and Handoff are answers to the loop rather than actions, and
+    // are never run.
     return failure("nothing to do");
 }
 
 }  // namespace
 
-std::string workshop_instructions(const WorkshopSettings& settings,
-                                  ToolAudience audience) {
+std::string workshop_instructions(const WorkshopSettings& settings) {
     if (!settings.enabled) {
         return {};
     }
@@ -2922,23 +2922,10 @@ std::string workshop_instructions(const WorkshopSettings& settings,
             }
         }
     }
-    text += "NOTE: <what you are doing>  recorded in the log, no other effect\n";
-    if (audience == ToolAudience::Chat) {
-        text +=
+    text += "NOTE: <what you are doing>  recorded in the log, no other effect\n"
             "HANDOFF: <the next step>   the next step needs another kind of expertise --\n"
             "                           say what it is, in one line, and an expert for it\n"
             "                           takes over from here\n";
-    }
-    if (audience == ToolAudience::Cook) {
-        text +=
-            "ASK: <question>            ask the user something you cannot work out\n"
-            "DONE: <what you changed>   this piece of work is finished\n"
-            "HANDOFF: <the next work>   this piece is done and the next needs a "
-            "different\n"
-            "                           kind of expertise -- say what it is, in one "
-            "line,\n"
-            "                           and the right expert will be brought in\n";
-    }
     text +=
         "\nThe colon is required. One call per reply, on its own line, and nothing "
         "after it. Paths are relative to the project root and cannot leave it.\n";
@@ -2957,15 +2944,13 @@ std::string workshop_instructions(const WorkshopSettings& settings,
                     "was asked for is something to be made.\n";
         }
     }
-    if (audience == ToolAudience::Chat) {
-        // Said plainly, because the alternative failure is the visible one: an
-        // expert that has finished the work and then writes "DONE: fixed it",
-        // leaving the person who asked with a status line instead of an answer.
-        text +=
-            "\nKeep going, one action a reply, until what was asked is done. When it is,"
-            " write the answer for the person who asked -- no verb, no status line. If"
-            " you need something from them, just ask it in the reply.\n";
-    }
+    // Said plainly, because the alternative failure is the visible one: an
+    // expert that has finished the work and then writes "DONE: fixed it",
+    // leaving the person who asked with a status line instead of an answer.
+    text +=
+        "\nKeep going, one action a reply, until what was asked is done. When it is,"
+        " write the answer for the person who asked -- no verb, no status line. If"
+        " you need something from them, just ask it in the reply.\n";
     // A worked example, because the rules alone are not enough. Told only the
     // shape, models write `WRITE path "a description of the change"` and expect
     // that to be applied -- which would put the description into the file in

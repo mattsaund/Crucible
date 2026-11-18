@@ -1,5 +1,5 @@
 {
-  "about": "build-tasks.json with Programming's worked questions taken away, so that it is asked about in its description instead (Roster.asked in routing.py). A build has shown no seat's worked questions beside a task since 1.0.0, so routed as one (\"tasks\") these score as build-tasks.json does; with --method worked, which shows them, they still measure a seat without any.",
+  "about": "steps.json with Programming's worked questions taken away, so that it is asked about in its description instead (Roster.asked in routing.py). A step handed on is shown no seat's worked questions, so routed as one (\"tasks\") these score as steps.json does; with --method worked, which shows them, they still measure a seat without any.",
   "tasks": true,
   "roster": [
     {"id": "programming", "name": "Programming", "tag": "PROG", "blurb": "Writing and running code: apps, websites, Python, JavaScript, HTML and CSS, shell, tests, builds, fixing errors.", "keywords": ["code", "programming", "app", "website", "python", "javascript"], "examples": []},

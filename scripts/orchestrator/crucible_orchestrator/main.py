@@ -3,30 +3,14 @@
 
 import sys
 
-from . import PROTOCOL, chat, intent, naming, routing
+from . import PROTOCOL, chat, naming, routing
 from .rpc import Channel
 
 
 def handlers(channel):
-    # Builds, cooks and benchmarks are read in the first time one is asked
-    # for, not as this starts: they are most of the package, a chat turn needs
-    # none of them, and the first prompt of a session waited on all of it.
-    cores = []
-
-    def core():
-        from . import cook
-        if not cores:
-            cores.append(cook.Core(channel))
-        return cores[0]
-
-    def cook_run(params):
-        from . import cook
-        return cook.run(core(), params)
-
-    def build_run(params):
-        from . import build
-        return build.run(core(), params)
-
+    # Benchmarks are read in the first time one is asked for, not as this
+    # starts: they are most of the package, a chat turn needs none of them,
+    # and the first prompt of a session waited on all of it.
     def bench_run(params):
         from . import bench
         return bench.run(channel, params)
@@ -35,11 +19,7 @@ def handlers(channel):
         "ping": lambda params: {"pong": params.get("say", "")},
         "route": lambda params: routing.route(channel, params).to_json(),
         "route.explain": lambda params: routing.explain(channel, params),
-        "decide": lambda params: intent.decide(channel, params).to_json(),
-        "decide.odds": lambda params: intent.odds(channel, params),
         "chat.turn": lambda params: chat.turn(channel, params),
-        "cook.run": cook_run,
-        "build.run": build_run,
         "bench.run": bench_run,
         "name.session": lambda params: naming.name_session(channel, params),
         "examples.write": lambda params: naming.write_examples(channel, params),

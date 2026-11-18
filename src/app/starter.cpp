@@ -67,10 +67,6 @@ void seat(Config& config, const std::string& file) {
             params.provider.clear();
         }
     }
-    if (config.build.worker_model.empty()) {
-        config.build.worker_model = file;
-        config.build.worker_provider.clear();
-    }
     if (config.routing.default_expert.empty() && !config.roster.empty()) {
         config.routing.default_expert = config.roster.experts().front().id;
     }

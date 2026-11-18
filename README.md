@@ -20,7 +20,7 @@ add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
-![A build asked for in the chat: its agents in the side menu, the model at work in the corner](docs/images/build.png)
+![A request worked in the chat: the expert's actions above its answer, the model at work in the corner](docs/images/build.png)
 
 ___
 ## Install
@@ -41,8 +41,8 @@ Open Anyway**.
 
 - Crucible's own Python (no system Python needed or touched)
 - the compute runtimes the machine can use (CPU, CUDA, Metal, Vulkan)
-- the programs agents use, like GitHub's CLI, Node.js, a headless browser, Git
-  on Windows and a text reader for pictures on Linux
+- the programs experts use, like GitHub's CLI, Node.js, a headless browser,
+  Git on Windows and a text reader for pictures on Linux
 - with no model at all, an open coding model sized to the machine (Qwen,
   Apache-2.0), seated as **Programming**
 - the fine-tuner's environment
@@ -81,39 +81,39 @@ curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install.sh 
 ___
 ## What it does
 
-### Ask or build
+### Ask for anything
 
-- **One box.** Ask a question and the right expert answers it. Ask for
-  software, like "a budgeting app that charts my gross and net revenue", and it
-  becomes a build. There is no mode to pick.
-- For a build, the architect writes a plan. Type *go*, or what to change.
-- Agents take the tasks side by side, each the expert that fits it. When
-  nobody on the roster fits, the build adds one and keeps it.
-- **Frontier and local together.** Large tasks go to a provider's model, small
-  ones to a model on this machine.
-- Each finished task is committed. A check runs at the end, and the architect
-  writes up what was built.
-- **A change is a sentence.** "Make the button blue" is one task, made and shown.
-- The **agents** are listed under the experts in the side menu. Click one for
-  its task, its steps and its code.
-- The build is a turn of the conversation, so "now add dark mode" knows the
-  project. Ask something else while it runs, and it answers beside it.
+- **One box, one loop.** Ask for anything. The expert works on it with the
+  tools until it is done, and the delegator brings in another expert when the
+  next step needs one.
+- A question is answered. Ask for software, like "a budgeting app that charts
+  my gross and net revenue", and the expert reads, writes and runs what it
+  takes, an action at a time, until the app is there.
+- **The expert can change mid-prompt.** When the next step wants another kind
+  of expertise, the delegator picks who takes it, and that expert carries on
+  with the same conversation.
+- Each action is shown above the reply, with the diff it made or the output it
+  printed.
+- **A change is a sentence.** "Make the button blue" is made and shown.
+- Every prompt is a turn of the conversation, so "now add dark mode" knows the
+  project.
 
 ### Code
 
 - **An editor** beside the conversation, with tabs, a file tree, find and replace,
   search across the project, Ctrl+P to open a file by a few letters, and a
   terminal.
-- A file an agent changes while it is open reloads. Unsaved work is never
+- A file an expert changes while it is open reloads. Unsaved work is never
   written over.
 
 ![The code editor, with the project's files beside it](docs/images/code.png)
 
 ### Preview, tune, ship
 
-- **Preview** shows the page being built and reloads as agents write it.
+- **Preview** shows the page being made and reloads as an expert writes it.
 - **Pick an element**, then nudge padding, margin, fonts, colors and more.
-  **Apply to source** writes the change into the stylesheet.
+  **Apply to source** hands the change to an expert, who writes it into the
+  stylesheet.
 - **Make it an app**, a program of its own in Applications, the Start menu or
   the applications menu. It runs without Crucible and keeps its own data.
 - **Source** is git, with changes, diffs, commits, pull, push, history and CI
@@ -186,7 +186,6 @@ Every model, local or not, gets the same tools in a trusted folder:
   largest models go down to IQ2 or IQ1, made after a pass over sample text that
   finds the weights that matter most. Every size is measured first and marked
   by how it fits.
-- Builds keep what frontier models did as data to teach local ones.
 
 ![Condensing: every size, measured, and how each fits](docs/images/condense.png)
 
@@ -225,7 +224,7 @@ Every model, local or not, gets the same tools in a trusted folder:
   a key.
 - HTTPS when you turn it on, with your own certificate or one Crucible makes
   for this machine and keeps. Settings shows its SHA-256 to check it by.
-- Chats and builds keep working while it serves. A request waits its turn.
+- Chats keep working while it serves. A request waits its turn.
 - It listens only while it is on.
 
 ![The local server: on, its address, and the last requests](docs/images/server.png)
@@ -247,7 +246,7 @@ Every model, local or not, gets the same tools in a trusted folder:
 - A chat with no project gets a folder of its own in `~/.crucible/Scratchpad`
   (hidden). The right-hand panel lists recent chats and projects.
 
-![Every build and chat of a project](docs/images/history.png)
+![Every chat of a project](docs/images/history.png)
 
 ___
 ## Settings and keys
@@ -296,7 +295,7 @@ MIT, see [LICENSE](LICENSE). What is compiled in is listed in
 
 Some things are fetched rather than shipped, each under its own license.
 Crucible's Python (PSF License), the fine-tuner (mostly Apache-2.0, BSD and
-MIT, with NVIDIA's proprietary CUDA libraries on NVIDIA machines), the agents'
+MIT, with NVIDIA's proprietary CUDA libraries on NVIDIA machines), the experts'
 programs, the starter model (Apache-2.0), the benchmarks' questions and every
 model's weights.
 

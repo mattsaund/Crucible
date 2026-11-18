@@ -422,9 +422,9 @@ TEST(a_colon_is_still_required_where_being_wrong_costs_something) {
 }
 
 TEST(a_near_miss_is_recognized_so_it_can_be_corrected) {
-    // Not executed -- named, so the cook loop can answer with the syntax
-    // instead of a generic "take an action", which is how a whole cook goes by
-    // with nothing written.
+    // Not executed -- named, so the loop can answer with the syntax instead
+    // of a generic "take an action", which is how a whole prompt goes by with
+    // nothing written.
     CHECK(tools::attempted_tool_call("WRITE calc.py \"Fixed it\"", "")
           == tools::ToolKind::Write);
     CHECK(tools::attempted_tool_call("RUN ./calc.py", "") == tools::ToolKind::Run);
@@ -439,8 +439,7 @@ TEST(a_near_miss_is_recognized_so_it_can_be_corrected) {
 TEST(the_instructions_show_the_write_shape_rather_than_only_describing_it) {
     tools::WorkshopSettings settings;
     settings.enabled = true;
-    const std::string text =
-        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    const std::string text = tools::workshop_instructions(settings);
 
     // Told only the rules, models write `WRITE path "a description"` and expect
     // it to be applied. A worked example is the cheapest thing that stops that.
@@ -456,8 +455,8 @@ TEST(a_handoff_names_the_next_piece_of_work) {
     if (!call) {
         return;
     }
-    // It is not executed like a file operation: the cook loop reads it, sends
-    // the line back through the delegator, and whoever wins takes the seat.
+    // It is not executed like a file operation: the loop reads it, sends the
+    // line through the delegator, and whoever wins takes the seat.
     CHECK(call->kind == tools::ToolKind::Handoff);
     CHECK_EQ(call->argument, std::string("write the API documentation for the parser"));
 
@@ -467,47 +466,25 @@ TEST(a_handoff_names_the_next_piece_of_work) {
     CHECK(!tools::run_tool(*call, settings, tools::SearchSettings{}, {}).ok);
 }
 
-TEST(the_instructions_offer_a_handoff_to_a_cook_and_not_to_a_chat) {
+TEST(the_instructions_offer_a_handoff_and_not_done) {
     tools::WorkshopSettings settings;
     settings.enabled = true;
 
-    // An expert that does not know it can hand over will never do it, and the
-    // roster stays a list of seats only one of which ever gets used.
-    const std::string cook =
-        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
-    CHECK(cook.find("HANDOFF:") != std::string::npos);
-    CHECK(cook.find("DONE:") != std::string::npos);
-
     // A prompt is worked in one loop, and the next step can go to another
-    // expert, so a chat turn may hand off. It is not told DONE: offered it,
-    // an expert that has finished the work ends the turn with a status line,
-    // and the person who asked gets "DONE: fixed it" instead of an answer.
-    const std::string chat =
-        tools::workshop_instructions(settings, tools::ToolAudience::Chat);
-    CHECK(chat.find("HANDOFF: <the next step>") != std::string::npos);
-    CHECK(chat.find("DONE:") == std::string::npos);
+    // expert, so a turn may hand off: an expert that does not know it can
+    // hand over will never do it, and the roster stays a list of seats only
+    // one of which ever gets used. It is not told DONE: offered it, an expert
+    // that has finished the work ends the turn with a status line, and the
+    // person who asked gets "DONE: fixed it" instead of an answer.
+    const std::string text = tools::workshop_instructions(settings);
+    CHECK(text.find("HANDOFF: <the next step>") != std::string::npos);
+    CHECK(text.find("DONE:") == std::string::npos);
 
-    // The verbs that act on the project are the same either way: what differs
-    // is how the work ends, not what may be touched.
-    CHECK(chat.find("READ:") != std::string::npos);
-    CHECK(chat.find("WRITE:") != std::string::npos);
-    CHECK(chat.find("RUN:") != std::string::npos);
-}
-
-TEST(a_cook_records_every_expert_that_held_the_seat) {
-    Cook cook;
-    cook.steps.push_back(step_of(1, "programming", "write", "wrote parse.py", true, 0, {"parse.py"}));
-    cook.steps.push_back(step_of(1, "programming", "run",   "$ pytest",       true, 0, {}));
-    cook.steps.push_back(step_of(2, "programming", "handoff", "document the parser", true, 0, {}));
-    cook.steps.push_back(step_of(2, "language",    "write", "wrote README.md", true, 0, {"README.md"}));
-    cook.steps.push_back(step_of(3, "programming", "write", "fixed a typo",    true, 0, {"parse.py"}));
-
-    // In the order they first took the seat, and each once however often they
-    // come back.
-    const std::vector<ExpertId> used = cook.experts_used();
-    CHECK_EQ(used.size(), std::size_t{2});
-    CHECK_EQ(used[0], ExpertId("programming"));
-    CHECK_EQ(used[1], ExpertId("language"));
+    // Every verb that acts on the project is there, whoever asks: what a
+    // prompt may touch is the folder's to say.
+    CHECK(text.find("READ:") != std::string::npos);
+    CHECK(text.find("WRITE:") != std::string::npos);
+    CHECK(text.find("RUN:") != std::string::npos);
 }
 
 TEST(a_command_runs_in_the_project_and_reports_its_status) {
@@ -559,12 +536,6 @@ TEST(a_file_named_two_ways_is_recorded_once) {
     }
     CHECK_EQ(first.changed[0], std::string("src/calc.py"));
     CHECK_EQ(second.changed[0], first.changed[0]);
-
-    // Which is what makes the journal's file count mean something.
-    Cook cook;
-    cook.steps.push_back(step_of(1, "programming", "write", "a", true, 0, first.changed));
-    cook.steps.push_back(step_of(1, "programming", "write", "b", true, 0, second.changed));
-    CHECK_EQ(cook.files_touched().size(), std::size_t{1});
 }
 
 TEST(a_command_starts_in_the_project_but_is_not_confined_to_it) {
@@ -627,7 +598,7 @@ TEST(a_command_that_never_finishes_is_killed) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start);
 
-    // A cook that waits forever on a stuck command has stopped cooking.
+    // A prompt that waits forever on a stuck command has stopped working.
     CHECK(!result.ok);
     CHECK(elapsed.count() < 10);
     CHECK(result.summary.find("timed out") != std::string::npos);
@@ -680,18 +651,15 @@ TEST(long_output_keeps_its_head_and_its_tail) {
 TEST(the_instructions_only_offer_what_the_settings_allow) {
     tools::WorkshopSettings settings;
     // Off: say nothing. An untrusted folder produces exactly this.
-    CHECK(tools::workshop_instructions(settings, tools::ToolAudience::Cook).empty());
-    CHECK(tools::workshop_instructions(settings, tools::ToolAudience::Chat).empty());
+    CHECK(tools::workshop_instructions(settings).empty());
 
     settings.enabled = true;
-    const std::string on =
-        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    const std::string on = tools::workshop_instructions(settings);
     CHECK(on.find("READ:") != std::string::npos);
     CHECK(on.find("RUN:") != std::string::npos);
 
     settings.allow_run = false;
-    const std::string no_run =
-        tools::workshop_instructions(settings, tools::ToolAudience::Cook);
+    const std::string no_run = tools::workshop_instructions(settings);
     CHECK(no_run.find("READ:") != std::string::npos);
     // Offering a verb that will be refused wastes a whole round trip and
     // teaches the model the protocol is unreliable.

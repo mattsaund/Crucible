@@ -137,10 +137,21 @@ TEST(a_request_with_no_method_says_so) {
 
 TEST(everything_that_moves_a_model_refuses_without_an_engine) {
     api::Surface surface = bare();
-    for (const std::string method : {"snapshot", "submit", "cancel", "release",
-                                     "cook.start", "cook.stop", "edit.approve"}) {
+    for (const std::string method : {"snapshot", "submit", "cancel", "release", "edit.approve"}) {
         const json reply = ask(surface, json{{"id", 1}, {"method", method}}.dump());
         CHECK(reply["ok"] == false);
+    }
+}
+
+TEST(there_is_no_build_to_start_stop_or_list) {
+    // Every prompt is worked in one loop: a build was a mode of its own, with
+    // its methods, and they are gone rather than kept as doors to nothing.
+    api::Surface surface = bare();
+    for (const std::string method : {"cook.start", "cook.stop", "cook.cancel", "cook.answer", "build.start",
+                                     "history.cook", "teach.list"}) {
+        const json reply = ask(surface, json{{"id", 1}, {"method", method}}.dump());
+        CHECK(reply["ok"] == false);
+        CHECK(reply.value("error", std::string()).find("no method called") != std::string::npos);
     }
 }
 
@@ -509,42 +520,28 @@ TEST(the_page_is_sent_a_turn_it_already_has_as_a_stub) {
     CHECK(json::parse(page.turns_json(hand.turns))[0]["prompt"] == "hi");
 }
 
-TEST(the_page_is_sent_a_journal_once_while_it_stays_the_same) {
-    auto cook = std::make_shared<Cook>();
-    cook->id           = "b1";
-    cook->started_unix = 100;
-    cook->ended_unix   = 160;   // over, so how long it ran does not move
-    auto edit = std::make_shared<const PendingEdit>(PendingEdit{"a.py", "a = 1\n", "a = 2\n"});
+TEST(the_page_is_sent_a_large_part_once_while_it_stays_the_same) {
+    auto edit  = std::make_shared<const PendingEdit>(PendingEdit{"a.py", "a = 1\n", "a = 2\n"});
+    auto bench = std::make_shared<const json>(json{{"running", true}, {"models", json::array()}});
 
     api::PageParts parts;
     Snapshot first;
-    first.cook         = cook;
     first.pending_edit = edit;
+    first.bench        = bench;
     CHECK(parts.keep(first).empty());
-    CHECK(first.cook == cook);
+    CHECK(first.pending_edit == edit);
 
     // The same again: left out, and named.
     Snapshot again;
-    again.cook         = cook;
     again.pending_edit = edit;
-    CHECK(parts.keep(again) == json::array({"cook", "pending_edit"}));
-    CHECK(again.cook == nullptr);
+    again.bench        = bench;
+    CHECK(parts.keep(again) == json::array({"pending_edit", "bench"}));
     CHECK(again.pending_edit == nullptr);
+    CHECK(again.bench == nullptr);
 
-    // A journal published again is sent again; an edit answered is gone.
+    // A run published again is sent again; an edit answered is gone.
     Snapshot later;
-    later.cook = std::make_shared<Cook>(*cook);
+    later.bench = std::make_shared<const json>(*bench);
     CHECK(parts.keep(later).empty());
-    CHECK(later.cook != nullptr);
-
-    // A running one, whose time moves, is the same only within the second.
-    auto running = std::make_shared<Cook>();
-    running->started_unix = static_cast<std::int64_t>(std::time(nullptr)) - 30;
-    Snapshot one;
-    one.cook = running;
-    parts.keep(one);
-    Snapshot two;
-    two.cook = running;
-    const json same = parts.keep(two);
-    CHECK(same.empty() || same == json::array({"cook"}));
+    CHECK(later.bench != nullptr);
 }
