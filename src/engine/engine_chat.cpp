@@ -114,9 +114,18 @@ json Engine::parse_reply(const json& params) {
     // web_search.hpp.
     const std::string search = tools::search_request(answer, reasoning);
     if (!call) {
+        // A near miss, named so the loop can say what was wrong. A WRITE or an
+        // EDIT after a sentence on its line is one as well, "inline": it was
+        // the place on the line that was wrong, not the colon.
+        tools::ToolKind attempted = tools::attempted_tool_call(answer, reasoning);
+        bool            inside    = false;
+        if (attempted == tools::ToolKind::None) {
+            attempted = tools::call_inside_a_line(answer, reasoning);
+            inside    = attempted != tools::ToolKind::None;
+        }
         return json{{"call", nullptr},
-                    {"attempted", std::string(tools::tool_kind_name(
-                                      tools::attempted_tool_call(answer, reasoning)))},
+                    {"attempted", std::string(tools::tool_kind_name(attempted))},
+                    {"inline", inside},
                     {"search", search}};
     }
     // All of it, because the orchestrator hands the call straight back to

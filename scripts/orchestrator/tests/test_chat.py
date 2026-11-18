@@ -34,6 +34,9 @@ def parse(answer):
     search = re.search(r"^SEARCH: ?(.*)$", answer, re.M)
     if not match:
         near = re.search(r"^(%s) \S" % "|".join(VERBS), answer, re.M)
+        inside = re.search(r"^.*\S (WRITE|EDIT): ?\S.*\n(```|<{5,9} ?SEARCH)", answer, re.M)
+        if not near and inside:
+            return {"call": None, "attempted": inside.group(1).lower(), "inline": True, "search": ""}
         return {"call": None, "attempted": near.group(1).lower() if near else "none", "search": ""}
     content = ""
     if match.group(1) == "WRITE":
@@ -602,6 +605,16 @@ class Loop(unittest.TestCase):
         core = run(ScriptedCore([said("WRITE index.html"), said("WRITE: index.html\n```\nx\n```"),
                                  said("Made it.")], auto_edits=True))
         self.assertEqual(core.sent[1][-1]["content"], chat.steps.nudge_for({"attempted": "write"}))
+        self.assertEqual(core.ran, [("write", "index.html")])
+        self.assertEqual(core.reply, "Made it.")
+
+    def test_a_call_after_a_sentence_on_its_line_is_told_to_start_a_line(self):
+        core = run(ScriptedCore([said("Here is the page. WRITE: index.html\n```\nx\n```"),
+                                 said("WRITE: index.html\n```\nx\n```"), said("Made it.")],
+                                auto_edits=True))
+        nudge = core.sent[1][-1]["content"]
+        self.assertEqual(nudge, chat.steps.nudge_for({"attempted": "write", "inline": True}))
+        self.assertIn("WRITE has to start a line of its own", nudge)
         self.assertEqual(core.ran, [("write", "index.html")])
         self.assertEqual(core.reply, "Made it.")
 

@@ -238,6 +238,14 @@ std::optional<ToolCall> parse_tool_call(std::string_view answer, std::string_vie
 /// syntax. Returns None for a reply that was not trying to call anything.
 ToolKind attempted_tool_call(std::string_view answer, std::string_view reasoning);
 
+/// A WRITE or an EDIT written after a sentence on its line, "Here it is.
+/// WRITE: style.css", with what goes with it (a fence, an edit's block) on the
+/// lines after. A call starts a line, so this is prose to parse_tool_call,
+/// and running it could run a command an answer only mentions. With its body
+/// after it, though, it was meant, and the caller says where it goes. None
+/// for anything else, a RUN in a sentence included.
+ToolKind call_inside_a_line(std::string_view answer, std::string_view reasoning);
+
 /// Resolve `relative` inside `root`.
 ///
 /// Returns nothing when the result would be outside it -- an absolute path, a
