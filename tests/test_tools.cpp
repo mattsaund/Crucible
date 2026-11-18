@@ -78,6 +78,14 @@ TEST(a_write_body_is_taken_from_a_fence_a_sentinel_or_the_rest) {
              std::string("# Haiku\n\n## The Haiku\n\n```\nRed leaves fall,\n```\n\n## Imagery\nWarm."));
     CHECK_EQ(body("WRITE: a.md\nText\n"), std::string("Text"));
     CHECK_EQ(body("WRITE: a.md\n```\nText\n```\ncode\n```\n```\n"), std::string("Text\n```\ncode\n```"));
+    // The same with the body's own last fence left off, as GPT OSS leaves it:
+    // the block's two fences are a pair, and the body runs to the end.
+    CHECK_EQ(body("WRITE: README.md\n```\n# Haiku\nThe haiku is:\n\n```\nRed leaves\n```\n\nWarm."),
+             std::string("# Haiku\nThe haiku is:\n\n```\nRed leaves\n```\n\nWarm."));
+    CHECK_EQ(body("WRITE: a.txt\n```\nabc\ndef"), std::string("abc\ndef"));
+    // Words after the body's end, and a block of a named language after
+    // them, are not the file's.
+    CHECK_EQ(body("WRITE: a.txt\n```\nabc\n```\nThen run it:\n```bash\nnode a.js\n```\n"), std::string("abc"));
 }
 
 TEST(a_reply_that_says_something_is_answering_not_calling_a_tool) {

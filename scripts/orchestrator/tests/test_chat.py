@@ -635,6 +635,14 @@ class Loop(unittest.TestCase):
         run(once)
         self.assertEqual(once.reply, "They fail on the date.")
 
+    def test_a_write_the_length_limit_cut_off_is_not_written_and_is_asked_for_again(self):
+        core = run(ScriptedCore([said("WRITE: README.md\n```\n# Haiku\nThe haiku is", hit_limit=True),
+                                 said("WRITE: README.md\n```\n# Haiku\n```"), said("Written.")],
+                                auto_edits=True))
+        self.assertEqual(core.ran, [("write", "README.md")])
+        self.assertEqual(core.sent[1][-1], {"role": "user", "content": chat.CUT_OFF})
+        self.assertEqual(core.reply, "Written.")
+
     def test_a_reply_that_repeats_itself_is_stopped_and_asked_once_more(self):
         core = run(ScriptedCore([said("again again again", looped=True), said("Plainly, once.")]))
         self.assertTrue(core.systems[1].endswith(chat.REPEATED_ITSELF))

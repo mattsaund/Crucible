@@ -305,45 +305,33 @@ std::string collect_body(const std::vector<std::string>& lines, std::size_t& ind
 
     if (const Fence open = fence_of(lines[index]); open.length > 0) {
         ++index;  // the opening fence, and whatever language tag it carried
-        // A call is the last thing in its reply, so a reply that ends on a
-        // bare fence of the opening's mark ends the body there, whatever
-        // blocks the file has in it. A README that showed a haiku in a bare
-        // block of its own was written up to where that block opened: a bare
-        // fence opening a block reads the same as one closing the body.
-        std::size_t last = lines.size();
-        while (last > index && trim(lines[last - 1]).empty()) {
-            --last;
-        }
-        if (last > index) {
-            const Fence end = fence_of(lines[last - 1]);
-            if (end.bare && end.mark == open.mark && end.length >= open.length) {
-                for (; index + 1 < last; ++index) {
-                    append(lines[index]);
-                }
-                index = last;  // past the closing fence
-                return body;
-            }
-        }
-        // Otherwise, as a file is often written with fences of its own in it
-        // (a README's ```bash) and ending the body at the first fence line
-        // wrote half of it and said nothing: a fence naming a language opens
-        // a block inside the body, a bare one closes the innermost, and the
-        // body ends at a bare fence of its own mark at least as long, with
-        // none open.
+        // Which fence ends the body. A fence naming a language opens a block
+        // inside it, and a bare one closes the innermost of those. A bare
+        // fence with none open is either the body's end or a block of its own
+        // opening, and the two read the same: a README that showed a haiku in
+        // a bare block was written up to where that block opened. So they are
+        // counted. They come in pairs, a block's opening and its closing, and
+        // an odd one out is the body's end. With none left over the body has
+        // no end of its own and runs to the end of the reply, as GPT OSS
+        // writes one, leaving its last fence off.
+        std::vector<std::size_t> loose;
         int inside = 0;
-        while (index < lines.size()) {
-            const Fence fence = fence_of(lines[index]);
-            if (fence.length > 0 && fence.mark == open.mark) {
-                if (!fence.bare) {
-                    ++inside;
-                } else if (inside > 0) {
-                    --inside;
-                } else if (fence.length >= open.length) {
-                    break;
-                }
+        for (std::size_t at = index; at < lines.size(); ++at) {
+            const Fence fence = fence_of(lines[at]);
+            if (fence.length == 0 || fence.mark != open.mark) {
+                continue;
             }
+            if (!fence.bare) {
+                ++inside;
+            } else if (inside > 0) {
+                --inside;
+            } else if (fence.length >= open.length) {
+                loose.push_back(at);
+            }
+        }
+        const std::size_t end = loose.size() % 2 == 1 ? loose.back() : lines.size();
+        for (; index < end; ++index) {
             append(lines[index]);
-            ++index;
         }
         if (index < lines.size()) {
             ++index;  // the closing fence

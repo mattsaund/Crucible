@@ -168,6 +168,12 @@ PINNED_ON = "\n\nThis request was sent to you by name, so it stays with you. Car
 FAILED_LAST = ("That last action failed: {}. If what was asked still needs it, fix it and carry "
                "on. Otherwise answer, and say what failed.")
 
+# A write or an edit in a reply the length limit cut off: what it would have
+# written is not all there, and a file is never left half written.
+CUT_OFF = ("That reply was cut off by the length limit before the end of what you were "
+           "writing, so nothing was written. Write it again, shorter, or in parts: WRITE the "
+           "first part, then EDIT to add the rest.")
+
 # A reply that went round in a loop and was stopped.
 REPEATED_ITSELF = ("\n\nYour last reply started repeating itself and was stopped. Write it "
                    "again, plainly and once.")
@@ -747,6 +753,14 @@ class Turn:
                 log.append({"role": "assistant", "content": answer})
                 log.append({"role": "user", "content": NOT_RUN})
                 final = True
+                continue
+
+            # --- a file cut off -------------------------------------------------
+            if hit_limit and kind in ("write", "edit"):
+                earlier = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                self.show(reply=earlier)
+                log.append({"role": "assistant", "content": answer})
+                log.append({"role": "user", "content": CUT_OFF})
                 continue
 
             # --- the same call again --------------------------------------------
