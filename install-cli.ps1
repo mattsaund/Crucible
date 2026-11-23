@@ -31,7 +31,13 @@ $parts = @()
 if ($userPath) { $parts = $userPath.Split(';') | Where-Object { $_ } }
 
 if ($Uninstall) {
-    if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+    if (Test-Path $root) {
+        try {
+            Remove-Item -Recurse -Force $root
+        } catch {
+            throw 'Close every cruciblecli first, then run this again.'
+        }
+    }
     Set-UserPath ($parts | Where-Object { $_ -ne $bin })
     Write-Host 'cruciblecli is gone. Your models, settings and chats are still there.'
     return
@@ -73,13 +79,19 @@ try {
 
     New-Item -ItemType Directory -Force -Path (Split-Path $root) | Out-Null
     if (Test-Path $root) {
-        try {
-            Remove-Item -Recurse -Force $root
-        } catch {
-            throw 'Close every cruciblecli first, then run this again.'
+        # A program that is running can be neither deleted nor overwritten, and
+        # /update runs this from inside one. It can be moved aside, though, so
+        # the old files step out of the way and go once nothing is using them.
+        $old = { Get-ChildItem $root -Recurse -File -Filter '*.old' | Remove-Item -Force -ErrorAction SilentlyContinue }
+        & $old
+        Get-ChildItem $root -Recurse -File | Where-Object { $_.Extension -ne '.old' } | ForEach-Object {
+            Move-Item -LiteralPath $_.FullName -Destination "$($_.FullName).$(Get-Random).old" -Force
         }
+        Copy-Item -Path (Join-Path $unpacked '*') -Destination $root -Recurse -Force
+        & $old
+    } else {
+        Move-Item $unpacked $root
     }
-    Move-Item $unpacked $root
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

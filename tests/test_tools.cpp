@@ -565,7 +565,9 @@ TEST(a_path_written_from_the_top_of_the_project_is_in_the_project) {
     CHECK(at("/home/nobody-here/project/README.md") == root / "README.md");
     // What is really on the disk outside it stays outside.
     CHECK(!at("/etc/hosts").has_value());
-    CHECK(!at("/usr").has_value());
+#if !defined(_WIN32)
+    CHECK(!at("/usr").has_value());   // a folder here, and no such thing on Windows
+#endif
     // And a made-up folder for a file it does not have is not made in it.
     CHECK(!at("/home/nobody-here/project/new.txt").has_value());
     // Climbing out is climbing out, however it is written.

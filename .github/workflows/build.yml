@@ -585,7 +585,9 @@ jobs:
           "$hash  cruciblecli-windows-x86_64.zip" | Set-Content -NoNewline dist-cli\cruciblecli-windows-x86_64.zip.sha256
 
       # The one-line installer, on the real thing: it installs, the engine
-      # answers over its pipe, and it comes off again.
+      # answers over its pipe, installing again works while that engine is
+      # running (which is what /update does), the engine ends when its pipe
+      # closes, and it all comes off again.
       - name: The terminal download installs and answers
         shell: pwsh
         run: |
@@ -594,9 +596,29 @@ jobs:
           $root = Join-Path $env:LOCALAPPDATA 'Programs\CrucibleCLI'
           & "$root\bin\cruciblecli.exe" --version
           if ($LASTEXITCODE -ne 0) { throw 'cruciblecli did not run' }
-          $answer = '{"id":1,"method":"ping"}' | & "$root\bin\crucible-engine.exe" 2>$null |
-              Where-Object { $_ -match '"id":1' } | Select-Object -First 1
+          $info = [Diagnostics.ProcessStartInfo]::new("$root\bin\crucible-engine.exe")
+          $info.UseShellExecute = $false
+          $info.RedirectStandardInput = $true
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          $engine = [Diagnostics.Process]::Start($info)
+          $null = $engine.StandardError.ReadToEndAsync()
+          $engine.StandardInput.WriteLine('{"id":1,"method":"ping"}')
+          $engine.StandardInput.Flush()
+          $answer = ''
+          for ($i = 0; $i -lt 200 -and $answer -notmatch '"id":1'; $i++) { $answer = $engine.StandardOutput.ReadLine() }
           if ($answer -notmatch '"ok":true') { throw "the engine did not answer over its pipe: $answer" }
+          $null = $engine.StandardOutput.ReadToEndAsync()
+          & .\install-cli.ps1
+          & "$root\bin\cruciblecli.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'cruciblecli did not run after installing over a running one' }
+          $engine.StandardInput.Close()
+          if (-not $engine.WaitForExit(30000)) {
+              $engine.Kill()
+              throw 'the engine did not end when its pipe closed'
+          }
+          & .\install-cli.ps1
+          if (Get-ChildItem $root -Recurse -File -Filter '*.old') { throw 'old files were left behind' }
           & .\install-cli.ps1 -Uninstall
           if (Test-Path $root) { throw 'it is still there after uninstalling' }
 
