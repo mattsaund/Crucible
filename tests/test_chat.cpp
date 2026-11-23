@@ -552,6 +552,39 @@ TEST(a_turn_asks_before_it_writes_and_a_no_leaves_the_file_alone) {
     CHECK(rig.snapshot().pending_edit == nullptr);
 }
 
+TEST(a_round_that_thinks_for_too_long_is_stopped_and_asked_again) {
+    Rig rig(script({reply("READ: notes.txt"), json{{"reasoning", std::string(20000, 'r')}},
+                    reply("It says PERIWINKLE, and needs no fix."), reply("DONE")}));
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    write_file(rig.project() / "notes.txt", "PERIWINKLE\n");
+    const Turn turn = rig.ask("Fix the notes if they need it.");
+    CHECK(!turn.failed);
+    CHECK(!turn.canceled);
+    CHECK_EQ(turn.reply, std::string("It says PERIWINKLE, and needs no fix."));
+    CHECK(rig.requests().size() >= 3);
+}
+
+TEST(a_write_that_changes_nothing_is_not_put_to_the_person) {
+    Rig rig(script({reply("WRITE: same.txt\n```\nhello\n```"), reply("It already said that.")}));
+    if (!rig.ready()) {
+        skipped();
+        return;
+    }
+    write_file(rig.project() / "same.txt", "hello\n");
+    bool asked = false;
+    const Turn turn = rig.ask("Thanks for that.", std::nullopt, {}, [&](const Snapshot& now) {
+        if (now.pending_edit) {
+            asked = true;
+            rig.engine().approve_edit(false);
+        }
+    });
+    CHECK(!asked);
+    CHECK_EQ(turn.reply, std::string("It already said that."));
+}
+
 TEST(a_turn_writes_when_the_person_says_yes) {
     Rig rig(script({reply("Here it is.\nWRITE: out.txt\n```\nhello\n```"), reply("Written.")}));
     if (!rig.ready()) {
@@ -668,9 +701,11 @@ TEST(a_turn_works_past_a_dozen_actions_until_it_answers) {
     CHECK_EQ(turn.actions.size(), std::size_t{20});
     CHECK_EQ(turn.reply, std::string("Twenty files, and none of them is Hamlet."));
     CHECK(!turn.failed);
-    // The account carries what scrolled out of the window.
+    // Each round continues the one before it under the same instructions, so
+    // a model reads only what is new. Nothing here is near filling the context.
     const std::vector<json> requests = rig.requests();
-    CHECK(has(text_of(requests.back()["messages"].front()), "What has been done for this request so far"));
+    CHECK_EQ(text_of(requests.back()["messages"].front()), text_of(requests.front()["messages"].front()));
+    CHECK_EQ(requests.back()["messages"].size(), std::size_t{42});
 }
 
 TEST(a_turn_that_calls_even_with_no_tools_offered_says_so_and_remembers_what_the_expert_said) {
@@ -806,7 +841,9 @@ TEST(a_turn_that_keeps_searching_is_asked_to_answer_and_says_why_when_it_will_no
 // Turns that end without an answer
 
 TEST(a_turn_with_no_answer_says_which_setting_to_look_at) {
+    // Nothing said is asked about twice before it is taken for the end.
     Rig rig(script({json{{"reasoning", "Let me think about this at length."}, {"finish", "length"}},
+                    json{{"content", ""}, {"tokens", 3}}, json{{"content", ""}, {"tokens", 3}},
                     json{{"content", ""}, {"tokens", 3}}}));
     if (!rig.ready()) {
         skipped();
@@ -820,7 +857,7 @@ TEST(a_turn_with_no_answer_says_which_setting_to_look_at) {
     CHECK_EQ(quiet.reply, std::string("(stopped without answering)"));
     // Neither is history: there was nothing said to remember.
     rig.ask("Hello?");
-    CHECK_EQ(rig.requests().at(2)["messages"].size(), std::size_t{2});
+    CHECK_EQ(rig.requests().at(4)["messages"].size(), std::size_t{2});
 }
 
 TEST(a_provider_that_fails_fails_the_turn_and_it_is_not_remembered) {

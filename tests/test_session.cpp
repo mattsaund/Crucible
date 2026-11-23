@@ -482,6 +482,39 @@ TEST(a_reopened_answer_still_says_how_much_went_in) {
     }
 }
 
+TEST(a_conversation_opened_again_shows_what_each_turn_did) {
+    TempDir temp;
+    const ScopedDataHome scoped(temp.path());
+    SessionStore store(Project::current());
+
+    Turn turn = finished_turn("make a page", "Made it.", 0);
+    turn.actions.push_back(TurnAction{"read app.js", "", "", ""});
+    turn.actions.push_back(TurnAction{"created index.html  +3", "+<h1>Hi</h1>\n", "index.html", ""});
+    turn.actions.push_back(TurnAction{"Writing takes over: the README", "", "", ""});
+    turn.actions.push_back(TurnAction{"rendered index.html to page.png", "", "", "/tmp/page.png"});
+    // A body too long to keep keeps its line.
+    turn.actions.push_back(TurnAction{"ran the tests", std::string(200 * 1024, 'x'), "", ""});
+    std::string error;
+    CHECK(store.save({turn}, TokenUsage{}, error));
+
+    std::vector<Turn> loaded;
+    TokenUsage        usage;
+    CHECK(store.load(store.session_id(), loaded, usage, error));
+    CHECK_EQ(loaded.size(), std::size_t{1});
+    if (!loaded.empty()) {
+        CHECK_EQ(loaded[0].actions.size(), std::size_t{5});
+    }
+    if (!loaded.empty() && loaded[0].actions.size() == 5) {
+        CHECK_EQ(loaded[0].actions[0].summary, std::string("read app.js"));
+        CHECK_EQ(loaded[0].actions[1].body, std::string("+<h1>Hi</h1>\n"));
+        CHECK_EQ(loaded[0].actions[1].language, std::string("index.html"));
+        CHECK_EQ(loaded[0].actions[2].summary, std::string("Writing takes over: the README"));
+        CHECK_EQ(loaded[0].actions[3].picture, std::string("/tmp/page.png"));
+        CHECK_EQ(loaded[0].actions[4].summary, std::string("ran the tests"));
+        CHECK(loaded[0].actions[4].body.empty());
+    }
+}
+
 TEST(a_conversation_from_when_a_message_could_become_a_build_opens_as_what_it_left) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());

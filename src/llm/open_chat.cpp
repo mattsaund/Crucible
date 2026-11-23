@@ -301,6 +301,19 @@ const common_chat_templates* LoadedModel::chat_templates(std::string& error) {
     return templates_.get();
 }
 
+bool LoadedModel::speaks_tools() {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
+    std::string                  why;
+    const common_chat_templates* templates = chat_templates(why);
+    if (templates == nullptr) {
+        return false;
+    }
+    const std::map<std::string, bool> caps = common_chat_templates_get_caps(templates);
+    const auto                        tools = caps.find("supports_tools");
+    const auto                        calls = caps.find("supports_tool_calls");
+    return tools != caps.end() && tools->second && calls != caps.end() && calls->second;
+}
+
 OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSink& sink) {
     const std::lock_guard<std::recursive_mutex> lock(use_);
     OpenChatResult result;
@@ -327,8 +340,9 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         // Tools the model may not call are not shown it: a small model shown
         // a tool calls it, whatever it was told, and the call would come back
         // as words.
-        if (!request.tools.is_null() && request.tool_choice != "none") {
-            inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(request.tools.dump()));
+        if ((!request.tools.is_null() || !request.tools_text.empty()) && request.tool_choice != "none") {
+            inputs.tools = common_chat_tools_parse_oaicompat(
+                common_json::parse(request.tools_text.empty() ? request.tools.dump() : request.tools_text));
         }
         inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(request.tool_choice);
         const std::map<std::string, bool> caps = common_chat_templates_get_caps(templates);
@@ -417,13 +431,26 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
             inputs.messages = common_chat_msgs_parse_oaicompat(
                 common_json::parse(messages.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
             session.emplace(templates, vocab, inputs);
+            const std::string written = session->prompt().str();
+            if (!request.must_call.empty()) {
+                common_chat_templates_inputs held = inputs;
+                held.tools.erase(std::remove_if(held.tools.begin(), held.tools.end(),
+                                                [&](const common_chat_tool& tool) {
+                                                    return tool.name != request.must_call;
+                                                }),
+                                 held.tools.end());
+                if (!held.tools.empty()) {
+                    held.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+                    session.emplace(templates, vocab, held);
+                }
+            }
             closing.clear();
             if (request.effort == "none" && !session->thinking_end_tags().empty()
                 && detail::inside_thinking(session->generation_prompt(), session->thinking_start_tag(),
                                            session->thinking_end_tags())) {
                 closing = session->thinking_end_tags().front();
             }
-            return session->prompt().str() + closing;
+            return written + closing;
         } catch (const std::exception& e) {
             bool              raised = false;
             const std::string said   = detail::template_said(e.what(), &raised);
@@ -588,11 +615,19 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     said += pending.text;
     try {
         handing.update(session->finish(pending), true);
-    } catch (const std::exception&) {
+    } catch (const std::exception& finished) {
         // The end of it is in no shape the parser knows -- cut off by
         // max_tokens partway through a call, say. What was handed on stands,
         // and an answer none of which could be read is sorted the way the
         // chat sorts one, its thinking from its words, rather than lost.
+        ggml_log_callback log  = nullptr;
+        void*             user = nullptr;
+        llama_log_get(&log, &user);
+        if (log != nullptr) {
+            const std::string line = std::string("crucible: a reply could not be read as this model's format: ")
+                                   + finished.what() + "\n";
+            log(GGML_LOG_LEVEL_WARN, line.c_str(), user);
+        }
         const common_chat_msg& shown = handing.shown();
         if (shown.content.empty() && shown.reasoning_content.empty() && shown.tool_calls.empty()) {
             ResponseFilter          filter;

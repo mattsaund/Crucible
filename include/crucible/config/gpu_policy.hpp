@@ -117,10 +117,8 @@ inline constexpr bool kDirectIoReal = false;
 namespace detail {
 
 /// The memory settings stamped onto one model, as apply_gpu_policy stamps
-/// them on a machine with a GPU or without one, where direct I/O reads past
-/// the page cache or does not (kDirectIoReal, on this one). Apart so that
-/// the tests can ask it of every system from any one of them.
-void stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu, bool direct_io_real);
+/// them on a machine with a GPU or without one.
+void stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu);
 
 }  // namespace detail
 

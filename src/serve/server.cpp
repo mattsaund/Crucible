@@ -428,6 +428,30 @@ std::string read_tools(const json& body, Ask& ask, std::string& param) {
     return {};
 }
 
+/// The tools `ask` offers, as text, as the client wrote them. Read again from
+/// the request, because a json object sorts its keys and llama.cpp's parsers
+/// hold a model to the order of the schema.
+std::string tools_in_order(const std::string& raw, const Ask& ask) {
+    if (!ask.tools.is_array()) {
+        return {};
+    }
+    const nlohmann::ordered_json body = nlohmann::ordered_json::parse(raw, nullptr, /*allow_exceptions=*/false);
+    if (!body.is_object() || !body.contains("tools") || !body["tools"].is_array()) {
+        return {};
+    }
+    std::set<std::string> offered;
+    for (const json& tool : ask.tools) {
+        offered.insert(text_of(tool["function"], "name"));
+    }
+    nlohmann::ordered_json kept = nlohmann::ordered_json::array();
+    for (const nlohmann::ordered_json& tool : body["tools"]) {
+        if (offered.count(tool["function"].value("name", std::string())) != 0) {
+            kept.push_back(tool);
+        }
+    }
+    return kept.dump();
+}
+
 /// A picture sent as a data: URL, read into `image`. Returns why it cannot
 /// be one, or empty. Only data: URLs: a URL on the web would have this
 /// machine fetch whatever a client named, on its network as well as the
@@ -1357,6 +1381,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         }
         if (why.empty() && chat) {
             why = read_tools(body, job->ask, param);
+            if (why.empty()) {
+                job->ask.tools_text = tools_in_order(req.body, job->ask);
+            }
         }
         if (why.empty() && chat) {
             why = read_format(body, job->ask, param);

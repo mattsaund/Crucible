@@ -28,6 +28,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#if defined(CRUCIBLE_PAGE_PROBE)
+#include <fstream>
+#include <iterator>
+#endif
 #include <memory>
 #include <mutex>
 #include <random>
@@ -649,6 +653,57 @@ int App::run() {
         });
     }
 
+#if defined(CRUCIBLE_PAGE_PROBE)
+    // --- a way in, for measuring ----------------------------------------------
+    //
+    // Only in a build configured with -DCRUCIBLE_PAGE_PROBE=ON, never in one
+    // that ships. A script put at $CRUCIBLE_PAGE_PROBE/in.js runs in the page,
+    // and what it hands window.probeReport lands in out.json beside it, so a
+    // frame's cost can be measured in the real window on the real document.
+    std::atomic<bool> probing{true};
+    std::thread       probe;
+    if (const char* folder = std::getenv("CRUCIBLE_PAGE_PROBE"); folder != nullptr && *folder != '\0') {
+        const std::filesystem::path dir(folder);
+        if (const char* size = std::getenv("CRUCIBLE_PAGE_PROBE_SIZE"); size != nullptr) {
+            int width  = 0;
+            int height = 0;
+            if (std::sscanf(size, "%dx%d", &width, &height) == 2) {
+                view.set_size(width, height, WEBVIEW_HINT_NONE);
+            }
+        }
+        view.bind("probeReport",
+                  [&view, dir](const std::string& id, const std::string& arguments, void*) {
+                      const json value = first_argument(arguments);
+                      {
+                          std::ofstream out(dir / "out.tmp", std::ios::binary);
+                          out << (value.is_string() ? value.get<std::string>() : value.dump());
+                      }
+                      std::error_code ec;
+                      std::filesystem::rename(dir / "out.tmp", dir / "out.json", ec);
+                      view.resolve(id, 0, "null");
+                  },
+                  nullptr);
+        probe = std::thread([&view, &probing, gate, dir] {
+            while (probing.load()) {
+                std::error_code ec;
+                const std::filesystem::path in = dir / "in.js";
+                if (std::filesystem::exists(in, ec)) {
+                    std::ifstream file(in, std::ios::binary);
+                    std::string script((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                    file.close();
+                    std::filesystem::remove(in, ec);
+                    view.dispatch([&view, gate, script] {
+                        if (gate->open) {
+                            view.eval(script);
+                        }
+                    });
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        });
+    }
+#endif
+
     engine_->start();
     // The orchestrator, on a worker while the page loads: the first prompt
     // used to wait for Python to start before anything else.
@@ -682,6 +737,12 @@ int App::run() {
     }
     view.set_html(page);
     view.run();
+#if defined(CRUCIBLE_PAGE_PROBE)
+    probing.store(false);
+    if (probe.joinable()) {
+        probe.join();
+    }
+#endif
 
     // --- closing --------------------------------------------------------------
     //

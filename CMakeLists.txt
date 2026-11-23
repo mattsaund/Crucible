@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     1.0.1
+    VERSION     1.1.0
     DESCRIPTION "An all in one local AI workshop: build software and chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
@@ -81,6 +81,7 @@ option(CRUCIBLE_NATIVE   "Tune the build for this exact CPU"       ON)
 option(CRUCIBLE_WARNINGS "Enable a strict warning set for Crucible's own sources" ON)
 option(CRUCIBLE_BUILD_TESTS "Build the unit tests" ON)
 option(CRUCIBLE_BUILD_TOOLS "Build the developer tools (routebench)" ON)
+option(CRUCIBLE_PAGE_PROBE "Developers only: let a script measure the page in the real window" OFF)
 
 
 # Needed before the dependencies are configured: ggml decides where to install
@@ -178,6 +179,7 @@ add_library(crucible_core STATIC
     src/tools/pdf_text.cpp
     src/tools/office_binary.cpp
     src/tools/workshop.cpp
+    src/tools/native_tools.cpp
     # tools, beyond the folder: version control, the web, the screen, programs
     # left running, and a page of the project made showable
     src/tools/git.cpp
@@ -387,6 +389,23 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# crucible-engine: the same session with no window, which cruciblecli drives
+# over a pipe. See src/gui/headless.cpp and cli/. It links nothing of a desktop,
+# so the terminal download runs on a machine that has none.
+# ---------------------------------------------------------------------------
+add_executable(crucible-engine
+    src/gui/main.cpp
+    src/gui/app.cpp
+    src/gui/crash.cpp
+    src/gui/headless.cpp)
+target_compile_definitions(crucible-engine PRIVATE CRUCIBLE_HEADLESS)
+target_link_libraries(crucible-engine PRIVATE crucible::core)
+if(WIN32)
+    target_link_libraries(crucible-engine PRIVATE shell32 dbghelp)
+    crucible_utf8_manifest(crucible-engine)
+endif()
+
+# ---------------------------------------------------------------------------
 # Warnings -- applied only to our own targets, never to the vendored deps.
 # ---------------------------------------------------------------------------
 if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -396,6 +415,7 @@ if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         -Wunused -Woverloaded-virtual -Wdouble-promotion)
     target_compile_options(crucible_core PRIVATE ${_crucible_warnings})
     target_compile_options(crucible      PRIVATE ${_crucible_warnings})
+    target_compile_options(crucible-engine PRIVATE ${_crucible_warnings})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -541,7 +561,7 @@ endif()
 # Windows has no such thing at all: it looks beside the executable, so there
 # the DLLs are installed into bin/ and nothing has to be baked in.
 if(CRUCIBLE_BACKEND_DL AND NOT WIN32)
-    set_target_properties(crucible PROPERTIES
+    set_target_properties(crucible crucible-engine PROPERTIES
         BUILD_RPATH   "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}"
         INSTALL_RPATH "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}")
 endif()
@@ -562,6 +582,14 @@ set(CRUCIBLE_INSTALL_COMPONENT crucible)
 install(TARGETS crucible
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+
+# The terminal download is its own component: the engine, the libraries it
+# needs and nothing of the window. packaging/cli/package.sh adds cruciblecli,
+# which cargo builds, and makes the archive install-cli.sh fetches.
+set(CRUCIBLE_CLI_COMPONENT cli)
+install(TARGETS crucible-engine
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        COMPONENT ${CRUCIBLE_CLI_COMPONENT})
 # --- the desktop entry ------------------------------------------------------
 #
 # What puts Crucible in the application menu. Linux only: macOS wants an .app
@@ -593,6 +621,9 @@ if(CRUCIBLE_HAS_WEBVIEW AND CRUCIBLE_WEBUI_CPP)
     target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP})
     add_dependencies(crucible crucible_page)
     target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
+    if(CRUCIBLE_PAGE_PROBE)
+        target_compile_definitions(crucible PRIVATE CRUCIBLE_PAGE_PROBE)
+    endif()
     target_link_libraries(crucible PRIVATE webview::core_static)
     # The page draws in the same typeface the window did and shows the same
     # flame, both handed over as data URIs rather than hoped for from the
@@ -634,6 +665,10 @@ if(CRUCIBLE_HAS_WEBVIEW)
     install(TARGETS crucible-app
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+    # /preview can package a page as an app from the terminal too.
+    install(TARGETS crucible-app
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            COMPONENT ${CRUCIBLE_CLI_COMPONENT})
     # Packaging is tested with the real runner beside the test binary, and
     # crucible-smoke --app makes a program of it and opens that.
     if(TARGET crucible_tests)
@@ -675,6 +710,11 @@ if(CRUCIBLE_BACKEND_DL)
                             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT}
                     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
                             COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+            install(TARGETS ${_lib}
+                    LIBRARY DESTINATION ${CRUCIBLE_LIBDIR}
+                            COMPONENT ${CRUCIBLE_CLI_COMPONENT}
+                    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+                            COMPONENT ${CRUCIBLE_CLI_COMPONENT})
         endif()
     endforeach()
 

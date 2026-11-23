@@ -60,7 +60,20 @@ header {
 .flame { width: 20px; height: 20px; flex: none; }
 .flame[src=""] { display: none; }
 .mark { color: var(--flame); letter-spacing: .22em; font-size: 12px; }
-nav { margin-left: auto; display: flex; gap: .3rem; }
+/* What the program last said. A failure gets a second line, which is what the
+   bar has room for, and the whole of it on hover. */
+.top-status {
+  flex: 1 1 12rem; min-width: 0; color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.top-status.busy { color: var(--flame); }
+.top-status.bad {
+  color: var(--error); white-space: normal; line-height: 1.25;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.unseen { visibility: hidden; }
+header button.icon[aria-expanded="true"] { color: var(--text); }
+nav { margin-left: auto; display: flex; flex: none; gap: .3rem; }
 nav button {
   background: none; border: 0; border-bottom: 2px solid transparent;
   padding: .5rem .9rem; color: var(--faint); cursor: pointer;
@@ -70,22 +83,20 @@ nav button[aria-current="true"] { color: var(--text); border-bottom-color: var(-
 
 /* The side menu's width is set on the element, so the grid takes it from
    there rather than keeping a second copy of the same number. */
-main { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; min-height: 0; }
+main { display: grid; grid-template-columns: auto auto minmax(0, 1fr); min-height: 0; }
+/* By its column, because the side menu is not always there and the view would
+   otherwise slide into the column it left. */
+main > .pane, main > .settings { grid-column: 3; }
 aside {
-  background: var(--panel); padding: 1.2rem 1rem;
+  background: var(--panel); padding: .75rem 1rem 1rem;
   display: flex; flex-direction: column; min-height: 0;
 }
 aside .roster-scroll { overflow-y: auto; flex: 1; min-height: 0; }
 /* Pushed down by the scroller above rather than pinned to the window: the
    roster scrolls when it is long, and a footer fixed to the viewport ends
    up either over the list or below the visible area. */
-aside .roster-foot { padding-top: .9rem; }
-
-/* Folded: a rail of dots, which is the one thing worth a glance when the
-   names are not there. */
-aside.rail { width: 2.6rem; padding: 1.2rem 0; align-items: center; }
-aside.rail .seat { padding: .35rem 0; }
-aside.rail .rail-gap { height: 1.2rem; }
+aside .roster-foot { padding-top: .6rem; }
+.roster-foot > .action.wide { margin-top: .8rem; }
 
 /* The edge, which is also the handle. An element rather than a CSS resize
    because the width has to be readable from script to be remembered. */
@@ -95,35 +106,32 @@ aside.rail .rail-gap { height: 1.2rem; }
 }
 .splitter:hover, .splitter.dragging { background: var(--flame); }
 
-/* The right-hand panel: recent chats and projects. The side menu's look,
-   on the other side. Every row's text starts where its section's title does,
-   and every row spans the panel edge to edge, so the highlight on the open
-   one is a band rather than a box floating inside it. */
-#splitter-r { margin-left: 0; margin-right: -2px; }
-aside.recents { padding: 1.1rem 0; }
-aside.recents .roster-scroll { padding-bottom: 1rem; }
+/* Recent chats and projects, in the side menu under the experts. Every row's
+   text starts where its section's title does, and every row spans the menu
+   edge to edge, so the highlight on the open one is a band rather than a box
+   floating inside it. */
+#side .roster-scroll { margin: 0 -1rem; padding: 0 1rem 1rem; }
+.recents { margin: 1.6rem -1rem 0; }
 .r-head {
   display: flex; align-items: center; justify-content: space-between; gap: .6rem;
-  padding: 0 .9rem; margin-bottom: .45rem; min-height: 1.9rem;
+  padding: 0 1rem; margin-bottom: .45rem; min-height: 1.9rem;
 }
-/* One line each, however narrow the panel is dragged: the title gives way,
+/* One line each, however narrow the menu is dragged: the title gives way,
    cut short, and the button keeps its words. */
-aside.recents .r-head h2 {
+.recents .r-head h2 {
   margin: 0; padding-left: 0; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .r-head button { flex: none; white-space: nowrap; }
 .r-head.r-projects { margin-top: 1.5rem; }
-/* History, under the chats. Inset as the headings are: the panel's rows run
-   edge to edge, and a button that did would touch both sides. Open, it is
-   marked as a tab in the bar is, since it was one. */
-aside.recents .action.r-history { width: calc(100% - 1.8rem); margin: 1rem .9rem 0; }
-aside.recents .action.r-history[aria-current="true"] { border-color: var(--flame); color: var(--text); }
+/* History, under the chats. Inset as the headings are: the rows run edge to
+   edge, and a button that did would touch both sides. */
+.recents .action.r-history { width: calc(100% - 2rem); margin: 1rem 1rem 0; }
 button.action.small { padding: .25rem .65rem; font-size: .88em; }
 button.recent {
   display: block; width: 100%; text-align: left; background: none; border: 0;
   border-left: 2px solid transparent; border-radius: 0;
-  padding: .42rem .9rem .42rem calc(.9rem - 2px); color: var(--text); cursor: pointer;
+  padding: .42rem 1rem .42rem calc(1rem - 2px); color: var(--text); cursor: pointer;
 }
 button.recent:hover { background: var(--hover); }
 button.recent.here { background: var(--raised); border-left-color: var(--flame); }
@@ -132,8 +140,12 @@ button.recent .r-title, button.recent .r-meta {
 }
 button.recent .r-meta { color: var(--faint); font-size: .85em; margin-top: .1rem; }
 
-/* The models at work, at the panel's foot: local above, frontier below. */
-.usage { border-top: 1px solid var(--panel-edge); padding: .9rem .9rem 0; }
+/* The models at work, at the menu's foot: local above, frontier below. It
+   scrolls by itself when there are many, so the lists above keep their room. */
+.usage {
+  border-top: 1px solid var(--panel-edge); margin: 0 -1rem; padding: .9rem 1rem 0;
+  max-height: 34vh; overflow-y: auto;
+}
 .usage h2 { margin: 0 0 .4rem; padding-left: 0; }
 .usage h2.u-frontier { margin-top: .9rem; }
 .u-row { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
@@ -159,7 +171,7 @@ button.r-trash {
 }
 .r-row:hover button.r-trash, button.r-trash:focus-visible { opacity: 1; }
 button.r-trash:hover { color: var(--error); background: var(--raised); }
-.r-empty { padding: .2rem .9rem; }
+.r-empty { padding: .2rem 1rem; }
 
 button.icon {
   background: none; border: 0; color: var(--faint);
@@ -539,7 +551,7 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; user-select:
 }
 
 .project-path {
-  flex: 0 1 auto; min-width: 0; margin-left: .6rem; padding: .2rem .35rem;
+  flex: 0 2 auto; min-width: 0; margin-left: .6rem; padding: .2rem .35rem;
   background: none; border: 0; border-radius: 4px; color: var(--faint); cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl;
 }
@@ -557,12 +569,6 @@ nav button.update-link {
 nav button.update-link:hover { color: var(--text); background: var(--hover); }
 
 /* --- the side menu ---------------------------------------------------------- */
-.side-status {
-  color: var(--faint); height: 1.6em; margin-bottom: .9rem;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.side-status.busy { color: var(--flame); }
-.side-status.bad  { color: var(--error); white-space: normal; height: auto; }
 button.seat {
   width: 100%; background: none; border: 0; border-radius: 5px;
   color: inherit; text-align: left; cursor: pointer; position: relative;
@@ -575,7 +581,6 @@ button.seat:hover { background: var(--raised); }
 .seat.linked .name { color: var(--flame); font-weight: 700; }
 .seat[data-phase="missing"] .name { color: var(--error); }
 .seat .cloud { color: var(--faint); display: flex; flex: none; }
-aside.rail button.seat { width: auto; padding: .35rem .4rem; height: auto; }
 aside h2 { position: relative; padding-left: .9rem; }
 aside h2.experts-head { margin: 0; padding-top: 1.6rem; padding-bottom: .7rem; }
 
@@ -846,8 +851,36 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .setup .action { margin-top: .6rem; }
 
 /* --- the panes beside the conversation ------------------------------------------------ */
-.pane.with-nav { grid-template-rows: auto 1fr auto; }
-.pane-nav { display: flex; gap: .3rem; margin: 0; padding: .5rem 2.5rem 0; border-bottom: 1px solid var(--panel-edge); }
+/* The conversation is always there, and the shelf is on its right: nothing
+   while it is collapsed, half of what there is once it is open, and the edge
+   between them drags. Where the two would not fit, the shelf takes the whole
+   area and its Chat tab is the way back. 52rem is SHELF_ROOM in panes.js. */
+.pane.chat-pane { grid-template-rows: minmax(0, 1fr); container: chat-pane / inline-size; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; }
+.split.open { grid-template-columns: minmax(0, 1fr) auto minmax(0, var(--shelf, 50%)); }
+.talk { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.split.open #transcript { padding-left: 1.6rem; padding-right: 1.6rem; }
+.shelf {
+  display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0;
+  background: var(--panel); container: shelf / inline-size;
+}
+.shelf-head { display: flex; align-items: center; border-bottom: 1px solid var(--panel-edge); }
+.shelf-head .pane-nav { flex: 1; min-width: 0; padding: 0 .5rem; border-bottom: 0; }
+.shelf-empty { grid-row: 2; display: grid; place-items: center; color: var(--faint); }
+.shelf #pane-body { min-width: 0; min-height: 0; padding: .9rem 1rem; }
+body.dragging-x iframe { pointer-events: none; }
+/* Each side lays itself out alone. A token arriving in the conversation
+   otherwise made the page measure a long file open beside it, thousands of
+   colored spans, every frame. */
+.split.open > .talk, .split.open > .shelf { contain: strict; }
+#transcript { contain: strict; }
+.pane-nav { display: flex; gap: .3rem; margin: 0; }
+.pane-nav button[data-pane="chat"] { display: none; }
+@container chat-pane (max-width: 52rem) {
+  .split.open { grid-template-columns: minmax(0, 1fr); }
+  .split.open > .talk, #splitter-shelf { display: none; }
+  .shelf-head .pane-nav button[data-pane="chat"] { display: inline-block; }
+}
 .pane-nav button {
   position: relative; background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
   padding: .4rem .8rem; color: var(--faint); cursor: pointer;
@@ -885,7 +918,7 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
 .code-editor-under { position: absolute; inset: 0; pointer-events: none; overflow: hidden; color: var(--text); }
 .code-editor-under code { font: inherit; background: none; padding: 0; white-space: pre; }
 .code-editor-wrap .code-editor {
-  position: relative; display: block; width: 100%; min-height: 60vh; resize: vertical;
+  position: absolute; inset: 0; display: block; width: 100%; height: 100%; resize: none;
   background: transparent; color: transparent; caret-color: var(--text);
 }
 .code-editor-wrap .code-editor:focus { border-color: var(--flame); }
@@ -905,9 +938,16 @@ button.tree-row.dir:hover { background: none; color: var(--faint); }
    the height there is, and the dials scroll inside their own panel with the
    Apply and Discard buttons kept in view under them. A page tall enough to
    need scrolling scrolls inside the frame, where the page expects it. */
-.preview { display: flex; flex-direction: column; gap: .8rem; height: 100%; min-height: 0; }
-.preview-bar select { flex: 1; min-width: 0; }
-.preview-body { display: grid; grid-template-columns: minmax(0, 1fr) 17rem; gap: 1rem; flex: 1; min-height: 0; }
+.preview { display: flex; flex-direction: column; gap: .7rem; height: 100%; min-height: 0; }
+.preview-bar { flex-wrap: wrap; row-gap: .4rem; }
+.preview-bar select { flex: 1 1 9rem; min-width: 0; }
+.preview-bar form { flex: 1 1 14rem; min-width: 0; }
+.preview-bar form input { flex: 1; min-width: 0; }
+.preview-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: .8rem; flex: 1; min-height: 0; }
+.preview-body.tuning { grid-template-columns: minmax(0, 1fr) 15rem; }
+@container shelf (max-width: 38rem) {
+  .preview-body.tuning { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 16rem); }
+}
 .preview-frame {
   width: 100%; height: 100%; min-height: 16rem; border: 1px solid var(--panel-edge); border-radius: 8px; background: #fff;
 }
@@ -1050,12 +1090,20 @@ button.condense-option:disabled { opacity: .45; cursor: default; }
 .modal select[data-change="cz-model"] { width: 100%; margin-top: .3rem; }
 
 /* --- the code pane: a small editor (code.js) ------------------------------ */
-.ide { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 1rem; min-height: 28rem; }
+.ide { display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: .8rem; height: 100%; min-height: 0; }
 .ide-side {
-  border-right: 1px solid var(--panel-edge); padding-right: .5rem; min-width: 0;
-  display: flex; flex-direction: column; max-height: 78vh;
+  border-right: 1px solid var(--panel-edge); padding-right: .5rem; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
 }
-.ide-side-head { display: flex; align-items: center; gap: .1rem; padding-bottom: .4rem; }
+@container shelf (max-width: 44rem) {
+  .ide { grid-template-columns: 9rem minmax(0, 1fr); gap: .5rem; }
+  .ide-status { gap: .6rem; }
+}
+@container shelf (max-width: 30rem) {
+  .ide { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 9rem) minmax(0, 1fr); }
+  .ide-side { border-right: 0; border-bottom: 1px solid var(--panel-edge); padding: 0 0 .3rem; }
+}
+.ide-side-head { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem; padding-bottom: .4rem; }
 .ide-side-tab {
   background: none; border: 0; border-radius: 4px; color: var(--faint); cursor: pointer;
   font: inherit; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding: .25rem .45rem;
@@ -1069,7 +1117,9 @@ button.tree-row.dir:hover { background: var(--hover); color: var(--text); }
   display: inline-block; width: .42rem; height: .42rem; border-radius: 50%;
   background: var(--flame); margin-left: .4rem; vertical-align: 1px; flex: none;
 }
-.ide-main { min-width: 0; display: flex; flex-direction: column; }
+.ide-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.ide-main > .code { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.ide-main > .code-picture { min-height: 0; max-height: 100%; object-fit: contain; align-self: flex-start; }
 .ide-tabs { display: flex; gap: .15rem; overflow-x: auto; border-bottom: 1px solid var(--panel-edge); margin-bottom: .55rem; }
 .ide-tab {
   display: flex; align-items: center; flex: none; color: var(--dim);
@@ -1099,7 +1149,8 @@ button.tree-row.dir:hover { background: var(--hover); color: var(--text); }
    the pixel: the same font and line height, inside its border, from its top
    padding. Each layer can scroll a scrollbar's height further than the
    textarea, so the colors and the numbers reach its last line too. */
-.ide-editor { --gutter: 2ch; }
+.ide-editor { --gutter: 2ch; flex: 1; min-height: 0; display: flex; }
+.ide-editor .code-editor-wrap { flex: 1; min-width: 0; }
 .ide-editor .code-editor-wrap .code-editor, .ide-editor .code-editor-under { padding-left: calc(var(--gutter) + 2rem); }
 .ide-editor .code-editor-under { padding-bottom: calc(.7rem + 16px); }
 .ide-gutter {
@@ -1110,8 +1161,8 @@ button.tree-row.dir:hover { background: var(--hover); color: var(--text); }
   background: none;
 }
 .ide-editor.plain .code-editor { color: var(--text); }
-.ide-status { display: flex; align-items: center; gap: 1.1rem; padding: .35rem .2rem 0; font-size: .85em; color: var(--faint); }
-.ide-run { margin-top: .5rem; }
+.ide-status { display: flex; align-items: center; gap: 1.1rem; padding: .35rem .2rem 0; font-size: .85em; color: var(--faint); white-space: nowrap; overflow: hidden; }
+.ide-run { margin-top: .5rem; flex: none; max-height: 40%; overflow: auto; }
 .ide-run input { flex: 1; font-family: var(--code); }
 .search-form { gap: .3rem; }
 .search-form input { flex: 1; min-width: 0; }

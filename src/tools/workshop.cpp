@@ -48,6 +48,8 @@
 #include <sstream>
 #include <system_error>
 #include <thread>
+#include <iterator>
+#include <limits>
 #include <utility>
 
 #include "crucible/tools/computer.hpp"
@@ -263,6 +265,30 @@ Fence fence_of(const std::string& line) {
 /// Which marker a line is, by its run of one character and the word after.
 enum class Marker { None, Search, Divider, Replace };
 
+/// The number in "search line 52", the rest of an opening marker that names
+/// a line. Zero for anything else.
+std::size_t search_line_of(const std::string& word) {
+    constexpr std::string_view head = "search line ";
+    if (word.rfind(head, 0) != 0 || word.size() == head.size() || word.size() > head.size() + 9) {
+        return 0;
+    }
+    std::size_t number = 0;
+    for (std::size_t i = head.size(); i < word.size(); ++i) {
+        if (word[i] < '0' || word[i] > '9') {
+            return 0;
+        }
+        number = number * 10 + static_cast<std::size_t>(word[i] - '0');
+    }
+    return number;
+}
+
+/// The line an opening marker names, or zero.
+std::size_t line_on_marker(const std::string& line) {
+    const std::string text = trim(line);
+    const std::size_t word = text.find_first_not_of('<');
+    return word == std::string::npos ? 0 : search_line_of(format::to_lower(trim(text.substr(word))));
+}
+
 Marker marker_of(const std::string& line) {
     const std::string text = trim(line);
     if (text.empty()) {
@@ -277,7 +303,7 @@ Marker marker_of(const std::string& line) {
         return Marker::None;
     }
     const std::string word = format::to_lower(trim(text.substr(run)));
-    if (first == '<' && (word == "search" || word == "find" || word == "original")) {
+    if (first == '<' && (word == "search" || word == "find" || word == "original" || search_line_of(word) > 0)) {
         return Marker::Search;
     }
     if (first == '=' && word.empty()) {
@@ -1777,6 +1803,22 @@ ToolKind verb_named(std::string_view name) {
             return verb.kind;
         }
     }
+    // The names it is offered them by (native_tools.hpp), when its own parser
+    // could not read the call and the words are all there is.
+    static constexpr std::pair<std::string_view, ToolKind> kNamed[] = {
+        {"LIST_FILES", ToolKind::List},      {"READ_FILE", ToolKind::Read},     {"FIND_IN_FILES", ToolKind::Find},
+        {"WRITE_FILE", ToolKind::Write},     {"EDIT_FILE", ToolKind::Edit},     {"RENDER_PAGE", ToolKind::Render},
+        {"RUN_COMMAND", ToolKind::Run},      {"RUN_PYTHON", ToolKind::Python},  {"GITHUB", ToolKind::Gh},
+        {"START_PROCESS", ToolKind::Start},  {"PROCESS_LOGS", ToolKind::Logs},  {"STOP_PROCESS", ToolKind::Stop},
+        {"FETCH_URL", ToolKind::Fetch},      {"WEB_SEARCH", ToolKind::Search},  {"HAND_OFF", ToolKind::Handoff},
+        {"TYPE_TEXT", ToolKind::Type},       {"PRESS_KEY", ToolKind::Key},      {"MOVE_MOUSE", ToolKind::Move},
+        {"USE_TOOL", ToolKind::Mcp},
+    };
+    for (const auto& [word, kind] : kNamed) {
+        if (upper == word) {
+            return kind;
+        }
+    }
     return ToolKind::None;
 }
 
@@ -2437,6 +2479,50 @@ bool settle_unmarked(EditBlock& block, std::vector<std::string> after, std::stri
 
 }  // namespace
 
+/// How far a named line may be from where the text is: it was read a step
+/// ago, and an edit since may have moved it.
+constexpr std::size_t kLineSlack = 2;
+
+/// Which of the lines `found`, from 1, a block naming `wanted` means: the
+/// nearest, when it is close and nearer than the others.
+std::optional<std::size_t> named_line(const std::vector<std::size_t>& found, std::size_t wanted) {
+    if (wanted == 0) {
+        return std::nullopt;
+    }
+    std::optional<std::size_t> best;
+    std::size_t gap  = std::numeric_limits<std::size_t>::max();
+    bool        tied = false;
+    for (std::size_t k = 0; k < found.size(); ++k) {
+        const std::size_t away = found[k] > wanted ? found[k] - wanted : wanted - found[k];
+        if (away < gap) {
+            gap  = away;
+            best = k;
+            tied = false;
+        } else if (away == gap) {
+            tied = true;
+        }
+    }
+    return tied || gap > kLineSlack ? std::nullopt : best;
+}
+
+/// What a model is told of text the file has more than once: where it is, so
+/// that it can say which instead of reading the file again to find out.
+std::string in_many_places(const std::string& which, const std::vector<std::size_t>& found) {
+    const std::size_t shown = std::min<std::size_t>(found.size(), 6);
+    std::string where;
+    for (std::size_t k = 0; k < shown; ++k) {
+        if (k > 0) {
+            where += k + 1 == shown && shown == found.size() ? " and " : ", ";
+        }
+        where += std::to_string(found[k]);
+    }
+    if (shown < found.size()) {
+        where += " and more";
+    }
+    return which + "those lines are in the file " + std::to_string(found.size()) + " times, at lines " + where
+         + ": give at_line for the one to change, or include more of the lines around it";
+}
+
 std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& error) {
     std::vector<EditBlock> blocks;
     // After: a SEARCH went straight to >>>>>>> REPLACE, and the lines up to
@@ -2464,6 +2550,7 @@ std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& err
             if (marker == Marker::Search) {
                 part = Part::Search;
                 current = EditBlock{};
+                current.line = line_on_marker(line);
                 search_started = false;
             }
             continue;   // a fence, a sentence, a blank line: not part of a block
@@ -2549,9 +2636,25 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
             continue;
         }
         if (exact > 1) {
-            error = which + "those lines are in the file " + std::to_string(exact)
-                  + " times: include more of the lines around the one to change";
-            return std::nullopt;
+            std::vector<std::size_t> places;
+            std::vector<std::size_t> found;
+            std::size_t line = 1;
+            std::size_t read = 0;
+            for (std::size_t at = out.find(block.search); at != std::string::npos;
+                 at = out.find(block.search, at + block.search.size())) {
+                line += static_cast<std::size_t>(std::count(out.begin() + static_cast<std::ptrdiff_t>(read),
+                                                            out.begin() + static_cast<std::ptrdiff_t>(at), '\n'));
+                read = at;
+                places.push_back(at);
+                found.push_back(line);
+            }
+            const std::optional<std::size_t> chosen = named_line(found, block.line);
+            if (!chosen) {
+                error = in_many_places(which, found);
+                return std::nullopt;
+            }
+            out.replace(places[*chosen], block.search.size(), without_read_numbers(block.replace, false));
+            continue;
         }
 
         // Line by line, with the indentation set aside. A blank last line is
@@ -2590,9 +2693,17 @@ std::optional<std::string> apply_edit_blocks(const std::string& text, const std:
             return std::nullopt;
         }
         if (starts.size() > 1) {
-            error = which + "those lines are in the file " + std::to_string(starts.size())
-                  + " times: include more of the lines around the one to change";
-            return std::nullopt;
+            std::vector<std::size_t> found;
+            found.reserve(starts.size());
+            for (const auto& start : starts) {
+                found.push_back(start.first + 1);
+            }
+            const std::optional<std::size_t> chosen = named_line(found, block.line);
+            if (!chosen) {
+                error = in_many_places(which, found);
+                return std::nullopt;
+            }
+            starts = {starts[*chosen]};
         }
         // The replacement moved to where the lines it replaces sit: the
         // difference between the first SEARCH line's indentation and the
@@ -2755,11 +2866,43 @@ std::optional<std::filesystem::path> resolve_in_root(const std::filesystem::path
     }
 
     std::filesystem::path candidate(relative);
-    if (candidate.is_absolute()) {
+    if (candidate.has_root_directory()) {
         // An absolute path inside the root is fine and is what a model produces
         // after reading its own file listing. One outside is not, and falls out
-        // of the containment check below.
+        // of the containment check below, with one exception. A small model
+        // thinks of the project as the top of the disk and writes /index.html,
+        // /src/app.js or /budget/app.js for it, or makes up a home folder
+        // around a file it has just read, every time, however often it is
+        // told. Where nothing on the disk has that name, what it means is
+        // inside: one name, a path from a folder the project has or from the
+        // project's own name, or a file the project has at its top.
+        const std::filesystem::path written = candidate;
         candidate = std::filesystem::weakly_canonical(candidate, ec);
+        if (ec) {
+            return std::nullopt;
+        }
+        std::error_code missing;
+        if (!std::filesystem::exists(candidate, missing) && !written.has_root_name()) {
+            std::filesystem::path below = written.relative_path();
+            const auto parts = std::distance(below.begin(), below.end());
+            bool meant = parts == 1;
+            if (parts > 1 && *below.begin() == base.filename()) {
+                below = below.lexically_relative(*below.begin());
+                meant = true;
+            } else if (parts > 1 && std::filesystem::is_directory(base / *below.begin(), missing)) {
+                meant = true;
+            } else if (parts > 1 && std::filesystem::is_regular_file(base / below.filename(), missing)) {
+                below = below.filename();
+                meant = true;
+            }
+            if (meant) {
+                const std::filesystem::path there = std::filesystem::weakly_canonical(base / below, ec);
+                if (!ec) {
+                    candidate = there;
+                }
+                ec.clear();
+            }
+        }
     } else {
         candidate = std::filesystem::weakly_canonical(base / candidate, ec);
     }

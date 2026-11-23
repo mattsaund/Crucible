@@ -166,9 +166,12 @@ const DRAWN_AT_ONCE = { chars: 40000, turns: 40 };
 
 /// Where a stretch of `turns` drawn at once starts, when it ends before `end`.
 function drawnFrom(turns, end) {
-  let from = end;
+  // Never past the end: a scroll can land between a conversation getting
+  // shorter and the draw that notices.
+  let from = Math.min(end, turns.length);
+  const last = from;
   let chars = 0;
-  while (from > 0 && end - from < DRAWN_AT_ONCE.turns && chars < DRAWN_AT_ONCE.chars) {
+  while (from > 0 && last - from < DRAWN_AT_ONCE.turns && chars < DRAWN_AT_ONCE.chars) {
     from -= 1;
     chars += (turns[from].prompt || '').length + (turns[from].reply || '').length;
   }
@@ -549,7 +552,7 @@ function composerView() {
 /// The conversation: every turn, or somewhere to start when there are none.
 ///
 /// No notices here: the transcript is the conversation and nothing else.
-/// What the program has to say goes to the side menu's status line, and a
+/// What the program has to say goes to the top bar's status line, and a
 /// seat that would not load says so on its own row.
 function conversationView() {
   const s = state.snapshot;
@@ -558,22 +561,21 @@ function conversationView() {
 }
 
 views.chat = () => {
-  // The panes beside the conversation, once there is a folder to show (see
-  // panes.js). The switcher sits above the scroller, not inside it: a long
-  // conversation scrolled it out of reach. Only the conversation keeps to
-  // its bottom as it grows; the other panes are read from the top, and a
-  // tree or a preview toolbar scrolled out of sight is a pane with nothing
-  // to click.
-  const pane = shownPane();
-  const nav = paneNav();
-  const body = pane === 'code' ? codePane() : pane === 'source' ? sourcePane()
-             : pane === 'preview' ? previewView() : conversationView();
-  return sideView() + `<div class="pane${nav ? ' with-nav' : ''}">${nav}
-      <div class="scroller"><div ${pane === 'chat' ? 'id="transcript" data-scroll="transcript-scroll"' : 'id="pane-body"'}>${
-        body}</div>
-        <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
-      ${composerView()}
-    </div>` + recentsView();
+  // The conversation is always here, with the shelf on its right (see
+  // panes.js), so what an expert is making can be read while it is being
+  // talked about. The same elements in the same order either way: opening
+  // the shelf leaves the transcript where it was scrolled and the box as it
+  // was typed.
+  const open = shelfOpen();
+  return sideView() + `<div class="pane chat-pane">
+      <div class="split${open ? ' open' : ''}"${open ? ` style="--shelf:${state.shelfShare}%"` : ''}>
+        <div class="talk">
+          <div class="scroller"><div id="transcript" data-scroll="transcript-scroll">${conversationView()}</div>
+            <button class="jump" id="jump" data-act="jump" hidden>${ICONS.down} Jump to latest</button></div>
+          ${composerView()}
+        </div>${shelfView()}
+      </div>
+    </div>`;
 };
 
 // --- what a person can do here ------------------------------------------------------------
@@ -806,7 +808,7 @@ afterDraw.push(() => {
   const layer = document.getElementById('layer');
   const prompt = document.getElementById('prompt');
   const wanted = (layer && layer.querySelector('[data-focus]'))
-      || (state.modal ? null : editorBox() || (prompt && !prompt.disabled ? prompt : null));
+      || (state.modal ? null : prompt && !prompt.disabled ? prompt : null);
   if (wanted && wanted !== focused && !(layer && layer.contains(document.activeElement))) {
     // Not out from under somebody typing elsewhere on the page.
     const active = document.activeElement;

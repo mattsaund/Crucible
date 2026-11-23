@@ -20,7 +20,7 @@ add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
-![One prompt, two experts: Qwen writes summary.html, then GPT OSS takes over for the README note](docs/images/ask.png)
+![One prompt, two experts: Programming writes the page, Writing takes over for the note, and the page opens on the shelf](docs/images/ask.png)
 
 ___
 ## Install
@@ -60,6 +60,21 @@ irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install.ps1 | iex
 The options are `--prefix DIR`, `--jobs N`, `--check`, `--no-deps`,
 `--no-trainer`, `-y` and `--uninstall`. Run from inside a clone, it builds that
 clone.
+
+**Or use it in the terminal.** `cruciblecli` is a separate download that does
+everything the app does, with no window. One line, then type `cruciblecli` in
+any folder.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mattsaund/Crucible/main/install-cli.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/mattsaund/Crucible/main/install-cli.ps1 | iex
+```
+
+It shares its settings, models and chats with the app, if you have both.
+`/update` updates it, and adding `-s -- --uninstall` to the `sh` line removes it.
 
 **Updating:** Settings → About → **Update now**, or run the installer again.
 Crucible checks GitHub once a day and says when there is one, and with
@@ -110,6 +125,8 @@ ___
 
 ### Preview, tune, ship
 
+- **The shelf** on the right of the chat holds Code, Source and Preview. It
+  stays collapsed until a model writes something, then opens on it.
 - **Preview** shows the page being made and reloads as an expert writes it.
 - **Pick an element**, then nudge padding, margin, fonts, colors and more.
   **Apply to source** hands the change to an expert, who writes it into the
@@ -130,8 +147,8 @@ ___
 - Replies show Markdown, code and math, typeset from LaTeX.
 - **Providers** are Anthropic and anything that speaks the OpenAI API, like
   OpenAI, Gemini, DeepSeek, Kimi, OpenRouter, Groq or a server on your network.
-- The corner of the right-hand panel shows the models in memory, and the
-  frontier model's tokens, cost at list prices, rate limits and context.
+- The foot of the side menu shows the models in memory, and the frontier
+  model's tokens, cost at list prices, rate limits and context.
 
 ![The roster: each seat with a description and a model](docs/images/experts.png)
 
@@ -243,12 +260,30 @@ Every model, local or not, gets the same tools in a trusted folder:
 
 ### History
 
-- History is per project, in the right-hand panel, and a reopened chat carries
-  on where it stopped.
+- History is per project, in the side menu, and a reopened chat carries on
+  where it stopped.
 - A chat with no project gets a folder of its own in `~/.crucible/Scratchpad`
-  (hidden). The right-hand panel lists recent chats and projects.
+  (hidden). The side menu lists recent chats and projects.
 
 ![Every chat of a project](docs/images/history.png)
+
+### In the terminal
+
+- **`cruciblecli` opens in the folder your terminal is in** and does everything
+  the app does, over SSH too.
+- A box at the bottom, with what it is doing in one line right above it and the
+  expert that has the prompt right below it.
+- Code changes are drawn as diffs and commands as they run, with their output.
+  The thinking sits among them, collapsed until you type `/showthinking`.
+- `/settings` has every page the app has, and `/models` searches Hugging Face
+  and downloads what fits your cards.
+- `/effort`, `/expert`, `/resume`, `/files`, `/git`, `/preview`, `/create`,
+  `/bench`, `/server` and the rest. `/help` lists them.
+- `!command` runs a command, `@file` attaches a file, and `/name prompt` sends
+  a prompt straight to one expert.
+- `cruciblecli -p "prompt"` answers once and exits, for scripts.
+
+![Crucible in the terminal: an edit as a diff, the command it ran, and the expert that did it](docs/images/terminal.png)
 
 ___
 ## Settings and keys

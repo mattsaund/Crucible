@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 //
-// The panes beside the conversation: the project's code, its version control
-// and a preview of what it shows, once there is a folder to show.
+// The shelf: the project's code, its version control and a preview of what
+// it shows, on the right of the conversation.
 //
 // A person watching an expert work on a project wants to read what it wrote,
 // see it and keep it, not only watch a transcript of it being made. The
-// editor is code.js and the preview preview.js; which pane is up, the
-// version control, and keeping what each has read in step with the work are
-// here.
+// editor is code.js and the preview preview.js; which pane is up, the shelf,
+// the version control, and keeping what each has read in step with the work
+// are here.
 
 const CHAT_PANES = [
   ['chat',    'Chat',    'The conversation'],
@@ -16,7 +16,13 @@ const CHAT_PANES = [
   ['preview', 'Preview', 'What it shows'],
 ];
 
+// 'chat' is the shelf collapsed.
 state.chatPane = 'chat';
+// The pane it opens on.
+state.shelfTab = 'code';
+// How much of the width it takes, in percent. Remembered with the window's
+// shape: see recall.
+state.shelfShare = 50;
 state.tree = null;
 state.source = null;
 state.diff = null;
@@ -25,13 +31,13 @@ state.ship = { command: '', tag: '', notes: '', output: '', running: false };
 
 // --- the panes ----------------------------------------------------------------------
 
-/// Whether there is a folder to show beside the conversation: a project, or
-/// the chat's own scratch folder once something is in it.
+/// Whether there is anything to show on the shelf: a folder with something in
+/// it. A project's is taken to have, until it has been read.
 function folderShown() {
   const project = state.snapshot.project || {};
   if (!project.open) return false;
-  if (!project.scratchpad) return true;
-  return !!(state.tree && state.tree.entries && state.tree.entries.length);
+  if (!state.tree) return !project.scratchpad;
+  return !!(state.tree.entries && state.tree.entries.length);
 }
 
 /// The pane on screen: the one chosen, while there is a folder to show.
@@ -51,12 +57,126 @@ function paneNav() {
 }
 
 function setPane(pane) {
+  if (pane === 'chat') shelfOpenedFor = promptKey();
+  else state.shelfTab = pane;
   state.chatPane = pane;
   render();
   enterPane(pane);
 }
 
 actions['chat-pane'] = (button) => setPane(button.dataset.pane);
+
+// --- the shelf ---------------------------------------------------------------------
+//
+// Code, Source and Preview, on the right of the conversation. It starts
+// collapsed, with nothing of it on screen and the button in the top bar to
+// open it, and expands by itself when a model makes something to show (see
+// shelfFollows). With nothing to show it says so and no more.
+
+/// The narrowest the chat area can be and hold the conversation and the shelf
+/// side by side, in rem. Under it the shelf takes the whole area and its Chat
+/// tab is the way back. The @container rule in style.css says the same.
+const SHELF_ROOM = 52;
+
+/// As little of the width as either side can be dragged to, in percent.
+const SHELF_LEAST = 25;
+
+const shelfOpen = () => state.chatPane !== 'chat';
+
+function shelfView() {
+  if (!shelfOpen()) return '';
+  const pane = shownPane();
+  return `<div class="splitter" id="splitter-shelf" data-act="shelf-edge" title="Drag to resize"></div>
+    <section class="shelf" aria-label="Shelf">
+      ${pane === 'chat' ? '<div class="shelf-empty">Nothing</div>'
+                        : `<div class="shelf-head">${paneNav()}</div>${shelfBody(pane)}`}
+    </section>`;
+}
+
+/// What the shelf shows, made again only when it may have changed. Coloring
+/// a long file or parsing a page into its frame for every token of a reply
+/// streaming in beside it is what would make the two together slow.
+let shelfMade = { pane: '', html: '' };
+function shelfBody(pane) {
+  if (!shelfKept || shelfMade.pane !== pane) {
+    const body = pane === 'code' ? codePane() : pane === 'source' ? sourcePane() : previewView();
+    shelfMade = { pane, html: `<div id="pane-body">${body}</div>` };
+  }
+  return region('pane-body', shelfMade.html);
+}
+
+/// What the shelf reads from a push. One that leaves this as it was changed
+/// the conversation and nothing on the shelf.
+const shelfInputs = (s) => `${!!s.busy}|${s.platform || ''}|${JSON.stringify(s.project || {})}`;
+
+/// Dragging the edge between the conversation and the shelf. Written straight
+/// onto the layout rather than through a draw, so the edge keeps up with the
+/// pointer however much is on screen.
+function dragShelf(handle) {
+  const split = handle.parentElement;
+  const box = split.getBoundingClientRect();
+  document.body.classList.add('dragging-x');
+  const move = (event) => {
+    const share = ((box.right - event.clientX) / box.width) * 100;
+    state.shelfShare = Math.round(Math.max(SHELF_LEAST, Math.min(100 - SHELF_LEAST, share)) * 10) / 10;
+    split.style.setProperty('--shelf', `${state.shelfShare}%`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.body.classList.remove('dragging-x');
+    remember.set('shelf-share', state.shelfShare);
+    render();
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+actions['shelf-toggle'] = () => setPane(shelfOpen() ? 'chat' : state.shelfTab);
+
+/// Pressed twice, the edge goes back to the middle.
+actions['shelf-edge'] = (edge, event) => {
+  if (event.detail < 2) return;
+  state.shelfShare = 50;
+  remember.set('shelf-share', 50);
+  render();
+};
+
+/// Which prompt this is: the folder it works in and where it is in the chat.
+const promptKey = () => `${(state.snapshot.project || {}).root || ''}|${(state.snapshot.turns || []).length}`;
+
+/// The prompt the shelf last opened for, or was collapsed during.
+let shelfOpenedFor = '';
+
+/// Whether the conversation and the shelf would fit side by side.
+function shelfFits() {
+  const pane = document.querySelector('.chat-pane');
+  if (!pane) return true;
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  return pane.clientWidth >= SHELF_ROOM * rem;
+}
+
+/// The first file a prompt writes expands the shelf on it: a page as the
+/// page, anything else as its code. Once a prompt, and the caret stays in the
+/// box. Collapsed during a prompt, it stays collapsed for the rest of it.
+function shelfFollows(written) {
+  const key = promptKey();
+  if (!written.length || shelfOpenedFor === key) return;
+  shelfOpenedFor = key;
+  if (state.view !== 'chat' || shownPane() !== 'chat' || !shelfFits()) return;
+  const page = written.find((file) => /\.html?$/i.test(file));
+  if (page) {
+    state.chatPane = state.shelfTab = 'preview';
+    state.preview.url = '';
+    loadPreview(page);
+    enterPreview();
+  } else if (state.preview.page && written.some((file) => /\.(css|js|svg)$/i.test(file))) {
+    state.chatPane = state.shelfTab = 'preview';
+    refreshPreview();
+  } else {
+    openFile(written[0], 0, true);
+  }
+}
 
 /// What a pane reads as it opens. The tree every time: a turn may have
 /// changed it while another pane was up.
@@ -238,6 +358,17 @@ actions['ship-release'] = (form) => guard(async () => {
 
 // --- keeping what the panes read in step --------------------------------------------------
 
+/// Another conversation starts with the shelf collapsed. A chat that had no
+/// id and gets one is the same conversation.
+let shelfSession = '';
+onSnapshot.push(() => {
+  const session = state.snapshot.session || '';
+  if (session === shelfSession) return;
+  const was = shelfSession;
+  shelfSession = session;
+  if (was) state.chatPane = 'chat';
+});
+
 /// A project change empties what was read of the old one, and the pane on
 /// screen reads the new one: the preview's page list among them, which
 /// preview.js has emptied by now, since it loads before this file. A chat's
@@ -260,8 +391,8 @@ onSnapshot.push(() => {
   if (state.view === 'chat') enterPane(shownPane());
 });
 
-/// What a turn leaves in a scratch folder is what shows its panes: looked
-/// at again whenever a turn ends, until something is there.
+/// What a turn leaves in an empty folder is what fills the shelf: looked at
+/// again whenever a turn ends, until something is there.
 let turnsSeen = '';
 onSnapshot.push(() => {
   const s = state.snapshot;
@@ -269,7 +400,7 @@ onSnapshot.push(() => {
   const key = `${project.root}|${(s.turns || []).length}|${!!s.busy}`;
   if (key === turnsSeen) return;
   turnsSeen = key;
-  if (project.scratchpad && !s.busy && !folderShown()) loadTree();
+  if (project.open && !s.busy && !folderShown()) loadTree();
 });
 
 /// An action a turn takes -- a file written, a command run -- may leave the
@@ -292,7 +423,10 @@ onSnapshot.push(() => {
   const written = done.slice(-added).map((a) => a.language || '').filter(Boolean);
   const touchedPage = written.some((f) => /\.(html?|css|js|svg|png|jpe?g|gif)$/i.test(f));
   codeFilesChanged(written);
+  // What was up before the shelf may open for this: what it opens on it
+  // reads for itself.
   const pane = state.view === 'chat' ? shownPane() : '';
+  shelfFollows(written);
   if (pane === 'code' || (written.length && !folderShown())) loadTree();
   if (pane === 'source') loadSource(false);
   else state.source = null;   // read again when its pane opens

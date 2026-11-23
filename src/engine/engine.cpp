@@ -30,6 +30,7 @@
 #include "crucible/config/paths.hpp"
 #include "crucible/lab/python.hpp"
 #include "crucible/llm/response_filter.hpp"
+#include "crucible/tools/native_tools.hpp"
 #include "crucible/tools/workshop.hpp"
 
 #include <fstream>
@@ -526,6 +527,12 @@ bool Engine::ask_about_edit(const tools::ToolCall& call,
         std::ostringstream buffer;
         buffer << in.rdbuf();
         edit->before = buffer.str();
+        // A write that leaves the file as it is asks nothing of anybody. A
+        // small model checking its work writes the same file again, and the
+        // person was asked to approve a change with no change in it.
+        if (edit->before == edit->after) {
+            return true;
+        }
     }
 
     {
@@ -1004,7 +1011,15 @@ void Engine::ensure_router(const CancelCallback& cancel) {
     if (config().router.model.empty() || delegator_here()) {
         return;  // keywords, which need nothing loaded, or already there
     }
+    // Back to what was going on before the load, once it is done. Left
+    // saying it was loading, a delegator choosing an expert read as a load
+    // stuck at the end of its bar.
+    const Snapshot before = state_.snapshot();
     load_router(cancel);
+    state_.set_mood(before.mood, before.status);
+    if (wake_) {
+        wake_();
+    }
 }
 
 void Engine::ready_delegator() {
@@ -1641,6 +1656,26 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     }
     if (method == "tools.parse") {
         return parse_reply(params);
+    }
+    if (method == "tools.native") {
+        // A call a model made in its own format, as the workshop runs one. A
+        // search goes its own way, as it does from a SEARCH line.
+        std::string why;
+        const std::optional<tools::ToolCall> call = tools::call_from_native(
+            params.value("name", std::string()), params.value("arguments", std::string()), why);
+        if (!call) {
+            return nlohmann::json{{"call", nullptr}, {"error", why}, {"attempted", "none"}, {"search", ""}};
+        }
+        if (call->kind == tools::ToolKind::Search) {
+            return nlohmann::json{{"call", nullptr}, {"attempted", "none"}, {"search", call->argument}};
+        }
+        return nlohmann::json{{"call", {{"kind", std::string(tools::tool_kind_name(call->kind))},
+                                        {"argument", call->argument},
+                                        {"content", call->content},
+                                        {"shell", call->shell},
+                                        {"unrun", call->unrun}}},
+                              {"attempted", "none"},
+                              {"search", ""}};
     }
     throw std::runtime_error("the core has no method " + method);
 }

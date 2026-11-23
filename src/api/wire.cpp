@@ -103,6 +103,7 @@ json turn_json(const Turn& turn) {
             if (!action.body.empty())     { one["body"]     = action.body; }
             if (!action.language.empty()) { one["language"] = action.language; }
             if (!action.picture.empty())  { one["picture"]  = action.picture; }
+            if (action.thought_at != std::string::npos) { one["thought_at"] = action.thought_at; }
             actions.push_back(std::move(one));
         }
         out["actions"] = std::move(actions);

@@ -25,7 +25,9 @@
 #include "crucible/util/platform.hpp"
 #include "app.hpp"
 #include "crash.hpp"
+#if !defined(CRUCIBLE_HEADLESS)
 #include "webkit_env.hpp"
+#endif
 
 int main(int argc, char** argv) {
     // Started from a terminal, `crucible --help` prints the braille mark, and
@@ -45,9 +47,9 @@ int main(int argc, char** argv) {
     // See kit/kit.hpp.
     crucible::kit::put_on_path();
 
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(CRUCIBLE_HEADLESS)
     // Before anything starts a thread. See webkit_env.hpp.
-    crucible::gui::avoid_nvidia_dmabuf_renderer();
+    crucible::gui::choose_webkit_renderer(argv);
 #endif
 
     const crucible::app::Options options = crucible::app::parse_arguments(argc, argv);

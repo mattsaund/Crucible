@@ -785,7 +785,7 @@ int main(int argc, char** argv) {
     const std::vector<std::string> args = arguments(argc, argv);
 #endif
 #if !defined(_WIN32) && !defined(__APPLE__)
-    crucible::gui::avoid_nvidia_dmabuf_renderer();
+    crucible::gui::choose_webkit_renderer(argv);
 #endif
     // --self-test [report] [seconds]. See SelfTest.
     const bool     testing = !args.empty() && args[0] == "--self-test";

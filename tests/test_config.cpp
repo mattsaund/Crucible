@@ -4,6 +4,8 @@
 // screen does, the models directory, folder trust, and where all of it lives.
 #include "test_helpers.hpp"
 
+#include "../src/gui/webkit_choice.hpp"
+
 #include "crucible/llm/mlx_server.hpp"
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,96 @@ TEST(experts_inherit_unset_fields_from_defaults) {
     CHECK(config.has_expert("biology"));
     CHECK(!config.has_expert("chemistry"));
     CHECK_EQ(config.configured_experts().size(), std::size_t{2});
+}
+
+// The app and cruciblecli share one file, and each writes it whole.
+namespace {
+
+/// A configuration with two experts and a provider, as both sides read it.
+Config shared_config() {
+    std::vector<std::string> warnings;
+    return config_from_json_text(R"({
+        "reasoning_effort": "low",
+        "defaults": {"temperature": 0.7, "top_k": 40},
+        "experts": [{"id": "code", "name": "Code", "blurb": "b", "model": "a.gguf"},
+                    {"id": "docs", "name": "Docs", "blurb": "b", "model": "b.gguf"}],
+        "providers": [{"id": "one", "name": "One", "kind": "openai", "base_url": "http://x/v1", "models": ["m"]}]
+    })", warnings);
+}
+
+Config changed_config(const Config& from, const std::function<void(Config&)>& change) {
+    Config out = from;
+    change(out);
+    return out;
+}
+
+}  // namespace
+
+TEST(a_setting_another_crucible_saved_survives_a_change_here) {
+    const Config base   = shared_config();
+    const Config theirs = changed_config(base, [](Config& c) { c.reasoning_effort = "high"; });
+    const Config mine   = changed_config(base, [](Config& c) { c.defaults.temperature = 0.2F; });
+    const std::optional<Config> merged = merge_saved_config(base, mine, config_to_json_text(theirs));
+    CHECK(merged.has_value());
+    if (!(merged.has_value())) {
+        return;
+    }
+    CHECK(merged->reasoning_effort == "high");
+    CHECK(merged->defaults.temperature == 0.2F);
+}
+
+TEST(two_changes_to_one_expert_list_are_both_kept) {
+    const Config base   = shared_config();
+    const Config theirs = changed_config(base, [](Config& c) { c.experts[ExpertId("code")].model = "new-code.gguf"; });
+    const Config mine   = changed_config(base, [](Config& c) { c.experts[ExpertId("docs")].model = "new-docs.gguf"; });
+    const std::optional<Config> merged = merge_saved_config(base, mine, config_to_json_text(theirs));
+    CHECK(merged.has_value());
+    if (!(merged.has_value())) {
+        return;
+    }
+    CHECK(merged->expert(ExpertId("code")).model == "new-code.gguf");
+    CHECK(merged->expert(ExpertId("docs")).model == "new-docs.gguf");
+}
+
+TEST(the_same_setting_changed_on_both_sides_goes_to_the_one_saving) {
+    const Config base   = shared_config();
+    const Config theirs = changed_config(base, [](Config& c) { c.reasoning_effort = "high"; });
+    const Config mine   = changed_config(base, [](Config& c) { c.reasoning_effort = "medium"; });
+    const std::optional<Config> merged = merge_saved_config(base, mine, config_to_json_text(theirs));
+    if (merged) {
+        CHECK(merged->reasoning_effort == "medium");
+    }
+}
+
+TEST(a_provider_removed_elsewhere_stays_removed_and_one_added_stays) {
+    const Config base   = shared_config();
+    const Config theirs = changed_config(base, [](Config& c) { c.providers.clear(); });
+    const Config mine   = changed_config(base, [](Config& c) {
+        Provider added;
+        added.id = "two";
+        added.name = "Two";
+        added.kind = "openai";
+        added.base_url = "http://y/v1";
+        c.providers.push_back(added);
+    });
+    const std::optional<Config> merged = merge_saved_config(base, mine, config_to_json_text(theirs));
+    CHECK(merged.has_value());
+    if (!(merged.has_value())) {
+        return;
+    }
+    CHECK(merged->providers.size() == 1);
+    if (!(merged->providers.size() == 1)) {
+        return;
+    }
+    CHECK(merged->providers[0].id == "two");
+}
+
+TEST(a_file_with_nothing_new_or_half_written_changes_nothing) {
+    const Config base = shared_config();
+    const Config mine = changed_config(base, [](Config& c) { c.reasoning_effort = "high"; });
+    CHECK(!merge_saved_config(base, mine, config_to_json_text(base)).has_value());
+    CHECK(!merge_saved_config(base, mine, "{\"models_dir\": \"cut off").has_value());
+    CHECK(!merge_saved_config(base, mine, "").has_value());
 }
 
 TEST(a_malformed_field_warns_but_keeps_the_rest) {
@@ -387,6 +479,31 @@ TEST(a_seat_whose_file_is_gone_is_not_shown_as_ready) {
           == SeatPhase::Missing);
     CHECK(seat_of(snapshot, "chemistry").phase
           == SeatPhase::Unconfigured);
+}
+
+TEST(webkit_draws_on_the_gpu_where_nvidia_can_and_on_the_processor_where_it_cannot) {
+    using gui::WebkitRenderer;
+    using gui::nvidia_version_in;
+    using gui::webkit_renderer_for;
+    // The open and the closed kernel module word the line differently.
+    CHECK_EQ(nvidia_version_in("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  620.73.04  "
+                               "Release Build  (root@)\nGCC version: gcc version 16.2.1\n"),
+             std::string("620.73.04"));
+    CHECK_EQ(nvidia_version_in("NVRM version: NVIDIA UNIX x86_64 Kernel Module  550.54.14  Thu Feb 22 2024\n"),
+             std::string("550.54.14"));
+    CHECK(nvidia_version_in("").empty());
+    CHECK(nvidia_version_in("no version on this line\n620.1 on the next\n").empty());
+
+    // No NVIDIA, or somebody has said: not ours to touch.
+    CHECK(webkit_renderer_for(false, "", true, false) == WebkitRenderer::Leave);
+    CHECK(webkit_renderer_for(true, "620.73.04", true, false) == WebkitRenderer::Leave);
+    // On Wayland from the first driver that works, and never after it failed.
+    CHECK(webkit_renderer_for(false, "620.73.04", true, false) == WebkitRenderer::Try);
+    CHECK(webkit_renderer_for(false, "631.10", true, false) == WebkitRenderer::Try);
+    CHECK(webkit_renderer_for(false, "620.73.04", true, true) == WebkitRenderer::Off);
+    // 615 ended the program at its first frame; X11 stays as it was.
+    CHECK(webkit_renderer_for(false, "615.78", true, false) == WebkitRenderer::Off);
+    CHECK(webkit_renderer_for(false, "620.73.04", false, false) == WebkitRenderer::Off);
 }
 
 TEST(what_a_notice_put_on_the_status_line_goes_when_the_notices_are_cleared) {

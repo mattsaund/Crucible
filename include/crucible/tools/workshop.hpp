@@ -271,6 +271,9 @@ std::string clamp_output(std::string_view text, std::size_t limit);
 struct EditBlock {
     std::string search;
     std::string replace;
+    /// The line the text starts on, from 1, for text the file has more than
+    /// once. Zero when the block does not say.
+    std::size_t line = 0;
 };
 
 /// The SEARCH/REPLACE blocks in an EDIT's body. Empty, with `error` saying
@@ -279,7 +282,8 @@ struct EditBlock {
 /// The shape is the one many code models were taught on -- seven angle
 /// brackets, SEARCH, the old lines, seven equals signs, the new lines, seven
 /// angle brackets, REPLACE -- and it is read forgivingly: five to nine of
-/// each marker, any case, with or without a fence around the blocks.
+/// each marker, any case, with or without a fence around the blocks. The
+/// opening marker may name a line, "<<<<<<< SEARCH line 52": see EditBlock.
 std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& error);
 
 /// `text` with `blocks` applied in order, or nothing with `error` saying
@@ -290,9 +294,10 @@ std::vector<EditBlock> parse_edit_blocks(std::string_view body, std::string& err
 /// aside -- a model copying lines out of a numbered READ gets those wrong
 /// more often than anything else -- and the replacement is indented as the
 /// lines it replaces were. Found more than once is refused rather than
-/// guessed at: changing the wrong one of two identical lines is worse than
-/// being asked for more of the lines around it. An empty SEARCH on an empty
-/// or missing file is the whole of it.
+/// guessed at, with the lines it is on, unless the block names one of them
+/// (within a line or two: it was read a step ago). Changing the wrong one of
+/// two identical lines is worse than being asked which. An empty SEARCH on an
+/// empty or missing file is the whole of it.
 std::optional<std::string> apply_edit_blocks(const std::string& text, const std::vector<EditBlock>& blocks,
                                              std::string& error);
 

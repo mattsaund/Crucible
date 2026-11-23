@@ -11,8 +11,12 @@
 // UI can show rather than thrown.
 #include "crucible/config/config.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <optional>
+#include <random>
+#include <string_view>
 #include <system_error>
 #include <nlohmann/json.hpp>
 
@@ -343,7 +347,8 @@ bool save_config(const Config& config, const std::filesystem::path& file) {
 
     // Write to a sibling temp file and rename, so an interrupted save cannot
     // leave the user with a truncated config and no way back into the app.
-    const std::filesystem::path temp = file.string() + ".tmp";
+    // Named for this save alone: the app and cruciblecli may both be saving.
+    const std::filesystem::path temp = file.string() + "." + std::to_string(std::random_device{}()) + ".tmp";
     {
         std::ofstream out(temp);
         if (!out) {
@@ -385,6 +390,120 @@ Config config_from_json_text(std::string_view text, std::vector<std::string>& wa
 
 bool save_config(const Config& config) {
     return save_config(config, paths::config_file());
+}
+
+namespace {
+
+/// What tells one entry of a list from another: experts and providers have an
+/// id, and an MCP server a name.
+std::string entry_key(const json& entry) {
+    if (!entry.is_object()) {
+        return {};
+    }
+    for (const char* key : {"id", "name"}) {
+        if (const auto found = entry.find(key); found != entry.end() && found->is_string()) {
+            return *found;
+        }
+    }
+    return {};
+}
+
+bool keyed_list(const json& list) {
+    return list.is_array()
+        && std::all_of(list.begin(), list.end(), [](const json& one) { return !entry_key(one).empty(); });
+}
+
+const json* entry_named(const json& list, const std::string& key) {
+    for (const json& one : list) {
+        if (entry_key(one) == key) {
+            return &one;
+        }
+    }
+    return nullptr;
+}
+
+/// Three versions of one value, as a merge sees them. A key or an entry that
+/// is not there is null.
+json merge_three(const json& base, const json& mine, const json& theirs) {
+    if (mine == base) {
+        return theirs;
+    }
+    if (theirs == base || theirs == mine) {
+        return mine;
+    }
+    static const json nothing;
+    if (mine.is_object() && theirs.is_object()) {
+        json out = json::object();
+        const auto in = [](const json& object, const std::string& key) -> const json& {
+            if (object.is_object()) {
+                if (const auto found = object.find(key); found != object.end()) {
+                    return *found;
+                }
+            }
+            return nothing;
+        };
+        for (const auto& [key, value] : mine.items()) {
+            if (json merged = merge_three(in(base, key), value, in(theirs, key)); !merged.is_null()) {
+                out[key] = std::move(merged);
+            }
+        }
+        for (const auto& [key, value] : theirs.items()) {
+            if (!mine.contains(key)) {
+                if (json merged = merge_three(in(base, key), nothing, value); !merged.is_null()) {
+                    out[key] = std::move(merged);
+                }
+            }
+        }
+        return out;
+    }
+    // A list of named things, entry by entry, in this side's order, with what
+    // the other side added after them. Any other list is one value.
+    if (keyed_list(mine) && keyed_list(theirs) && (base.is_null() || keyed_list(base))) {
+        static const json no_list = json::array();
+        const json& before = base.is_array() ? base : no_list;
+        const auto  found  = [](const json* entry) -> const json& { return entry != nullptr ? *entry : nothing; };
+        json out = json::array();
+        for (const json& one : mine) {
+            const std::string key = entry_key(one);
+            if (json merged = merge_three(found(entry_named(before, key)), one, found(entry_named(theirs, key)));
+                !merged.is_null()) {
+                out.push_back(std::move(merged));
+            }
+        }
+        for (const json& one : theirs) {
+            const std::string key = entry_key(one);
+            if (entry_named(mine, key) == nullptr) {
+                if (json merged = merge_three(found(entry_named(before, key)), nothing, one); !merged.is_null()) {
+                    out.push_back(std::move(merged));
+                }
+            }
+        }
+        return out;
+    }
+    return mine;
+}
+
+}  // namespace
+
+std::optional<Config> merge_saved_config(const Config& base, const Config& mine, std::string_view saved) {
+    const json on_disk = json::parse(saved, nullptr, /*allow_exceptions=*/false);
+    if (on_disk.is_discarded() || !on_disk.is_object()) {
+        return std::nullopt;
+    }
+    std::vector<std::string> warnings;
+    // All three through the one serializer, so that a value written another
+    // way by hand does not read as a change.
+    const json theirs = config_to_json(config_from_json(on_disk, warnings));
+    const json before = config_to_json(base);
+    if (theirs == before) {
+        return std::nullopt;
+    }
+    const json own    = config_to_json(mine);
+    const json merged = merge_three(before, own, theirs);
+    if (merged == own) {
+        return std::nullopt;
+    }
+    return config_from_json(merged, warnings);
 }
 
 void write_default_config(const std::filesystem::path& file) {

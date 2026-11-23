@@ -83,6 +83,11 @@ struct TurnAction {
     /// A picture the action produced, by path: a screenshot it took, a
     /// picture it looked at. The window asks for the bytes when it draws it.
     std::string picture = {};
+
+    /// How much of the turn's reasoning had been written when this happened,
+    /// so the thinking can be read in among the work it led to. npos for an
+    /// action saved before this was kept.
+    std::size_t thought_at = std::string::npos;
 };
 
 /// One exchange. Kept as a unit so the transcript can show which expert

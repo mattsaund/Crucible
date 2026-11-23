@@ -10,14 +10,21 @@ until it writes an answer for the person who asked. There is no other mode: a
 request to make an app is worked the same way as a question about one, for as
 long as it takes.
 
-Five things are worth knowing before reading it.
+Six things are worth knowing before reading it.
+
+The expert calls tools the way it was trained to. A model on this machine whose
+chat template can write tools is offered them as functions and its calls are
+read by the parser that goes with the template (tools/native_tools.hpp): told
+to write `READ: file` lines instead, Qwen and flint fell back on their own
+<tool_call> partway through and the turn ended on the bare tag. A provider's
+model, or one whose template has no tools, writes the lines.
 
 The transcript is the person's, and it is kept readable while the turn works.
 A round that reached for a tool said two things: a sentence for the reader and
-a line for the machine. The line comes off the reply and the sentence stays
-(it is the only explanation of the change that will ever be written) and what
-the tool did goes above the reply as an action, with the diff it made or the
-output it printed.
+a call for the machine. The call stays off the reply and the sentence stays on
+it (it is the only explanation of the change that will ever be written) and
+what the tool did goes above the reply as an action, with the diff it made or
+the output it printed.
 
 The expert can change mid-prompt. When the next step needs another kind of
 expertise, the expert says so with a HANDOFF line, and every few actions the
@@ -26,10 +33,19 @@ routes that step, and when another expert fits it better, that one is seated
 and carries on with the same conversation. A prompt sent to one expert stays
 with it.
 
-The context is bounded, and the loop is not. The expert is shown the request,
-an account of what has been done, and the last few exchanges; older ones live
-in the account. So a prompt can take sixty actions without its request being
-pushed out of the window by the files it read along the way.
+The context is bounded, and the loop is not. What the expert is shown only
+grows, so that each round reads nothing but what is new: the model keeps what
+it has already read, and a prompt that changes near its start is read again
+whole. Once it nears what the context holds, the older exchanges go at one
+stroke and an account of them takes their place beside the request. So a prompt
+can take sixty actions without its request being pushed out of the window by
+the files it read along the way, and without paying for them every round.
+
+A prompt that asks for something to be made or changed is checked before it
+ends. An expert will say it is finished with a page written and the README
+still to do, or show the change in its reply and write nothing, so the turn
+that is about to end is asked, out of sight, whether all of it is done. It
+either says so or carries on with the tools.
 
 The loop is honest about itself. The same call made again with nothing changed
 since is not run, a run of actions that goes round the same few steps is told
@@ -46,8 +62,11 @@ the person. Which of those happens, in what order, and what the expert is told
 about each, is decided here.
 """
 
+import json
+import os
 import re
 import sys
+import time
 
 from . import routing, steps
 from .rpc import Disconnected
@@ -57,10 +76,15 @@ from .rpc import Disconnected
 # that would take more than this is going round, whatever it thinks.
 ACTIONS = 60
 
-# How many of the turn's own messages the expert is shown in full: four actions
-# with their results. Fewer and it forgets the error it was fixing, more and a
-# couple of file listings crowd out the request. The account carries the rest.
+# How many of the turn's own messages stay when the context is nearly full and
+# the older ones go: four actions with their results. Fewer and it forgets the
+# error it was fixing. The account carries the rest.
 RECENT = 8
+
+# How much of what a conversation may take (PROMPT_SHARE of the context) a
+# prompt fills before its older exchanges go. They go all at once and well
+# before the end, because each time they do the model reads the rest again.
+CROWDED = 0.8
 
 # How many lines the account of what was done carries.
 ACCOUNT_LINES = 12
@@ -80,6 +104,10 @@ CHECKPOINT_EVERY = 6
 # model for another; a handoff the expert asked for needs only the floor.
 SWITCH_AT = 0.75
 
+# The most a checkpoint may write, thinking included. It is asked for one line;
+# one that is still thinking after this much is left where it was.
+CHECKPOINT_TOKENS = 256
+
 # Actions after a takeover before a checkpoint may move the work again, so two
 # experts do not pass a step back and forth.
 SETTLE = 2
@@ -87,6 +115,17 @@ SETTLE = 2
 # How many replies in a row may nearly call a tool and not, before the words
 # are taken as the answer.
 NUDGES = 2
+
+# How many times a prompt's work is checked before it may end. A model that
+# keeps finding something to do has done what it is going to, and one that
+# changed nothing when it was checked is not asked a second time.
+REVIEWS = 2
+
+# How much a model may think before its next step, in characters, once a
+# prompt that asked for work is under way. Most steps take a few thousand.
+# gpt-oss at high effort once wrote 46,000, two and a half minutes, before
+# reading a file it had read already. Asked again at once, it gets on with it.
+THINK_MOST = 10000
 
 # How many past exchanges are replayed to the expert, before the context is
 # consulted. Bounded deliberately: a swapped-in expert reads the whole history
@@ -153,6 +192,13 @@ NEXT_STEP = ("Before you go on: what is the next step towards what was asked? Sa
              "line, as\n\nHANDOFF: <the next step>\n\nand nothing else. If it is all done, "
              "reply DONE: instead.")
 
+# The same, of a model that calls tools in its own format.
+NEXT_STEP_NATIVE = ("Before you go on: what is the next step towards what was asked? Call hand_off "
+                    "with it as next_step. If it is all done, call hand_off with next_step DONE.")
+
+# A call that could not be read as one of the tools.
+BAD_CALL = "That call could not be run: {}. Check the tool's parameters and try again."
+
 # Said to the expert seated for a step another one handed on.
 TAKES_OVER = ("\n\nYou are taking over this request from {} for the next step: {}. The "
               "conversation so far is above. Carry on from it.")
@@ -173,6 +219,15 @@ FAILED_LAST = ("That last action failed: {}. If what was asked still needs it, f
 CUT_OFF = ("That reply was cut off by the length limit before the end of what you were "
            "writing, so nothing was written. Write it again, shorter, or in parts: WRITE the "
            "first part, then EDIT to add the rest.")
+
+# Asked before a prompt that wanted something made or changed may end.
+REVIEW = ("Before you finish, check your work against what was asked: {}\n\nIf any of it is not "
+          "actually done yet, a file not written or a change only described in your reply, do it now "
+          "with your tools. If all of it is done, reply DONE and nothing else.")
+
+# A round that ended with nothing said and nothing called.
+SAID_NOTHING = ("Your last reply was empty. If there is more to do, do it now with your tools. "
+                "Otherwise tell the person what you did.")
 
 # A reply that went round in a loop and was stopped.
 REPEATED_ITSELF = ("\n\nYour last reply started repeating itself and was stopped. Write it "
@@ -264,7 +319,7 @@ def system_prompt(params, seat, tools=True):
     offered: the round that answers from what the turn found."""
     text = params.get("system_prompt", "")
     effort = params.get("effort", "")
-    if effort and not seat.get("remote") and seat.get("takes_effort"):
+    if effort and not seat.get("remote") and seat.get("takes_effort") and not seat.get("native"):
         # Where a local reasoning model looks for it. A provider takes it as a
         # field of the request instead, which the core sends with each round.
         text += "\n\nReasoning: " + effort
@@ -284,6 +339,21 @@ def system_prompt(params, seat, tools=True):
     # is the folder, answered once, in the terms it is about: with none
     # trusted, there are no tools to list.
     return text + seat.get("tools", "")
+
+
+# What makes a prompt a request for work rather than a question. Only ever a
+# reason to ask the expert once more whether it is finished, so a wrong guess
+# costs a short round and no more.
+WORK_WORDS = re.compile(r"\b(add|make|create|write|build|fix|change|update|edit|implement|remove|delete|"
+                        r"rename|refactor|replace|move|convert|generate|install|put|center|style|improve|"
+                        r"redo|rewrite)\b", re.IGNORECASE)
+JUST_ASKING = re.compile(r"\s*(what|why|how|when|where|who|which|does|do|did|is|are|was|were|explain|"
+                         r"describe|summarize|compare|tell me|show me)\b", re.IGNORECASE)
+
+
+def asks_for_work(prompt):
+    """Whether `prompt` asks for something to be made or changed."""
+    return bool(WORK_WORDS.search(prompt or "")) and not JUST_ASKING.match(prompt or "")
 
 
 def actions_for(params):
@@ -314,14 +384,75 @@ def running_account(done):
 
 
 def window(log):
-    """The turn's own messages the expert is shown in full, and where they
-    start in `log`: the last RECENT of them, from an answer of the expert's."""
+    """Where the turn's own messages would start if the older ones went, and
+    those that stay: the last RECENT of them, from an answer of the expert's."""
     if len(log) <= RECENT:
         return 0, log
     start = len(log) - RECENT
     if log[start]["role"] != "assistant":
         start += 1
     return start, log[start:]
+
+
+# What each tool did, for a model that does not read tool calls.
+DID = {"read_file": "read", "write_file": "wrote", "edit_file": "edited", "list_files": "listed",
+       "find_in_files": "searched for", "render_page": "drew", "run_command": "ran",
+       "run_python": "ran some Python", "fetch_url": "fetched", "web_search": "searched the web for",
+       "hand_off": "handed on the next step,"}
+
+
+# A next step that says there is none, the way a model made to name one puts it.
+NOTHING_LEFT = re.compile(
+    r"^\W*(?:done|none|nothing|n/?a|no (?:further|more|next|other)\b|all (?:done|set|complete|finished)\b"
+    r"|(?:the )?tasks? (?:is |are |has been |have been )?(?:complete|completed|done|finished)\b"
+    r"|(?:completed|finished)\b)", re.I)
+ALREADY_MADE = re.compile(r"\b(?:ha(?:s|ve) been|(?:is|are) (?:now )?(?:complete|completed|done|finished|ready|in place))\b",
+                          re.I)
+JUST_DONE = re.compile(r"\W*(?:done|none|nothing|n/?a)\W*", re.I)
+# The word the last check asks for, left at the end of a sentence by a model
+# that went on to answer properly. Only in capitals and after a full stop, so
+# that "set its status to DONE" is left as it is.
+TRAILING_DONE = re.compile(r"(?:(?<=[.!?:])|(?<=\n))\s*DONE[.!]?\s*$")
+
+
+def nothing_left(step):
+    """Whether the step a checkpoint got back is that there is none. Sent on
+    as a step, "the page has been added" brought the last expert back to work
+    on a finished job, and it broke the page. A real step read this way only
+    stays with the expert that has it."""
+    return bool(NOTHING_LEFT.match(step or "") or ALREADY_MADE.search(step or ""))
+
+
+def as_done(function):
+    """A tool call in words, as something done. Written as the call it was,
+    with its arguments, LFM2.5 copied it: "(called edit_file: {...})" became
+    the end of its answer to the person, and nothing was edited."""
+    try:
+        given = json.loads(function.get("arguments") or "{}")
+    except ValueError:
+        given = {}
+    given = given if isinstance(given, dict) else {}
+    what = next((str(given[key]) for key in ("path", "page", "command", "next_step", "text", "url", "query")
+                 if given.get(key)), "")
+    name = function.get("name") or "a tool"
+    words = DID.get(name, "used " + name.replace("_", " "))
+    return steps.line("I %s %s." % (words, what) if what else "I %s." % words, 200)
+
+
+def plain(log):
+    """The turn's messages for a model that does not read tool calls: a call
+    as a line of what it did, and what came back as the next thing said."""
+    out = []
+    for message in log:
+        if message.get("role") == "tool":
+            out.append({key: value for key, value in message.items() if key != "tool_call_id"})
+            out[-1]["role"] = "user"
+        elif message.get("tool_calls"):
+            out.append({"role": "assistant", "content": paragraphs(
+                message.get("content") or "", as_done(message["tool_calls"][0]["function"]))})
+        else:
+            out.append(message)
+    return out
 
 
 def dropped_note(dropped):
@@ -331,7 +462,7 @@ def dropped_note(dropped):
         dropped // 2, "earlier exchange" if dropped == 2 else "earlier exchanges")
 
 
-def unanswered(shown, parsed, hit_limit):
+def unanswered(shown, parsed, hit_limit, spent=True):
     """Why a turn that ended has no answer to show, or "" when it has one.
 
     Three ways to get here, and they want different things said. A reasoning
@@ -347,8 +478,12 @@ def unanswered(shown, parsed, hit_limit):
     call = parsed.get("call")
     asked_to_act = bool(call) and call.get("kind") in PROJECT_VERBS
     asked_to_search = bool(parsed.get("search"))
+    if parsed.get("attempted") == "call":
+        return "wrote a tool call that could not be read"
     if shown and not asked_to_act and not asked_to_search:
         return ""
+    if asked_to_act and not spent:
+        return "kept trying the same thing and was stopped"
     if asked_to_act:
         return ('used all the actions this request may take. Ask again to carry on, or raise '
                 '"Actions per prompt" in Settings, Tools')
@@ -358,6 +493,19 @@ def unanswered(shown, parsed, hit_limit):
         return ('thought until "Longest reply" ran out. Raise it in Settings, Generation, or '
                 'lower the effort')
     return "stopped without answering"
+
+
+def trace(**fields):
+    """One line about a round, to the file $CRUCIBLE_TRACE names, for reading
+    afterwards what a model really wrote. Nothing without it."""
+    path = os.environ.get("CRUCIBLE_TRACE")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(json.dumps(dict(fields, at=round(time.time(), 2)), ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 # --- the turn ---------------------------------------------------------------------
@@ -376,6 +524,8 @@ class Turn:
         self.expert = ""
         self.name = ""
         self.seat = {}
+        self.size = 0          # the seated expert's context, in tokens
+        self.before_call = None   # what this round said before a call it spelled out
         # A note for the next round alone, put after the instructions: who is
         # taking over, or that a reply was stopped for repeating itself.
         self.aside = ""
@@ -444,6 +594,27 @@ class Turn:
 
         # --- the expert, in its seat ---------------------------------------------
         seat = self.call("turn.load")
+        first_error = seat.get("error", "") if not seat.get("ok") else ""
+        tried = [decision.expert]
+        # An expert that cannot be seated right now is no reason to leave the
+        # prompt unanswered while another one can take it. flint, 36 GB on
+        # three cards, fits or does not by what the desktop has open. A prompt
+        # sent to one expert by name stays with it, and says why it cannot.
+        while not seat.get("ok") and seat.get("error") != "stopped" and not pinned:
+            other = self.next_best(tried)
+            if other is None:
+                break
+            routed = self.call("turn.route", {"decision": other.to_json()})
+            if not routed.get("has_model"):
+                tried.append(other.expert)
+                continue
+            self.show(actions=[{"summary": "%s could not load, so %s takes this" % (
+                self.roster.label(tried[-1]), self.roster.label(other.expert)),
+                "body": seat.get("error", "")}])
+            self.mood("loading", self.roster.label(other.expert) + " is taking this")
+            tried.append(other.expert)
+            decision = other
+            seat = self.call("turn.load")
         if not seat.get("ok"):
             error = seat.get("error", "")
             if error == "stopped":
@@ -451,6 +622,8 @@ class Turn:
                 # and the turn it belonged to reads as canceled, not failed.
                 self.end("canceled")
             else:
+                # The first expert's reason: it is the one who was asked for.
+                error = first_error or error
                 self.end("failed", reason=error, mood="error", status=error)
             return
         self.decision = decision
@@ -473,6 +646,34 @@ class Turn:
             return
         self.rounds()
 
+    def next_best(self, tried):
+        """Who the delegator would seat for this prompt, of the experts with a
+        model who have not been tried. None when nobody is left."""
+        params = self.params
+        seats = params.get("seats") or {}
+        left = [one for one in params.get("roster") or []
+                if one.get("id") not in tried and (seats.get(one.get("id")) or {}).get("model")]
+        if not left:
+            return None
+        if len(left) == 1:
+            return routing.Decision(left[0]["id"], 1.0, routing.FALLBACK,
+                                    self.roster.label(tried[0]) + " could not load")
+        try:
+            decision = routing.route(self.core, {
+                "prompt": routed_prompt(params.get("prompt", ""), "", params.get("attachments") or []),
+                "pinned": "",
+                "roster": left,
+                "seats": {one["id"]: seats.get(one["id"]) for one in left},
+                "routing": params.get("routing"),
+            })
+        except Disconnected:
+            raise
+        except Exception as error:   # the delegator could not be had: the first of them, then
+            print("chat: could not route past %s (%s)" % (tried[-1], error), file=sys.stderr)
+            return routing.Decision(left[0]["id"], 1.0, routing.FALLBACK,
+                                    self.roster.label(tried[0]) + " could not load")
+        return decision if decision.expert in [one["id"] for one in left] else None
+
     def open(self):
         """The conversation, opened for the seated expert and fitted to its
         context. What was dropped to fit is said; "" when it opened, or why it
@@ -484,6 +685,7 @@ class Turn:
         # expert can answer it: the context is the one it was loaded with and
         # the count is its own tokenizer's.
         size = int(opened.get("size") or 0)
+        self.size = size
         used = int(opened.get("used") or 0)
         budget = int(size * PROMPT_SHARE)
         policy = params.get("overflow", "")
@@ -529,6 +731,8 @@ class Turn:
         except Exception as error:   # the delegator could not be had; the step stays
             print("chat: the next step could not be routed (%s)" % error, file=sys.stderr)
             return ""
+        trace(kind="route", step=work, expert=decision.expert, confidence=decision.confidence,
+              source=decision.source, explicit=explicit)
         if (not decision.expert or decision.expert == self.expert
                 or decision.source == routing.FALLBACK
                 or (decision.source == routing.KEYWORD and not explicit)
@@ -563,31 +767,87 @@ class Turn:
         self.mood("thinking", name + " is reading")
         return name
 
-    def checkpoint(self, shown, account):
+    def native(self):
+        """Whether the seated expert calls tools in its own format."""
+        return bool(self.seat.get("native"))
+
+    def for_seat(self, log):
+        """The turn's messages as the seated expert reads them. An expert that
+        took over from one with another way of calling tools reads them too."""
+        return list(log) if self.native() else plain(log)
+
+    @staticmethod
+    def said_call(log, answer, raw):
+        """Keep what the expert said, with the call it made in its own format."""
+        message = {"role": "assistant", "content": answer}
+        if raw:
+            message["tool_calls"] = [{"id": raw.get("id") or "call_1", "type": "function",
+                                      "function": {"name": raw.get("name", ""),
+                                                   "arguments": raw.get("arguments") or "{}"}}]
+        log.append(message)
+
+    @staticmethod
+    def answered(log, raw, text, **more):
+        """Keep what came back: the call's result when it made one, otherwise
+        the next thing said to it."""
+        message = ({"role": "tool", "tool_call_id": raw.get("id") or "call_1", "content": text} if raw
+                   else {"role": "user", "content": text})
+        message.update(more)
+        log.append(message)
+
+    def prose(self, answer, kind, raw):
+        """What a round said beside its call. A call in the model's own format
+        is not in the words at all, or was spelled out after them."""
+        # What gpt-oss writes beside a call is its working out loud ("we also
+        # need to... let's list the files again"), and its answer comes last.
+        if raw and self.seat.get("takes_effort"):
+            return ""
+        said = (self.before_call if self.before_call is not None else
+                answer.strip() if raw else prose_before_tool_call(answer, kind))
+        # gpt-oss sometimes leaves a scrap of its own format beside a call, one
+        # word and no capital: a reply began "comment?".
+        return "" if said and len(said.split()) < 2 and said == said.lower() else said
+
+    def crowded(self, used):
+        """Whether a prompt of `used` tokens is near what the context holds."""
+        return self.size > 0 and used > self.size * PROMPT_SHARE * CROWDED
+
+    def checkpoint(self, shown, note):
         """Ask the seated expert, out of sight, what the next step is, and let
         the delegator choose who takes it. `shown` is what it is shown of the
-        turn so far, ending in the result of its last action, and `account`
-        what was done before that. The step, when another expert took it,
-        or ""."""
-        if not shown or shown[-1]["role"] != "user":
+        turn so far, ending in the result of its last action, and `note` what
+        was done before that. The step, when another expert took it, or "".
+
+        Asked under the same instructions as every other round, with the
+        question at the very end. Asked under others, the model read the whole
+        conversation again to answer it, and once more for the round after.
+        """
+        if not shown or shown[-1]["role"] not in ("user", "tool"):
             return ""
-        messages = [dict(m) for m in shown]
-        messages[-1]["content"] = messages[-1]["content"] + "\n\n" + NEXT_STEP
-        # One line is wanted, so a reasoning model is asked to think little
-        # about it, whatever the prompt itself was given.
-        quick = dict(self.params, effort="low") if self.params.get("effort") else self.params
-        system = system_prompt(quick, self.seat, tools=False)
-        if account:
-            system += "\n\n" + account
+        messages = [dict(m) for m in self.for_seat(shown)]
+        messages[-1]["content"] = (messages[-1]["content"] + "\n\n"
+                                   + (NEXT_STEP_NATIVE if self.native() else NEXT_STEP))
         self.mood("thinking", self.name + " is choosing the next step")
-        said = self.call("turn.round", {"messages": messages, "paragraph": False, "quiet": True,
-                                        "system": system})
+        said = self.call("turn.round", {"messages": messages, "note": note, "paragraph": False,
+                                        "quiet": True, "quick": True, "most": CHECKPOINT_TOKENS,
+                                        "native": self.native(),
+                                        "system": system_prompt(self.params, self.seat)})
+        trace(kind="checkpoint", expert=self.expert, answer=said.get("answer", ""),
+              reasoning=len(said.get("reasoning", "")), tokens=said.get("output_tokens"),
+              prompt=said.get("prompt_tokens"), reused=said.get("prompt_reused"),
+              prompt_ms=said.get("prompt_ms"), output_ms=said.get("output_ms"))
         if said.get("error") or said.get("canceled") or said.get("looped"):
             return ""
-        parsed = self.core.call("tools.parse", {"answer": said.get("answer", ""),
-                                                "reasoning": said.get("reasoning", "")}) or {}
+        raw = (said.get("calls") or [None])[0]
+        parsed = (self.core.call("tools.native", {"name": raw.get("name", ""),
+                                                  "arguments": raw.get("arguments", "")}) if raw else
+                  self.core.call("tools.parse", {"answer": said.get("answer", ""),
+                                                 "reasoning": said.get("reasoning", "")})) or {}
         call = parsed.get("call") or {}
         work = (call.get("argument") or "").strip() if call.get("kind") == "handoff" else ""
+        trace(kind="next_step", expert=self.expert, step=work, called=(raw or {}).get("name", ""))
+        if nothing_left(work):
+            return ""
         return work if work and self.hand_off(work, explicit=False) else ""
 
     def rounds(self):
@@ -599,12 +859,21 @@ class Turn:
         searches = int(params.get("search_rounds") or 0)
         root = params.get("root", "")
         log = []               # this turn's own messages, after the conversation it opened with
+        start = 0              # where in `log` what the expert is shown begins
+        note = ""              # the account of what was done before that
+        used = 0               # how long the last round's prompt was, in tokens
         done = []              # what each action did, for the account
         earlier = ""           # what the rounds before this one left on screen
         repeats = steps.Repeats(root)
         cycles = steps.Cycles()
         searched = []
-        actions = since_checkpoint = nudges = loops = cycle_strikes = 0
+        actions = since_checkpoint = nudges = loops = cycle_strikes = reviews = 0
+        reviewing = False       # this round is the check before the prompt ends
+        rushing = False         # this round follows one that thought for too long
+        edits = reviewed_at = 0 # files changed so far, and when it was last checked
+        before_check = ""       # what was on screen before the answer being checked
+        working = workshop and asks_for_work(params.get("prompt"))
+        declined = False        # the person said no to an edit, and is not to be pressed
         since_switch = SETTLE   # actions since another expert took over
         touched = set()         # the files this prompt has changed
         failed = ""            # what the last action said when it failed, until it is answered
@@ -620,21 +889,47 @@ class Turn:
         most = limit * 2 + 20
 
         for _ in range(most):
-            start, shown_log = window(log)
-            account = running_account(done) if start > 0 else ""
+            # What it is shown only grows until the context is nearly full,
+            # and then the older exchanges go together.
+            if self.crowded(used) and window(log)[0] > start:
+                start = window(log)[0]
+                note = running_account(done)
+            shown_log = self.for_seat(log[start:])
             system = system_prompt(params, self.seat, tools=not final)
-            if account:
-                system += "\n\n" + account
             if self.aside:
                 system += self.aside
                 self.aside = ""
             # A turn that reads a file, then writes one, then answers says
             # something each time, and each is kept: a paragraph apart, rather
             # than run into the next sentence or replaced by it.
-            said = self.call("turn.round", {"messages": shown_log, "paragraph": bool(earlier),
-                                            "system": system})
+            said = self.call("turn.round", {"messages": shown_log, "note": note,
+                                            "paragraph": bool(earlier), "system": system,
+                                            "quiet": reviewing, "native": self.native(),
+                                            "tools": not final, "rush": rushing,
+                                            "think_most": THINK_MOST if working and actions else 0})
+            used = int(said.get("prompt_tokens") or 0)
+            if said.get("no_native") and self.native():
+                # A template that will not take this conversation: the lines
+                # every model can be told to write, for the rest of the turn.
+                self.seat = dict(self.seat, native=False, tools=self.seat.get("text_tools", ""))
+                continue
+            if said.get("too_long"):
+                # Longer than the context holds. The older exchanges go, and
+                # with nothing older to let go there is nothing to ask.
+                if window(log)[0] > start:
+                    start = window(log)[0]
+                    note = running_account(done)
+                    continue
+                reason = "this request no longer fits the context: %d tokens" % int(said["too_long"])
+                self.end("failed", reason=reason, mood="error", status="context full")
+                return
             answer = said.get("answer", "")
             reasoning = said.get("reasoning", "")
+            trace(kind="round", expert=self.expert, answer=answer, reasoning=len(reasoning),
+                  tokens=said.get("output_tokens"), hit_limit=said.get("hit_limit"),
+                  looped=said.get("looped"), overthought=said.get("overthought"), rushed=rushing,
+                  error=said.get("error"), prompt=said.get("prompt_tokens"), reused=said.get("prompt_reused"),
+                  prompt_ms=said.get("prompt_ms"), output_ms=said.get("output_ms"))
             # That a different model answered than the one in the seat, mostly.
             notes = [{"summary": note} for note in said.get("notes") or []]
             if said.get("error"):
@@ -673,30 +968,61 @@ class Turn:
                     break
                 self.aside = REPEATED_ITSELF
                 continue
+            if said.get("overthought") and not rushing:
+                # It went on thinking past anything a next step needs. Asked
+                # again at once, with the thinking cut short, so that it acts.
+                self.show(reply=earlier)
+                shown = earlier
+                rushing = True
+                continue
+            rushing = False
             if final or (not workshop and not searching):
                 break
 
-            parsed = self.core.call("tools.parse", {"answer": answer, "reasoning": reasoning}) or {}
+            # The call it made in its own format, and otherwise a line in its
+            # words: a model offered functions may still write one.
+            raw = (said.get("calls") or [None])[0] if workshop else None
+            if raw:
+                parsed = self.core.call("tools.native", {"name": raw.get("name", ""),
+                                                         "arguments": raw.get("arguments", "")}) or {}
+                if parsed.get("error"):
+                    earlier = paragraphs(earlier, answer.strip())
+                    self.show(reply=earlier)
+                    shown = earlier
+                    self.said_call(log, answer, raw)
+                    self.answered(log, raw, BAD_CALL.format(parsed["error"]))
+                    nudges += 1
+                    if nudges > NUDGES:
+                        break
+                    continue
+            else:
+                parsed = self.core.call("tools.parse", {"answer": answer, "reasoning": reasoning}) or {}
+            self.before_call = parsed.get("prose")
             call = (parsed.get("call") or {}) if workshop else {}
             kind = call.get("kind", "")
 
             # --- the next step, to somebody else ----------------------------------
+            if kind == "handoff" and NOTHING_LEFT.match(call.get("argument") or ""):
+                # Handing on "it is all done" is finishing.
+                said_done = call.get("argument") or ""
+                call = dict(call, kind="done", argument="" if JUST_DONE.fullmatch(said_done) else said_done)
+                kind = "done"
             if kind == "handoff":
                 work = (call.get("argument") or "").strip()
-                earlier = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                earlier = paragraphs(earlier, self.prose(answer, kind, raw))
                 self.show(reply=earlier)
                 shown = earlier
-                log.append({"role": "assistant", "content": answer})
+                self.said_call(log, answer, raw)
                 if not self.could_switch(explicit=True):
-                    log.append({"role": "user", "content": (PINNED_ON if params.get("pinned") else
-                                                            CARRY_ON.format(work)).strip()})
+                    self.answered(log, raw, (PINNED_ON if params.get("pinned") else
+                                             CARRY_ON.format(work)).strip())
                     continue
                 before = self.name
                 taken = self.hand_off(work or params.get("prompt", ""), explicit=True)
                 if taken:
                     since_switch = 0
-                log.append({"role": "user", "content": (TAKES_OVER.format(before, work) if taken
-                                                        else CARRY_ON.format(work)).strip()})
+                self.answered(log, raw, (TAKES_OVER.format(before, work) if taken
+                                         else CARRY_ON.format(work)).strip())
                 since_checkpoint = 0
                 cycles.clear()
                 continue
@@ -706,12 +1032,27 @@ class Turn:
                 # Not offered, but plain enough: the work is finished, and what
                 # follows the word is what the person is told.
                 said_done = (call.get("argument") or "").strip()
-                shown = paragraphs(paragraphs(earlier, prose_before_tool_call(answer, kind)), said_done)
+                shown = paragraphs(paragraphs(earlier, self.prose(answer, kind, raw)), said_done)
                 self.show(reply=shown)
                 break
 
             acting = kind in PROJECT_VERBS
             query = "" if acting else parsed.get("search") or ""
+            if reviewing and not acting and not query:
+                # It says it is finished, or has nothing to add: what it
+                # answered before it was asked stands, and what it said to
+                # the check comes off. A reply once ended "All requirements
+                # have been met. DONE".
+                self.show(reply=earlier)
+                shown = earlier
+                break
+            if reviewing:
+                # It found more to do, so what it said about being finished
+                # was early. The answer it ends on says it instead, rather
+                # than the person reading "all done" three times over.
+                earlier = before_check
+                self.show(reply=earlier)
+            reviewing = False
             if not acting and not query:
                 # An answer straight after a failed action is asked once to
                 # face the failure, and goes off the screen meanwhile: it may
@@ -731,63 +1072,86 @@ class Turn:
                     log.append({"role": "user", "content": steps.nudge_for(parsed)})
                     self.show(reply=earlier)
                     continue
+                # Nothing said and nothing called is not an answer, and a
+                # thinking model does it: asked once to say or do something.
+                if (workshop and not answer.strip() and not final and not hit_limit
+                        and int(said.get("output_tokens") or 0) > 0 and nudges < NUDGES):
+                    nudges += 1
+                    log.append({"role": "assistant", "content": answer})
+                    log.append({"role": "user", "content": SAID_NOTHING})
+                    continue
+                # The prompt wanted something made or changed: checked once
+                # more, out of sight, before it ends.
+                if (workshop and not final and reviews < REVIEWS and not declined
+                        and asks_for_work(params.get("prompt")) and (not reviews or edits > reviewed_at)):
+                    reviews += 1
+                    reviewed_at = edits
+                    reviewing = True
+                    before_check = earlier
+                    earlier = shown
+                    log.append({"role": "assistant", "content": answer})
+                    log.append({"role": "user", "content": REVIEW.format(steps.line(params.get("prompt", ""), 600))})
+                    continue
                 break
             nudges = 0
 
             if query:
                 if not searching:
-                    log.append({"role": "assistant", "content": answer})
-                    log.append({"role": "user", "content": NO_SEARCH})
+                    self.said_call(log, answer, raw)
+                    self.answered(log, raw, NO_SEARCH)
                     self.show(reply=earlier)
                     continue
                 spent = len(searched) >= searches
-                final = self.search(query, answer, earlier, searched, log, spent) or final
+                final = self.search(query, answer, earlier, searched, log, spent, raw) or final
                 continue
 
             if actions >= limit:
                 # Every action spent, and this round asked for another. What it
                 # asked for is not run, and comes off the reply the way a call
                 # that ran does. The next round answers.
-                earlier = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                earlier = paragraphs(earlier, self.prose(answer, kind, raw))
                 self.show(reply=earlier)
-                log.append({"role": "assistant", "content": answer})
-                log.append({"role": "user", "content": NOT_RUN})
+                self.said_call(log, answer, raw)
+                self.answered(log, raw, NOT_RUN)
                 final = True
                 continue
 
             # --- a file cut off -------------------------------------------------
             if hit_limit and kind in ("write", "edit"):
-                earlier = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                earlier = paragraphs(earlier, self.prose(answer, kind, raw))
                 self.show(reply=earlier)
-                log.append({"role": "assistant", "content": answer})
-                log.append({"role": "user", "content": CUT_OFF})
+                self.said_call(log, answer, raw)
+                self.answered(log, raw, CUT_OFF)
                 continue
 
             # --- the same call again --------------------------------------------
             if repeats.again(call, start):
-                kept = paragraphs(earlier, prose_before_tool_call(answer, kind))
+                kept = paragraphs(earlier, self.prose(answer, kind, raw))
                 self.show(reply=kept)
                 earlier = kept
-                log.append({"role": "assistant", "content": answer})
+                self.said_call(log, answer, raw)
                 if repeats.strikes > 1:
-                    log.append({"role": "user", "content": ALREADY_DONE})
+                    self.answered(log, raw, ALREADY_DONE)
                     final = True
                 else:
-                    log.append({"role": "user", "content": steps.REPEAT_NUDGE.format("request")})
+                    self.answered(log, raw, steps.REPEAT_NUDGE.format("request"))
                 continue
 
-            earlier, result = self.act(call, answer, earlier, log, actions + 1 >= limit)
+            earlier, result = self.act(call, answer, earlier, log, actions + 1 >= limit, raw)
             actions += 1
             since_checkpoint += 1
             if result is None:
+                declined = True
                 done.append({"summary": "declined: " + steps.spoken(call), "ok": False})
                 continue
             ok = bool(result.get("ok", True))
-            failed = "" if ok else steps.line(result.get("summary") or result.get("output") or steps.spoken(call), 200)
+            failed = ("" if ok or steps.needs_a_page(call, result) else
+                      steps.line(result.get("summary") or result.get("output") or steps.spoken(call), 200))
             since_switch += 1
             # A piece of work finished: a file this prompt had not changed yet.
             new_work = bool(set(result.get("changed") or []) - touched)
             touched.update(result.get("changed") or [])
+            edits += 1 if result.get("changed") else 0
             done.append({"summary": result.get("summary") or steps.spoken(call),
                          "ok": ok, "changed": result.get("changed") or []})
             repeats.ran(call, result, len(log) - 1)
@@ -805,8 +1169,7 @@ class Turn:
             if due and since_switch >= SETTLE and actions < limit and self.could_switch(explicit=False):
                 since_checkpoint = 0
                 before = self.name
-                at, now_shown = window(log)
-                work = self.checkpoint(now_shown, running_account(done) if at > 0 else "")
+                work = self.checkpoint(log[start:], note)
                 if work:
                     self.aside = TAKES_OVER.format(before, work)
                     since_switch = 0
@@ -819,11 +1182,16 @@ class Turn:
         # the context of the next one. Remembered before a placeholder is put
         # in its place: what goes into the history is what the model said, not
         # what Crucible said about it.
+        if reviews and shown:
+            finished = TRAILING_DONE.sub("", shown).rstrip()
+            if finished and finished != shown:
+                self.show(reply=finished)
+                shown = finished
         answered = not canceled and output_tokens > 0
         why = ""
         if answered:
             parsed = (self.core.call("tools.parse", {"answer": shown, "reasoning": ""}) or {}) if shown else {}
-            why = unanswered(shown, parsed, hit_limit)
+            why = unanswered(shown, parsed, hit_limit, actions >= limit)
             if why and not workshop and (parsed.get("call") or {}).get("kind") in PROJECT_VERBS:
                 why = "reached for the project with no folder open. Open one to let it work there"
             if loops > 1 and not shown:
@@ -834,7 +1202,7 @@ class Turn:
         self.end("finished", status="canceled" if canceled else "", remember=answered and bool(shown),
                  reply="(" + why + ")" if why else None)
 
-    def act(self, call, answer, earlier, log, last):
+    def act(self, call, answer, earlier, log, last, raw=None):
         """Run the project call `call` the expert made, put what came of it
         above the reply, and hand the result back. The reply as it now reads,
         and what the tool said, or None for an edit the person declined."""
@@ -843,7 +1211,7 @@ class Turn:
         self.mood("thinking", doing(kind, argument))
 
         # The turn so far, and this round's prose up to the call.
-        kept = paragraphs(earlier, prose_before_tool_call(answer, kind))
+        kept = paragraphs(earlier, self.prose(answer, kind, raw))
         changes_a_file = kind in ("write", "edit")
 
         # --- the gate ---------------------------------------------------------
@@ -861,8 +1229,8 @@ class Turn:
                 # This round described a change that did not happen; what came
                 # before it still stands.
                 self.show(actions=[{"summary": "declined the edit to " + argument}], reply=earlier)
-                log.append({"role": "assistant", "content": answer})
-                log.append({"role": "user", "content": DECLINED})
+                self.said_call(log, answer, raw)
+                self.answered(log, raw, DECLINED)
                 return earlier, None
 
         result = self.call("turn.tool", {"call": call})
@@ -870,28 +1238,31 @@ class Turn:
         # transcript rather than only handed to the model, and the protocol
         # line off the reply, with the prose around it staying.
         self.show(actions=[{"summary": result.get("summary", ""), "body": result.get("detail", ""),
-                            "language": argument if changes_a_file else "",
+                            # The file it changed, from the project's root, which is
+                            # what the shelf opens: not the path as the model wrote
+                            # it, and nothing for a write that changed nothing.
+                            "language": (result.get("changed") or [""])[0] if changes_a_file else "",
                             "picture": result.get("picture", "")}],
                   reply=kept)
-        log.append({"role": "assistant", "content": answer})
+        self.said_call(log, answer, raw)
 
         # A picture the tool produced goes to a model that can see one, as a
         # picture, and with every round after this one; one that cannot is
         # told so, beside whatever words were read off it. A RUN that only
         # printed lines of a file is told the READ that numbers them.
-        handback = {"role": "user", "content": result.get("output", "")
-                    + steps.read_hint(call, result, self.params.get("root", ""))}
+        text = result.get("output", "") + steps.read_hint(call, result, self.params.get("root", ""))
+        more = {}
         if result.get("pictures"):
             if result.get("sees"):
-                handback["pictures"] = result["pictures"]
+                more["pictures"] = result["pictures"]
             else:
-                handback["content"] += TEXT_ONLY
+                text += TEXT_ONLY
         if last:
-            handback["content"] += LAST_ACTION
-        log.append(handback)
+            text += LAST_ACTION
+        self.answered(log, raw, text, **more)
         return kept, result
 
-    def search(self, query, answer, earlier, searched, log, spent):
+    def search(self, query, answer, earlier, searched, log, spent, raw=None):
         """Look up what the expert asked for, and hand back what was found.
         Whether the next round is the one that answers with no tools.
 
@@ -923,14 +1294,14 @@ class Turn:
         # Only the answer goes back, never the reasoning: the formats that
         # produce reasoning say to drop it from the context, and feeding it
         # back teaches the model that thinking aloud is part of the transcript.
-        log.append({"role": "assistant", "content": answer})
+        self.said_call(log, answer, raw)
         last = len(searched) >= int(self.params.get("search_rounds") or 0)
         if repeat or last:
             # The last search it is allowed. Saying so is the difference
             # between an answer and a model that asks to search again and ends
             # the turn with nothing in it.
             handback += LAST_SEARCH
-        log.append({"role": "user", "content": handback})
+        self.answered(log, raw, handback)
         return repeat and not self.seat.get("workshop")
 
 

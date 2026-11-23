@@ -96,7 +96,7 @@ int delegator_device(const std::vector<ComputeDevice>& gpus, const SplitPolicy& 
 /// split mode is -- "where the compute happens" is a separate question from
 /// "how it is divided between cards", and "auto" is an answer to the second
 /// one only.
-void detail::stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu, bool direct_io_real) {
+void detail::stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_gpu) {
     if (have_gpu && gpu.gpu_only) {
         // Negative means every layer plus the output, which is what llama.cpp
         // does with -1 (see llama_model::n_gpu_layers). Overriding the
@@ -107,15 +107,13 @@ void detail::stamp_memory(ModelParams& params, const GpuConfig& gpu, bool have_g
         params.gpu_only     = true;
     }
     if (gpu.vram_only) {
+        // What the setting is for is refusing a model that does not fit, and
+        // keeping its buffers on the card. How the file is read is the load's
+        // to choose (reading_for). This used to read every model past the page
+        // cache, and so from the disk every time: a 5.4 GB model took 5.5 s to
+        // come back where it takes 0.77 s from the cache, which is memory the
+        // system gives back the moment anything else wants it.
         params.no_host   = true;
-        // Read past the page cache, so the weights take no RAM on their way
-        // to the cards, on Linux, where direct I/O does that. Elsewhere it
-        // only turns the mapping off and keeps nothing out of RAM: Windows
-        // caches the file all the same, and a Mac would hold the weights
-        // twice in its one memory, in the cache and in buffers of their own.
-        // There a model is mapped as any other is. What the setting is for,
-        // refusing a model that does not fit, is the same everywhere.
-        params.direct_io = direct_io_real;
         params.vram_only = true;
     }
 }
@@ -236,10 +234,10 @@ std::string apply_gpu_policy(Config& config) {
         config.gpu.priority = std::move(kept);
     }
 
-    detail::stamp_memory(config.router, config.gpu, have_gpu, kDirectIoReal);
-    detail::stamp_memory(config.defaults, config.gpu, have_gpu, kDirectIoReal);
+    detail::stamp_memory(config.router, config.gpu, have_gpu);
+    detail::stamp_memory(config.defaults, config.gpu, have_gpu);
     for (auto& [id, expert] : config.experts) {
-        detail::stamp_memory(expert, config.gpu, have_gpu, kDirectIoReal);
+        detail::stamp_memory(expert, config.gpu, have_gpu);
     }
 
     // "Auto" plans nothing, except over cards whose links differ, where each

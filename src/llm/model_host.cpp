@@ -86,6 +86,18 @@ void log_to_file(ggml_log_level level, const char* text, void* /*user_data*/) {
     if (level == GGML_LOG_LEVEL_ERROR && t_errors.size() < 8) {
         t_errors.emplace_back(text);
     }
+    // Not llama.cpp's debug lines: one per tensor, thousands a load, each one
+    // a write to the disk while the model waits, in a log nobody can read for
+    // them. The rest of a line that was one of those goes with it.
+    thread_local bool skipping = false;
+    if (level == GGML_LOG_LEVEL_DEBUG) {
+        skipping = true;
+        return;
+    }
+    if (level == GGML_LOG_LEVEL_CONT && skipping) {
+        return;
+    }
+    skipping = false;
     const std::lock_guard<std::mutex> lock(g_log_mutex);
     if (!g_log_stream.is_open()) {
         return;
@@ -688,8 +700,7 @@ private:
 }  // namespace
 
 FileRead reading_for(const ModelParams& params, const std::vector<ComputeDevice>& gpus, double cached) {
-    if (!params.on_processor && direct_io_safe(gpus)
-        && (params.direct_io || reads_faster_direct(params, gpus, cached))) {
+    if (!params.on_processor && direct_io_safe(gpus) && reads_faster_direct(params, gpus, cached)) {
         return FileRead::Direct;
     }
     return kPrefetchHelps && cached >= 0.0 && cached < 0.8 ? FileRead::Prefetched : FileRead::Mapped;
@@ -2023,9 +2034,13 @@ void ModelHost::release_router_serving() {
 }
 
 bool ModelHost::processor_may_hold(const ModelParams& params) const {
-    // "Keep every layer on the GPU" and "Use dedicated VRAM only" both say
-    // a model is not to run from system memory, and this would be one.
-    if (params.gpu_only || params.vram_only || params.remote() || params.path.empty()) {
+    // Asked only of the delegator. "Keep every layer on the GPU" and "Use
+    // dedicated VRAM only" are about the experts, and the delegator kept to
+    // them cost the most: with the cards full, every message pushed the
+    // expert out to route it and read it back, 7 s of delegator and 32 s of
+    // Qwen on cards wired for one lane, for a one-line follow-up. Routing is
+    // a few short reads, which the processor does in a second or two.
+    if (params.remote() || params.path.empty()) {
         return false;
     }
     std::uint64_t used  = 0;
@@ -2237,7 +2252,6 @@ bool same_load(const ModelParams& a, const ModelParams& b) {
         && a.flash_attn   == b.flash_attn
         && a.tensor_split == b.tensor_split
         && a.no_host      == b.no_host
-        && a.direct_io    == b.direct_io
         && a.sequences    == b.sequences
         && a.own_caches   == b.own_caches;
 }

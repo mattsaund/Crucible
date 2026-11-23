@@ -146,8 +146,8 @@ function splitModel(value) {
 
 // --- the bar across the top ------------------------------------------------------
 
-// History is not one of them: it is the right-hand panel's, under the chats
-// it goes back from.
+// History is not one of them: it is the side menu's, under the chats it goes
+// back from.
 const TABS = [
   ['chat',    'Chat',    'Ask anything'],
   ['create',  'Create',  'Fine-tune an expert'],
@@ -155,35 +155,51 @@ const TABS = [
   ['bench',   'Bench',   'Benchmark models'],
 ];
 
+/// What the program last said. It stays until something else is said: an
+/// idle engine says nothing, which would otherwise wipe it the moment it was
+/// put there, and a crash pointed at on startup was never seen.
+function statusLine() {
+  const s = state.snapshot;
+  return state.error || s.status || (s.notices || []).slice(-1)[0] || '';
+}
+
 function topView() {
   const s = state.snapshot;
+  const chat = state.view === 'chat';
+  // The two buttons keep their places in every view, unseen outside the chat,
+  // so that the tabs do not move under the pointer going from one to another.
+  const unseen = chat ? '' : ' unseen';
+  const away = chat ? '' : ' tabindex="-1"';
+  // What the program last said, in every view. Hovered, the last few things.
+  const saying = statusLine();
+  const lately = state.error || (s.notices || []).slice(-6).join('\n') || saying;
   const tabs = TABS.map(([view, label, tip]) =>
     `<button data-act="view" data-view="${view}" title="${tip}"
              aria-current="${state.view === view}">${label}</button>`).join('');
   const update = s.update
     ? `<span class="pip" title="Crucible ${escape(s.update.latest)} is available"></span>` : '';
-  // Opening a project, or another chat, is the right-hand panel's; the bar
-  // only says which folder this chat works in -- the project's, or the
+  // Opening a project, or another chat, is the side menu's; the bar only
+  // says which folder this chat works in -- the project's, or the
   // scratch folder of a chat with none, or before its first message, where
   // that folder will go. Cut from the left when it is long, because the end
   // is the part that differs between two of them.
   const project = s.project || {};
   const folder = project.open ? project.display || project.root : project.scratch_display;
   return `
-    <button class="icon" data-act="fold" title="Show or hide the side menu"
-            aria-label="Show or hide the side menu">${ICONS.fold}</button>
+    <button class="icon${unseen}" data-act="fold" aria-expanded="${sideShown()}"${away}
+            title="Show or hide the side menu" aria-label="Show or hide the side menu">${ICONS.fold}</button>
     <img class="flame" src="${escape(state.mark || '')}" alt="">
     <span class="mark">CRUCIBLE</span>
     ${folder ? `<button type="button" class="project-path" data-act="show-folder"
         title="${escape(project.root || folder)}"><bdi>${escape(folder)}</bdi></button>` : ''}
+    <span class="top-status${state.error ? ' bad' : s.busy ? ' busy' : ''}" title="${escape(lately)}">${escape(saying)}</span>
     <nav>${s.update ? `<button class="update-link" data-act="settings-page" data-page="about"
         title="Crucible ${escape(s.update.latest)} is available">Update</button>` : ''}${tabs}
       <button class="icon" data-act="gear" aria-current="${state.view === 'settings'}"
               title="${s.update ? `Settings\nCrucible ${escape(s.update.latest)} is available`
                                 : 'Settings'}" aria-label="Settings">${ICONS.gear}${update}</button>
-      <button class="icon" data-act="fold-right" aria-pressed="${recentsOpen()}"
-              title="Show or hide recent chats and projects"
-              aria-label="Show or hide recent chats and projects">${ICONS.foldRight}</button>
+      <button class="icon${unseen}" data-act="shelf-toggle" aria-expanded="${chat && shelfOpen()}"${away}
+              title="Shelf" aria-label="Shelf">${ICONS.foldRight}</button>
     </nav>`;
 }
 
@@ -198,6 +214,10 @@ actions['show-folder'] = () => guard(async () => {
 // --- the side menu ----------------------------------------------------------------
 
 function sidebarOpen() { return state.sidebar >= SIDEBAR_SHUT; }
+
+/// Whether the side menu is on screen: it belongs to the chat, and is there
+/// while it is open.
+const sideShown = () => state.view === 'chat' && sidebarOpen();
 function sidebarWidth() { return Math.max(state.sidebar, SIDEBAR_MIN); }
 
 function setSidebar(rem) {
@@ -206,24 +226,15 @@ function setSidebar(rem) {
   render();
 }
 
-// --- the other side: what has been done lately ----------------------------------------
+// --- what has been done lately -----------------------------------------------------
 //
-// Conversations, newest first, across every project Crucible has been opened
-// in -- and those projects. Choosing a conversation opens its project, when it
-// is not the one open, and puts the conversation back with the expert's
-// memory of it, so the next question carries on from where it stopped.
-
-function recentsOpen() { return state.recentsWidth >= SIDEBAR_SHUT; }
-function recentsWidth() { return Math.max(state.recentsWidth, SIDEBAR_MIN); }
-
-function setRecents(rem) {
-  state.recentsWidth = Math.max(0, Math.min(rem, 34));
-  remember.set('recents-width', state.recentsWidth);
-  render();
-}
+// Under the experts in the side menu: conversations, newest first, across
+// every project Crucible has been opened in, and those projects. Choosing a
+// conversation opens its project, when it is not the one open, and puts the
+// conversation back with the expert's memory of it, so the next question
+// carries on from where it stopped.
 
 function recentsView() {
-  if (!recentsOpen()) return '';
   const r = state.recents;
   const here = state.snapshot.session || '';
   const project = state.snapshot.project || {};
@@ -247,23 +258,18 @@ function recentsView() {
         <span class="r-title">${escape(p.name)}</span><span class="r-meta">${escape(p.display)}</span></button>${
         bin('project-forget', `data-path="${escape(p.root)}" data-name="${escape(p.name)}"`, 'Remove')}</div>`).join('')
     : '<div class="status r-empty">No projects.</div>';
-  // A region (see region): it seldom changes while a reply streams beside it.
-  return `<div class="splitter" id="splitter-r" title="Drag to resize"></div>
-    ${region('recents', `<aside class="recents" id="recents" style="width:${recentsWidth()}rem">
-      <div class="roster-scroll">
-        <div class="r-head"><h2>RECENT CHATS</h2>
-          <button class="action small" data-act="new-chat"
-                  ${busy ? 'disabled' : ''}>New chat</button></div>
-        ${chats}
-        <button class="action wide r-history" data-act="view" data-view="history"
-                title="Past conversations" aria-current="${state.view === 'history'}">History</button>
-        <div class="r-head r-projects"><h2>PROJECTS</h2>
-          <button class="action small" data-act="open-project"
-                  ${busy ? 'disabled' : ''}>Open project</button></div>
-        ${projects}
-      </div>
-      ${usageView()}
-    </aside>`)}`;
+  return `<div class="recents">
+      <div class="r-head"><h2>CHATS</h2>
+        <button class="action small" data-act="new-chat"
+                ${busy ? 'disabled' : ''}>New chat</button></div>
+      ${chats}
+      <button class="action wide r-history" data-act="view" data-view="history"
+              title="Past conversations">History</button>
+      <div class="r-head r-projects"><h2>PROJECTS</h2>
+        <button class="action small" data-act="open-project"
+                ${busy ? 'disabled' : ''}>Open project</button></div>
+      ${projects}
+    </div>`;
 }
 
 // --- the models at work ---------------------------------------------------------
@@ -286,7 +292,7 @@ function resets(text) {
   return Number.isNaN(when) ? `resets in ${text}` : `resets in ${span((when - Date.now()) / 1000)}`;
 }
 
-/// The foot of the right-hand panel: the models in this machine's memory,
+/// The foot of the side menu: the models in this machine's memory,
 /// and under them the frontier model in use -- what it has cost at list
 /// prices, and how much of its provider's limits and its context is used.
 function usageView() {
@@ -335,9 +341,6 @@ function usageView() {
       <h2 class="u-frontier">FRONTIER</h2>${frontier}
     </div>`;
 }
-
-actions['fold-right'] = () =>
-  setRecents(recentsOpen() ? 0 : Math.max(remember.get('recents-open', 16), SIDEBAR_MIN));
 
 actions['recent-chat'] = (row) => guard(async () => {
   // A chat of another project opens that project.
@@ -413,7 +416,7 @@ actions['new-chat'] = () => guard(async () => {
 let recentsKey = '';
 let recentsTimer = 0;
 afterDraw.push(() => {
-  if (!recentsOpen()) return;
+  if (!sidebarOpen()) return;
   const s = state.snapshot;
   const key = `${(s.project || {}).root}|${s.session}|${s.session_name}|${(s.turns || []).length}|${
     !!s.busy}|${s.names_filed || 0}`;
@@ -435,6 +438,7 @@ function seatTip(e) {
 actions['seat-open'] = () => enter('settings', 'experts');
 
 function sideView() {
+  if (!sideShown()) return '';
   const s = state.snapshot;
   const experts = s.experts || [];
   const delegator = s.delegator || {};
@@ -450,21 +454,6 @@ function sideView() {
   const problem = s.delegator_problem || '';
   const delegatorPhase = routing ? 'active' : problem ? 'missing'
                        : delegator.model ? 'dormant' : 'unconfigured';
-
-  if (!sidebarOpen()) {
-    // Closed, it is a rail rather than nothing: the dots still say which seat
-    // is loaded, which is the one thing worth a glance while it is folded.
-    const dots = experts.map((e, i) =>
-      `<button class="seat" data-act="seat-open" data-expert="${escape(e.id)}"
-               data-phase="${i === linked ? 'active' : e.phase}" title="${escape(e.name)}">
-         <span class="dot"></span></button>`).join('');
-    return region('side', `<aside class="rail" id="side">
-        <button class="seat" data-act="settings-page" data-page="general"
-                data-phase="${delegatorPhase}"
-                title="${escape(delegator.model || 'no delegator')}"><span class="dot"></span></button>
-        <div class="rail-gap"></div>${dots}
-      </aside>`);
-  }
 
   // The line from the delegator runs down the list to the seat with the
   // turn, so a seat's place on it is its index in the roster.
@@ -482,19 +471,9 @@ function sideView() {
   };
   const seats = experts.map(seatRow).join('') || '<div class="status">None yet.</div>';
 
-  // What the program last said stays on the line until something else is:
-  // an idle engine says nothing, which would otherwise wipe it the moment it
-  // was put there -- a crash pointed at on startup was never seen.
-  const said = (s.notices || []).slice(-6).join('\n');
-  const status = state.error || s.status || (s.notices || []).slice(-1)[0] || '';
   const loaded = !!s.resident || (s.delegator_ready && !!delegator.model);
-  // Eject is sized to its own word rather than to the panel: it is an
-  // occasional action, and a button stretched across a side menu that can be
-  // dragged to four hundred pixels reads as the most important thing here.
-  // A region (see region): drawn in every view, and seldom changed by a push.
+  // A region (see region): seldom changed by a push.
   return region('side', `<aside id="side" style="width:${sidebarWidth()}rem">
-      <div class="side-status${state.error ? ' bad' : s.busy ? ' busy' : ''}" title="${escape(said || status)}">${
-        escape(status) || '&nbsp;'}</div>
       <div class="roster-scroll">
         <h2${linked >= 0 ? ' class="on-trunk-gap"' : ''}>DELEGATOR</h2>
         <button class="seat${routing ? ' linked' : ''}${linked >= 0 ? ' trunk-start' : ''}"
@@ -508,9 +487,11 @@ function sideView() {
         </button>
         <h2 class="experts-head${linked >= 0 ? ' on-trunk' : ''}">EXPERTS</h2>${seats}
         <button class="action wide" data-act="settings-page" data-page="experts">Manage experts</button>
+        ${recentsView()}
       </div>
       <div class="roster-foot">
-        <button class="action" data-act="eject" ${loaded ? '' : 'disabled'}
+        ${usageView()}
+        <button class="action wide" data-act="eject" ${loaded ? '' : 'disabled'}
                 title="${loaded ? 'Unload every model' : 'Nothing is loaded'}">Eject</button>
       </div>
     </aside>`) + '<div class="splitter" id="splitter" title="Drag to resize"></div>';
@@ -523,11 +504,12 @@ actions.eject = () => guard(() => call('release', { all: true }));
 /// than to the splitter, which is redrawn while it is being dragged.
 function listenForSplitters() {
   document.addEventListener('pointerdown', (down) => {
-    const handle = down.target.closest && down.target.closest('#splitter, #splitter-r, #composer-splitter');
+    const handle = down.target.closest
+      && down.target.closest('#splitter, #splitter-shelf, #composer-splitter');
     if (!handle) return;
     down.preventDefault();
+    if (handle.id === 'splitter-shelf') return dragShelf(handle);
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    if (handle.id === 'splitter-r') return dragRecents(down, rem);
     const sideways = handle.id === 'splitter';
     const from = sideways ? down.clientX : down.clientY;
     const start = sideways ? (sidebarOpen() ? sidebarWidth() : 0) : state.composerRows;
@@ -558,26 +540,6 @@ function listenForSplitters() {
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
   });
-}
-
-/// The right-hand panel's edge, which widens it when dragged left.
-function dragRecents(down, rem) {
-  const from = down.clientX;
-  const start = recentsOpen() ? recentsWidth() : 0;
-  document.body.classList.add('dragging-x');
-  const move = (event) => setRecents(start + (from - event.clientX) / rem);
-  const up = () => {
-    document.removeEventListener('pointermove', move);
-    document.removeEventListener('pointerup', up);
-    document.body.classList.remove('dragging-x');
-    if (state.recentsWidth < SIDEBAR_SHUT) setRecents(0);
-    else {
-      if (state.recentsWidth < SIDEBAR_MIN) setRecents(SIDEBAR_MIN);
-      remember.set('recents-open', state.recentsWidth);
-    }
-  };
-  document.addEventListener('pointermove', move);
-  document.addEventListener('pointerup', up);
 }
 
 // --- moving between views ------------------------------------------------------------
@@ -760,11 +722,12 @@ window.crucibleSnapshot = (snapshot) => {
       }).catch(() => { /* the next push tries again */ }).finally(() => { fetchingTurns = false; });
     }
   }
+  const shelfFrom = shelfInputs(state.snapshot);
   state.snapshot = snapshot;
   trustWatch();
   for (const job of onSnapshot) job();
   pushOwed = true;
-  render();
+  renderPush(shelfInputs(snapshot) === shelfFrom);
 };
 
 /// Things to do when the engine says something changed, beyond redrawing.
@@ -793,7 +756,7 @@ function recall() {
   state.sidebar = remember.get('sidebar', 15);
   state.composerRows = remember.get('composer-rows', 1);
   state.route = remember.get('route', '');
-  state.recentsWidth = remember.get('recents-width', 16);
+  state.shelfShare = remember.get('shelf-share', 50);
 }
 
 function start() {

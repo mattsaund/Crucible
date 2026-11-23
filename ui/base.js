@@ -61,9 +61,6 @@ const state = {
   // window shape, not a setting about how Crucible works.
   sidebar: 15,
 
-  // The right-hand panel's width in rem, 0 when it is shut. The same rules
-  // as the side menu's, the other way round.
-  recentsWidth: 16,
   composerRows: 1,
 
   // Where prompts go: '' for the delegator, or an expert's id. Kept in the
@@ -351,26 +348,76 @@ afterDraw.push(() => {
 
 let drawQueued = false;
 
+/// Whether the next draw may leave the shelf as it is (see shelfBody). True
+/// only when all that asked for the draw is a push that changed nothing the
+/// shelf shows: a reply streaming in beside a long file or a page in a frame
+/// is thirty of those a second.
+let shelfKept = false;
+
 /// A push from the window that has not been drawn yet. The window sends the
 /// next one once it is told this one was (window.cpp, Pusher): a page slower
 /// than the pushes otherwise fell behind them, a queue of whole snapshots
 /// building up in front of every key pressed.
 let pushOwed = false;
 
-/// Ask for a redraw. Any number of calls before the next frame make one.
-function render() {
+function queueDraw() {
   if (drawQueued) return;
   drawQueued = true;
   requestAnimationFrame(draw);
 }
 
+/// Ask for a redraw. Any number of calls before the next frame make one.
+function render() {
+  shelfKept = false;
+  queueDraw();
+}
+
+/// The same for a push from the window. `sameShelf` says it changed nothing
+/// the shelf draws from.
+function renderPush(sameShelf) {
+  shelfKept = sameShelf && (shelfKept || !drawQueued);
+  queueDraw();
+}
+
+/// Whether the window has drawn. Until it has, a failure is the whole page's
+/// (see crucibleFailed in index.html); after, what is on screen is still good.
+let drewOnce = false;
+
+/// Say what went wrong in the top bar, and keep the window. Once for each
+/// thing that goes wrong: a view that fails every frame must not ask for one.
+let slipShown = '';
+function slip(error) {
+  const said = String((error && error.message) || error || '');
+  const word = /^Script error/.test(said) ? 'Something failed' : said.split('\n')[0];
+  if (word === slipShown) return;
+  slipShown = word;
+  state.error = word;
+  render();
+}
+window.crucibleSlip = (detail) => {
+  if (!drewOnce) return false;
+  slip(detail);
+  return true;
+};
+
 function draw() {
   drawQueued = false;
-  paint('top', topView());
-  paint('main', (views[state.view] || views.chat)());
-  paint('layer', state.modal ? modalView(state.modal) : '');
+  try {
+    paint('top', topView());
+    paint('main', (views[state.view] || views.chat)());
+    paint('layer', state.modal ? modalView(state.modal) : '');
+    drewOnce = true;
+    slipShown = '';
+  } catch (error) {
+    if (!drewOnce) throw error;
+    slip(error);
+  }
+  shelfKept = false;
 
-  for (const job of afterDraw) job();
+  // One at a time: the rest still run when one of them fails.
+  for (const job of afterDraw) {
+    try { job(); } catch (error) { slip(error); }
+  }
   if (pushOwed) {
     pushOwed = false;
     if (window.crucibleDrawn) window.crucibleDrawn(window.crucibleToken || '').catch(() => {});
@@ -471,7 +518,7 @@ function keepAtBottom(id, force) {
 /// Run `work`, and say so if it fails.
 ///
 /// The one way an action talks to the engine. A refusal becomes the line of
-/// red text in the side menu rather than an exception nobody is listening
+/// red text in the top bar rather than an exception nobody is listening
 /// for -- or, when a modal is up, the error inside that modal, because that
 /// is where the person is looking.
 async function guard(work) {
@@ -502,7 +549,11 @@ function dispatch(kind, event) {
   const handler = actions[element.getAttribute(`data-${kind}`)];
   if (!handler) return;
   if (kind === 'submit') event.preventDefault();
-  handler(element, event);
+  try {
+    handler(element, event);
+  } catch (error) {
+    slip(error);
+  }
 }
 
 function listen() {
