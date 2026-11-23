@@ -466,7 +466,7 @@ TEST(every_view_draws_before_anything_has_been_fetched) {
     page().eval("state.chatPane = 'chat'");
     // No project is no longer a wall: the box is open, because a conversation
     // with none open gets a scratch folder of its own -- and opening a project
-    // is the right-hand panel's, not the top bar's.
+    // is the side menu's, not the top bar's.
     CHECK(page().eval("topView()").find("open-project") == std::string::npos);
     CHECK(page().eval("views.chat()").find("id=\"prompt\"") != std::string::npos);
 }
@@ -651,13 +651,13 @@ TEST(every_view_draws_a_session_with_everything_in_it) {
 
 TEST(the_top_bar_says_which_folder_the_chat_works_in) {
     const std::string top = page().eval("topView()");
-    // The path, but not a button: opening a project is the right-hand panel's.
+    // The path, but not a button: opening a project is the side menu's.
     CHECK(top.find("class=\"project-path\"") != std::string::npos);
     CHECK(top.find("~/work/demo") != std::string::npos);
     // And opens it in the desktop's file browser; which folder is the window's to say.
     CHECK(top.find("data-act=\"show-folder\"") != std::string::npos);
     CHECK(top.find("open-project") == std::string::npos);
-    CHECK(top.find("data-act=\"fold-right\"") != std::string::npos);
+    CHECK(top.find("data-act=\"shelf-toggle\"") != std::string::npos);
     // A new chat, before its first message makes its folder: where it will go.
     const std::string fresh = page().eval(
         "(() => { const was = state.snapshot.project;"
@@ -839,7 +839,7 @@ TEST(the_chat_is_the_conversation_and_nothing_the_program_says) {
     const std::string transcript = chat.substr(from, to - from);
     CHECK(transcript.find("opened demo") == std::string::npos);
     CHECK(chat.find("class=\"notices\"") == std::string::npos);
-    CHECK(page().eval("sideView()").find("opened demo") != std::string::npos);
+    CHECK(page().eval("topView()").find("opened demo") != std::string::npos);
 }
 
 TEST(a_delegator_that_would_not_load_says_so_on_its_own_row) {
@@ -1318,10 +1318,10 @@ TEST(with_no_project_the_box_is_open_and_nothing_is_said_about_it) {
     CHECK(chat.find("class=\"pane-nav\"") == std::string::npos);
 }
 
-TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
+TEST(the_side_menu_lists_recent_chats_across_projects_and_the_projects) {
     const std::string side = page().eval(
-        "(function () { var w = state.recentsWidth, r = state.recents, session = state.snapshot.session;"
-        " state.recentsWidth = 16; state.snapshot.session = '20261005-101500';"
+        "(function () { var r = state.recents, session = state.snapshot.session;"
+        " state.snapshot.session = '20261005-101500';"
         " state.recents = { chats: ["
         "   { id: '20261005-101500', title: 'why <b>orbits</b> decay', when: '1 hour ago', turns: 3,"
         "     project: '/home/me/orbit', project_name: 'orbit' },"
@@ -1330,8 +1330,8 @@ TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
         "   projects: [{ root: '/home/me/orbit', name: 'orbit', display: '~/orbit', current: true },"
         "              { root: '/home/me/.crucible/Scratchpad', name: 'Scratchpad', display: '~/.crucible/Scratchpad' }] };"
         " var out = recentsView();"
-        " state.recentsWidth = w; state.recents = r; state.snapshot.session = session; return out; })()");
-    CHECK(side.find("RECENT CHATS") != std::string::npos);
+        " state.recents = r; state.snapshot.session = session; return out; })()");
+    CHECK(side.find(">CHATS<") != std::string::npos);
     CHECK(side.find("New chat") != std::string::npos);
     CHECK(side.find("Open project") != std::string::npos);
     CHECK(side.find("class=\"action small\" data-act=\"new-chat\"") != std::string::npos);
@@ -1339,23 +1339,30 @@ TEST(the_right_panel_lists_recent_chats_across_projects_and_the_projects) {
     CHECK(side.find("data-act=\"recent-chat\" data-id=\"20261004-090000\" data-project=\"/home/me/.crucible/Scratchpad\"") != std::string::npos);
     CHECK(side.find("class=\"recent here\"") != std::string::npos);
     CHECK(side.find("data-act=\"recent-project\" data-path=\"/home/me/orbit\"") != std::string::npos);
-    // History is here, under the chats, and no longer in the top bar; open,
-    // it keeps the panel beside it, with its button marked.
+    // History is here, under the chats, and no longer in the top bar.
     CHECK(side.find("data-act=\"view\" data-view=\"history\"") != std::string::npos);
     CHECK(page().eval("topView()").find("data-view=\"history\"") == std::string::npos);
-    CHECK(page().eval("(function () { var v = state.view, w = state.recentsWidth; state.view = 'history';"
-                      " state.recentsWidth = 16; var out = views.history(); state.view = v; state.recentsWidth = w;"
-                      " return out; })()").find("aria-current=\"true\">History</button>") != std::string::npos);
-    // Shut, it is not drawn at all; the top bar has the way back.
-    CHECK_EQ(page().eval("(function () { var w = state.recentsWidth; state.recentsWidth = 0;"
-                         " var out = recentsView(); state.recentsWidth = w; return out; })()"), "");
-    CHECK(page().eval("topView()").find("data-act=\"fold-right\"") != std::string::npos);
+    // All of it in the side menu, under the experts, the models at its foot.
+    const std::string menu = page().eval("sideView()");
+    const std::size_t experts = menu.find("EXPERTS");
+    const std::size_t chats = menu.find(">CHATS<");
+    const std::size_t projects = menu.find(">PROJECTS<");
+    const std::size_t local = menu.find(">LOCAL<");
+    const std::size_t frontier = menu.find(">FRONTIER<");
+    CHECK(experts != std::string::npos && chats != std::string::npos && projects != std::string::npos
+          && local != std::string::npos && frontier != std::string::npos);
+    CHECK(experts < chats && chats < projects && projects < local && local < frontier);
+    // And nothing of it on the other side of the conversation.
+    CHECK(page().eval("views.chat().split('class=\"pane chat-pane\"')[1]").find(">CHATS<") == std::string::npos);
+    // Folded, nothing of it is left.
+    CHECK_EQ(page().eval("(function () { var w = state.sidebar; state.sidebar = 0; var out = sideView();"
+                         " state.sidebar = w; return out; })()"), std::string());
 }
 
 TEST(each_recent_chat_and_project_has_a_bin_but_not_while_something_runs) {
     const char* const draw =
-        "(function (busy) { var w = state.recentsWidth, r = state.recents, b = state.snapshot.busy;"
-        " state.recentsWidth = 16; state.snapshot.busy = busy;"
+        "(function (busy) { var r = state.recents, b = state.snapshot.busy;"
+        " state.snapshot.busy = busy;"
         " state.recents = { chats: ["
         "   { id: '20261005-101500', title: 'orbits', when: '1 hour ago', turns: 3,"
         "     project: '/home/me/orbit', project_name: 'orbit' },"
@@ -1363,7 +1370,7 @@ TEST(each_recent_chat_and_project_has_a_bin_but_not_while_something_runs) {
         "     project: '/home/me/.crucible/Scratchpad/20261004-090000', project_name: 'Scratchpad' }],"
         "   projects: [{ root: '/home/me/orbit', name: 'orbit', display: '~/orbit' }] };"
         " var out = recentsView();"
-        " state.recentsWidth = w; state.recents = r; state.snapshot.busy = b; return out; })";
+        " state.recents = r; state.snapshot.busy = b; return out; })";
     const std::string idle = page().eval(std::string(draw) + "(false)");
     CHECK(idle.find("data-act=\"chat-delete\" data-id=\"20261005-101500\"") != std::string::npos);
     CHECK(idle.find("data-scratch=\"1\"") != std::string::npos);    // its folder goes too
@@ -1374,12 +1381,12 @@ TEST(each_recent_chat_and_project_has_a_bin_but_not_while_something_runs) {
     CHECK(busy.find("data-act=\"recent-chat\"") != std::string::npos);
 }
 
-TEST(the_right_panel_ends_with_the_models_at_work) {
+TEST(the_side_menu_ends_with_the_models_at_work) {
     // Local models above, the frontier model in use below: what each holds,
     // what it has cost, and how much of its provider's limits is used.
     const char* const draw =
         "(function (snap) { var was = {}; for (var k in snap) { was[k] = state.snapshot[k]; state.snapshot[k] = snap[k]; }"
-        " var w = state.recentsWidth; state.recentsWidth = 16; var out = recentsView(); state.recentsWidth = w;"
+        " var out = sideView();"
         " for (var k2 in snap) state.snapshot[k2] = was[k2]; return out; })";
     const std::string busy = std::string(draw) + "({"
         " memory_total: 25769803776,"
@@ -1865,8 +1872,10 @@ TEST(the_box_has_who_answers_how_hard_it_thinks_auto_and_an_arrow) {
 TEST(what_came_from_a_model_is_never_markup) {
     // A notice, a prompt and a blurb, each with markup in it.
     const std::string chat = page().eval("views.chat()");
+    const std::string top = page().eval("topView()");
     CHECK(chat.find("<b>not markup</b>") == std::string::npos);
-    CHECK(chat.find("&lt;b&gt;not markup&lt;/b&gt;") != std::string::npos);
+    CHECK(top.find("<b>not markup</b>") == std::string::npos);
+    CHECK(top.find("&lt;b&gt;not markup&lt;/b&gt;") != std::string::npos);
     CHECK(chat.find("sky &lt;blue&gt;") != std::string::npos);
     CHECK(page().eval("sideView()").find("&quot;fields&quot;") != std::string::npos);
 }
@@ -2018,6 +2027,16 @@ TEST(code_keeps_its_indentation) {
 }
 
 TEST(inline_styling_is_split_into_runs) {
+    // A numbered list with blank lines between its items keeps counting.
+    const std::string loose = js().eval("markdown('1. first\\n\\n2. second\\n\\n3. third')");
+    CHECK(loose.find("<ol><li>first</li></ol>") != std::string::npos);
+    CHECK(loose.find("<ol start=\"2\"><li>second</li></ol>") != std::string::npos);
+    CHECK(loose.find("<ol start=\"3\"><li>third</li></ol>") != std::string::npos);
+    // Bold and italics go around a code span, with what is in it left alone.
+    CHECK(has("markdown('1. **Created `a.html`** - a page')", "<strong>Created <code>a.html</code></strong>"));
+    CHECK(has("markdown('see *the `x` flag* here')", "<em>the <code>x</code> flag</em>"));
+    CHECK(has("markdown('`a ** b` and `c ** d`')", "<code>a ** b</code> and <code>c ** d</code>"));
+    CHECK_EQ(js().eval("markdown('**`a`** b').includes('**')"), "false");
     const std::string call = "markdown('plain **bold** and `code` and *italic*')";
     CHECK(has(call, "<strong>bold</strong>"));
     CHECK(has(call, "<code>code</code>"));
@@ -2508,6 +2527,165 @@ TEST(a_scratch_folder_shows_its_panes_once_it_has_files) {
     CHECK(marked.substr(0, first).find(">Chat<span class=\"pip\">") != std::string::npos);
     CHECK(marked.substr(first + 1, second - first - 1).find("pip") == std::string::npos);
     CHECK(marked.substr(second + 1).find("pip") == std::string::npos);
+}
+
+TEST(the_shelf_starts_collapsed_and_says_nothing_when_it_has_nothing) {
+    CHECK_EQ(page().eval(kPaneState), "ok");
+    // Collapsed: nothing of it on screen. The top bar has the way to open it.
+    const std::string shut = page().eval("(state.chatPane = 'chat', views.chat())");
+    CHECK(shut.find("shelf") == std::string::npos);
+    CHECK(page().eval("topView()").find("data-act=\"shelf-toggle\"") != std::string::npos);
+    CHECK(shut.find("class=\"pane-nav\"") == std::string::npos);
+    CHECK(shut.find("id=\"transcript\"") != std::string::npos);
+    // Open on a folder: its panes, and the conversation and the box still there.
+    for (const char* pane : {"code", "source", "preview"}) {
+        const std::string chat = page().eval(std::string("(state.chatPane = '") + pane + "', views.chat())");
+        CHECK(chat.find("id=\"transcript\"") != std::string::npos);
+        CHECK(chat.find("id=\"prompt\"") != std::string::npos);
+        CHECK(chat.find("id=\"pane-body\"") != std::string::npos);
+        CHECK(chat.find("class=\"split open\"") != std::string::npos);
+        CHECK(chat.find("<section class=\"shelf\"") != std::string::npos);
+        CHECK(chat.find("id=\"splitter-shelf\"") != std::string::npos);
+        CHECK(chat.find(">Nothing<") == std::string::npos);
+    }
+    // Open on nothing: the one word, with no tabs to go through to more of it.
+    const char* const empty =
+        "(function (project, tree) { var p = state.snapshot.project, t = state.tree;"
+        " state.snapshot.project = project; state.tree = tree; state.chatPane = 'code';"
+        " var out = views.chat(); state.snapshot.project = p; state.tree = t; state.chatPane = 'chat'; return out; })";
+    for (const char* const args : {"({ open: false }, null)",
+                                   "({ open: true, scratchpad: true, root: '/s/1' }, { entries: [] })",
+                                   "({ open: true, root: '/work/empty' }, { entries: [] })"}) {
+        const std::string nothing = page().eval(std::string(empty) + args);
+        CHECK(nothing.find("<div class=\"shelf-empty\">Nothing</div>") != std::string::npos);
+        CHECK(nothing.find("class=\"pane-nav\"") == std::string::npos);
+        CHECK(nothing.find("id=\"pane-body\"") == std::string::npos);
+    }
+    // The same button opens it on the pane it was last on, and collapses it.
+    const std::string toggled = page().eval(
+        "(function () { var view = state.view, tab = state.shelfTab, enter = enterPane; enterPane = function () {};"
+        " state.view = 'chat'; state.chatPane = 'chat'; state.shelfTab = 'preview';"
+        " actions['shelf-toggle'](); var a = state.chatPane; actions['shelf-toggle'](); var b = state.chatPane;"
+        " enterPane = enter; state.view = view; state.shelfTab = tab; return a + ',' + b; })()");
+    CHECK_EQ(toggled, std::string("preview,chat"));
+    // Another conversation starts with it collapsed. A chat getting its
+    // first id is the same conversation, and leaves it open.
+    const std::string conversations = page().eval(
+        "(function () { var s = state.snapshot.session, jobs = function () { onSnapshot.forEach(function (j) { j(); }); };"
+        " state.snapshot.session = 'a'; jobs(); state.chatPane = 'code';"
+        " state.snapshot.session = 'b'; jobs(); var other = state.chatPane;"
+        " state.snapshot.session = ''; jobs(); state.chatPane = 'code';"
+        " state.snapshot.session = 'c'; jobs(); var first = state.chatPane;"
+        " state.snapshot.session = s; jobs(); state.chatPane = 'chat'; return other + ',' + first; })()");
+    CHECK_EQ(conversations, std::string("chat,code"));
+}
+
+TEST(the_side_menus_collapse_entirely_and_are_only_in_the_chat) {
+    CHECK_EQ(page().eval(kPaneState), "ok");
+    // Both collapsed: the conversation, and no strip of either at its sides.
+    const std::string folded = page().eval(
+        "(function () { var w = state.sidebar, p = state.chatPane; state.sidebar = 0; state.chatPane = 'chat';"
+        " var out = views.chat(); state.sidebar = w; state.chatPane = p; return out; })()");
+    CHECK(folded.find("<aside") == std::string::npos);
+    CHECK(folded.find("id=\"splitter\"") == std::string::npos);
+    CHECK(folded.find("shelf") == std::string::npos);
+    CHECK(folded.find("id=\"transcript\"") != std::string::npos);
+
+    // Every other view has neither, however they were left, and the top bar
+    // keeps both buttons' places so that its tabs do not move.
+    for (const char* view : {"create", "models", "bench", "history", "settings"}) {
+        const std::string set = std::string("(function () { var v = state.view, p = state.chatPane, w = state.sidebar;"
+                                            " state.view = '") + view + "'; state.chatPane = 'code'; state.sidebar = 15;";
+        const std::string there = page().eval(set + " var out = views." + view + "();"
+                                              " state.view = v; state.chatPane = p; state.sidebar = w; return out; })()");
+        CHECK(there.find("<aside") == std::string::npos);
+        CHECK(there.find("id=\"side\"") == std::string::npos);
+        CHECK(there.find("<section class=\"shelf\"") == std::string::npos);
+        const std::string top = page().eval(set + " var out = topView();"
+                                            " state.view = v; state.chatPane = p; state.sidebar = w; return out; })()");
+        CHECK(top.find("class=\"icon unseen\" data-act=\"fold\"") != std::string::npos);
+        CHECK(top.find("class=\"icon unseen\" data-act=\"shelf-toggle\"") != std::string::npos);
+    }
+
+    // What the program last said is in the top bar, in every view.
+    const char* const said =
+        "(function (view, w) { var v = state.view, e = state.error, was = state.sidebar;"
+        " state.view = view; state.sidebar = w; state.error = 'it failed'; var out = topView();"
+        " state.view = v; state.error = e; state.sidebar = was; return out; })";
+    CHECK(page().eval(std::string(said) + "('models', 15)").find("class=\"top-status bad\" title=\"it failed\">it failed<")
+          != std::string::npos);
+    CHECK(page().eval(std::string(said) + "('chat', 0)").find(">it failed<") != std::string::npos);
+    // With the side menu open too: it no longer keeps a line of its own for
+    // this, which left an empty row above the delegator most of the time.
+    CHECK(page().eval(std::string(said) + "('chat', 15)").find(">it failed<") != std::string::npos);
+    CHECK(page().eval("sideView()").find("side-status") == std::string::npos);
+    // Eject is a button of the menu's like the others in it.
+    CHECK(page().eval("sideView()").find("class=\"action wide\" data-act=\"eject\"") != std::string::npos);
+}
+
+TEST(a_push_that_changes_nothing_on_the_shelf_leaves_it) {
+    CHECK_EQ(page().eval(kPaneState), "ok");
+    const std::string made = page().eval(
+        "(function () { var n = 0, code = codePane, queued = drawQueued; codePane = function () { n++; return code(); };"
+        " state.chatPane = 'code'; var seen = [];"
+        " render(); views.chat(); seen.push(n);"
+        " drawQueued = false; renderPush(true); views.chat(); seen.push(n);"
+        " drawQueued = false; renderPush(false); views.chat(); seen.push(n);"
+        // Asked for by something else as well, it is made again.
+        " render(); renderPush(true); views.chat(); seen.push(n);"
+        " codePane = code; shelfKept = false; drawQueued = queued; state.chatPane = 'chat'; return seen.join(','); })()");
+    CHECK_EQ(made, std::string("1,1,2,3"));
+    // What it draws from, and nothing else, makes a push count.
+    const std::string inputs = page().eval(
+        "(function () { var a = { busy: false, project: { root: '/p', open: true }, turns: [1] };"
+        " var b = { busy: false, project: { root: '/p', open: true }, turns: [1, 2], status: 'x' };"
+        " var c = { busy: true, project: { root: '/p', open: true } };"
+        " return [shelfInputs(a) === shelfInputs(b), shelfInputs(a) === shelfInputs(c)].join(','); })()");
+    CHECK_EQ(inputs, std::string("true,false"));
+}
+
+TEST(the_first_file_a_prompt_writes_expands_the_shelf_on_it) {
+    CHECK_EQ(page().eval(kPaneState), "ok");
+    const std::string got = page().eval(
+        "(function () { var seen = [], file = openFile, load = loadPreview, enter = enterPreview, tree = loadTree,"
+        " turns = state.snapshot.turns, view = state.view, preview = state.preview;"
+        " openFile = function (p, l, quietly) { seen.push('code ' + p + (quietly ? ' quietly' : '')); state.chatPane = 'code'; };"
+        " loadPreview = function (p) { seen.push('page ' + p); }; enterPreview = function () {}; loadTree = function () {};"
+        " state.view = 'chat'; state.chatPane = 'chat'; state.preview = previewBlank();"
+        " var jobs = function () { onSnapshot.forEach(function (job) { job(); }); }; jobs();"
+        " var ask = function (actions_, shut) {"
+        "   var turn = { prompt: 'x', reply: '', streaming: true, actions: [] };"
+        "   state.snapshot.turns = state.snapshot.turns.concat([turn]); jobs();"
+        "   actions_.forEach(function (w) {"
+        "     turn.actions = turn.actions.concat([{ summary: 'did', body: '', language: w }]); jobs();"
+        "     if (shut && shownPane() !== 'chat') setPane('chat'); });"
+        "   var here = state.chatPane; state.chatPane = 'chat'; seen.push('[' + here + ']'); };"
+        " ask(['']);"                       // a read writes nothing
+        " ask(['src/a.py', 'src/b.py']);"   // once, on the first
+        " ask(['site/index.html']);"        // a page is shown as the page
+        " ask(['one.py', 'two.py'], true);" // shut, it stays shut for that prompt
+        " ask(['three.py']);"               // and the next prompt opens it again
+        " openFile = file; loadPreview = load; enterPreview = enter; loadTree = tree; state.snapshot.turns = turns;"
+        " state.view = view; state.preview = preview; state.chatPane = 'chat'; jobs(); return seen.join(' '); })()");
+    CHECK_EQ(got, std::string("[chat] code src/a.py quietly [code] page site/index.html [preview] "
+                              "code one.py quietly [chat] code three.py quietly [code]"));
+}
+
+TEST(a_mistake_after_the_first_draw_keeps_the_window) {
+    // A scroll landing between a conversation getting shorter and the draw
+    // that notices ended the whole window once.
+    CHECK_EQ(page().eval("String(drawnFrom([], 5))"), std::string("0"));
+    CHECK_EQ(page().eval("String(drawnFrom([{ prompt: 'a', reply: 'b' }], 5))"), std::string("0"));
+    // Before anything is on screen it is the whole page's to say; after, it
+    // is a line in the side menu, and a repeat of it asks for no more draws.
+    const std::string said = page().eval(
+        "(function () { var drew = drewOnce, error = state.error, shown = slipShown; drewOnce = false;"
+        " var before = window.crucibleSlip('it broke'); drewOnce = true; slipShown = '';"
+        " var after = window.crucibleSlip(new Error('it broke\\nat line 3')); var line = state.error;"
+        " window.crucibleSlip('Script error.\\n:'); var muted = state.error;"
+        " drewOnce = drew; state.error = error; slipShown = shown;"
+        " return [before, after, line, muted].join('|'); })()");
+    CHECK_EQ(said, std::string("false|true|it broke|Something failed"));
 }
 
 TEST(what_is_typed_is_sent_as_a_prompt_and_the_tester_sends_one_too) {
@@ -3190,7 +3368,7 @@ void held_calls_restored() {
 
 TEST(a_page_still_being_read_when_another_project_opens_is_not_drawn_in_it) {
     // A page of one project asked for, and another project opened from the
-    // right-hand panel before it arrives: it is dropped when it does, and
+    // side menu before it arrives: it is dropped when it does, and
     // the new project's preview starts as empty as the window's first.
     CHECK_EQ(held_calls(), "set");
     page().eval("__open('/work/a'); loadPreview('index.html');"

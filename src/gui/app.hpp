@@ -117,6 +117,12 @@ private:
     /// The one path, so a change made anywhere means the same thing.
     void update_config(const std::function<void(Config&)>& change);
 
+    /// Pick up what another Crucible saved to the config file: the app and
+    /// cruciblecli share it. Looked at no more than once a second, from
+    /// housekeeping, and never written back from here, or two of them would
+    /// answer each other's saves for ever.
+    void follow_config_file();
+
     /// Rebuild what the expert can see from what is on screen. Called after
     /// anything that changes the transcript out from under it.
     void rebuild_history();
@@ -284,6 +290,11 @@ private:
     /// An update to the newest release, when somebody asks for one. See
     /// app/update.hpp.
     update::Installer     updater_;
+
+    /// The config file as this Crucible last read or wrote it, and when.
+    std::string                           config_on_disk_;
+    std::filesystem::file_time_type       config_stamp_{};
+    std::chrono::steady_clock::time_point config_checked_{};
 
     /// The window while it is open, for quit(): a webview, held as void so
     /// this header does not need webview's. Set and cleared by run().

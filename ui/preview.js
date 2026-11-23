@@ -280,7 +280,7 @@ function previewView() {
         <option value="">${pages.length ? 'Choose a page' : 'No HTML pages in the project'}</option>
         ${pages.map((page) => `<option value="${escape(page)}"${page === p.page && !p.url ? ' selected' : ''}>${escape(page)}</option>`).join('')}
       </select>
-      <form class="row" data-submit="preview-url" style="flex:1;gap:.4rem">
+      <form class="row" data-submit="preview-url" style="gap:.4rem">
         <input id="preview-url" data-draft value="${escape(p.url)}" placeholder="or an address: http://localhost:3000"
                aria-label="Address to preview" autocomplete="off" spellcheck="false">
         <button class="action" type="submit">Go</button></form>
@@ -301,7 +301,11 @@ function previewView() {
     ? `<iframe id="preview-frame" class="preview-frame" sandbox="allow-scripts allow-forms allow-modals"
          title="Preview of ${escape(p.page)}" srcdoc="${escape(tunedDocument(p.html, p.kept))}"></iframe>`
     : `<div class="preview-empty status">${p.error ? escape(p.error) : 'Choose a page, or give an address.'}</div>`;
-  return `<div class="preview">${picker}<div class="preview-body">${frame}${p.url ? '' : tuneView()}</div></div>`;
+  // The dials only while there is something to tune: the panel is half the
+  // window, and the page is what it is there to show.
+  const tuning = !p.url && p.html && (p.picking || p.picked || p.changes.length);
+  return `<div class="preview">${picker}<div class="preview-body${tuning ? ' tuning' : ''}">${frame}${
+    tuning ? tuneView() : ''}</div></div>`;
 }
 
 /// Under the bar: the name the app will have while it is being made, what

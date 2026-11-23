@@ -1,6 +1,7 @@
 # Build output
 build/
 build-*/
+cli/target/
 cmake-build-*/
 compile_commands.json
 .cache/

@@ -45,9 +45,19 @@ struct OpenChat {
     /// The tools offered, as OpenAI's list has them, or null for none.
     nlohmann::json tools;
 
+    /// The same list as text, in the order its parameters were written, when
+    /// that is known. nlohmann::json sorts an object's keys, and llama.cpp's
+    /// parsers hold a model to the order of the schema: flint, whose calls
+    /// were read with `content` ahead of `path`, could not write a file.
+    std::string tools_text;
+
     /// "auto", "none" or "required". One function named by the request is
     /// that function alone, offered as required.
     std::string tool_choice = "auto";
+    /// The one tool the reply has to be a call of, when it has to be one. The
+    /// others are still shown it, so that the prompt is the one every other
+    /// round read and only what is new is read again.
+    std::string must_call;
 
     /// Whether the answer may make more than one call. Unset leaves it to
     /// what the template says the model can do.

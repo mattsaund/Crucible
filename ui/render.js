@@ -42,19 +42,23 @@ const apart = (...parts) => parts
 
 function inline(text) {
   // Code spans first and separately, so backticked content is never looked at
-  // again -- `a ** b` is code containing asterisks, not emphasis. Then math,
-  // taken out before the emphasis can reach it: in $a_1 + b_2$ the
-  // underscores are subscripts, not italics.
+  // again -- `a ** b` is code containing asterisks, not emphasis -- each held
+  // by a mark, so that bold can still go around one. Then math, taken out
+  // before the emphasis can reach it: in $a_1 + b_2$ the underscores are
+  // subscripts, not italics.
+  const spans = [];
+  const formulas = [];
   return text.split(/(`[^`]+`)/).map((part) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
-      return `<code>${escape(part.slice(1, -1))}</code>`;
+      spans.push(`<code>${escape(part.slice(1, -1))}</code>`);
+      return `\uE002${spans.length - 1}\uE003`;
     }
-    const formulas = [];
-    return escape(liftMath(part, formulas))
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=$|[\s).,!?;:])/g, '$1<em>$2</em>')
-      .replace(MATH_HOLE, (_, n) => tex(formulas[n].tex, formulas[n].display));
-  }).join('');
+    return escape(liftMath(part.replace(/[\uE002\uE003]/g, ''), formulas));
+  }).join('')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(\uE003])[*_]([^*_\n]+)[*_](?=$|[\s).,!?;:\uE002])/g, '$1<em>$2</em>')
+    .replace(MATH_HOLE, (_, n) => tex(formulas[n].tex, formulas[n].display))
+    .replace(/\uE002(\d+)\uE003/g, (_, n) => spans[n]);
 }
 
 // --- math -----------------------------------------------------------------
@@ -346,7 +350,11 @@ function markdownBlocks(src, made) {
         items.push(lines[i].match(pattern)[1]); i += 1;
       }
       const tag = ordered ? 'ol' : 'ul';
-      block(from, () => `<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
+      // From the number it was written with: items with a blank line between
+      // them come here one list at a time, and each would otherwise be a 1.
+      const first = ordered ? Number(/\d+/.exec(line)[0]) : 1;
+      const open = first === 1 ? `<${tag}>` : `<ol start="${first}">`;
+      block(from, () => `${open}${items.map((t) => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
       continue;
     }
 

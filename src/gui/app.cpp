@@ -11,8 +11,12 @@
 #include "crash.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <system_error>
 #include <thread>
@@ -28,6 +32,15 @@
 #include "crucible/util/subprocess.hpp"
 
 namespace crucible::gui {
+
+namespace {
+
+std::string read_config_file() {
+    std::ifstream in(paths::config_file(), std::ios::binary);
+    return in ? std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()) : std::string();
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Lifetime
@@ -50,6 +63,11 @@ App::App(Config config, std::vector<std::string> warnings, bool skip_trust)
     }
 
     state_.configure_seats(config_);
+    config_on_disk_ = read_config_file();
+    {
+        std::error_code stamped;
+        config_stamp_ = std::filesystem::last_write_time(paths::config_file(), stamped);
+    }
 
     // What a condense going when Crucible last closed left half written in
     // the models folder: gigabytes, and nothing else will remove them.
@@ -118,6 +136,7 @@ std::string App::apply_config(Config edited) {
 }
 
 void App::housekeeping() {
+    follow_config_file();
     persist_session();
     name_sessions();
     name_old_session();
@@ -182,19 +201,60 @@ void App::absorb_finished_build() {
 }
 
 void App::update_config(const std::function<void(Config&)>& change) {
-    const bool prereleases = config_.ui.prereleases;
+    const bool   prereleases = config_.ui.prereleases;
+    const Config before      = config_;
     change(config_);
+    // What another Crucible saved since this one last looked goes in with
+    // it. Written whole over the file, it would otherwise be undone.
+    if (const std::string saved = read_config_file(); !saved.empty() && saved != config_on_disk_) {
+        if (std::optional<Config> merged = merge_saved_config(before, config_, saved)) {
+            config_ = std::move(*merged);
+        }
+    }
     config_.resolve_models();
     state_.configure_seats(config_);
     if (!save_config(config_)) {
         say("could not write " + paths::config_file().string());
     }
+    config_on_disk_ = read_config_file();
+    std::error_code stamped;
+    config_stamp_ = std::filesystem::last_write_time(paths::config_file(), stamped);
     engine_->apply_config(config_);
     refresh_prices();
     // What the last check found was the newest of the other kind.
     if (config_.ui.prereleases != prereleases) {
         begin_update_check();
     }
+}
+
+void App::follow_config_file() {
+    const auto now = std::chrono::steady_clock::now();
+    // A fine-tune being tried has a seat that is in the engine and not the
+    // file: picked up after it, rather than taken away in the middle.
+    if (now - config_checked_ < std::chrono::seconds(1) || !testing_.empty()) {
+        return;
+    }
+    config_checked_ = now;
+    std::error_code ec;
+    const auto stamp = std::filesystem::last_write_time(paths::config_file(), ec);
+    if (ec || stamp == config_stamp_) {
+        return;
+    }
+    config_stamp_ = stamp;
+    const std::string saved = read_config_file();
+    if (saved.empty() || saved == config_on_disk_) {
+        return;
+    }
+    config_on_disk_ = saved;
+    std::optional<Config> merged = merge_saved_config(config_, config_, saved);
+    if (!merged) {
+        return;
+    }
+    config_ = std::move(*merged);
+    config_.resolve_models();
+    state_.configure_seats(config_);
+    engine_->apply_config(config_);
+    refresh_prices();
 }
 
 void App::refresh_prices() {
@@ -307,7 +367,7 @@ std::string App::open_project(const std::filesystem::path& root) {
         remember_project(project.root);
     }
     // Nothing said in the transcript: the top bar shows the folder, and the
-    // right-hand panel which project it is.
+    // side menu which project it is.
     return {};
 }
 
@@ -458,7 +518,7 @@ void App::name_old_session() {
     // On a worker: the list is read from every project's history.
     workers_.post([this, here] {
         bool asked = false;
-        // The 24 the right-hand panel lists: the first with no name, an
+        // The 24 the side menu lists: the first with no name, an
         // exchange to name it from, and no answer yet this run.
         for (const SessionSummary& chat : recent_chats(24)) {
             const Project project = Project::at(chat.project);

@@ -2,9 +2,8 @@
 //
 // History: every conversation this project has had.
 
-// With the right-hand panel beside it, as Chat has: History is opened from
-// there, and a project picked in it shows that project's.
-views.history = () => historyPane() + recentsView();
+// Opened from the side menu, where a project picked shows that project's.
+views.history = () => historyPane();
 
 function historyPane() {
   const project = state.snapshot.project || {};
@@ -36,9 +35,9 @@ actions['history-session'] = (e) => guard(async () => {
   enter('chat');
 });
 
-/// The right-hand panel beside History opens projects too, and the list is
-/// then the old project's, whose conversations would open in the new one. It
-/// is read again for the project open now, and until then is not shown.
+/// The side menu beside History opens projects too, and the list is then the
+/// old project's, whose conversations would open in the new one. It is read
+/// again for the project open now, and until then is not shown.
 let historyRoot = '';
 onSnapshot.push(() => {
   const project = state.snapshot.project || {};

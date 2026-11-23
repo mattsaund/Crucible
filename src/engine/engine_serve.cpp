@@ -396,6 +396,7 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
             chat.images.insert(chat.images.end(), message.images.begin(), message.images.end());
         }
         chat.tools               = ask.tools;
+        chat.tools_text          = ask.tools_text;
         chat.tool_choice         = ask.tool_choice;
         chat.parallel_tool_calls = ask.parallel_tool_calls;
         chat.schema              = ask.schema;

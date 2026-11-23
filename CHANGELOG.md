@@ -6,6 +6,88 @@ macOS, Windows and Linux that its commit's checks built. Running Crucible checks
 for a newer release once a day and says so in **Settings, About**, where Update
 now installs it and keeps your config, models and history.
 
+## 1.1.0 (2026-11-23)
+
+Getting the normal chat to finish real work, making the program faster, and
+bringing the terminal back.
+
+- **Crucible in the terminal.** `cruciblecli` is a new program, written in Rust,
+  that does everything the app does with no window. Type it in any folder and
+  it opens there. A box at the bottom, what it is doing in one line right above
+  it, the expert that has the prompt right below it, code changes as diffs and
+  commands with their output. `/settings` has every page the app has, `/models`
+  searches Hugging Face and downloads, and `/effort`, `/expert`, `/resume`,
+  `/files`, `/git`, `/preview`, `/create`, `/bench` and the rest are a slash
+  away. The thinking appears in the readout among the work, collapsed until you
+  type `/showthinking`. It is a separate one-line download, and shares its
+  settings, models and chats with the app.
+- **The app and the terminal can be open together.** Each picks up what the
+  other saves, and a setting changed in one is no longer undone when the other
+  saves.
+- **The load percentage stays up.** Changing a setting during a load took it
+  off for good, and the delegator sat near 100% while it was really choosing
+  an expert, which it now says it is doing.
+- **The shelf.** Code, Source and Preview are in a panel on the right of the
+  chat, which stays where it is, so you can read or try what an expert made
+  while you talk to it. It starts collapsed, says Nothing when it has nothing
+  to show, and expands by itself on the first file a prompt writes, a web page
+  as the page. Drag its edge to resize it and press the edge twice to put it
+  back in the middle. In a window too narrow for both, it takes the area and
+  has a Chat tab.
+- **Everything from the right-hand menu is in the left one now**, under the
+  experts: recent chats, History, projects, and the local and frontier models
+  at its foot.
+- **Both side menus collapse all the way**, with their buttons in the top bar,
+  and only the Chat window has them. Create, Models, Bench, History and
+  Settings get the whole window. What the program last said is in the top bar
+  now, which takes the empty row off the top of the menus.
+- **Each model calls tools in the format it was trained on.** Local models
+  with a tool template no longer have to imitate Crucible's own commands,
+  which they kept falling out of partway through a job. Providers and models
+  without a template work as before.
+- **An edit can say which of two identical places it means.** Told the lines
+  they are on, a model picks one, where it used to go round reading the file
+  again.
+- **Scrolling is smooth on NVIDIA.** The window draws on the graphics card
+  again from driver 620 on Wayland, and starts itself again without it if the
+  desktop refuses. On a 4K display at 150% that took scrolling from 31 frames
+  a second to the display's limit, on less than half the processor.
+- **A reply streaming in stays smooth beside a long file.** Drawing it no
+  longer measures the file again.
+- **Models come back from memory.** Dedicated VRAM only no longer reads every
+  model from the disk each time, so a 5.4 GB model that took 5.5 s to reload
+  takes 0.6 s. The copy is in the system's file cache, which gives the memory
+  back whenever something else wants it.
+- **A message no longer reloads the expert.** The delegator can use the
+  processor when the cards are full, instead of pushing the expert out to
+  decide who answers.
+- **Each step reads only what is new.** The prompt is kept in the same order
+  from step to step, so a long job rereads a fraction of it.
+- **An expert that cannot load passes the prompt to the next best one**, and
+  a prompt that asked for work is checked before it ends.
+- **Experts hand off mid-prompt with models that reason.** The question of what
+  comes next used to run out of room while the model was still thinking, so no
+  step ever reached the delegator. It is answered at once now.
+- **A model that thinks too long is stopped and told to act.** GPT OSS once
+  spent over two minutes on one step before reading a file it had already read.
+- **A web page's script is not taken for broken.** Run under node it fails on
+  `document`, and models rewrote working code to make that go away. They are
+  told what the error means.
+- **One summary at the end.** When the last check finds more to do, the early
+  "all done" comes off the reply, and an expert that took over no longer copies
+  the last one's tool calls into its answer.
+- **A chat opened again shows what each turn did**, its edits and commands as
+  well as its reply.
+- **A write that changes nothing is not put to you for approval.**
+- **One mistake in the page no longer blanks the window.** It says so in the
+  side menu and carries on. Scrolling a conversation just as it got shorter
+  was one way to reach that screen.
+- **Folding the side menu leaves the chat its full width.**
+- **Bold around code and numbered lists draw properly.** A bold phrase with
+  code in it showed its stars, and every numbered item said 1.
+- **Replies no longer carry a model's working notes**, and the thinking from
+  each step of a job is its own paragraph.
+
 ## 1.0.1 (2026-11-17)
 
 Small fixes found taking the README's pictures for 1.0.0.

@@ -39,6 +39,10 @@
 // and a mistake inside it surfaces as a rejected promise that never reaches
 // the error handler -- which is exactly how the first blank page here happened.
 function crucibleFailed(what, detail) {
+  // Once the window has drawn, one mistake in one handler is a line in the
+  // top bar and the window goes on working. This page is for a window that
+  // would otherwise be blank.
+  if (window.crucibleSlip && window.crucibleSlip(detail)) return;
   document.body.innerHTML =
     '<pre style="margin:2rem;color:#FF5F00;white-space:pre-wrap"></pre>';
   document.body.firstChild.textContent = what + '\n\n' + detail;

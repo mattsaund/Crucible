@@ -896,8 +896,21 @@ filed_under_crucible() {
             sub(/.*STREQUAL "/, "", component)
             sub(/".*/, "", component)
         }
-        index($0, want) { seen = 1; if (component != "crucible") wrong = 1 }
+        index($0, want) { if (component == "crucible") seen = 1; else if (component != "cli") wrong = 1 }
         END { exit (seen && !wrong) ? 0 : 1 }
+    ' "$1"
+}
+
+# The terminal download is its own component, and carries the same libraries.
+filed_under_cli() {
+    awk -v want="$2" '
+        /^if\(CMAKE_INSTALL_COMPONENT STREQUAL "/ {
+            component = $0
+            sub(/.*STREQUAL "/, "", component)
+            sub(/".*/, "", component)
+        }
+        index($0, want) && component == "cli" { seen = 1 }
+        END { exit seen ? 0 : 1 }
     ' "$1"
 }
 
@@ -911,6 +924,10 @@ if [ -f "$GENERATED" ]; then
     done
     check "the crucible binary is filed under the crucible component" \
           filed_under_crucible "$GENERATED" "bin/crucible"
+    check "the terminal download carries the engine" \
+          filed_under_cli "$GENERATED" "bin/crucible-engine"
+    check "and the libraries it needs" \
+          filed_under_cli "$GENERATED" "lib/crucible/libllama.$_so"
 else
     echo "    (skipped: no configured build tree at build/)"
 fi
@@ -1229,8 +1246,11 @@ check     "a tag is what publishes them" \
           grep -q 'tags: \["v\*"\]' "$REL"
 check     "the ones built for its commit" \
           grep -q 'run-id: ${{ needs.checked.outputs.run }}' "$REL"
-check     "and only while all three are still there to publish" \
-          grep -q 'select(. == "Crucible-macOS" or . == "Crucible-Windows" or . == "Crucible-Linux")' "$REL"
+check     "and only while all six are still there to publish" \
+          grep -q 'if \[ "${have:-0}" = 6 \]' "$REL"
+for _name in Crucible-macOS Crucible-Windows Crucible-Linux Crucible-CLI-macOS Crucible-CLI-Windows Crucible-CLI-Linux; do
+    check "  $_name is one of them" grep -q "== \"$_name\"" "$REL"
+done
 check     "and they can be built by hand without publishing anything" \
           grep -q 'workflow_dispatch' "$BLD"
 
@@ -1472,6 +1492,11 @@ check     "the release waits for the checks, the installers and the runtimes" \
           grep -q 'needs: \[checked, checks, runtimes-attach\]' "$REL"
 check     "and publishes all three installers or nothing" \
           grep -q 'test -s artifacts/Crucible-Windows/Crucible-Setup.exe' "$REL"
+for _asset in Crucible-CLI-Linux/cruciblecli-linux-x86_64.tar.gz Crucible-CLI-macOS/cruciblecli-macos-arm64.tar.gz \
+              Crucible-CLI-Windows/cruciblecli-windows-x86_64.zip; do
+    check "and the terminal download $_asset" grep -q "test -s artifacts/$_asset" "$REL"
+    check "  named as the installers fetch it" grep -q "${_asset#*/}" "$ROOT/install-cli.sh" "$ROOT/install-cli.ps1"
+done
 check     "and is published only once the runtimes are on it" \
           grep -q "needs.runtimes-attach.result == 'success'" "$REL"
 # The checks run in the same run, and gate it: a tag is checked, built and
@@ -1542,6 +1567,61 @@ check     "and loaded before the module that needs them" \
 check     "a missing nvcc is only an error once the download has been tried" \
           awk '/prebuilt::try_install/ { tried = 1 } /is not on PATH, and no prebuilt/ { exit !tried }' \
               "$ROOT/src/runtime/builder.cpp"
+
+echo
+echo "  the terminal download installs in one line"
+
+check     "install-cli.sh parses as plain sh" sh -n "$ROOT/install-cli.sh"
+check     "every removal in it refuses an empty path" \
+          bash -c '! grep -E "rm -[rf]+ \"\$[A-Za-z_]" "$1"' _ "$ROOT/install-cli.sh"
+check     "the README gives the one line" \
+          grep -q 'install-cli.sh | sh' "$ROOT/README.md"
+check     "and the Windows one" \
+          grep -q 'install-cli.ps1 | iex' "$ROOT/README.md"
+check     "cruciblecli says the same version as the program" \
+          bash -c 'grep -q "^version = \"$(sed -n "s/^ *VERSION  *\([0-9.]*\).*/\1/p" "$1/CMakeLists.txt" | head -1)" "$1/cli/Cargo.toml"' _ "$ROOT"
+
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) _cli_asset=cruciblecli-linux-x86_64.tar.gz ;;
+    Darwin-arm64) _cli_asset=cruciblecli-macos-arm64.tar.gz ;;
+    *) _cli_asset="" ;;
+esac
+if [ -n "$_cli_asset" ]; then
+    _cli="$(mktemp -d)"
+    mkdir -p "$_cli/home" "$_cli/pack/cruciblecli/bin"
+    printf 'keep this line\n' > "$_cli/home/.bashrc"
+    printf '#!/bin/sh\necho "cruciblecli 9.9.9"\n' > "$_cli/pack/cruciblecli/bin/cruciblecli"
+    cp "$_cli/pack/cruciblecli/bin/cruciblecli" "$_cli/pack/cruciblecli/bin/crucible-engine"
+    chmod +x "$_cli/pack/cruciblecli/bin/cruciblecli" "$_cli/pack/cruciblecli/bin/crucible-engine"
+    tar -C "$_cli/pack" -czf "$_cli/archive.tar.gz" cruciblecli
+
+    cli_install() {
+        env -i HOME="$_cli/home" PATH=/usr/bin:/bin CRUCIBLE_CLI_ARCHIVE="$_cli/archive.tar.gz" \
+            sh "$ROOT/install-cli.sh" "$@" >/dev/null 2>&1
+    }
+    cli_runs()   { "$_cli/home/.local/bin/cruciblecli" --version | grep -q 9.9.9; }
+    path_lines() { [ "$(grep -c 'cruciblecli installer' "$_cli/home/.bashrc")" = "$1" ]; }
+    still_mine() { grep -q 'keep this line' "$_cli/home/.bashrc"; }
+    damaged() {
+        printf '%064d  %s\n' 0 "$_cli_asset" > "$_cli/archive.tar.gz.sha256"
+        cli_install
+    }
+
+    check     "it installs" cli_install
+    check     "and cruciblecli runs from ~/.local/bin" cli_runs
+    check     "the PATH is set for the next terminal" path_lines 1
+    check     "installing again changes nothing" cli_install
+    check     "and adds no second PATH line" path_lines 1
+    check_not "a damaged download is refused" damaged
+    check     "and what was installed still runs" cli_runs
+    rm -f "${_cli:?}/archive.tar.gz.sha256"
+    check     "it uninstalls" cli_install --uninstall
+    check_not "cruciblecli is gone" test -e "$_cli/home/.local/bin/cruciblecli"
+    check_not "and its folder" test -e "$_cli/home/.local/lib/crucible-cli"
+    check     "the PATH line goes with it" path_lines 0
+    check     "and the rest of the file stays" still_mine
+    rm -rf "${_cli:?}"
+fi
 
 echo
 echo "$((PASS + FAIL)) checks, $FAIL failed"

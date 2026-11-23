@@ -168,6 +168,10 @@ public:
     /// See open_chat.hpp.
     OpenChatResult open_chat(const OpenChat& request, const OpenChatSink& sink);
 
+    /// Whether this model's chat template can write tools and the calls made
+    /// to them, so that open_chat can offer it tools in its own format.
+    bool speaks_tools();
+
     /// Each of `texts` as an embedding: the model's hidden state pooled over
     /// the text the way the model says to -- an embedding model's file names
     /// its pooling -- or averaged for a model that names none, and scaled to

@@ -31,7 +31,9 @@
 #include "crucible/config/paths.hpp"
 #include "crucible/engine/overflow.hpp"
 #include "crucible/lab/python.hpp"
+#include "crucible/llm/loaded_model.hpp"
 #include "crucible/llm/response_filter.hpp"
+#include "crucible/tools/native_tools.hpp"
 #include "crucible/tools/web_search.hpp"
 #include "crucible/tools/workshop.hpp"
 #include "crucible/util/text.hpp"
@@ -92,6 +94,10 @@ constexpr int kWorkContext = 32768;
 /// enough to cost nothing.
 constexpr std::size_t kLoopLook = 16;
 
+/// What the checkpoint may write on a model that cannot leave its thinking
+/// out, in tokens: enough to think and still say the next step.
+constexpr int kCheckpointThinking = 768;
+
 }  // namespace
 
 tools::ToolCall Engine::call_from(const json& params) {
@@ -107,7 +113,15 @@ tools::ToolCall Engine::call_from(const json& params) {
 json Engine::parse_reply(const json& params) {
     const std::string answer    = params.value("answer", "");
     const std::string reasoning = params.value("reasoning", "");
-    const std::optional<tools::ToolCall> call = tools::parse_tool_call(answer, reasoning);
+    std::optional<tools::ToolCall> call = tools::parse_tool_call(answer, reasoning);
+    // A call the model spelled out in its own format, and what it said first.
+    std::optional<std::string> prose;
+    if (!call) {
+        if (std::optional<tools::CallInText> written = tools::call_in_text(answer)) {
+            call  = std::move(written->call);
+            prose = std::move(written->prose);
+        }
+    }
     // And what it asked to look up, if anything. A search is asked for in a
     // way of its own -- a SEARCH line, or a tool-trained model's own call on
     // its reasoning channel -- and has bookkeeping of its own. See
@@ -123,6 +137,16 @@ json Engine::parse_reply(const json& params) {
             attempted = tools::call_inside_a_line(answer, reasoning);
             inside    = attempted != tools::ToolKind::None;
         }
+        // A call in the model's own format that could not be read. The bare
+        // tag must never be left standing as what the expert answered.
+        bool in_its_format = false;
+        for (const std::string_view mark : {std::string_view("<tool_call>"), std::string_view("<|tool_call_start|>"),
+                                            std::string_view("<function="), std::string_view("to=functions.")}) {
+            in_its_format = in_its_format || answer.find(mark) != std::string::npos;
+        }
+        if (attempted == tools::ToolKind::None && in_its_format) {
+            return json{{"call", nullptr}, {"attempted", "call"}, {"inline", false}, {"search", search}};
+        }
         return json{{"call", nullptr},
                     {"attempted", std::string(tools::tool_kind_name(attempted))},
                     {"inline", inside},
@@ -131,13 +155,22 @@ json Engine::parse_reply(const json& params) {
     // All of it, because the orchestrator hands the call straight back to
     // turn.tool: without the shell, "RUN powershell:" ran under cmd, and
     // without `unrun` a second call in the answer went unmentioned.
-    return json{{"call", {{"kind", std::string(tools::tool_kind_name(call->kind))},
+    json parsed{{"call", {{"kind", std::string(tools::tool_kind_name(call->kind))},
                           {"argument", call->argument},
                           {"content", call->content},
                           {"shell", call->shell},
                           {"unrun", call->unrun}}},
                 {"attempted", "none"},
                 {"search", search}};
+    if (prose) {
+        parsed["prose"] = *prose;
+    }
+    // A search written that way goes the way a search goes.
+    if (call->kind == tools::ToolKind::Search) {
+        parsed["call"]   = nullptr;
+        parsed["search"] = call->argument;
+    }
+    return parsed;
 }
 
 void Engine::set_project(std::filesystem::path root) {
@@ -190,6 +223,13 @@ struct Engine::ChatTurn {
     long                    load_ms = 0;
     tools::WorkshopSettings workshop;
 
+    /// The seated model is offered the tools as functions, through its own
+    /// chat template, and calls them the way it was trained to. See
+    /// tools/native_tools.hpp. One with no tools in its template, and a
+    /// provider's, reads the `VERB:` lines instead.
+    bool                   native = false;
+    nlohmann::ordered_json native_tools;
+
     /// The conversation as the turn opened it: the instructions, the exchanges
     /// before this one, and the question, fitted to the context. A round is
     /// this and the turn's own exchanges, which the orchestrator sends.
@@ -210,6 +250,7 @@ struct Engine::ChatTurn {
     // prompt, and folding that in would make a long prompt look like a slow
     // expert.
     bool              first_token = true;
+    bool thought_shown = false;   ///< this turn has shown some reasoning already
     Clock::time_point first_token_at;
     int               streamed_chunks = 0;
 
@@ -376,10 +417,18 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         }
         const ChatModel& model       = *chat->held.model;
         chat->workshop.sees_pictures = model.sees_images();
+        auto* const local            = dynamic_cast<LoadedModel*>(chat->held.model);
+        chat->native                 = chat->workshop.enabled && local != nullptr && local->speaks_tools();
+        chat->native_tools           = chat->native
+                                           ? tools::native_tools(chat->workshop, chat->config.tools.web_search)
+                                           : nlohmann::ordered_json();
+        const std::string lines      = tools::workshop_instructions(chat->workshop);
         return json{{"ok", true}, {"remote", chat->params.remote()},
                     {"sees_images", model.sees_images()}, {"takes_effort", model.takes_effort()},
                     {"workshop", chat->workshop.enabled},
-                    {"tools", tools::workshop_instructions(chat->workshop)}};
+                    {"native", chat->native},
+                    {"tools", chat->native ? tools::native_instructions(chat->workshop) : lines},
+                    {"text_tools", lines}};
     }
 
     if (chat->held.model == nullptr && method != "turn.end" && method != "turn.show") {
@@ -438,10 +487,50 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             system != params.end() && system->is_string() && !messages.empty() && messages.front().role == "system") {
             messages.front().content = system->get<std::string>();
         }
+        // What the turn did before the messages it is still shown, beside the
+        // request rather than in the instructions, which stay as they were so
+        // that the model does not read everything after them again.
+        if (const std::string note = params.value("note", std::string()); !note.empty() && messages.size() > 1) {
+            messages.back().content += "\n\n" + note;
+        }
+        // Asked through the model's own template, the turn's exchanges go as
+        // they are, the calls it made and what came back from them included.
+        // A picture is a part of a message of its own after the result.
+        const bool             native = chat->native && params.value("native", false);
+        json                   wire   = json::array();
+        std::vector<ChatImage> wire_images;
+        const auto             wired = [&wire_images](const ChatMessage& message) {
+            if (message.images.empty()) {
+                return json{{"role", message.role}, {"content", message.content}};
+            }
+            json parts = json::array();
+            for (const ChatImage& image : message.images) {
+                parts.push_back(json{{"type", "media_marker"}});
+                wire_images.push_back(image);
+            }
+            parts.push_back(json{{"type", "text"}, {"text", message.content}});
+            return json{{"role", message.role}, {"content", std::move(parts)}};
+        };
+        if (native) {
+            for (const ChatMessage& message : messages) {
+                wire.push_back(wired(message));
+            }
+        }
         for (const json& one : params.value("messages", json::array())) {
+            const auto held = chat->pictures.find(one.value("pictures", std::string()));
+            if (native) {
+                json entry = one;
+                entry.erase("pictures");
+                wire.push_back(std::move(entry));
+                if (held != chat->pictures.end()) {
+                    ChatMessage shown{"user", "That is the picture."};
+                    shown.images = held->second;
+                    wire.push_back(wired(shown));
+                }
+                continue;
+            }
             ChatMessage message{one.value("role", "user"), one.value("content", "")};
-            if (const auto held = chat->pictures.find(one.value("pictures", std::string()));
-                held != chat->pictures.end()) {
+            if (held != chat->pictures.end()) {
                 message.images = held->second;
             }
             messages.push_back(std::move(message));
@@ -452,15 +541,32 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // A round the person does not see: the loop asking the expert what the
         // next step is, so the delegator can choose who takes it.
         const bool        quiet        = params.value("quiet", false);
+        // A round asked for one line, which a model that reasons would spend
+        // on reasoning about it: the checkpoint.
+        const bool        quick        = params.value("quick", false);
+        // The round after one that thought for too long, which is to act.
+        const bool        rush         = params.value("rush", false);
+        // How much reasoning a round may write before it is stopped, or zero.
+        const std::size_t think_most   = params.value("think_most", std::size_t{0});
+        bool              overthought  = false;
         // Set once the reply has started going round, a few words or a dot
         // again and again. Stopped there rather than run to the end of the
         // context: gpt-oss once wrote 7177 dots.
         bool              looped       = false;
         bool              first_answer = true;
+        bool              first_thought = true;
         std::string       answer;
         std::string       reasoning;
         ResponseFilter    filter;
         const std::string name = chat->name;
+
+        // Thinking, from here until it says or does something. Not the last
+        // step's words, which read as a command still running long after it
+        // had finished, or as a load still going while it read the prompt.
+        state_.set_mood(Mood::Thinking, name + " is thinking");
+        if (wake_) {
+            wake_();
+        }
 
         // The two things a piece of output can be, wherever it came from.
         const auto take = [&](std::string_view thought, std::string_view said) {
@@ -472,7 +578,17 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             if (!thought.empty()) {
                 reasoning += thought;
                 if (!quiet) {
+                    // Each round's thinking is a paragraph of its own: run
+                    // together they read "created the file.The file has".
+                    if (first_thought && chat->thought_shown) {
+                        state_.append_reasoning(turn, "\n\n");
+                    }
+                    first_thought       = false;
+                    chat->thought_shown = true;
                     state_.append_reasoning(turn, thought);
+                }
+                if (think_most > 0 && answer.empty() && reasoning.size() > think_most) {
+                    overthought = true;
                 }
             }
             if (!said.empty()) {
@@ -510,7 +626,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         };
 
         ChatSink sink;
-        sink.cancel = [&cancel, &looped] { return looped || cancel(); };
+        sink.cancel = [&cancel, &looped, &overthought] { return looped || overthought || cancel(); };
         if (model.reasons_inline()) {
             // A reasoning model writes its working before its answer, and on
             // some of them the markers between the two are ordinary visible
@@ -526,8 +642,65 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // both ways at once, and both are reasoning.
         sink.on_reasoning = [&](std::string_view thought) { take(thought, {}); };
 
-        const ChatResult outcome =
-            model.chat(ChatRequest{messages, chat->params, chat->config.reasoning_effort}, sink);
+        // Thinking left out where the template can leave it out. gpt-oss's
+        // cannot, and writes its effort into the system message, so a
+        // different one reads the whole prompt again and again for the round
+        // after: the checkpoint keeps it and has the room to think instead.
+        // Only a round that has already thought too long is worth that.
+        std::string effort = chat->config.reasoning_effort;
+        int         most   = params.value("most", 0);
+        if (native && (quick || rush)) {
+            if (!model.takes_effort()) {
+                effort = "none";
+            } else if (rush) {
+                effort = "low";
+            } else if (most > 0) {
+                most = std::max(most, kCheckpointThinking);
+            }
+        }
+
+        // A round that is asked for one line may write only so much of it.
+        ModelParams asked_params = chat->params;
+        if (most > 0) {
+            asked_params.max_tokens = asked_params.max_tokens > 0 ? std::min(asked_params.max_tokens, most) : most;
+        }
+        ChatResult outcome;
+        json       calls     = json::array();
+        bool       no_native = false;
+        int        too_long  = 0;
+        if (native) {
+            OpenChat open;
+            open.messages            = std::move(wire);
+            open.images              = std::move(wire_images);
+            open.tools_text          = params.value("tools", true) ? chat->native_tools.dump() : std::string();
+            open.tool_choice         = params.value("tools", true) ? "auto" : "none";
+            open.parallel_tool_calls = false;
+            open.must_call           = quick && params.value("tools", true) ? std::string(tools::kHandOffTool)
+                                                                            : std::string();
+            open.effort              = effort;
+            open.params              = asked_params;
+            OpenChatSink open_sink;
+            open_sink.cancel   = sink.cancel;
+            open_sink.on_delta = [&](const OpenChatDelta& delta) {
+                if (!delta.reasoning.empty() || !delta.content.empty()) {
+                    take(delta.reasoning, delta.content);
+                }
+            };
+            const OpenChatResult result = dynamic_cast<LoadedModel&>(model).open_chat(open, open_sink);
+            outcome.stats = result.stats;
+            too_long      = result.too_long;
+            // A template that will not take this conversation, or these tools,
+            // leaves the lines every model can be told to write.
+            no_native = result.refused || result.untemplated;
+            if (!no_native && too_long == 0) {
+                outcome.error = result.error;
+            }
+            for (const ToolCall& call : result.calls) {
+                calls.push_back(json{{"id", call.id}, {"name", call.name}, {"arguments", call.arguments}});
+            }
+        } else {
+            outcome = model.chat(ChatRequest{messages, asked_params, chat->config.reasoning_effort}, sink);
+        }
         const GenerationStats& pass = outcome.stats;
 
         // Whatever was still held back, waiting to see if it was a marker.
@@ -547,7 +720,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             stats.output_tokens += pass.output_tokens;
             stats.prompt_ms     += pass.prompt_ms;
             stats.output_ms     += pass.output_ms;
-            stats.canceled       = pass.canceled && !looped;
+            stats.canceled       = pass.canceled && !looped && !overthought;
             stats.hit_limit      = pass.hit_limit;
         }
         const Snapshot now = state_.snapshot();
@@ -556,10 +729,18 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                     {"error", outcome.error},
                     {"discard", outcome.discard_partial},
                     {"notes", outcome.notes},
-                    {"canceled", pass.canceled && !looped},
+                    {"canceled", pass.canceled && !looped && !overthought},
                     {"looped", looped},
+                    {"overthought", overthought},
                     {"hit_limit", pass.hit_limit},
                     {"output_tokens", pass.output_tokens},
+                    {"prompt_tokens", pass.prompt_tokens},
+                    {"prompt_reused", pass.prompt_reused},
+                    {"prompt_ms", pass.prompt_ms},
+                    {"output_ms", pass.output_ms},
+                    {"calls", std::move(calls)},
+                    {"no_native", no_native},
+                    {"too_long", too_long},
                     {"reply", turn < now.turns.size() ? now.turns[turn].reply : std::string()}};
     }
 

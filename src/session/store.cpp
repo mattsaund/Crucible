@@ -113,6 +113,11 @@ TokenUsage usage_from_json(const json& obj) {
     return usage;
 }
 
+/// How much of what a turn's actions produced is kept with it: an action's
+/// diff or output when it is no longer than this, up to this much a turn.
+constexpr std::size_t kActionBytes        = 12 * 1024;
+constexpr std::size_t kActionBytesPerTurn = 48 * 1024;
+
 json turn_to_json(const Turn& turn) {
     json entry{
         {"prompt", turn.prompt},
@@ -136,6 +141,31 @@ json turn_to_json(const Turn& turn) {
                                        {"label", one.label}, {"kind", one.kind}});
         }
         entry["attachments"] = std::move(attachments);
+    }
+    if (!turn.actions.empty()) {
+        // What the turn did, so that a conversation opened again shows it.
+        // Each one's line always, and its diff or output while there is room:
+        // a session is written whole each time a turn ends.
+        json        actions = json::array();
+        std::size_t room    = kActionBytesPerTurn;
+        for (const TurnAction& action : turn.actions) {
+            json one{{"summary", action.summary}};
+            if (!action.body.empty() && action.body.size() <= std::min(room, kActionBytes)) {
+                one["body"] = action.body;
+                room -= action.body.size();
+                if (!action.language.empty()) {
+                    one["language"] = action.language;
+                }
+            }
+            if (!action.picture.empty()) {
+                one["picture"] = action.picture;
+            }
+            if (action.thought_at != std::string::npos) {
+                one["thought_at"] = action.thought_at;
+            }
+            actions.push_back(std::move(one));
+        }
+        entry["actions"] = std::move(actions);
     }
     if (turn.route) {
         entry["route"] = json{
@@ -170,6 +200,16 @@ Turn turn_from_json(const json& entry) {
             if (one.is_object()) {
                 turn.attachments.push_back({one.value("path", ""), one.value("name", ""),
                                             one.value("label", ""), one.value("kind", "file")});
+            }
+        }
+    }
+
+    if (const auto actions = entry.find("actions"); actions != entry.end() && actions->is_array()) {
+        for (const json& one : *actions) {
+            if (one.is_object()) {
+                turn.actions.push_back(TurnAction{one.value("summary", ""), one.value("body", ""),
+                                                  one.value("language", ""), one.value("picture", ""),
+                                                  one.value("thought_at", std::string::npos)});
             }
         }
     }

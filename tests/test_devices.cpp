@@ -1436,33 +1436,25 @@ TEST(vram_only_is_stamped_onto_every_model) {
 
     // The delegator as well as the experts: it is resident for the whole
     // session, so it is the last model that should be allowed to sit in RAM.
-    // Read past the page cache where that is what direct I/O does.
     CHECK(config.router.vram_only);
-    CHECK_EQ(config.router.direct_io, kDirectIoReal);
     CHECK(config.router.no_host);
     CHECK(config.defaults.vram_only);
     for (const auto& [id, expert] : config.experts) {
         CHECK(expert.vram_only);
-        CHECK_EQ(expert.direct_io, kDirectIoReal);
     }
 }
 
-TEST(vram_only_asks_for_direct_io_only_where_it_reads_past_the_cache) {
-    // llama.cpp's direct I/O opens the file O_DIRECT on Linux, and buffered
-    // on macOS and Windows, where asking for it only turned the mapping off:
-    // the cache kept the file all the same, and a Mac held the weights twice.
-    // There a model is mapped. The refusal and the host buffer are the
-    // setting's on every system.
+TEST(vram_only_leaves_how_the_file_is_read_to_the_load) {
+    // The refusal and the host buffer are the setting's on every system. It
+    // used to read every model past the page cache as well, so each one came
+    // back from the disk however recently it had been read.
     GpuConfig gpu;
     gpu.vram_only = true;
-    for (const bool real : {true, false}) {
-        ModelParams params;
-        detail::stamp_memory(params, gpu, /*have_gpu=*/true, real);
-        CHECK(params.vram_only);
-        CHECK(params.no_host);
-        CHECK_EQ(params.direct_io, real);
-        CHECK(reading_for(params, {}, -1.0) == (real ? FileRead::Direct : FileRead::Mapped));
-    }
+    ModelParams params;
+    detail::stamp_memory(params, gpu, /*have_gpu=*/true);
+    CHECK(params.vram_only);
+    CHECK(params.no_host);
+    CHECK(reading_for(params, {}, -1.0) == FileRead::Mapped);
 #if defined(__linux__)
     CHECK(kDirectIoReal);
 #else
@@ -1486,7 +1478,6 @@ TEST(the_memory_policy_is_off_unless_it_is_asked_for) {
     config.gpu.gpu_only  = false;
     apply_gpu_policy(config);
     CHECK(!config.defaults.vram_only);
-    CHECK(!config.defaults.direct_io);
     CHECK(!config.defaults.no_host);
 }
 

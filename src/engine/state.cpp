@@ -123,6 +123,21 @@ void AppState::configure_seats(const Config& config) {
     }
 
     const std::lock_guard<std::mutex> lock(mutex_);
+    // A seat mid-load is still loading, and one in memory is still there,
+    // whatever setting was changed. Starting them over took the percentage
+    // off a load in progress, and it did not come back.
+    for (std::size_t i = 0; i < roster->size(); ++i) {
+        if (seats[i].phase != SeatPhase::Dormant) {
+            continue;
+        }
+        if (const std::optional<std::size_t> was = seat_index(roster->at(i).id); was && *was < seats_.size()) {
+            const SeatState& old = seats_[*was];
+            if (old.phase == SeatPhase::Loading || old.phase == SeatPhase::Active) {
+                seats[i].phase    = old.phase;
+                seats[i].progress = old.progress;
+            }
+        }
+    }
     roster_ = std::move(roster);
     seats_  = std::move(seats);
 
@@ -280,7 +295,9 @@ void AppState::set_reply(std::size_t turn, std::string text) {
 void AppState::add_action(std::size_t turn, TurnAction action) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (turn < turns_.size()) {
-        writable(turn).actions.push_back(std::move(action));
+        Turn& entry       = writable(turn);
+        action.thought_at = entry.reasoning.size();
+        entry.actions.push_back(std::move(action));
     }
 }
 

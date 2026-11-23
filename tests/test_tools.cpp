@@ -8,6 +8,7 @@
 #include <chrono>
 #include <system_error>
 
+#include "crucible/tools/native_tools.hpp"
 #include "crucible/util/platform.hpp"
 
 // ---------------------------------------------------------------------------
@@ -488,6 +489,210 @@ TEST(a_call_in_square_brackets_on_a_line_of_its_own_is_the_call) {
     CHECK(!tools::parse_tool_call("[READ: the guide](https://example.com/guide)", "").has_value());
     CHECK(!tools::parse_tool_call("[x] READ: done", "").has_value());
     CHECK(!tools::parse_tool_call("[READ: a] and [READ: b]", "").has_value());
+}
+
+TEST(a_tool_a_model_calls_in_its_own_format_is_the_call_the_workshop_runs) {
+    using tools::ToolKind;
+    using tools::call_from_native;
+    std::string why;
+    const auto check = [&](const char* name, const char* arguments, ToolKind kind, const std::string& argument,
+                           const std::string& content = {}) {
+        const auto call = call_from_native(name, arguments, why);
+        CHECK(call.has_value());
+        if (call) {
+            CHECK(call->kind == kind);
+            CHECK_EQ(call->argument, argument);
+            CHECK_EQ(call->content, content);
+        }
+    };
+    check("list_files", "{}", ToolKind::List, ".");
+    check("list_files", R"({"path":"src"})", ToolKind::List, "src");
+    check("read_file", R"({"path":"app.js"})", ToolKind::Read, "app.js");
+    check("read_file", R"({"path":"app.js","start_line":10,"end_line":20})", ToolKind::Read, "app.js 10-20");
+    // A number written as a string, and a start with no end.
+    check("read_file", R"({"path":"app.js","start_line":"10"})", ToolKind::Read, "app.js 10-409");
+    check("find_in_files", R"({"text":"color","files":"*.css"})", ToolKind::Find, "color in *.css");
+    check("write_file", R"({"path":"a.txt","content":"hello\nworld\n"})", ToolKind::Write, "a.txt", "hello\nworld\n");
+    // An empty file is a file.
+    check("write_file", R"({"path":"a.txt","content":""})", ToolKind::Write, "a.txt", "");
+    check("edit_file", R"({"path":"a.css","search":"color: red;","replace":"color: blue;"})", ToolKind::Edit, "a.css",
+          "<<<<<<< SEARCH\ncolor: red;\n=======\ncolor: blue;\n>>>>>>> REPLACE\n");
+    // Deleting text is replacing it with nothing.
+    check("edit_file", R"({"path":"a.css","search":"x","replace":""})", ToolKind::Edit, "a.css",
+          "<<<<<<< SEARCH\nx\n=======\n\n>>>>>>> REPLACE\n");
+    check("render_page", R"({"page":"index.html","output":"p.png","size":"1280x800"})", ToolKind::Render,
+          "index.html to p.png at 1280x800");
+    check("run_command", R"({"command":"npm test"})", ToolKind::Run, "npm test");
+    check("run_python", R"j({"code":"print(1)"})j", ToolKind::Python, "", "print(1)");
+    check("git", R"({"arguments":"status"})", ToolKind::Git, "status");
+    check("hand_off", R"({"next_step":"write the README"})", ToolKind::Handoff, "write the README");
+    check("web_search", R"({"query":"llama"})", ToolKind::Search, "llama");
+    check("click", R"({"x":10,"y":"20","button":"right","double":true})", ToolKind::Click, "10 20 right double");
+    check("use_tool", R"({"tool":"github/create_issue","arguments":{"title":"x"}})", ToolKind::Mcp,
+          "github/create_issue", R"({"title":"x"})");
+    // The names other people's tools use for the same things.
+    check("read_file", R"({"file_path":"a.txt"})", ToolKind::Read, "a.txt");
+    check("edit_file", R"({"file_path":"a","old_string":"x","new_string":"y"})", ToolKind::Edit, "a",
+          "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n");
+
+    // What it left out, or made up, is said rather than run.
+    const auto refused = [&](const char* name, const char* arguments, const std::string& says) {
+        why.clear();
+        CHECK(!call_from_native(name, arguments, why).has_value());
+        CHECK(why.find(says) != std::string::npos);
+    };
+    refused("read_file", "{}", "needs a path");
+    refused("write_file", R"({"path":"a.txt"})", "contents");
+    refused("edit_file", R"({"path":"a.txt","search":"","replace":"x"})", "text to replace");
+    refused("edit_file", R"({"path":"a.txt","search":"x"})", "what it becomes");
+    refused("run_command", "{}", "a command");
+    refused("read_file", "not json", "not a JSON object");
+    refused("read_file", "[1]", "not a JSON object");
+    refused("delete_everything", "{}", "no tool called delete_everything");
+}
+
+TEST(a_path_written_from_the_top_of_the_project_is_in_the_project) {
+    TempDir dir;
+    const std::filesystem::path root = std::filesystem::weakly_canonical(dir.path()) / "budget";
+    std::filesystem::create_directories(root / "src");
+    std::ofstream(root / "README.md") << "x";
+    const auto at = [&](const char* written) { return tools::resolve_in_root(root, written); };
+    // One name, from a folder it has, from its own name, or a file it has with
+    // a home folder made up around it.
+    CHECK(at("/no-such-page.html") == root / "no-such-page.html");
+    CHECK(at("/src/no-such.js") == root / "src" / "no-such.js");
+    CHECK(at("/budget/no-such.html") == root / "no-such.html");
+    CHECK(at("/home/nobody-here/project/README.md") == root / "README.md");
+    // What is really on the disk outside it stays outside.
+    CHECK(!at("/etc/hosts").has_value());
+#if !defined(_WIN32)
+    CHECK(!at("/usr").has_value());   // a folder here, and no such thing on Windows
+#endif
+    // And a made-up folder for a file it does not have is not made in it.
+    CHECK(!at("/home/nobody-here/project/new.txt").has_value());
+    // Climbing out is climbing out, however it is written.
+    CHECK(!at("/src/../../outside.txt").has_value());
+    CHECK(!at("../outside.txt").has_value());
+}
+
+TEST(a_call_a_model_spelled_out_in_its_own_format_is_still_the_call) {
+    using tools::ToolKind;
+    using tools::call_in_text;
+    const auto is = [](std::string_view text, ToolKind kind, const std::string& argument, const std::string& content,
+                       const std::string& prose) {
+        const auto found = call_in_text(text);
+        CHECK(found.has_value());
+        if (found) {
+            CHECK(found->call.kind == kind);
+            CHECK_EQ(found->call.argument, argument);
+            CHECK_EQ(found->call.content, content);
+            CHECK_EQ(found->prose, prose);
+        }
+    };
+    // LFM, after a sentence on the same line, as LFM2.5 2.6B wrote it.
+    is("Now the README.<|tool_call_start|>[read_file(path='app.js')]<|tool_call_end|>", ToolKind::Read, "app.js", "",
+       "Now the README.");
+    is("<|tool_call_start|>[write_file(path='a.html', content='<b class=\"x\">it\\'s</b>\\n')]<|tool_call_end|>\n",
+       ToolKind::Write, "a.html", "<b class=\"x\">it's</b>\n", "");
+    // Qwen.
+    is("Writing it.\n\n<tool_call>\n<function=write_file>\n<parameter=path>\na.txt\n</parameter>\n"
+       "<parameter=content>\nline one\nline two\n</parameter>\n</function>\n</tool_call>",
+       ToolKind::Write, "a.txt", "line one\nline two", "Writing it.");
+    // flint.
+    is("<tool_call>edit_file<arg_key>path</arg_key><arg_value>a.css</arg_value><arg_key>search</arg_key>"
+       "<arg_value>red</arg_value><arg_key>replace</arg_key><arg_value>blue</arg_value></tool_call>",
+       ToolKind::Edit, "a.css", "<<<<<<< SEARCH\nred\n=======\nblue\n>>>>>>> REPLACE\n", "");
+    is("<tool_call>list_files</tool_call>", ToolKind::List, ".", "", "");
+    // Hermes.
+    is(R"(<tool_call>{"name": "run_command", "arguments": {"command": "npm test"}}</tool_call>)", ToolKind::Run,
+       "npm test", "", "");
+    // gpt-oss.
+    is(R"(Next.<|start|>assistant<|channel|>commentary to=functions.read_file <|constrain|>json<|message|>{"path":"a.js"}<|call|>)",
+       ToolKind::Read, "a.js", "", "Next.");
+
+    // Not a whole call, not the end of the reply, or not a tool: it is words.
+    CHECK(!call_in_text("").has_value());
+    CHECK(!call_in_text("Just an answer.").has_value());
+    CHECK(!call_in_text("<tool_call>").has_value());
+    CHECK(!call_in_text("<tool_call>\n\n\n\n<tool_call>").has_value());
+    CHECK(!call_in_text("<tool_call>delete_everything</tool_call>").has_value());
+    CHECK(!call_in_text("<tool_call>read_file<arg_key>path</arg_key>").has_value());
+    CHECK(!call_in_text("Models write <tool_call>read_file</tool_call> like this, in their own format.").has_value());
+    CHECK(!call_in_text("<|tool_call_start|>[write_file(path='a.txt', content='never clo").has_value());
+}
+
+TEST(a_model_is_offered_the_tools_the_folder_allows_and_every_one_of_them_can_be_called) {
+    TempDir dir;
+    tools::WorkshopSettings settings;
+    CHECK(tools::native_tools(settings, false).empty());
+    CHECK(tools::native_instructions(settings).empty());
+
+    settings.enabled = true;
+    settings.root    = dir.path();
+    const auto names = [](const nlohmann::ordered_json& list) {
+        std::set<std::string> out;
+        for (const nlohmann::ordered_json& one : list) {
+            CHECK_EQ(one.value("type", std::string()), std::string("function"));
+            const nlohmann::ordered_json& function = one["function"];
+            CHECK(!function.value("description", std::string()).empty());
+            CHECK_EQ(function["parameters"].value("type", std::string()), std::string("object"));
+            CHECK(out.insert(function.value("name", std::string())).second);
+        }
+        return out;
+    };
+    const std::set<std::string> everything = names(tools::native_tools(settings, false));
+    for (const char* const name : {"list_files", "read_file", "find_in_files", "write_file", "edit_file", "render_page",
+                                   "run_command", "run_python", "git", "hand_off"}) {
+        CHECK(everything.count(name) == 1);
+    }
+    CHECK(everything.count("web_search") == 0);
+    CHECK(everything.count("screenshot") == 0);
+
+    settings.allow_run = false;
+    const std::set<std::string> no_commands = names(tools::native_tools(settings, false));
+    for (const char* const name : {"run_command", "run_python", "git", "github", "start_process"}) {
+        CHECK(no_commands.count(name) == 0);
+    }
+    CHECK(no_commands.count("write_file") == 1);
+    settings.allow_run = true;
+
+    settings.web              = true;
+    settings.computer_control = true;
+    const nlohmann::ordered_json all = tools::native_tools(settings, true);
+    CHECK(names(all).count("fetch_url") == 1);
+    CHECK(names(all).count("web_search") == 1);
+    CHECK(names(all).count("screenshot") == 1);
+
+    // Each one, called with what it says it requires, is a call the workshop
+    // can run: the two lists cannot drift apart.
+    for (const nlohmann::ordered_json& one : all) {
+        const nlohmann::ordered_json& function = one["function"];
+        nlohmann::json                arguments = nlohmann::json::object();
+        for (const nlohmann::ordered_json& field : function["parameters"]["required"]) {
+            const std::string type =
+                function["parameters"]["properties"][field.get<std::string>()].value("type", std::string());
+            arguments[field.get<std::string>()] = type == "integer" ? nlohmann::json(1) : nlohmann::json("x");
+        }
+        std::string why;
+        const auto  call = tools::call_from_native(function.value("name", std::string()), arguments.dump(), why);
+        CHECK(call.has_value());
+        CHECK(why.empty());
+    }
+
+    // A file's path comes before its contents: llama.cpp's parsers hold a
+    // model to this order, and sorted by name flint could not write a file.
+    for (const nlohmann::ordered_json& one : all) {
+        if (one["function"].value("name", std::string()) == "write_file") {
+            CHECK_EQ(one["function"]["parameters"]["properties"].begin().key(), std::string("path"));
+        }
+    }
+
+    // Told to do the work with them, and that a reply writes nothing.
+    const std::string told = tools::native_instructions(settings);
+    CHECK(told.find("showing its contents") != std::string::npos);
+    CHECK(told.find("The project folder is empty") != std::string::npos);
+    std::ofstream(dir.path() / "a.txt") << "x";
+    CHECK(tools::native_instructions(settings).find("The project folder is empty") == std::string::npos);
 }
 
 TEST(the_instructions_show_the_write_shape_rather_than_only_describing_it) {
@@ -986,4 +1191,44 @@ TEST(on_path_finds_real_programs_and_not_invented_ones) {
     // An empty requirement means "nothing needed", which is how a backend with
     // no SDK says so.
     CHECK(util::on_path(""));
+}
+
+TEST(an_edit_can_say_which_of_two_identical_lines_it_means) {
+    const std::string text = "a\nsame\nb\nc\nd\ne\nsame\nf\n";
+    std::string error;
+    // Not said: refused, with where they are, so nothing has to be read again.
+    CHECK(!tools::apply_edit_blocks(text, {tools::EditBlock{"same", "new"}}, error));
+    CHECK(error.find("2 times, at lines 2 and 7") != std::string::npos);
+    CHECK(error.find("at_line") != std::string::npos);
+    // Said, it changes that one and leaves the other.
+    auto changed = tools::apply_edit_blocks(text, {tools::EditBlock{"same", "new", 7}}, error);
+    CHECK(changed.has_value());
+    CHECK_EQ(changed.value_or(""), std::string("a\nsame\nb\nc\nd\ne\nnew\nf\n"));
+    // A line or two off, from a read a step ago, is still the nearest one.
+    changed = tools::apply_edit_blocks(text, {tools::EditBlock{"same", "new", 3}}, error);
+    CHECK_EQ(changed.value_or(""), std::string("a\nnew\nb\nc\nd\ne\nsame\nf\n"));
+    // Near neither, or as near one as the other, is not a choice.
+    CHECK(!tools::apply_edit_blocks(text, {tools::EditBlock{"same", "new", 40}}, error));
+    const std::string close = "same\nx\nsame\n";
+    CHECK(!tools::apply_edit_blocks(close, {tools::EditBlock{"same", "new", 2}}, error));
+    // By its lines too, with the indentation set aside.
+    const std::string indented = "  one\n  two\nmid\n  one\n  two\n";
+    changed = tools::apply_edit_blocks(indented, {tools::EditBlock{"one\ntwo", "both", 4}}, error);
+    CHECK_EQ(changed.value_or(""), std::string("  one\n  two\nmid\n  both\n"));
+
+    // The native call says it as at_line, and the block keeps it.
+    std::string why;
+    const auto call = tools::call_from_native(
+        "edit_file", R"({"path":"a.txt","search":"same","replace":"new","at_line":7})", why);
+    CHECK(call.has_value());
+    if (call) {
+        const auto blocks = tools::parse_edit_blocks(call->content, error);
+        CHECK_EQ(blocks.size(), std::size_t{1});
+        if (!blocks.empty()) {
+            CHECK_EQ(blocks[0].line, std::size_t{7});
+            CHECK_EQ(blocks[0].search, std::string("same"));
+        }
+    }
+    // Text that only looks like a marker with a line stays text.
+    CHECK(tools::parse_edit_blocks("<<<<<<< SEARCH line x\na\n=======\nb\n>>>>>>> REPLACE\n", error).empty());
 }

@@ -418,6 +418,21 @@ jobs:
   # publishes the ones built here for its commit, rather than building them
   # for the first time as it goes out, which is when a broken one used to be
   # found.
+  # The terminal program's own tests, on all three systems, because it is the
+  # one part of Crucible no other job here compiles for each of them first.
+  cli:
+    name: Terminal program (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tests
+        run: cargo test --locked --manifest-path cli/Cargo.toml
+
   dmg:
     name: macOS disk image
     runs-on: macos-latest
@@ -480,6 +495,17 @@ jobs:
           name: Crucible-macOS
           path: dist/Crucible-macOS.dmg
 
+      # The terminal download, from the engine this job just built.
+      - name: Terminal download
+        run: |
+          cargo build --release --locked --manifest-path cli/Cargo.toml
+          bash packaging/cli/package.sh build cli/target/release/cruciblecli dist-cli/cruciblecli-macos-arm64.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-CLI-macOS
+          path: dist-cli/*
+
   setup:
     name: Windows setup
     runs-on: windows-latest
@@ -541,6 +567,66 @@ jobs:
           name: Crucible-Windows
           path: dist/Crucible-Setup.exe
 
+      # The terminal download, from the engine this job just built.
+      - name: Terminal download
+        shell: pwsh
+        run: |
+          cargo build --release --locked --manifest-path cli/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "cargo failed with $LASTEXITCODE" }
+          cmake --install build --component cli --prefix "$PWD\cli-stage\cruciblecli"
+          if ($LASTEXITCODE -ne 0) { throw "the install failed with $LASTEXITCODE" }
+          Copy-Item cli\target\release\cruciblecli.exe cli-stage\cruciblecli\bin\
+          $built = ((& .\cli-stage\cruciblecli\bin\crucible-engine.exe --version) | Select-Object -First 1).Split(' ')[-1]
+          $said = (& .\cli-stage\cruciblecli\bin\cruciblecli.exe --version).Split(' ')[-1]
+          if ($built -ne $said) { throw "the engine is $built and cruciblecli is $said (cli/Cargo.toml)" }
+          New-Item -ItemType Directory -Force dist-cli | Out-Null
+          Compress-Archive -Path cli-stage\cruciblecli -DestinationPath dist-cli\cruciblecli-windows-x86_64.zip
+          $hash = (Get-FileHash dist-cli\cruciblecli-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  cruciblecli-windows-x86_64.zip" | Set-Content -NoNewline dist-cli\cruciblecli-windows-x86_64.zip.sha256
+
+      # The one-line installer, on the real thing: it installs, the engine
+      # answers over its pipe, installing again works while that engine is
+      # running (which is what /update does), the engine ends when its pipe
+      # closes, and it all comes off again.
+      - name: The terminal download installs and answers
+        shell: pwsh
+        run: |
+          $env:CRUCIBLE_CLI_ARCHIVE = "$PWD\dist-cli\cruciblecli-windows-x86_64.zip"
+          & .\install-cli.ps1
+          $root = Join-Path $env:LOCALAPPDATA 'Programs\CrucibleCLI'
+          & "$root\bin\cruciblecli.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'cruciblecli did not run' }
+          $info = [Diagnostics.ProcessStartInfo]::new("$root\bin\crucible-engine.exe")
+          $info.UseShellExecute = $false
+          $info.RedirectStandardInput = $true
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          $engine = [Diagnostics.Process]::Start($info)
+          $null = $engine.StandardError.ReadToEndAsync()
+          $engine.StandardInput.WriteLine('{"id":1,"method":"ping"}')
+          $engine.StandardInput.Flush()
+          $answer = ''
+          for ($i = 0; $i -lt 200 -and $answer -notmatch '"id":1'; $i++) { $answer = $engine.StandardOutput.ReadLine() }
+          if ($answer -notmatch '"ok":true') { throw "the engine did not answer over its pipe: $answer" }
+          $null = $engine.StandardOutput.ReadToEndAsync()
+          & .\install-cli.ps1
+          & "$root\bin\cruciblecli.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'cruciblecli did not run after installing over a running one' }
+          $engine.StandardInput.Close()
+          if (-not $engine.WaitForExit(30000)) {
+              $engine.Kill()
+              throw 'the engine did not end when its pipe closed'
+          }
+          & .\install-cli.ps1
+          if (Get-ChildItem $root -Recurse -File -Filter '*.old') { throw 'old files were left behind' }
+          & .\install-cli.ps1 -Uninstall
+          if (Test-Path $root) { throw 'it is still there after uninstalling' }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-CLI-Windows
+          path: dist-cli/*
+
   appimage:
     name: Linux AppImage
     # An AppImage is only as portable as the glibc it was linked against, so it
@@ -596,3 +682,14 @@ jobs:
         with:
           name: Crucible-Linux
           path: dist/Crucible-x86_64.AppImage
+
+      # The terminal download, from the engine this job just built.
+      - name: Terminal download
+        run: |
+          cargo build --release --locked --manifest-path cli/Cargo.toml
+          bash packaging/cli/package.sh build cli/target/release/cruciblecli dist-cli/cruciblecli-linux-x86_64.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Crucible-CLI-Linux
+          path: dist-cli/*

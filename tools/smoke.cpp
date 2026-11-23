@@ -506,8 +506,13 @@ int smoke_ask_config(const std::filesystem::path& file, const std::string& promp
     config.tools.auto_edits = true;   // nobody at a window to allow a write
     config.resolve_models();
 
-    const std::filesystem::path project = paths::data_dir() / "smoke-ask";
-    std::filesystem::remove_all(project);
+    // A folder to work in, as it is, or an empty one of its own.
+    const char* const given = std::getenv("CRUCIBLE_SMOKE_PROJECT");
+    const std::filesystem::path project =
+        given != nullptr && *given != '\0' ? std::filesystem::path(given) : paths::data_dir() / "smoke-ask";
+    if (given == nullptr || *given == '\0') {
+        std::filesystem::remove_all(project);
+    }
     std::filesystem::create_directories(project);
 
     AppState state;
@@ -559,7 +564,75 @@ int smoke_ask_config(const std::filesystem::path& file, const std::string& promp
     return turn.failed || turn.reply.empty() ? 1 : 0;
 }
 
+/// Prompts on the seats a config names, one after another on one engine, so
+/// a model is loaded once however many there are. `tasks` is a JSON list of
+/// {"id", "project", "prompt", "minutes"}. Each prints as one line of JSON.
+int smoke_tasks(const std::filesystem::path& file, const std::filesystem::path& tasks) {
+    using json = nlohmann::json;
+    std::vector<std::string> warnings;
+    Config config = load_config(file, warnings);
+    for (const std::string& warning : warnings) {
+        std::fprintf(stderr, "config: %s\n", warning.c_str());
+    }
+    config.tools.auto_edits = true;   // nobody at a window to allow a write
+    config.resolve_models();
+    std::ifstream in(tasks);
+    const json list = json::parse(in, nullptr, false);
+    if (!list.is_array()) {
+        std::fprintf(stderr, "%s is not a list\n", tasks.string().c_str());
+        return 2;
+    }
+    AppState state;
+    state.configure_seats(config);
+    Engine engine(config, state, [] {});
+    engine.start();
+    for (const json& task : list) {
+        engine.set_project(task.value("project", std::string()));
+        engine.reset_history();
+        state.clear_turns();
+        const auto started = std::chrono::steady_clock::now();
+        const int  minutes = task.value("minutes", 15);
+        engine.submit(task.value("prompt", std::string()));
+        bool timed_out = false;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const Snapshot now = state.snapshot();
+            if (!now.turns.empty() && !now.turns.back().streaming && !engine.is_busy()) {
+                break;
+            }
+            if (!timed_out && std::chrono::steady_clock::now() - started > std::chrono::minutes(minutes)) {
+                timed_out = true;
+                engine.cancel();
+            }
+        }
+        const Snapshot after = state.snapshot();
+        const Turn&    turn  = after.turns.back();
+        json actions = json::array();
+        for (const TurnAction& action : turn.actions) {
+            actions.push_back(action.summary);
+        }
+        std::printf("%s\n",
+                    json{{"id", task.value("id", std::string())},
+                         {"seconds", std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()},
+                         {"failed", turn.failed},
+                         {"timed_out", timed_out},
+                         {"expert", turn.route ? turn.route->expert : std::string()},
+                         {"confidence", turn.route ? static_cast<double>(turn.route->confidence) : 0.0},
+                         {"tokens", turn.output_tokens},
+                         {"load_ms", turn.load_ms},
+                         {"actions", actions},
+                         {"reply", turn.reply}}
+                        .dump(-1, ' ', false, json::error_handler_t::replace).c_str());
+        std::fflush(stdout);
+    }
+    engine.stop();
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 4 && std::string(argv[1]) == "--tasks") {
+        return smoke_tasks(argv[2], argv[3]);
+    }
     if (argc >= 3 && std::string(argv[1]) == "--runtime") {
         return smoke_runtime(argv[2]);
     }
@@ -583,6 +656,7 @@ int main(int argc, char** argv) {
         std::printf("usage: crucible-smoke <delegator.gguf or -> <expert.gguf> \"a question\"\n"
                     "       crucible-smoke --turns <model.gguf> <count>\n"
                     "       crucible-smoke --ask-config <config.json> \"a prompt\" [minutes]\n"
+                    "       crucible-smoke --tasks <config.json> <tasks.json>\n"
                     "       crucible-smoke --bench <model.gguf> [quick|standard|full] [mmlu_pro,arc,...] [seconds]\n"
                     "       crucible-smoke --runtime cpu\n"
                     "       crucible-smoke --host <first.gguf> [<second.gguf>]\n"

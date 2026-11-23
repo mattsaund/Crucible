@@ -616,6 +616,12 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
     return stats;
 }
 
+namespace {
+/// How far before the end of a prompt the checkpoint of a cache that cannot be
+/// cut is taken: more than any template's opening of a reply.
+constexpr std::size_t kCheckpointBack = 32;
+}  // namespace
+
 bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& params, const CancelCallback& cancel,
                               GenerationStats& stats) {
     const llama_vocab* vocab = llama_model_get_vocab(model_);
@@ -649,16 +655,27 @@ bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& para
     // in llama_decode that ends the program.
     const int batch_size =
         std::max(1, std::min(params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
-    for (std::size_t offset = reused; offset < tokens.size();
-         offset += static_cast<std::size_t>(batch_size)) {
+    // A cache that cannot be cut goes back only as far as its checkpoint, and
+    // the next prompt has to reach that far. The opening of the reply is not
+    // written the same way in the history as at the end of a prompt (LFM2.5's
+    // template ends a prompt inside a <think> that an earlier answer does not
+    // have), so a checkpoint at the very end was one token past what the next
+    // prompt shared, and every round read the whole conversation again. It is
+    // taken a little before the end instead.
+    const bool        checkpointed = window_cache_ || llama_model_is_recurrent(model_) || llama_model_is_hybrid(model_);
+    const std::size_t mark         = checkpointed && tokens.size() > reused + kCheckpointBack
+                                         ? tokens.size() - kCheckpointBack
+                                         : tokens.size();
+    for (std::size_t offset = reused; offset < tokens.size();) {
         if (cancel && cancel()) {
             stats.canceled = true;
             stats.prompt_ms = ms_since(prompt_start);
             forget();  // the cache holds part of a prompt nobody will finish
             return false;
         }
+        const std::size_t until = offset < mark ? mark : tokens.size();
         const int count = static_cast<int>(
-            std::min<std::size_t>(static_cast<std::size_t>(batch_size), tokens.size() - offset));
+            std::min<std::size_t>(static_cast<std::size_t>(batch_size), until - offset));
         llama_batch batch = llama_batch_get_one(tokens.data() + offset, count);
         if (llama_decode(ctx_, batch) != 0) {
             stats.canceled  = cancel && cancel();   // aborted from inside, by Stop
@@ -668,8 +685,14 @@ bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& para
         }
         cached_.insert(cached_.end(), tokens.begin() + static_cast<long>(offset),
                        tokens.begin() + static_cast<long>(offset) + count);
+        offset += static_cast<std::size_t>(count);
+        if (offset == mark && mark < tokens.size()) {
+            keep_checkpoint();
+        }
     }
-    keep_checkpoint();
+    if (mark == tokens.size()) {
+        keep_checkpoint();
+    }
     stats.prompt_ms = ms_since(prompt_start);
     return true;
 }

@@ -84,8 +84,12 @@ function commentOf(lang) {
 /// (\n), and how they were on disk, so a save gives them back unchanged.
 function fill(tab, got) {
   // Read again: a new textarea, since the one on screen keeps the text it was
-  // given and would go on showing the old file over the new colors.
-  if (tab.content !== undefined) tab.serial = ++state.code.serial;
+  // given and would go on showing the old file over the new colors. Whoever
+  // was in the old one is put in the new.
+  if (tab.content !== undefined) {
+    if (tab === activeTab() && editorBox() && editorBox() === document.activeElement) tab.take = true;
+    tab.serial = ++state.code.serial;
+  }
   Object.assign(tab, got, { loading: false, error: '', stale: false, conflict: false, gone: false });
   const text = String(got.content || '');
   tab.crlf = /\r\n/.test(text);
@@ -108,8 +112,10 @@ async function readInto(tab) {
   }
 }
 
-/// Open `path` in a tab and show it, at `line` when one is given.
-async function openFile(path, line) {
+/// Open `path` in a tab and show it, at `line` when one is given. The caret
+/// goes there, unless it is opened `quietly`, for somebody who did not ask
+/// and may be typing in the box beside it.
+async function openFile(path, line, quietly) {
   let tab = tabOf(path);
   if (!tab) {
     tab = { path, loading: true, serial: ++state.code.serial };
@@ -117,12 +123,13 @@ async function openFile(path, line) {
   }
   if (tab.error && !unsaved(tab)) { tab.error = ''; tab.loading = true; }
   state.open.file = tab;
-  // A file opened from the conversation (a chip a turn left) is opened in the
-  // Code pane beside it.
+  // A file opened from the conversation (a chip a turn left) is opened on
+  // the shelf, whose tree may be older than what the turn wrote.
   if (state.view === 'chat' && state.chatPane !== 'code') {
-    state.chatPane = 'code';
-    if (!state.tree) loadTree();
+    state.chatPane = state.shelfTab = 'code';
+    loadTree();
   }
+  if (!quietly) tab.take = true;
   if (line) tab.goto = line;
   render();
   if (tab.loading) {
@@ -502,6 +509,10 @@ afterDraw.push(() => {
   const tab = activeTab();
   if (!box || !tab) return;
   follow(box);
+  if (tab.take) {
+    tab.take = false;
+    box.focus();
+  }
   // A tab opened at a line, from a search or an expert's error: put the caret
   // there once, then forget it.
   if (tab.goto) {
@@ -527,7 +538,7 @@ actions['tree-fold'] = (button) => {
   render();
 };
 actions['file-open'] = (button) => guard(() => openFile(button.dataset.path, Number(button.dataset.line) || 0));
-actions['tab-show'] = (button) => { const t = tabOf(button.dataset.path); if (t) { state.open.file = t; render(); } };
+actions['tab-show'] = (button) => { const t = tabOf(button.dataset.path); if (t) { t.take = true; state.open.file = t; render(); } };
 actions['tab-close'] = (button) => closeTab(button.dataset.path);
 // The old pane's Close, kept for whoever still asks for it by name.
 actions['file-close'] = () => { const t = activeTab(); if (t) closeTab(t.path); };
@@ -976,6 +987,11 @@ function codeShortcut(event) {
     event.preventDefault();
     actions['code-side']({ dataset: { side: 'search' } });
   }
-  if (!event.shiftKey && (event.key === 's' || event.key === 'S')) { event.preventDefault(); saveTab(activeTab()); }
+  // From the box, Ctrl+S is not about the file open beside it.
+  if (!event.shiftKey && (event.key === 's' || event.key === 'S')
+      && !(document.activeElement && document.activeElement.id === 'prompt')) {
+    event.preventDefault();
+    saveTab(activeTab());
+  }
 }
 

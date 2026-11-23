@@ -49,10 +49,12 @@ jobs:
                         --status success --json databaseId --jq '.[].databaseId'); do
             have="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
                       --jq '[.artifacts[] | select(.expired | not) | .name
-                             | select(. == "Crucible-macOS" or . == "Crucible-Windows" or . == "Crucible-Linux")]
+                             | select(. == "Crucible-macOS" or . == "Crucible-Windows" or . == "Crucible-Linux"
+                                      or . == "Crucible-CLI-macOS" or . == "Crucible-CLI-Windows"
+                                      or . == "Crucible-CLI-Linux")]
                             | unique | length')"
-            echo "run $id passed on $GITHUB_SHA, with ${have:-0} of the three installers"
-            if [ "${have:-0}" = 3 ]; then run="$id"; break; fi
+            echo "run $id passed on $GITHUB_SHA, with ${have:-0} of the six downloads"
+            if [ "${have:-0}" = 6 ]; then run="$id"; break; fi
           done
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
@@ -122,13 +124,17 @@ jobs:
           pattern: Crucible-*
           path: artifacts
 
-      # All three, or nothing goes out.
-      - name: All three are here
+      # All six, or nothing goes out: install-cli.sh and install-cli.ps1 fetch
+      # the terminal ones by these names from the newest release.
+      - name: All six are here
         run: |
           ls -la artifacts/*
           test -s artifacts/Crucible-macOS/Crucible-macOS.dmg
           test -s artifacts/Crucible-Windows/Crucible-Setup.exe
           test -s artifacts/Crucible-Linux/Crucible-x86_64.AppImage
+          test -s artifacts/Crucible-CLI-macOS/cruciblecli-macos-arm64.tar.gz
+          test -s artifacts/Crucible-CLI-Windows/cruciblecli-windows-x86_64.zip
+          test -s artifacts/Crucible-CLI-Linux/cruciblecli-linux-x86_64.tar.gz
 
       - uses: softprops/action-gh-release@v3
         with:

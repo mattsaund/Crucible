@@ -63,6 +63,10 @@ struct Ask {
     /// time, unset to leave it to the model.
     nlohmann::json      tools;
     std::string         tool_choice = "auto";
+
+    /// Those tools as text, in the order the client wrote their parameters,
+    /// which `tools` has sorted. See OpenChat::tools_text.
+    std::string         tools_text;
     std::optional<bool> parallel_tool_calls;
 
     /// What the answer must be, as JSON Schema text: {"type": "object"} for

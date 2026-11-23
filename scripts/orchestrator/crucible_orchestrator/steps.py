@@ -49,6 +49,9 @@ def nudge_for(parsed):
     `WRITE /path "fixed it"` is failing on one character, and is told which.
     """
     attempted = parsed.get("attempted", "none")
+    if attempted == "call":
+        return ("That tool call could not be read, so nothing was run. Make the call again, "
+                "complete and on its own.")
     if parsed.get("inline") and attempted and attempted != "none":
         # "Here it is. WRITE: style.css" and a fence: right, but a call starts
         # a line, and nothing before it on the line is read.
@@ -217,6 +220,22 @@ def read_of(call, root=""):
     return (project_path(read[0], root),) + read[1:]
 
 
+# What node says when the script it was given is written for a web page. A
+# model takes it for a bug in what it just wrote, and LFM2.5 rewrote a working
+# delete button five times trying to make it go away.
+PAGE_ONLY = re.compile(r"ReferenceError: (?:document|window|localStorage|sessionStorage|navigator|alert|location) "
+                       r"is not defined")
+PAGE_ONLY_HINT = ("\n(That file runs in a web page, which node does not have, so this error says "
+                  "nothing about your change. Read the file to check it.)")
+
+
+def needs_a_page(call, result):
+    """Whether a RUN failed only because node was given a script for a web page."""
+    return (call.get("kind") == "run" and not result.get("ok")
+            and bool(re.search(r"\bnode(?:js)?\b", call.get("argument") or ""))
+            and bool(PAGE_ONLY.search(result.get("output") or "")))
+
+
 # gpt-oss's own edit tool, which it runs as a command when it forgets this
 # one has none. Told so in the result, with what to use instead: without it,
 # it re-read the file it could not change until the repeat guard ended the task.
@@ -229,7 +248,10 @@ def read_hint(call, result, root=""):
     """For a RUN that printed lines of a file in the project and did nothing
     else, a line to go after its result naming the READ that does the same and
     numbers them; for a RUN of apply_patch, which is not here, what to use
-    instead; "" otherwise."""
+    instead; for node run on a web page's script, what that error means; ""
+    otherwise."""
+    if needs_a_page(call, result):
+        return PAGE_ONLY_HINT
     if call.get("kind") == "run" and APPLY_PATCH.match(call.get("argument") or ""):
         return APPLY_PATCH_HINT
     read = read_of(call, root) if call.get("kind") == "run" and result.get("ok") else None
