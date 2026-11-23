@@ -44,6 +44,17 @@ if [ "$built" != "$said" ]; then
     exit 1
 fi
 
+# And it answers over its pipe, which is how cruciblecli talks to it. In a
+# folder of its own, so that this leaves nothing in the home folder.
+mkdir -p "$WORK/home"
+answer="$(printf '{"id":1,"method":"ping"}\n' |
+    env HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/home/.config" XDG_DATA_HOME="$WORK/home/.local/share" \
+        "$STAGE/bin/crucible-engine" 2>/dev/null | grep -m1 '"id":1' || true)"
+case "$answer" in
+    *'"ok":true'*) ;;
+    *) echo "error: the engine did not answer over its pipe: $answer" >&2; exit 1 ;;
+esac
+
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
 tar -C "$WORK" -czf "$OUTPUT" cruciblecli

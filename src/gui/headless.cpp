@@ -21,6 +21,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <deque>
 #include <exception>
@@ -208,6 +209,9 @@ Pipes take_pipes() {
         ::close(nothing);
     }
     ::dup2(STDERR_FILENO, STDOUT_FILENO);
+    // cruciblecli gone is a write that fails, which ends the session in good
+    // order. Left to the signal, it would end the process on the spot.
+    std::signal(SIGPIPE, SIG_IGN);
 #endif
     return pipes;
 }

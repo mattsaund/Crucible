@@ -584,6 +584,22 @@ jobs:
           $hash = (Get-FileHash dist-cli\cruciblecli-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  cruciblecli-windows-x86_64.zip" | Set-Content -NoNewline dist-cli\cruciblecli-windows-x86_64.zip.sha256
 
+      # The one-line installer, on the real thing: it installs, the engine
+      # answers over its pipe, and it comes off again.
+      - name: The terminal download installs and answers
+        shell: pwsh
+        run: |
+          $env:CRUCIBLE_CLI_ARCHIVE = "$PWD\dist-cli\cruciblecli-windows-x86_64.zip"
+          & .\install-cli.ps1
+          $root = Join-Path $env:LOCALAPPDATA 'Programs\CrucibleCLI'
+          & "$root\bin\cruciblecli.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'cruciblecli did not run' }
+          $answer = '{"id":1,"method":"ping"}' | & "$root\bin\crucible-engine.exe" 2>$null |
+              Where-Object { $_ -match '"id":1' } | Select-Object -First 1
+          if ($answer -notmatch '"ok":true') { throw "the engine did not answer over its pipe: $answer" }
+          & .\install-cli.ps1 -Uninstall
+          if (Test-Path $root) { throw 'it is still there after uninstalling' }
+
       - uses: actions/upload-artifact@v7
         with:
           name: Crucible-CLI-Windows
