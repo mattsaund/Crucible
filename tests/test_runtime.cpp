@@ -7,9 +7,15 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <optional>
+#include <fstream>
 #include <thread>
 
+#include "crucible/lab/mlx_runtime.hpp"
+#include "crucible/lab/pyenv.hpp"
 #include "crucible/llm/model_host.hpp"
+#include "crucible/runtime/llama_versions.hpp"
+#include "crucible/util/gguf.hpp"
 #include "crucible/runtime/builder.hpp"
 
 // ---------------------------------------------------------------------------
@@ -137,7 +143,7 @@ TEST(a_runtime_built_against_another_llama_cpp_is_reported_as_stale) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
 
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     // Vulkan, and named the way this platform names a module. CUDA is not
     // offered on a Mac at all, so a fake CUDA module there is never looked at;
@@ -194,7 +200,7 @@ TEST(a_stale_runtime_stays_closed_at_startup) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
 
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     for (const char* id : {"vulkan", "cpu"}) {
         std::ofstream out(runtimes / (std::string(module_prefix()) + id + std::string(module_suffix())));
@@ -240,7 +246,7 @@ TEST(runtimes_are_loaded_and_listed_on_several_threads_at_once) {
     // from a thread.
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     {
         std::ofstream out(runtimes / (std::string(module_prefix()) + "vulkan" + std::string(module_suffix())));
@@ -289,7 +295,7 @@ TEST(a_runtime_arriving_during_a_load_waits_and_the_load_reads_on) {
     // waiting for the first, and the load would wait for itself for good.
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     {
         std::ofstream out(runtimes / (std::string(module_prefix()) + "vulkan" + std::string(module_suffix())));
@@ -749,6 +755,66 @@ void write_sliding_gguf(const std::filesystem::path& file, const std::string& ar
 
 }  // namespace
 
+TEST(crucibles_own_gguf_reader_reads_what_ggml_wrote) {
+    // A model is read without llama.cpp: whichever runtime is in use, or none.
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "read.gguf";
+    {
+        ggml_init_params init{};
+        init.mem_size   = 16 * ggml_tensor_overhead() + 4 * 64 * 64 * sizeof(float);
+        init.mem_buffer = nullptr;
+        init.no_alloc   = false;
+        ggml_context* ctx  = ggml_init(init);
+        gguf_context* gguf = gguf_init_empty();
+        gguf_set_val_str(gguf, "general.architecture", "testarch");
+        gguf_set_val_u32(gguf, "testarch.block_count", 2);
+        gguf_set_val_i32(gguf, "testarch.negative", -5);
+        gguf_set_val_f32(gguf, "testarch.rope", 0.5F);
+        const std::int32_t heads[] = {4, 0, 4};
+        gguf_set_arr_data(gguf, "testarch.attention.head_count_kv", GGUF_TYPE_INT32, heads, 3);
+        const char* tokens[] = {"a", "bc", "def"};
+        gguf_set_arr_str(gguf, "tokenizer.ggml.tokens", tokens, 3);
+        for (const char* name : {"token_embd.weight", "blk.0.attn_q.weight", "blk.1.attn_q.weight"}) {
+            ggml_tensor* tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, 16);
+            ggml_set_name(tensor, name);
+            gguf_add_tensor(gguf, tensor);
+        }
+        gguf_write_to_file(gguf, file.string().c_str(), /*only_meta=*/false);
+        gguf_free(gguf);
+        ggml_free(ctx);
+    }
+    std::string error;
+    const std::optional<gguf::File> read = gguf::File::read(file, &error);
+    CHECK(read.has_value());
+    CHECK(error.empty());
+    if (!read) {
+        return;
+    }
+    CHECK_EQ(read->text("general.architecture"), std::string("testarch"));
+    CHECK(read->unsigneds("testarch.block_count") == std::vector<std::uint64_t>({2}));
+    CHECK(read->unsigneds("testarch.negative") == std::vector<std::uint64_t>({0}));
+    CHECK(read->unsigneds("testarch.attention.head_count_kv") == std::vector<std::uint64_t>({4, 0, 4}));
+    CHECK(read->unsigneds("testarch.rope").empty());
+    CHECK_EQ(read->length("tokenizer.ggml.tokens"), std::uint64_t{3});
+    CHECK(read->text("missing").empty());
+    CHECK_EQ(read->tensors().size(), std::size_t{3});
+    CHECK_EQ(read->tensors()[1].name, std::string("blk.0.attn_q.weight"));
+    CHECK(read->tensors()[1].ne == std::vector<std::int64_t>({64, 16}));
+    for (const gguf::Tensor& tensor : read->tensors()) {
+        CHECK_EQ(tensor.size, std::uint64_t{64 * 16 * sizeof(float)});
+    }
+
+    // Not a GGUF, and one cut short, are nothing, and say why.
+    const std::filesystem::path text = dir.path() / "not.gguf";
+    std::ofstream(text) << "hello";
+    CHECK(!gguf::File::read(text, &error).has_value());
+    CHECK(error.find("not a GGUF") != std::string::npos);
+    const std::filesystem::path cut = dir.path() / "cut.gguf";
+    std::filesystem::copy_file(file, cut);
+    std::filesystem::resize_file(cut, 40);
+    CHECK(!gguf::File::read(cut, &error).has_value());
+}
+
 TEST(a_window_cache_charges_a_sliding_layer_its_window_and_a_batch) {
     // flint's shape in miniature: three of four layers slide, 513 back.
     ModelShape shape;
@@ -1029,4 +1095,217 @@ TEST(a_processor_name_is_a_name_not_a_legal_notice) {
     CHECK_EQ(util::parse_cpu_name("model name : Intel(R) Xeon(R) CPU E5-2670 @ 2.60GHz\n"),
              "Intel Xeon E5-2670");
     CHECK(util::parse_cpu_name("flags : fpu vme\n").empty());
+}
+
+
+TEST(backends_from_before_a_folder_each_move_into_their_llama_cpps) {
+    // An install from before each llama.cpp had its own folder: the modules,
+    // their manifest and NVIDIA's libraries loose in runtimes/. The first look
+    // moves them where this runtime reads them, rather than downloading them
+    // all again.
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    std::filesystem::create_directories(runtimes / "cuda");
+    const std::string module = std::string("libggml-cpu-test") + std::string(crucible::module_suffix());
+    std::ofstream(runtimes / module) << "x";
+    std::ofstream(runtimes / "cuda" / "libcublas.so.12") << "x";
+    std::ofstream(runtimes / "manifest.json")
+        << R"({"cpu": {"llama_tag": ")" << CRUCIBLE_LLAMA_TAG << R"(", "source": "downloaded"}})";
+
+    (void)RuntimeRegistry::scan();
+
+    CHECK(std::filesystem::exists(paths::backends_dir() / module));
+    CHECK(std::filesystem::exists(paths::backends_dir() / "manifest.json"));
+    // NVIDIA's libraries stay where every llama.cpp's CUDA module finds them.
+    CHECK(std::filesystem::exists(runtimes / "cuda" / "libcublas.so.12"));
+    CHECK(!std::filesystem::exists(runtimes / module));
+    CHECK(!std::filesystem::exists(runtimes / "manifest.json"));
+}
+
+// ---------------------------------------------------------------------------
+// Which llama.cpp: runtimes of this Crucible built with others
+// ---------------------------------------------------------------------------
+
+
+namespace {
+
+/// A release list with this Crucible's runtime published for each of `tags`.
+std::string releases_offering(const std::vector<std::pair<std::string, std::string>>& tags) {
+    nlohmann::json assets = nlohmann::json::array();
+    for (const auto& [tag, url] : tags) {
+        assets.push_back({{"name", llama_versions::core_asset(tag)}, {"browser_download_url", url}, {"size", 2048}});
+    }
+    return nlohmann::json::array({{{"tag_name", "llama-b99999"}, {"draft", false}, {"assets", assets}}}).dump();
+}
+
+}  // namespace
+
+TEST(llama_cpp_versions_are_listed_newest_first_with_what_is_running) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    CHECK(llama_versions::is_tag("b12701"));
+    CHECK(!llama_versions::is_tag("v1.5.0"));
+    CHECK(!llama_versions::is_tag("b12/../x"));
+    CHECK_EQ(llama_versions::tag_number("b13000"), 13000LL);
+    CHECK(llama_versions::core_asset("b13000").find(std::string("-") + CRUCIBLE_VERSION + "-b13000.tar.gz")
+          != std::string::npos);
+
+    const std::vector<llama_versions::Version> listed =
+        llama_versions::list(releases_offering({{"b99998", "https://x/a"}, {"b1", "https://x/b"}}));
+    CHECK(listed.size() >= 3);
+    CHECK_EQ(listed.front().tag, std::string("b99998"));
+    CHECK(!listed.front().installed);
+    CHECK_EQ(listed.front().url, std::string("https://x/a"));
+    const auto running = std::find_if(listed.begin(), listed.end(),
+                                      [](const auto& v) { return v.tag == CRUCIBLE_LLAMA_TAG; });
+    CHECK(running != listed.end());
+    CHECK(running != listed.end() && running->running && running->installed && running->chosen);
+}
+
+TEST(a_newer_llama_cpp_is_installed_chosen_and_kept_apart) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    // A runtime package as the release would publish it, served from disk.
+    const std::filesystem::path pack = temp.path() / "pack";
+    std::filesystem::create_directories(pack);
+    std::ofstream(pack / "runtime.json") << R"({"crucible": ")" << CRUCIBLE_VERSION << R"(", "llama_tag": "b99998"})";
+    std::ofstream(pack / "libcrucible-program.so") << "x";
+    const std::filesystem::path archive = temp.path() / "core.tar.gz";
+    util::Subprocess tar;
+    std::string      error;
+    CHECK(tar.start({"tar", "-czf", archive.string(), "-C", pack.string(), "."}, {}, {}, error));
+    std::string line;
+    while (tar.read_line(line)) {
+    }
+    CHECK_EQ(tar.wait(), 0);
+    const std::string offered = releases_offering({{"b99998", "file://" + archive.generic_string()}});
+
+    std::vector<std::string> said;
+    CHECK(llama_versions::install("b99998", offered, error, [&said](std::string s) { said.push_back(std::move(s)); }));
+    CHECK(error.empty());
+    CHECK(std::filesystem::exists(llama_versions::core_dir("b99998") / "runtime.json"));
+    CHECK(!said.empty() && said.front().find("downloading " + llama_versions::core_asset("b99998")) == 0);
+
+    // Chosen, it is what the next start loads; it cannot then be deleted.
+    CHECK(llama_versions::choose("b99998", error));
+    CHECK_EQ(llama_versions::chosen_tag(), std::string("b99998"));
+    CHECK(!llama_versions::remove("b99998", error));
+    // Nor the running one; and one that is not installed cannot be chosen.
+    CHECK(!llama_versions::remove(CRUCIBLE_LLAMA_TAG, error));
+    CHECK(!llama_versions::choose("b99997", error));
+    // Back to the one the installer brought, and then it goes.
+    CHECK(llama_versions::choose("", error));
+    CHECK(llama_versions::chosen_tag().empty());
+    CHECK(llama_versions::remove("b99998", error));
+    CHECK(!std::filesystem::exists(llama_versions::core_dir("b99998")));
+
+    // A package that says it is another Crucible's, or another llama.cpp's,
+    // is not put in place.
+    std::ofstream(pack / "runtime.json") << R"({"crucible": "0.0.1", "llama_tag": "b99998"})";
+    std::filesystem::remove(archive);
+    util::Subprocess again;
+    CHECK(again.start({"tar", "-czf", archive.string(), "-C", pack.string(), "."}, {}, {}, error));
+    while (again.read_line(line)) {
+    }
+    CHECK_EQ(again.wait(), 0);
+    CHECK(!llama_versions::install("b99998", offered, error));
+    CHECK(!std::filesystem::exists(llama_versions::core_dir("b99998")));
+}
+
+TEST(a_llama_cpp_chosen_under_another_crucible_is_not_chosen_here) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    // What an older Crucible chose: its runtime is in core/<its version>/,
+    // and this one has none for it. The launcher loads the bundled one.
+    std::filesystem::create_directories(paths::runtimes_dir() / "core" / "0.0.1" / "b99998");
+    std::ofstream(paths::runtimes_dir() / "core" / "0.0.1" / "b99998" / "runtime.json") << "{}";
+    std::ofstream(paths::runtimes_dir() / "active") << "b99998\n";
+    CHECK(llama_versions::chosen_tag().empty());
+    const auto listed  = llama_versions::list("[]");
+    const auto chosen  = std::count_if(listed.begin(), listed.end(), [](const auto& v) { return v.chosen; });
+    const auto running = std::find_if(listed.begin(), listed.end(), [](const auto& v) { return v.running; });
+    CHECK_EQ(chosen, std::ptrdiff_t{1});
+    CHECK(running != listed.end() && running->chosen);
+}
+
+// ---------------------------------------------------------------------------
+// MLX's packages as a runtime
+// ---------------------------------------------------------------------------
+
+
+TEST(mlxs_versions_are_read_off_its_packages_records) {
+    CHECK_EQ(lab::mlx::version_in("mlx-0.29.1.dist-info", "mlx"), std::string("0.29.1"));
+    CHECK_EQ(lab::mlx::version_in("mlx_lm-0.28.0.dist-info", "mlx-lm"), std::string("0.28.0"));
+    // Another package whose name starts the same is not this one.
+    CHECK(lab::mlx::version_in("mlx_lm-0.28.0.dist-info", "mlx").empty());
+    CHECK(lab::mlx::version_in("mlx_metal-0.29.1.dist-info", "mlx").empty());
+    CHECK(lab::mlx::version_in("mlx-0.29.1", "mlx").empty());
+
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    CHECK(!lab::mlx::versions().present);
+#if defined(_WIN32)
+    const std::filesystem::path site = lab::pyenv::venv_dir() / "Lib" / "site-packages";
+#else
+    const std::filesystem::path site = lab::pyenv::venv_dir() / "lib" / "python3.14" / "site-packages";
+#endif
+    std::filesystem::create_directories(site / "mlx-0.29.1.dist-info");
+    std::filesystem::create_directories(site / "mlx_lm-0.28.0.dist-info");
+    std::filesystem::create_directories(site / "mlx_metal-0.29.1.dist-info");
+    const lab::mlx::Versions found = lab::mlx::versions();
+    CHECK(found.present);
+    CHECK_EQ(found.mlx, std::string("0.29.1"));
+    CHECK_EQ(found.mlx_lm, std::string("0.28.0"));
+    // Before a check, what is newest reads as what is here: nothing to update.
+    CHECK_EQ(found.newest_mlx_lm, std::string("0.28.0"));
+    CHECK(!lab::mlx::update_available());
+}
+
+TEST(what_pip_would_install_is_read_from_its_report) {
+    std::string mlx;
+    std::string mlx_lm;
+    CHECK(lab::mlx::read_report(R"({"version": "1", "install": [
+        {"metadata": {"name": "mlx-lm", "version": "0.28.2"}},
+        {"metadata": {"name": "transformers", "version": "4.57.0"}},
+        {"metadata": {"name": "MLX", "version": "0.29.3"}}]})", mlx, mlx_lm));
+    CHECK_EQ(mlx, std::string("0.29.3"));
+    CHECK_EQ(mlx_lm, std::string("0.28.2"));
+    // Nothing to install is nothing newer.
+    std::string none_mlx;
+    std::string none_lm;
+    CHECK(lab::mlx::read_report(R"({"version": "1", "install": []})", none_mlx, none_lm));
+    CHECK(none_mlx.empty() && none_lm.empty());
+    CHECK(!lab::mlx::read_report("pip says no", none_mlx, none_lm));
+    // A warning in the same stream as the report is passed over.
+    std::string warned;
+    CHECK(lab::mlx::read_report("WARNING: a cache is not writable\n"
+                                R"({"install": [{"metadata": {"name": "mlx", "version": "0.30.0"}}]})",
+                                warned, none_lm));
+    CHECK_EQ(warned, std::string("0.30.0"));
+}
+
+TEST(a_llama_cpp_without_a_backend_in_use_says_so_and_is_not_chosen_on_its_own) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    // The processor's backend in use now, and a newer llama.cpp with none.
+    const std::string cpu = std::string(crucible::module_prefix()) + "cpu-x64" + std::string(crucible::module_suffix());
+    std::filesystem::create_directories(paths::backends_dir());
+    std::ofstream(paths::backends_dir() / cpu) << "x";
+    std::filesystem::create_directories(llama_versions::core_dir("b99998"));
+    std::ofstream(llama_versions::core_dir("b99998") / "runtime.json") << "{}";
+    const auto lacking = [] {
+        for (const llama_versions::Version& v : llama_versions::list("[]")) {
+            if (v.tag == "b99998") {
+                return v.lacking;
+            }
+        }
+        return std::vector<std::string>{"not listed"};
+    };
+    CHECK_EQ(lacking().size(), std::size_t{1});
+    CHECK(!lacking().empty() && lacking().front() == std::string(backend_info(BackendKind::Cpu).name));
+    // With its own, nothing is lacking.
+    std::filesystem::create_directories(paths::runtimes_dir() / "backends" / "b99998");
+    std::ofstream(paths::runtimes_dir() / "backends" / "b99998" / cpu) << "x";
+    CHECK(lacking().empty());
 }

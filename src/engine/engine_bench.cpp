@@ -28,7 +28,7 @@
 #include <sstream>
 #include <thread>
 
-#include <gguf.h>
+#include "crucible/util/gguf.hpp"
 #include <nlohmann/json.hpp>
 
 #include "crucible/config/paths.hpp"
@@ -224,18 +224,13 @@ json model_facts(const std::filesystem::path& file) {
             out["quant"] = now.quantization;
         }
     }
-    gguf_init_params params{};
-    params.no_alloc = true;
-    params.ctx      = nullptr;
-    if (gguf_context* gguf = gguf_init_from_file(file.string().c_str(), params); gguf != nullptr) {
+    if (const std::optional<gguf::File> header = gguf::File::read(file)) {
         for (const auto& [key, field] : {std::pair<const char*, const char*>{"general.name", "name"},
                                          {"general.architecture", "arch"}}) {
-            const std::int64_t id = gguf_find_key(gguf, key);
-            if (id >= 0 && gguf_get_kv_type(gguf, id) == GGUF_TYPE_STRING) {
-                out[field] = cut(detail::scrub_utf8(gguf_get_val_str(gguf, id)), 100);
+            if (const std::string said = header->text(key); !said.empty()) {
+                out[field] = cut(detail::scrub_utf8(said), 100);
             }
         }
-        gguf_free(gguf);
     }
     return out;
 }

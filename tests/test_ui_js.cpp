@@ -932,6 +932,15 @@ TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
         " const out = views.chat(); state.snapshot.mood = was; return out; })()"));
     CHECK(choosing.find("◆ Delegator") != std::string::npos);
     CHECK(choosing.find(">42%<") != std::string::npos);
+    // And choosing with nothing to load, a ring turning beside it.
+    const std::string deciding = live_header(page().eval(
+        "(() => { const was = [state.snapshot.mood, state.snapshot.delegator_progress];"
+        " state.snapshot.mood = 'routing'; delete state.snapshot.delegator_progress;"
+        " const out = views.chat(); state.snapshot.mood = was[0]; state.snapshot.delegator_progress = was[1];"
+        " return out; })()"));
+    CHECK(deciding.find("◆ Delegator") != std::string::npos);
+    CHECK(deciding.find("aria-label=\"loading\"") != std::string::npos);
+    CHECK(deciding.find("animateTransform") != std::string::npos);
     CHECK(choosing.find("Physics") == std::string::npos);
     // An expert answered somewhere else says where.
     const std::string away = live_header(page().eval(
@@ -942,15 +951,29 @@ TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
     CHECK(away.find("class=\"ring\"") == std::string::npos);
 }
 
-TEST(an_expert_at_work_says_thinking_in_a_word_not_dots) {
-    const char* const thinking =
-        "(() => { const was = state.snapshot.mood; state.snapshot.mood = 'thinking';"
-        " const out = views.chat(); state.snapshot.mood = was; return out; })()";
-    const std::string chat = page().eval(thinking);
-    CHECK(chat.find("<div class=\"body thinking\">thinking</div>") != std::string::npos);
-    CHECK(chat.find("<div class=\"body thinking\">...</div>") == std::string::npos);
-    // Not while a model loads: the ring above says that.
-    CHECK(page().eval("views.chat()").find("body thinking") == std::string::npos);
+TEST(the_thinking_can_be_opened_before_it_starts) {
+    // A turn still arriving with nothing said yet has the fold at once, from
+    // its first moment, and dots in it until the thinking starts.
+    const char* const live_turn =
+        "(function (open, reasoning, reply) { var turns = state.snapshot.turns, last = turns[turns.length - 1];"
+        " var was = [last.reasoning, last.reply]; last.reasoning = reasoning; last.reply = reply;"
+        " var key = thoughtKey(turns.length - 1); if (open) thoughtsOpen.add(key); else thoughtsOpen.delete(key);"
+        " var out = views.chat(); thoughtsOpen.delete(key); last.reasoning = was[0]; last.reply = was[1];"
+        " return out; })";
+    const std::string shut = page().eval(std::string(live_turn) + "(false, '', '')");
+    CHECK(shut.find("<summary>thinking</summary>") != std::string::npos);
+    CHECK(shut.find("class=\"waiting\"") == std::string::npos);
+    const std::string opened = page().eval(std::string(live_turn) + "(true, '', '')");
+    CHECK(opened.find("<span class=\"waiting\">...</span>") != std::string::npos);
+    // The thinking itself once it has started.
+    const std::string started = page().eval(std::string(live_turn) + "(true, 'weighing the forces', '')");
+    CHECK(started.find("weighing the forces") != std::string::npos);
+    CHECK(started.find("class=\"waiting\"") == std::string::npos);
+    // A model answering without thinking loses the fold with its first word.
+    const std::string answered = page().eval(std::string(live_turn) + "(false, '', 'Hello')");
+    CHECK(answered.find("<summary>thinking</summary>", answered.find("still going")) == std::string::npos);
+    // And no word below it in place of the dots any more.
+    CHECK(opened.find("body thinking") == std::string::npos);
 }
 
 TEST(the_provider_dialog_asks_for_an_address_a_key_and_a_model) {
@@ -4492,4 +4515,83 @@ TEST(a_region_on_screen_as_it_was_made_is_sent_as_its_element_alone) {
               /^<div id="r-test" class="list" data-sig="r\d+" data-stub><\/div>$/.test(again),
               changed.indexOf('another list') >= 0 && changed.indexOf('data-stub') < 0].join(','); })())JS"),
              std::string("true,true,true"));
+}
+
+TEST(the_llama_cpp_versions_are_listed_with_what_each_can_do) {
+    // Running, a newer one installed and chosen for the next start, one left
+    // from before, and the newest published, not installed.
+    const std::string listed = page().eval(R"JS((() => {
+        const was = [state.runtimes, state.llama];
+        state.runtimes = { loadable: true, runtimes: [], directory: '~/x', bytes: 0 };
+        state.llama = { running: 'b12701', newer: 'b13100', fetching: '', said: '', error: '', passed_over: '',
+          checked_at: 0, check_error: '', versions: [
+            { tag: 'b13100', published: true, installed: false, bytes: 18000000, disk: 0 },
+            { tag: 'b13000', installed: true, chosen: true, disk: 30000000, lacking: ['CUDA'] },
+            { tag: 'b12900', installed: false, disk: 4000000 },
+            { tag: 'b12701', running: true, bundled: true, installed: true, disk: 0 },
+            { tag: 'b12600', published: true, installed: false, bytes: 18000000, disk: 0 } ] };
+        state.settingsPage = 'runtimes';
+        const out = views.settings();
+        [state.runtimes, state.llama] = was;
+        return out; })())JS");
+    CHECK(listed.find("data-act=\"llama-install\" data-tag=\"b13100\"") != std::string::npos);
+    CHECK(listed.find("data-act=\"llama-use\" data-tag=\"b13000\">Restart") != std::string::npos);
+    CHECK(listed.find("next start") != std::string::npos);
+    // A backend in use now that it has none of, said on its row.
+    CHECK(listed.find("no CUDA") != std::string::npos);
+    CHECK(listed.find("data-act=\"llama-delete\" data-tag=\"b12900\"") != std::string::npos);
+    // The running one cannot be deleted, nor the one the next start loads.
+    CHECK(listed.find("data-act=\"llama-delete\" data-tag=\"b12701\"") == std::string::npos);
+    CHECK(listed.find("data-act=\"llama-delete\" data-tag=\"b13000\"") == std::string::npos);
+    // An older one published and not installed is not offered.
+    CHECK(listed.find("b12600") == std::string::npos);
+    CHECK(listed.find("data-path=\"ui.runtime_updates\"") != std::string::npos);
+    CHECK(listed.find("data-act=\"llama-check\"") != std::string::npos);
+}
+
+TEST(a_llama_cpp_being_fetched_says_how_far_along_it_is) {
+    const std::string fetching = page().eval(R"JS((() => {
+        const was = [state.runtimes, state.llama];
+        state.runtimes = { loadable: true, runtimes: [], directory: '~/x', bytes: 0 };
+        state.llama = { running: 'b12701', newer: 'b13100', fetching: 'b13100', said: 'downloading 4.0 MB of 18.0 MB',
+          error: '', passed_over: '', checked_at: 0, check_error: '', versions: [
+            { tag: 'b13100', published: true, installed: false, bytes: 18000000, disk: 0 },
+            { tag: 'b12701', running: true, bundled: true, installed: true, disk: 0 } ] };
+        state.settingsPage = 'runtimes';
+        const out = views.settings();
+        [state.runtimes, state.llama] = was;
+        return out; })())JS");
+    // In a word and a ring, the ring at how far the download is.
+    CHECK(fetching.find(">Downloading<") != std::string::npos);
+    CHECK(fetching.find("22 percent loaded") != std::string::npos);
+    CHECK(fetching.find("downloading 4 MB") == std::string::npos);
+    CHECK(fetching.find("data-act=\"llama-install\"") == std::string::npos);
+}
+
+TEST(mlx_is_listed_where_it_runs_with_an_update_when_there_is_one) {
+    const auto runtimes = [](const std::string& mlx) {
+        return page().eval(R"JS((() => {
+            const was = [state.runtimes, state.llama, state.mlx];
+            state.runtimes = { loadable: true, runtimes: [], directory: '~/x', bytes: 0 };
+            state.llama = null;
+            state.mlx = )JS" + mlx + R"JS(;
+            state.settingsPage = 'runtimes';
+            const out = views.settings();
+            [state.runtimes, state.llama, state.mlx] = was;
+            return out; })())JS");
+    };
+    const std::string newer = runtimes("{ present: true, here: true, mlx: '0.29.1', mlx_lm: '0.28.0',"
+                                       " newest_mlx: '0.29.3', newest_mlx_lm: '0.28.2' }");
+    CHECK(newer.find("mlx-lm 0.28.0") != std::string::npos);
+    CHECK(newer.find("data-act=\"mlx-update\"") != std::string::npos);
+    CHECK(newer.find("Update to 0.28.2") != std::string::npos);
+    const std::string current = runtimes("{ present: true, here: true, mlx: '0.29.1', mlx_lm: '0.28.0',"
+                                         " newest_mlx: '0.29.1', newest_mlx_lm: '0.28.0' }");
+    CHECK(current.find("data-act=\"mlx-update\"") == std::string::npos);
+    // Not installed on a Mac: offered. Nowhere else: not shown.
+    CHECK(runtimes("{ present: false, here: true }").find("data-flavor=\"mlx\"") != std::string::npos);
+    CHECK(runtimes("{ present: false, here: false }").find(">MLX<") == std::string::npos);
+    // The box and the button are above everything, for llama.cpp and MLX both.
+    const std::size_t box = current.find("data-path=\"ui.runtime_updates\"");
+    CHECK(box != std::string::npos && box < current.find(">MLX<"));
 }

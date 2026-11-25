@@ -76,6 +76,7 @@ private:
     self::Rebuild*         rebuild() override { return &rebuild_; }
     update::Installer*     updater() override { return &updater_; }
     void                   quit() override;
+    std::string            restart() override;
 
     Config      config() const override { return config_; }
     std::string apply_config(Config edited) override;
@@ -310,6 +311,13 @@ private:
     std::string                           config_on_disk_;
     std::filesystem::file_time_type       config_stamp_{};
     std::chrono::steady_clock::time_point config_checked_{};
+
+    // A newer llama.cpp for this Crucible, once a day. See
+    // runtime/llama_versions.hpp and keep_runtimes_current.
+    std::chrono::steady_clock::time_point runtime_checked_{};
+    std::atomic<bool>                     runtime_checking_{false};
+    std::string                           runtime_announced_;
+    void keep_runtimes_current();
 
     /// The window while it is open, for quit(): a webview, held as void so
     /// this header does not need webview's. Set and cleared by run().

@@ -78,6 +78,29 @@ jobs:
     if: needs.checked.outputs.run == ''
     uses: ./.github/workflows/build.yml
 
+  # A llama.cpp published as a runtime of its own (llama.yml) is what the
+  # people on the last release may be running. A release that bundles an
+  # older one would take them back to it when they update, and the models
+  # that needed the newer one would stop loading.
+  llama-floor:
+    name: Its llama.cpp is not older than a runtime's
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bundled="$(grep -m1 'CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake \
+                     | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
+          newest="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' \
+                    | sed -nE 's/^runtime-.*-b([0-9]+)$/\1/p' | sort -n | tail -1)"
+          echo "bundles $bundled; newest runtime of its own: ${newest:+b$newest}"
+          if [ -n "$newest" ] && [ "${bundled#b}" -lt "$newest" ]; then
+            echo "::error::llama.cpp b$newest is published as a runtime and this release bundles $bundled. Move CRUCIBLE_LLAMA_TAG to b$newest or newer."
+            exit 1
+          fi
+
   # The compute backends, built by runtimes.yml inside this run so the release
   # can wait for them. runtimes.yml can be run by hand on its own as well.
   runtimes:
@@ -107,7 +130,7 @@ jobs:
 
   release:
     name: Publish the release
-    needs: [checked, checks, runtimes-attach]
+    needs: [checked, checks, runtimes-attach, llama-floor]
     # Pushing the tag is the decision to release, and the run is what decides
     # whether it goes out: the checks and the installers have to have passed,
     # on the commit before or here, and the runtimes have to be on the draft,
@@ -117,6 +140,7 @@ jobs:
       && needs.checked.result == 'success'
       && (needs.checked.outputs.run != '' || needs.checks.result == 'success')
       && needs.runtimes-attach.result == 'success'
+      && needs.llama-floor.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: The installers, from the run that passed on this commit

@@ -1598,7 +1598,11 @@ check     "on a draft, before anything is published" \
           awk '/^  runtimes-attach:/ { on = 1 } /^  release:/ { on = 0 } on && /draft: true/ { found = 1 }
                END { exit !found }' "$REL"
 check     "the release waits for the checks, the installers and the runtimes" \
-          grep -q 'needs: \[checked, checks, runtimes-attach\]' "$REL"
+          grep -q 'needs: \[checked, checks, runtimes-attach, llama-floor\]' "$REL"
+# A llama.cpp published as a runtime of its own is what people on the last
+# release may run: a release bundling an older one would take them back.
+check     "and never bundles an older llama.cpp than a runtime of its own" \
+          grep -q "needs.llama-floor.result == 'success'" "$REL"
 check     "and publishes all three installers or nothing" \
           grep -q 'test -s artifacts/Crucible-Windows/Crucible-Setup.exe' "$REL"
 for _asset in Crucible-CLI-Linux/cruciblecli-linux-x86_64.tar.gz Crucible-CLI-macOS/cruciblecli-macos-arm64.tar.gz \
@@ -1651,6 +1655,26 @@ check     "the page offers to build what is not installed" \
           grep -q 'data-act="runtime-build"' "$ROOT/ui/settings.js"
 check_not "and nothing disables that button for want of a compiler" \
           grep -qE 'runtime-build[^>]*buildable' "$ROOT/ui/settings.js"
+
+echo
+echo "  a newer llama.cpp arrives without a new Crucible"
+LL="$ROOT/.github/workflows/llama.yml"
+check     "it is published from the Actions tab with a llama.cpp tag" \
+          grep -q 'llama_tag:' "$LL"
+check     "built from the release's own source" \
+          grep -q 'ref: ${{ needs.which.outputs.sha }}' "$LL"
+check     "a model answers on it before it goes out" \
+          grep -q 'crucible-smoke --host' "$LL"
+check     "as a pre-release that is never Latest" \
+          grep -q -- '--prerelease --latest=false' "$LL"
+check     "and its backends are built for that llama.cpp" \
+          grep -q 'llama_tag: ${{ inputs.llama_tag }}' "$LL"
+check     "the backends' recipe takes the tag it is given" \
+          grep -q 'tag="${LLAMA_TAG:-}"' "$ROOT/.github/scripts/runtime-recipe.sh"
+check     "every installer's run packs one and loads it" \
+          test "$(grep -c 'bash packaging/runtime/core.sh build dist-runtime' "$ROOT/.github/workflows/build.yml")" = 3
+check     "the update check passes over a runtime's release" \
+          grep -q "name\[0\] != 'v'" "$ROOT/src/app/update.cpp"
 
 echo
 echo "  a downloaded CUDA runtime brings NVIDIA's libraries with it"

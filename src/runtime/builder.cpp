@@ -623,7 +623,7 @@ void RuntimeBuilder::run(BackendKind kind) {
         std::string                        why;
         set_phase(BuildProgress::Phase::FetchingSource, "looking for a prebuilt runtime");
         const bool got = prebuilt::try_install(
-            kind, paths::runtimes_dir(), landed,
+            kind, paths::backends_dir(), landed,
             [this](std::string note) {
                 set_phase(BuildProgress::Phase::FetchingSource, std::move(note));
             },
@@ -832,7 +832,7 @@ void RuntimeBuilder::run(BackendKind kind) {
 
     // --- install -----------------------------------------------------------
     set_phase(BuildProgress::Phase::Installing);
-    const std::filesystem::path target = paths::runtimes_dir();
+    const std::filesystem::path target = paths::backends_dir();
     std::filesystem::create_directories(target, ec);
 
     // Where the modules land depends on the generator. Makefiles and Ninja put
@@ -907,7 +907,7 @@ void RuntimeBuilder::run(BackendKind kind) {
 void RuntimeBuilder::record_and_activate(std::vector<BackendKind>& produces,
                                          std::string_view how) {
     // --- record what is now installed ----------------------------------------
-    const std::filesystem::path manifest_path = paths::runtimes_dir() / "manifest.json";
+    const std::filesystem::path manifest_path = paths::backends_dir() / "manifest.json";
     json manifest = json::object();
     if (std::ifstream in(manifest_path); in) {
         json parsed = json::parse(in, nullptr, false);

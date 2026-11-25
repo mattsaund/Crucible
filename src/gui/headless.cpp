@@ -353,6 +353,12 @@ int App::run() {
     return 0;
 }
 
+std::string App::restart() {
+    // A program on the other end of a pipe is not started again from here:
+    // its next start, whoever makes it, runs on what was chosen.
+    return "the engine runs on it from its next start";
+}
+
 void App::quit() {
     if (Bus* const bus = running.load()) {
         close_bus(*bus);

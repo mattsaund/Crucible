@@ -295,7 +295,7 @@ std::string RuntimeStatus::size_label() const {
 }
 
 std::filesystem::path RuntimeRegistry::manifest_file() {
-    return paths::runtimes_dir() / "manifest.json";
+    return paths::backends_dir() / "manifest.json";
 }
 
 bool RuntimeRegistry::loadable_backends_supported() {
@@ -306,8 +306,14 @@ bool RuntimeRegistry::loadable_backends_supported() {
 #endif
 }
 
+std::vector<std::filesystem::path> RuntimeRegistry::modules_of(const std::filesystem::path& dir, BackendKind kind) {
+    auto found = modules_in(dir);
+    const auto mine = found.find(kind);
+    return mine == found.end() ? std::vector<std::filesystem::path>{} : std::move(mine->second);
+}
+
 bool RuntimeRegistry::any_installed() {
-    return !modules_in(paths::runtimes_dir()).empty();
+    return !modules_in(paths::backends_dir()).empty();
 }
 
 bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
@@ -324,7 +330,7 @@ bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
         return true;
     }
 
-    const auto installed = modules_in(paths::runtimes_dir());
+    const auto installed = modules_in(paths::backends_dir());
     const auto found = installed.find(kind);
     if (found == installed.end() || found->second.empty()) {
         error = std::string(backend_info(kind).name) + " is not installed";
@@ -372,7 +378,57 @@ bool RuntimeRegistry::activate(BackendKind kind, std::string& error) {
     return true;
 }
 
+namespace {
+
+/// Backends from before each llama.cpp had a folder of its own, loose in
+/// runtimes/ with their manifest beside them: moved into backends/<tag>, the
+/// folder of the llama.cpp they were built with, once. An update that moves
+/// llama.cpp would otherwise find nothing installed and download it all again,
+/// CUDA's two hundred megabytes and NVIDIA's libraries with it.
+void adopt_loose_backends() {
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path loose    = runtimes / "manifest.json";
+    std::error_code             ec;
+    if (!std::filesystem::is_regular_file(loose, ec)) {
+        return;
+    }
+    std::string tag;
+    {
+        std::ifstream in(loose);
+        const json    manifest = json::parse(in, nullptr, /*allow_exceptions=*/false);
+        if (manifest.is_object()) {
+            for (const auto& [kind, entry] : manifest.items()) {
+                if (entry.is_object() && entry.contains("llama_tag") && entry["llama_tag"].is_string()) {
+                    tag = entry["llama_tag"].get<std::string>();
+                    break;
+                }
+            }
+        }
+    }
+    if (tag.empty() || tag.find_first_of("/\\.") != std::string::npos) {
+        return;
+    }
+    const std::filesystem::path into = runtimes / "backends" / tag;
+    if (std::filesystem::exists(into / "manifest.json", ec)) {
+        return;   // already there: what is loose is left for removal
+    }
+    std::filesystem::create_directories(into, ec);
+    const std::string_view suffix = crucible::module_suffix();
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(runtimes, ec)) {
+        const std::string name = entry.path().filename().string();
+        const bool module = entry.is_regular_file(ec) && name.size() > suffix.size()
+                         && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+        if (module || name == "manifest.json") {
+            std::error_code moved;
+            std::filesystem::rename(entry.path(), into / name, moved);
+        }
+    }
+}
+
+}  // namespace
+
 void RuntimeRegistry::load_all() {
+    adopt_loose_backends();
     if (!loadable_backends_supported()) {
         return;  // the backend is compiled in; there is nothing to load
     }
@@ -419,7 +475,7 @@ void RuntimeRegistry::init_llama() {
 }
 
 std::vector<BackendKind> RuntimeRegistry::loadable() {
-    const auto installed = modules_in(paths::runtimes_dir());
+    const auto installed = modules_in(paths::backends_dir());
     const json manifest  = read_manifest(manifest_file());
 
     std::vector<BackendKind> result;
@@ -435,10 +491,11 @@ std::vector<BackendKind> RuntimeRegistry::loadable() {
 }
 
 std::vector<RuntimeStatus> RuntimeRegistry::scan() {
+    adopt_loose_backends();
     // So that asking a CUDA module for its score -- which loads it -- can
     // find what it depends on. See best_module.
     cuda_libraries::preload();
-    const auto installed = modules_in(paths::runtimes_dir());
+    const auto installed = modules_in(paths::backends_dir());
     const auto devices   = registered_devices();
     const json manifest  = read_manifest(manifest_file());
 
@@ -527,7 +584,7 @@ std::vector<RuntimeStatus> RuntimeRegistry::scan() {
 bool RuntimeRegistry::remove(BackendKind kind, std::string& error) {
     const BackendInfo& info = backend_info(kind);
 
-    const auto installed = modules_in(paths::runtimes_dir());
+    const auto installed = modules_in(paths::backends_dir());
     const auto found = installed.find(kind);
     if (found == installed.end()) {
         error = std::string(info.name) + " is not installed";

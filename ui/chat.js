@@ -41,8 +41,9 @@ function liveWho(turn) {
   if (!expert) {
     const problem = s.delegator_problem || '';
     const tip = problem ? `${(s.delegator || {}).model}: ${problem}\nRouting on keywords` : 'Choosing an expert';
+    // Its load as a figure while it loads, and turning while it chooses.
     return `<div class="who live" title="${escape(tip)}"><span class="seat">◆ Delegator</span>${
-      s.delegator_progress !== undefined ? ring(s.delegator_progress) : ''}</div>`;
+      ring(s.delegator_progress !== undefined ? s.delegator_progress : -1)}</div>`;
   }
   return `<div class="who live" title="${escape(expert.model || '')}"><span class="seat">◆ ${escape(expert.name)}</span>${
     expert.phase === 'loading' ? ring(expert.progress) : ''}${
@@ -136,11 +137,8 @@ function turnView(turn, index, busy, where) {
   if (turn.failed) {
     reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
   } else if (!turn.reply && turn.streaming) {
-    // While the delegator chooses or a model loads, the name above says so.
-    // Once an expert has the turn, a word, and none beside a fold of its
-    // thinking, which already says it.
-    const waiting = state.snapshot.mood === 'routing' || state.snapshot.mood === 'loading';
-    reply = waiting || turn.reasoning ? '' : '<div class="body thinking">thinking</div>';
+    // Nothing yet: the fold of its thinking, below, says so.
+    reply = '';
   } else if (live) {
     reply = `<div class="body md" id="${where}-reply">${streamedMarkdown(turn.reply, `${where}-reply`)}</div>`;
   } else {
@@ -151,10 +149,15 @@ function turnView(turn, index, busy, where) {
   // model look like it has started rambling. What it says is drawn only
   // while it is open: a reasoning model thinks at length, and all of it was
   // drawn again on every push behind a closed fold.
+  // A turn still arriving has the fold from its first moment, before the
+  // delegator has chosen or the model has said a word, so it can be opened
+  // early: dots in it until the thinking starts. A model that answers
+  // without thinking loses it with the first word of the answer.
   const open = thoughtsOpen.has(thoughtKey(index));
-  const thinking = !open ? ''
+  const early = turn.streaming && !turn.reasoning && !turn.reply;
+  const thinking = !open ? '' : early ? '<span class="waiting">...</span>'
     : live ? streamedMarkdown(turn.reasoning, `${where}-thought`) : markdown(turn.reasoning);
-  const thought = turn.reasoning
+  const thought = turn.reasoning || early
     ? `<details class="work thought" data-toggle="thinking" data-index="${index}"${open ? ' open' : ''}>
          <summary>thinking</summary><div class="md"${live && open ? ` id="${where}-thought"` : ''}>${
            thinking}</div></details>`

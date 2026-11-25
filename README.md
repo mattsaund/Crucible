@@ -20,7 +20,7 @@ add a key. Nothing leaves the machine until you say so.
 
 Website: https://msaunders.dev/crucible/
 
-![One prompt, two experts: Programming writes the page, Writing takes over for the note, and the page opens on the shelf](docs/images/ask.png)
+![One prompt: Programming writes the page and the note, and both land on the shelf](docs/images/ask.png)
 
 ___
 ## Install
@@ -125,8 +125,10 @@ ___
 
 ### Preview, tune, ship
 
-- **The shelf** on the right of the chat holds Code, Source and Preview. It
-  stays collapsed until a model writes something, then opens on it.
+- **The shelf** on the right of the chat lists what the experts made there,
+  and keeps it with the chat. Code is a **Build**, which opens with Code,
+  Source and Preview. Anything else, like a PDF or a spreadsheet, downloads
+  from its card.
 - **Preview** shows the page being made and reloads as an expert writes it.
 - **Pick an element**, then nudge padding, margin, fonts, colors and more.
   **Apply to source** hands the change to an expert, who writes it into the
@@ -253,10 +255,15 @@ Every model, local or not, gets the same tools in a trusted folder:
 - Runtimes (CPU, CUDA, Metal, Vulkan) install from Settings, downloaded or
   compiled. A downloaded CUDA runtime needs only the NVIDIA driver, 580 or
   newer.
+- **A newer llama.cpp without a new Crucible.** Settings, Runtimes lists the
+  versions published for this Crucible, and Use restarts on one. With
+  Auto-update on, Crucible fetches the newest once a day and runs on it from
+  the next start, the way LM Studio keeps its runtimes current.
+- MLX, on Apple silicon, updates from the same page.
 - Several GPUs work as one, split automatically, evenly, by priority, or kept
   to a single card.
 
-![Runtimes: CPU, CUDA and Vulkan, all three active](docs/images/runtimes.png)
+![Runtimes: llama.cpp's version, kept up to date, and CPU, CUDA and Vulkan, all three active](docs/images/runtimes.png)
 
 ### History
 

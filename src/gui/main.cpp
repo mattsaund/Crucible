@@ -29,7 +29,21 @@
 #include "webkit_env.hpp"
 #endif
 
-int main(int argc, char** argv) {
+// Built as a runtime -- a module with one llama.cpp in it, which the launcher
+// in bin/ loads (see src/launcher) -- this is what the launcher calls in place
+// of main. Built as a program of its own, for the tools and the tests' sake,
+// it is main.
+#if defined(CRUCIBLE_AS_MODULE)
+#  if defined(_WIN32)
+#    define CRUCIBLE_ENTRY extern "C" __declspec(dllexport) int crucible_entry
+#  else
+#    define CRUCIBLE_ENTRY extern "C" __attribute__((visibility("default"))) int crucible_entry
+#  endif
+#else
+#  define CRUCIBLE_ENTRY int main
+#endif
+
+CRUCIBLE_ENTRY(int argc, char** argv) {
     // Started from a terminal, `crucible --help` prints the braille mark, and
     // on Windows the console needs telling before it can render it.
     crucible::util::use_utf8_console();

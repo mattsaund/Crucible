@@ -11,13 +11,14 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
-#include <gguf.h>
+#include "crucible/util/gguf.hpp"
 
 namespace crucible {
 namespace {
@@ -44,13 +45,6 @@ constexpr std::uint64_t kStateElementBytes = 4;
 /// allowance in this file; everything else is read from the header.
 constexpr std::uint64_t kActivationAllowance = 512ULL * 1024 * 1024;
 
-std::string string_value(gguf_context* gguf, const char* key) {
-    const std::int64_t id = gguf_find_key(gguf, key);
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_STRING) {
-        return {};
-    }
-    return gguf_get_val_str(gguf, id);
-}
 
 /// One unsigned value, or the per-layer list of them.
 ///
@@ -58,40 +52,8 @@ std::string string_value(gguf_context* gguf, const char* key) {
 /// `attention.head_count_kv` as a number, while a hybrid one -- LFM2, and
 /// anything else that alternates attention with something cheaper -- writes an
 /// array with a zero for every layer that has no KV cache at all.
-///
-/// gguf_get_val_* aborts the process on a type mismatch, so every read here is
-/// behind a type check.
-std::vector<std::uint64_t> unsigned_values(gguf_context* gguf, const std::string& key) {
-    const std::int64_t id = gguf_find_key(gguf, key.c_str());
-    if (id < 0) {
-        return {};
-    }
-
-    const gguf_type type = gguf_get_kv_type(gguf, id);
-    if (type == GGUF_TYPE_ARRAY) {
-        const gguf_type element = gguf_get_arr_type(gguf, id);
-        if (element != GGUF_TYPE_INT32 && element != GGUF_TYPE_UINT32) {
-            return {};
-        }
-        const auto* data = static_cast<const std::int32_t*>(gguf_get_arr_data(gguf, id));
-        if (data == nullptr) {
-            return {};
-        }
-        std::vector<std::uint64_t> values;
-        values.reserve(gguf_get_arr_n(gguf, id));
-        for (std::size_t i = 0; i < gguf_get_arr_n(gguf, id); ++i) {
-            values.push_back(data[i] < 0 ? 0 : static_cast<std::uint64_t>(data[i]));
-        }
-        return values;
-    }
-    if (type == GGUF_TYPE_UINT32) {
-        return {gguf_get_val_u32(gguf, id)};
-    }
-    if (type == GGUF_TYPE_INT32) {
-        const std::int32_t value = gguf_get_val_i32(gguf, id);
-        return {value < 0 ? 0 : static_cast<std::uint64_t>(value)};
-    }
-    return {};
+std::vector<std::uint64_t> unsigned_values(const gguf::File& gguf, const std::string& key) {
+    return gguf.unsigneds(key);
 }
 
 std::uint64_t first_or(const std::vector<std::uint64_t>& values, std::uint64_t fallback) {
@@ -113,26 +75,20 @@ std::uint64_t padded_cells(std::uint64_t tokens) {
 /// which charges it the whole cache -- an overestimate, and the safe way to
 /// be wrong, since a dry run measures the real figure before anything is
 /// refused on it.
-std::vector<bool> sliding_blocks(gguf_context* gguf, const std::string& arch, std::size_t layers) {
+std::vector<bool> sliding_blocks(const gguf::File& gguf, const std::string& arch, std::size_t layers) {
     std::vector<bool> sliding(layers, false);
-    const std::string  key = arch + ".attention.sliding_window_pattern";
-    const std::int64_t id  = gguf_find_key(gguf, key.c_str());
-    if (id >= 0 && gguf_get_kv_type(gguf, id) == GGUF_TYPE_ARRAY) {
-        const gguf_type   element = gguf_get_arr_type(gguf, id);
-        const std::size_t count   = std::min<std::size_t>(gguf_get_arr_n(gguf, id), layers);
-        const void*       data    = element == GGUF_TYPE_STRING ? nullptr : gguf_get_arr_data(gguf, id);
-        for (std::size_t i = 0; data != nullptr && i < count; ++i) {
-            if (element == GGUF_TYPE_BOOL || element == GGUF_TYPE_INT8 || element == GGUF_TYPE_UINT8) {
-                sliding[i] = static_cast<const std::int8_t*>(data)[i] != 0;
-            } else if (element == GGUF_TYPE_INT32 || element == GGUF_TYPE_UINT32) {
-                sliding[i] = static_cast<const std::int32_t*>(data)[i] != 0;
-            }
+    const std::string  key    = arch + ".attention.sliding_window_pattern";
+    const gguf::Value* stated = gguf.find(key);
+    if (stated != nullptr && stated->type == gguf::Type::Array) {
+        const std::size_t count = std::min<std::size_t>(stated->integers.size(), layers);
+        for (std::size_t i = 0; i < count; ++i) {
+            sliding[i] = stated->integers[i] != 0;
         }
         return sliding;
     }
 
     std::uint64_t every = 0;
-    if (id >= 0) {
+    if (stated != nullptr) {
         const std::vector<std::uint64_t> stated = unsigned_values(gguf, key);
         if (stated.empty()) {
             return sliding;
@@ -271,17 +227,15 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
         return shape;
     }
 
-    gguf_init_params params{};
-    params.no_alloc = true;   // metadata only: no tensor data is read
-    params.ctx      = nullptr;
-    gguf_context* gguf = gguf_init_from_file(file.string().c_str(), params);
-    if (gguf == nullptr) {
+    // The header only: no tensor data is read.
+    const std::optional<gguf::File> read = gguf::File::read(file);
+    if (!read) {
         return shape;  // not a GGUF; the file size is still worth having
     }
+    const gguf::File& gguf = *read;
 
-    const std::string arch = string_value(gguf, "general.architecture");
+    const std::string arch = gguf.text("general.architecture");
     if (arch.empty()) {
-        gguf_free(gguf);
         return shape;
     }
 
@@ -334,9 +288,8 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
 
     // The vocabulary, for the logits buffer. Its size is the length of the
     // token list rather than a key of its own in most files.
-    if (const std::int64_t tokens = gguf_find_key(gguf, "tokenizer.ggml.tokens");
-        tokens >= 0 && gguf_get_kv_type(gguf, tokens) == GGUF_TYPE_ARRAY) {
-        shape.vocab = static_cast<std::uint32_t>(gguf_get_arr_n(gguf, tokens));
+    if (const std::uint64_t tokens = gguf.length("tokenizer.ggml.tokens"); tokens > 0) {
+        shape.vocab = static_cast<std::uint32_t>(tokens);
     } else {
         shape.vocab = static_cast<std::uint32_t>(
             first_or(unsigned_values(gguf, key("vocab_size")), 0));
@@ -353,14 +306,13 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
     std::vector<BlockTensors> blocks(layers);
     std::uint64_t output_weights = 0;
 
-    for (std::int64_t i = 0; i < gguf_get_n_tensors(gguf); ++i) {
-        const char* raw = gguf_get_tensor_name(gguf, i);
-        if (raw == nullptr) {
-            continue;
-        }
-        const std::string_view name(raw);
-        const std::uint64_t    size = gguf_get_tensor_size(gguf, i);
-        const std::int64_t*    ne   = gguf_get_tensor_ne(gguf, i);
+    for (const gguf::Tensor& tensor : gguf.tensors()) {
+        const std::string_view name(tensor.name);
+        const std::uint64_t    size = tensor.size;
+        const std::int64_t     ne[4] = {
+            tensor.ne.size() > 0 ? tensor.ne[0] : 1, tensor.ne.size() > 1 ? tensor.ne[1] : 1,
+            tensor.ne.size() > 2 ? tensor.ne[2] : 1, tensor.ne.size() > 3 ? tensor.ne[3] : 1,
+        };
 
         std::string_view suffix;
         const std::int64_t block = block_of(name, suffix);
@@ -474,7 +426,6 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
     shape.layers = static_cast<std::uint32_t>(slots);
     shape.looped = looped;
     shape.known  = layers > 0;
-    gguf_free(gguf);
     return shape;
 }
 

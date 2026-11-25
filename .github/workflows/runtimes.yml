@@ -24,7 +24,18 @@
 name: runtimes
 
 on:
+  # llama.yml builds these for a newer llama.cpp than a release pins, from
+  # that release's source.
   workflow_call:
+    inputs:
+      llama_tag:
+        description: A llama.cpp tag to build for, in place of the one the source pins
+        type: string
+        default: ''
+      ref:
+        description: What to check out, a Crucible release's tag
+        type: string
+        default: ''
   workflow_dispatch:
   # A llama.cpp move on next starts its runtimes at once, beside the checks.
   # They are what a release waits on longest -- CUDA's is an hour and a half
@@ -61,16 +72,24 @@ jobs:
           - { platform: macos-arm64, runs-on: macos-latest,  backend: metal }
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       # The tag is the contract between this workflow and the binary that will
       # load what it produces, so it is read from the same file the build reads
-      # rather than written down twice.
+      # rather than written down twice. Or given, by llama.yml, with the
+      # release whose program is built with it.
       - name: The llama.cpp tag
         shell: bash
+        env:
+          GIVEN: ${{ inputs.llama_tag }}
         run: |
-          tag="$(grep -m1 'CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake \
-                 | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
-          test -n "$tag"
+          tag="$GIVEN"
+          if [ -z "$tag" ]; then
+            tag="$(grep -m1 'CRUCIBLE_LLAMA_TAG' cmake/CrucibleDependencies.cmake \
+                   | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
+          fi
+          [[ "$tag" =~ ^b[0-9]+$ ]] || { echo "not a llama.cpp tag: $tag" >&2; exit 1; }
           echo "LLAMA_TAG=$tag" >> "$GITHUB_ENV"
           echo "using llama.cpp $tag"
 

@@ -84,7 +84,8 @@ Options parse_arguments(int argc, char** argv) {
             return options;
         }
         if (argument == "-v" || argument == "--version") {
-            std::cout << "crucible " CRUCIBLE_VERSION "\n";
+            std::cout << "crucible " CRUCIBLE_VERSION "\n"
+                      << "  llama.cpp " CRUCIBLE_LLAMA_TAG "\n";
             // Whatever the last check found, read from the cache. No network:
             // `--version` is what a script and a bug report run, and neither
             // should wait on GitHub to hear what this binary already knows.

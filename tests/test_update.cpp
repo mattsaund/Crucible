@@ -191,6 +191,13 @@ TEST(the_box_decides_whether_a_pre_release_is_offered_and_installed) {
     CHECK(update::parse_latest(fixed, version, page));
     CHECK_EQ(version, std::string("v1.0.0-pre.5"));
 
+    // A release of runtimes alone, a newer llama.cpp for this Crucible, is
+    // not a Crucible to update to, whatever its number.
+    const std::string runtimes = "[" + release_json("llama-b13000", false, false) + ","
+                               + release_json("v1.5.0", false, false) + "]";
+    CHECK(update::parse_latest(runtimes, version, page));
+    CHECK_EQ(version, std::string("v1.5.0"));
+
     // Nothing published is nothing to offer.
     const std::string drafts = "[" + release_json("v1.0.0-pre.6", true, true) + "]";
     CHECK(!update::parse_latest(drafts, version, page));

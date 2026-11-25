@@ -1,0 +1,214 @@
+# A newer llama.cpp for a Crucible already released, without a new Crucible.
+#
+# Crucible is a runtime: the program as a module built with one llama.cpp,
+# which a small launcher loads (src/launcher/launcher.cpp). A new model is
+# usually a new llama.cpp and nothing else, and this publishes one for the
+# Crucible people already have: the program built from that release's source
+# with the newer llama.cpp, on each system, and the compute backends built
+# with it (runtimes.yml). Settings, Runtimes lists it, and with Auto-update on
+# Crucible fetches it once a day and runs on it from the next start. See
+# include/crucible/runtime/llama_versions.hpp.
+#
+# Run by hand from the Actions tab, with the llama.cpp tag (b13000) and, if
+# not the latest, the Crucible release to build it for. It goes out as a
+# pre-release of its own, runtime-<version>-<tag>: never Latest, and never
+# offered as an update to Crucible itself (src/app/update.cpp passes over
+# every tag that is not a version).
+#
+# The next Crucible release has to bundle a llama.cpp at least this new, or
+# the people on this one would go back to an older one when they update:
+# release.yml checks.
+name: llama.cpp runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_tag:
+        description: The llama.cpp tag, like b13000
+        required: true
+        type: string
+      crucible:
+        description: The Crucible release to build it for, like v1.6.0 (empty for the latest)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  which:
+    name: Which Crucible
+    runs-on: ubuntu-latest
+    outputs:
+      crucible: ${{ steps.which.outputs.crucible }}
+      version: ${{ steps.which.outputs.version }}
+      sha: ${{ steps.which.outputs.sha }}
+    steps:
+      - id: which
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+          CRUCIBLE: ${{ inputs.crucible }}
+        run: |
+          [[ "$LLAMA_TAG" =~ ^b[0-9]+$ ]] || { echo "::error::$LLAMA_TAG is not a llama.cpp tag (b and a number)"; exit 1; }
+          gh api "repos/ggml-org/llama.cpp/git/ref/tags/$LLAMA_TAG" > /dev/null \
+            || { echo "::error::llama.cpp has no tag $LLAMA_TAG"; exit 1; }
+          crucible="$CRUCIBLE"
+          if [ -z "$crucible" ]; then
+            crucible="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
+          [[ "$crucible" =~ ^v[0-9] ]] || { echo "::error::$crucible is not a Crucible release"; exit 1; }
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$crucible" --jq .sha)"
+          # A release from before runtimes of their own has nothing to load one.
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/runtime/core.sh?ref=$sha" > /dev/null 2>&1 \
+            || { echo "::error::Crucible $crucible is older than runtimes of their own"; exit 1; }
+          # What it bundles needs no runtime of its own.
+          bundled="$(gh api "repos/$GITHUB_REPOSITORY/contents/cmake/CrucibleDependencies.cmake?ref=$sha" \
+                       --jq .content | base64 -d | grep -m1 'CRUCIBLE_LLAMA_TAG' \
+                       | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
+          if [ "${LLAMA_TAG#b}" -le "${bundled#b}" ]; then
+            echo "::error::Crucible $crucible already runs llama.cpp $bundled"
+            exit 1
+          fi
+          echo "crucible=$crucible" >> "$GITHUB_OUTPUT"
+          echo "version=${crucible#v}" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "llama.cpp $LLAMA_TAG for Crucible $crucible ($sha), which bundles $bundled"
+
+  backends:
+    name: Backends
+    needs: which
+    uses: ./.github/workflows/runtimes.yml
+    with:
+      llama_tag: ${{ inputs.llama_tag }}
+      ref: ${{ needs.which.outputs.sha }}
+
+  # The program, built with it, on each system. A model loads and answers on
+  # it before anything is published: llama.cpp changes what Crucible calls
+  # often enough that a tag that builds is not one that works.
+  program:
+    name: Crucible on it (${{ matrix.platform }})
+    needs: [which, backends]
+    # Whatever backends built: a GPU's that failed is not published, and the
+    # app compiles that one. The processor's is needed for the check below.
+    if: ${{ !cancelled() && needs.which.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x64,   runs-on: ubuntu-22.04 }
+          - { platform: macos-arm64, runs-on: macos-latest }
+          - { platform: windows-x64, runs-on: windows-latest }
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.which.outputs.sha }}
+
+      - name: Window headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # As the installers are built (build.yml), with the newer llama.cpp, and
+      # the smoke tool for the check.
+      - name: Configure
+        shell: bash
+        env:
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+        run: |
+          extra=()
+          if [ "$RUNNER_OS" = Windows ]; then
+            extra=(-G Ninja -DCRUCIBLE_PRECOMPILE_HEADERS=OFF)
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRUCIBLE_BACKEND_DL=ON \
+                -DCRUCIBLE_BUILD_TESTS=OFF -DCRUCIBLE_BUILD_TOOLS=ON \
+                -DCRUCIBLE_LLAMA_TAG_OVERRIDE="$LLAMA_TAG" "${extra[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: The processor's backend for it
+        uses: actions/download-artifact@v8
+        with:
+          name: runtime-cpu-${{ matrix.platform }}
+          path: cpu
+
+      - name: Two tiny models
+        shell: bash
+        run: |
+          digest() { if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+          model() {
+            mkdir -p tiny-models
+            curl --location --fail --silent --show-error --retry 3 --output "tiny-models/$1" "$2"
+            test "$(digest "tiny-models/$1")" = "$3" || { echo "tiny-models/$1 is not the file pinned" >&2; exit 1; }
+          }
+          model stories260K-f32.gguf \
+            https://huggingface.co/ggml-org/test-model-stories260K/resolve/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf \
+            270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+          model stories15M-q4_0.gguf \
+            https://huggingface.co/ggml-org/tiny-llamas/resolve/99dd1a73db5a37100bd4ae633f4cfce6560e1567/stories15M-q4_0.gguf \
+            6151b1929d7f5aa3385d9ddef3393e55587c0a55de661562322bc51dfda93a04
+
+      # The processor's backend where this llama.cpp's go, and the model host
+      # loads, asks, swaps and loads again on it. See tools/smoke.cpp.
+      - name: A model loads and answers on it
+        shell: bash
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/crucible-data
+          XDG_CONFIG_HOME: ${{ runner.temp }}/crucible-config
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+        run: |
+          backends="$XDG_DATA_HOME/crucible/runtimes/backends/$LLAMA_TAG"
+          mkdir -p "$backends"
+          tar -xzf cpu/runtime-cpu-*.tar.gz -C "$backends"
+          printf '{"cpu": {"llama_tag": "%s", "source": "downloaded"}}\n' "$LLAMA_TAG" > "$backends/manifest.json"
+          build/bin/crucible-smoke --host tiny-models/stories260K-f32.gguf tiny-models/stories15M-q4_0.gguf
+
+      - name: The runtime
+        shell: bash
+        run: bash packaging/runtime/core.sh build dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: program-${{ matrix.platform }}
+          path: dist/*.tar.gz
+
+  # Whatever built: a system whose program failed is not offered this one,
+  # and its people stay on what they have.
+  publish:
+    name: Publish
+    needs: [which, backends, program]
+    if: ${{ !cancelled() && needs.which.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: A pre-release of its own
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+          VERSION: ${{ needs.which.outputs.version }}
+          SHA: ${{ needs.which.outputs.sha }}
+        run: |
+          tag="runtime-$VERSION-$LLAMA_TAG"
+          files="$(find artifacts -type f \( -name 'runtime-*.tar.gz' -o -name 'runtime-*.recipe' \))"
+          echo "$files"
+          echo "$files" | grep -q 'runtime-core-' || { echo "::error::no system's program built"; exit 1; }
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # shellcheck disable=SC2086
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber $files
+          else
+            # shellcheck disable=SC2086
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+              --prerelease --latest=false \
+              --title "llama.cpp $LLAMA_TAG for Crucible $VERSION" \
+              --notes "llama.cpp $LLAMA_TAG for Crucible $VERSION, without a new Crucible. Settings, Runtimes lists it; with Auto-update on, Crucible fetches it and runs on it from the next start." \
+              $files
+          fi

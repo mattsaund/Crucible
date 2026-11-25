@@ -510,6 +510,13 @@ jobs:
       - name: Stage
         run: cmake --install build --config Release --component crucible --prefix "$PWD/stage"
 
+      # A runtime of its own, as llama.yml publishes one for a newer
+      # llama.cpp: packed from this build, and loaded by a launcher with
+      # nothing beside it. See packaging/runtime/core.sh.
+      - name: A runtime of its own loads
+        shell: bash
+        run: bash packaging/runtime/core.sh build dist-runtime
+
       - name: Disk image
         run: |
           version="$(./stage/bin/crucible --version | awk 'NR==1 {print $NF}')"
@@ -589,6 +596,13 @@ jobs:
 
       - name: Stage
         run: cmake --install build --component crucible --prefix "$PWD\stage"
+
+      # A runtime of its own, as llama.yml publishes one for a newer
+      # llama.cpp: packed from this build, and loaded by a launcher with
+      # nothing beside it. See packaging/runtime/core.sh.
+      - name: A runtime of its own loads
+        shell: bash
+        run: bash packaging/runtime/core.sh build dist-runtime
 
       # Inno Setup is on the Windows runner image already; installing it is the
       # fallback rather than the plan, so a change in the image is a slower run
@@ -714,6 +728,13 @@ jobs:
 
       - name: Stage
         run: cmake --install build --component crucible --prefix "$PWD/stage"
+
+      # A runtime of its own, as llama.yml publishes one for a newer
+      # llama.cpp: packed from this build, and loaded by a launcher with
+      # nothing beside it. See packaging/runtime/core.sh.
+      - name: A runtime of its own loads
+        shell: bash
+        run: bash packaging/runtime/core.sh build dist-runtime
 
       - name: AppImage
         run: bash packaging/linux/appimage.sh "$PWD/stage" "$PWD/dist/Crucible-x86_64.AppImage"

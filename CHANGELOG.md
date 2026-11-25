@@ -6,6 +6,30 @@ macOS, Windows and Linux that its commit's checks built. Running Crucible checks
 for a newer release once a day and says so in **Settings, About**, where Update
 now installs it and keeps your config, models and history.
 
+## 1.6.0 (2026-11-25)
+
+Runtimes that update on their own, without a new Crucible.
+
+- **A newer llama.cpp without a new Crucible.** Settings, Runtimes lists the
+  llama.cpp versions published for this Crucible. Install fetches one with its
+  CPU, CUDA, Vulkan or Metal backends, Use restarts on it, and Delete takes an
+  old one away. The one Crucible came with is always there to go back to. A
+  version without a backend you use, say no CUDA yet, says so on its row.
+- **Auto-update**, on by default, checks once a day and fetches the newest,
+  which runs from the next start, the way LM Studio keeps its runtimes
+  current. It waits for a version that has every backend you use. MLX's
+  packages, on Apple silicon, are kept up to date the same way, with an Update
+  button of their own. Check asks now.
+- **Crucible is a runtime.** A small launcher loads the program built with
+  one llama.cpp, so a new model that needs a newer llama.cpp arrives as a
+  runtime instead of a Crucible release. Each llama.cpp keeps its own
+  backends, and the ones you have move into their folder the first time.
+- **The thinking fold opens before the thinking starts.** It shows three dots
+  until the model's reasoning begins, and the delegator's loading ring turns
+  while it chooses.
+- **The side menu starts at the top** again.
+- `crucible --version` says which llama.cpp it runs on.
+
 ## 1.5.0 (2026-11-25)
 
 The shelf, who is working above every reply, and Inkling 2 Mini across

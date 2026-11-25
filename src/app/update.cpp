@@ -146,6 +146,13 @@ const json* release_in(const json& parsed) {
         if (tag == one.end() || !tag->is_string() || tag->get_ref<const std::string&>().empty()) {
             continue;
         }
+        // Crucible's own, "v" and a number. A release of runtimes alone (a
+        // newer llama.cpp for a Crucible, "runtime-1.6.0-b13000") is not a
+        // Crucible to update to, though its number reads larger.
+        const std::string& name = tag->get_ref<const std::string&>();
+        if (name.size() < 2 || name[0] != 'v' || name[1] < '0' || name[1] > '9') {
+            continue;
+        }
         // The first of equals wins: GitHub lists the newest made first.
         if (newest == nullptr
             || compare(tag->get_ref<const std::string&>(), (*newest)["tag_name"].get_ref<const std::string&>()) > 0) {
