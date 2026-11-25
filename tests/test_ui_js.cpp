@@ -15,6 +15,9 @@
 #include <JavaScriptCore/JavaScript.h>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -702,6 +705,54 @@ TEST(a_newer_version_is_one_button_away_where_it_can_be_installed) {
     CHECK(going.find("data-act=\"update-install\" disabled") != std::string::npos);
 }
 
+TEST(an_expert_can_be_edited_from_its_card) {
+    const std::string page_ = page().eval("(state.settingsPage = 'experts', views.settings())");
+    CHECK(page_.find("data-act=\"expert-edit\" data-id=\"physics\"") != std::string::npos);
+    // The dialog opens with what the seat says now.
+    const std::string dialog = page().eval(
+        "(() => { const was = state.config.experts; state.config.experts = [{ id: 'physics', name: 'Physics',"
+        " tag: 'PHYS', blurb: 'forces', keywords: ['force', 'field'], examples: ['Why do things fall?'] }];"
+        " actions['expert-edit']({ dataset: { id: 'physics' } }); const out = modalView(state.modal);"
+        " state.config.experts = was; closeModal(); return out; })()");
+    CHECK(dialog.find("Edit Physics") != std::string::npos);
+    CHECK(dialog.find("value=\"force, field\"") != std::string::npos);
+    CHECK(dialog.find("Why do things fall?") != std::string::npos);
+    CHECK(dialog.find("data-act=\"ee-save\"") != std::string::npos);
+    // And a rename redraws the replies it answered, which are kept by signature.
+    const std::string before = page().eval("turnsView(state.snapshot.turns, 0)");
+    const std::string after = page().eval(
+        "(() => { const e = state.snapshot.experts.find((x) => x.id === 'physics'); const was = e.name;"
+        " e.name = 'Mechanics'; const out = turnsView(state.snapshot.turns, 0); e.name = was; return out; })()");
+    CHECK(before.find("◆ Physics") != std::string::npos);
+    CHECK(after.find("◆ Mechanics") != std::string::npos);
+}
+
+TEST(nothing_in_the_page_can_widen_it_past_the_window) {
+    // A load's status and a chat's folder in the top bar, in a narrow window,
+    // made the page's one column grow past the window, and everything on its
+    // right went off the edge with it. Nothing here can measure a layout, so
+    // what stops it is pinned in the stylesheet instead.
+    std::ifstream in(std::filesystem::path(CRUCIBLE_SOURCE_DIR) / "ui" / "style.css");
+    const std::string css((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(css.find("grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); }") != std::string::npos);
+    CHECK(css.find("body > * { min-width: 0; }") != std::string::npos);
+    // And the composer beside the conversation gives way the same way.
+    CHECK(css.find(".talk > * { min-width: 0; }") != std::string::npos);
+    CHECK(css.find(".box-bar .menu-wrap { min-width: 0; }") != std::string::npos);
+}
+
+TEST(the_trusted_folders_can_be_cleared_from_about) {
+    // Only when there are some to clear.
+    const std::string with_some = page().eval(
+        "(() => { const was = state.about.trusted; state.about.trusted = ['/home/me/work'];"
+        " state.settingsPage = 'about'; const out = views.settings(); state.about.trusted = was; return out; })()");
+    CHECK(with_some.find("data-act=\"trust-clear\">Clear trusted folders") != std::string::npos);
+    const std::string with_none = page().eval(
+        "(() => { const was = state.about.trusted; state.about.trusted = [];"
+        " state.settingsPage = 'about'; const out = views.settings(); state.about.trusted = was; return out; })()");
+    CHECK(with_none.find("data-act=\"trust-clear\" disabled") != std::string::npos);
+}
+
 TEST(the_pre_releases_box_sits_by_the_version_check_and_asks_again_when_ticked) {
     // Beside "Check for new versions", off as the configuration has it.
     const std::string about = page().eval("(state.settingsPage = 'about', views.settings())");
@@ -842,28 +893,64 @@ TEST(the_chat_is_the_conversation_and_nothing_the_program_says) {
     CHECK(page().eval("topView()").find("opened demo") != std::string::npos);
 }
 
-TEST(a_delegator_that_would_not_load_says_so_on_its_own_row) {
-    const std::string side = page().eval(
-        "(() => { state.snapshot.delegator_problem = 'would put 11.8 GB on the 3060';"
-        " const out = sideView(); delete state.snapshot.delegator_problem; return out; })()");
-    CHECK(side.find("data-phase=\"missing\"") != std::string::npos);
-    CHECK(side.find("would put 11.8 GB on the 3060") != std::string::npos);
-    CHECK(side.find("Routing on keywords") != std::string::npos);
+TEST(a_delegator_that_would_not_load_says_so_on_the_picker_that_names_it) {
+    // The side menu no longer lists the delegator, so the composer's picker,
+    // the one thing that names it, says so: in red, why on hover, and why in
+    // its menu.
+    const std::string picker = page().eval(
+        "(() => { state.snapshot.delegator_problem = 'would put 11.8 GB on the 3060'; state.route = '';"
+        " state.menu = 'route:chat'; const out = routePicker('chat'); state.menu = '';"
+        " delete state.snapshot.delegator_problem; return out; })()");
+    CHECK(picker.find("class=\"picker trouble\"") != std::string::npos);
+    CHECK(picker.find("would put 11.8 GB on the 3060") != std::string::npos);
+    CHECK(picker.find("Routing on keywords") != std::string::npos);
+    CHECK(picker.find("mi-note bad") != std::string::npos);
+    CHECK(page().eval("routePicker('chat')").find("trouble") == std::string::npos);
     const std::string chat = page().eval("views.chat()");
     CHECK(chat.substr(chat.find("id=\"transcript\"")).find("11.8 GB") == std::string::npos);
 }
 
+/// The header above the turn still arriving, in `chat`: from its opening tag
+/// to the end of it.
+std::string live_header(const std::string& chat) {
+    const std::size_t at = chat.find("class=\"who live\"");
+    return at == std::string::npos ? std::string() : chat.substr(at, chat.find("</div>", at) - at);
+}
+
 TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
-    const std::string side = page().eval("sideView()");
-    // The delegator, 42% loaded, and an expert at 50%.
-    CHECK(side.find("class=\"ring\"") != std::string::npos);
-    CHECK(side.find(">42%<") != std::string::npos);
-    CHECK(side.find(">50%<") != std::string::npos);
-    // A seat answered somewhere else is marked as one.
-    CHECK(side.find("Answered by Anthropic") != std::string::npos);
+    // Above the reply still arriving, the expert it went to, 50% loaded.
+    const std::string expert = live_header(page().eval("views.chat()"));
+    CHECK(expert.find("◆ Physics") != std::string::npos);
+    CHECK(expert.find("class=\"ring\"") != std::string::npos);
+    CHECK(expert.find(">50%<") != std::string::npos);
     // Turned with the SVG's own transform, about the circle's own center.
     // A CSS rotation put the arc somewhere else in WebKit, half off the ring.
-    CHECK(side.find("transform=\"rotate(-90 16 16)\"") != std::string::npos);
+    CHECK(expert.find("transform=\"rotate(-90 16 16)\"") != std::string::npos);
+    // While the delegator chooses, it is the delegator, 42% loaded.
+    const std::string choosing = live_header(page().eval(
+        "(() => { const was = state.snapshot.mood; state.snapshot.mood = 'routing';"
+        " const out = views.chat(); state.snapshot.mood = was; return out; })()"));
+    CHECK(choosing.find("◆ Delegator") != std::string::npos);
+    CHECK(choosing.find(">42%<") != std::string::npos);
+    CHECK(choosing.find("Physics") == std::string::npos);
+    // An expert answered somewhere else says where.
+    const std::string away = live_header(page().eval(
+        "(() => { const was = state.snapshot.linked; state.snapshot.linked = 'claude';"
+        " const out = views.chat(); state.snapshot.linked = was; return out; })()"));
+    CHECK(away.find("◆ Claude") != std::string::npos);
+    CHECK(away.find("answered by Anthropic") != std::string::npos);
+    CHECK(away.find("class=\"ring\"") == std::string::npos);
+}
+
+TEST(an_expert_at_work_says_thinking_in_a_word_not_dots) {
+    const char* const thinking =
+        "(() => { const was = state.snapshot.mood; state.snapshot.mood = 'thinking';"
+        " const out = views.chat(); state.snapshot.mood = was; return out; })()";
+    const std::string chat = page().eval(thinking);
+    CHECK(chat.find("<div class=\"body thinking\">thinking</div>") != std::string::npos);
+    CHECK(chat.find("<div class=\"body thinking\">...</div>") == std::string::npos);
+    // Not while a model loads: the ring above says that.
+    CHECK(page().eval("views.chat()").find("body thinking") == std::string::npos);
 }
 
 TEST(the_provider_dialog_asks_for_an_address_a_key_and_a_model) {
@@ -1342,16 +1429,15 @@ TEST(the_side_menu_lists_recent_chats_across_projects_and_the_projects) {
     // History is here, under the chats, and no longer in the top bar.
     CHECK(side.find("data-act=\"view\" data-view=\"history\"") != std::string::npos);
     CHECK(page().eval("topView()").find("data-view=\"history\"") == std::string::npos);
-    // All of it in the side menu, under the experts, the models at its foot.
+    // All of it in the side menu, the models at its foot.
     const std::string menu = page().eval("sideView()");
-    const std::size_t experts = menu.find("EXPERTS");
     const std::size_t chats = menu.find(">CHATS<");
     const std::size_t projects = menu.find(">PROJECTS<");
     const std::size_t local = menu.find(">LOCAL<");
     const std::size_t frontier = menu.find(">FRONTIER<");
-    CHECK(experts != std::string::npos && chats != std::string::npos && projects != std::string::npos
+    CHECK(chats != std::string::npos && projects != std::string::npos
           && local != std::string::npos && frontier != std::string::npos);
-    CHECK(experts < chats && chats < projects && projects < local && local < frontier);
+    CHECK(chats < projects && projects < local && local < frontier);
     // And nothing of it on the other side of the conversation.
     CHECK(page().eval("views.chat().split('class=\"pane chat-pane\"')[1]").find(">CHATS<") == std::string::npos);
     // Folded, nothing of it is left.
@@ -1877,7 +1963,8 @@ TEST(what_came_from_a_model_is_never_markup) {
     CHECK(top.find("<b>not markup</b>") == std::string::npos);
     CHECK(top.find("&lt;b&gt;not markup&lt;/b&gt;") != std::string::npos);
     CHECK(chat.find("sky &lt;blue&gt;") != std::string::npos);
-    CHECK(page().eval("sideView()").find("&quot;fields&quot;") != std::string::npos);
+    CHECK(page().eval("(state.settingsPage = 'experts', views.settings())").find("&quot;fields&quot;")
+          != std::string::npos);
 }
 
 TEST(every_dialog_draws) {
@@ -2548,26 +2635,30 @@ TEST(the_shelf_starts_collapsed_and_says_nothing_when_it_has_nothing) {
         CHECK(chat.find("id=\"splitter-shelf\"") != std::string::npos);
         CHECK(chat.find(">Nothing<") == std::string::npos);
     }
-    // Open on nothing: the one word, with no tabs to go through to more of it.
+    // Open on nothing: the one word, with no build to go through to more of it.
     const char* const empty =
-        "(function (project, tree) { var p = state.snapshot.project, t = state.tree;"
+        "(function (project, tree) { var p = state.snapshot.project, t = state.tree, s = state.shelf;"
         " state.snapshot.project = project; state.tree = tree; state.chatPane = 'code';"
-        " var out = views.chat(); state.snapshot.project = p; state.tree = t; state.chatPane = 'chat'; return out; })";
+        " state.shelf = { build: null, items: [] };"
+        " var out = views.chat(); state.snapshot.project = p; state.tree = t; state.shelf = s;"
+        " state.chatPane = 'chat'; return out; })";
     for (const char* const args : {"({ open: false }, null)",
                                    "({ open: true, scratchpad: true, root: '/s/1' }, { entries: [] })",
                                    "({ open: true, root: '/work/empty' }, { entries: [] })"}) {
         const std::string nothing = page().eval(std::string(empty) + args);
         CHECK(nothing.find("<div class=\"shelf-empty\">Nothing</div>") != std::string::npos);
-        CHECK(nothing.find("class=\"pane-nav\"") == std::string::npos);
+        CHECK(nothing.find("data-pane=\"code\"") == std::string::npos);
         CHECK(nothing.find("id=\"pane-body\"") == std::string::npos);
     }
-    // The same button opens it on the pane it was last on, and collapses it.
+    // The same button opens it on its list, and collapses it; the build's
+    // last tab is kept for when the build is entered again.
     const std::string toggled = page().eval(
         "(function () { var view = state.view, tab = state.shelfTab, enter = enterPane; enterPane = function () {};"
         " state.view = 'chat'; state.chatPane = 'chat'; state.shelfTab = 'preview';"
         " actions['shelf-toggle'](); var a = state.chatPane; actions['shelf-toggle'](); var b = state.chatPane;"
-        " enterPane = enter; state.view = view; state.shelfTab = tab; return a + ',' + b; })()");
-    CHECK_EQ(toggled, std::string("preview,chat"));
+        " var kept = state.shelfTab;"
+        " enterPane = enter; state.view = view; state.shelfTab = tab; return a + ',' + b + ',' + kept; })()");
+    CHECK_EQ(toggled, std::string("shelf,chat,preview"));
     // Another conversation starts with it collapsed. A chat getting its
     // first id is the same conversation, and leaves it open.
     const std::string conversations = page().eval(
@@ -2644,31 +2735,57 @@ TEST(a_push_that_changes_nothing_on_the_shelf_leaves_it) {
     CHECK_EQ(inputs, std::string("true,false"));
 }
 
-TEST(the_first_file_a_prompt_writes_expands_the_shelf_on_it) {
+TEST(the_first_thing_a_prompt_makes_opens_the_shelf_on_its_list) {
     CHECK_EQ(page().eval(kPaneState), "ok");
     const std::string got = page().eval(
-        "(function () { var seen = [], file = openFile, load = loadPreview, enter = enterPreview, tree = loadTree,"
-        " turns = state.snapshot.turns, view = state.view, preview = state.preview;"
-        " openFile = function (p, l, quietly) { seen.push('code ' + p + (quietly ? ' quietly' : '')); state.chatPane = 'code'; };"
-        " loadPreview = function (p) { seen.push('page ' + p); }; enterPreview = function () {}; loadTree = function () {};"
-        " state.view = 'chat'; state.chatPane = 'chat'; state.preview = previewBlank();"
+        "(function () { var seen = [], load = loadShelf, turns = state.snapshot.turns, view = state.view,"
+        " busy = state.snapshot.busy, rev = state.snapshot.shelf_rev;"
+        " loadShelf = function () {};"
+        " state.view = 'chat'; state.chatPane = 'chat'; state.snapshot.busy = true; state.snapshot.shelf_rev = 1;"
         " var jobs = function () { onSnapshot.forEach(function (job) { job(); }); }; jobs();"
-        " var ask = function (actions_, shut) {"
+        " var ask = function (made, shut) {"
         "   var turn = { prompt: 'x', reply: '', streaming: true, actions: [] };"
         "   state.snapshot.turns = state.snapshot.turns.concat([turn]); jobs();"
-        "   actions_.forEach(function (w) {"
-        "     turn.actions = turn.actions.concat([{ summary: 'did', body: '', language: w }]); jobs();"
-        "     if (shut && shownPane() !== 'chat') setPane('chat'); });"
+        "   for (var i = 0; i < made; i += 1) { state.snapshot.shelf_rev += 1; jobs();"
+        "     if (shut && shownPane() !== 'chat') setPane('chat'); }"
         "   var here = state.chatPane; state.chatPane = 'chat'; seen.push('[' + here + ']'); };"
-        " ask(['']);"                       // a read writes nothing
-        " ask(['src/a.py', 'src/b.py']);"   // once, on the first
-        " ask(['site/index.html']);"        // a page is shown as the page
-        " ask(['one.py', 'two.py'], true);" // shut, it stays shut for that prompt
-        " ask(['three.py']);"               // and the next prompt opens it again
-        " openFile = file; loadPreview = load; enterPreview = enter; loadTree = tree; state.snapshot.turns = turns;"
-        " state.view = view; state.preview = preview; state.chatPane = 'chat'; jobs(); return seen.join(' '); })()");
-    CHECK_EQ(got, std::string("[chat] code src/a.py quietly [code] page site/index.html [preview] "
-                              "code one.py quietly [chat] code three.py quietly [code]"));
+        " ask(0);"        // nothing made, nothing opened
+        " ask(2);"        // on its list, once, not into the build
+        " ask(1, true);"  // shut, it stays shut for that prompt
+        " ask(1);"        // and the next prompt opens it again
+        " loadShelf = load; state.snapshot.turns = turns; state.view = view; state.snapshot.busy = busy;"
+        " state.snapshot.shelf_rev = rev; state.chatPane = 'chat'; jobs(); return seen.join(' '); })()");
+    CHECK_EQ(got, std::string("[chat] [shelf] [chat] [shelf]"));
+}
+
+TEST(the_shelf_lists_the_build_and_each_thing_to_download) {
+    const char* const drawn_with =
+        "(function (listing, saved) { var s = state.shelf, k = state.shelfSaved, p = state.chatPane;"
+        " state.shelf = listing; state.shelfSaved = saved; state.chatPane = 'shelf';"
+        " var out = views.chat(); state.shelf = s; state.shelfSaved = k; state.chatPane = p; return out; })";
+    const std::string shelf = page().eval(std::string(drawn_with) +
+        "({ root: '~/.crucible/Scratchpad/1', build: { name: 'Budget', files: 3, updated: 1, project: false, page: 'index.html' },"
+        "   items: [{ path: 'out/report.pdf', name: 'report.pdf', kind: 'pdf', bytes: 2048, added: 1 }] },"
+        " { path: 'out/report.pdf', to: '~/Downloads/report.pdf' })");
+    CHECK(shelf.find(">Build<") != std::string::npos);
+    CHECK(shelf.find(">Budget<") != std::string::npos);
+    CHECK(shelf.find("data-act=\"build-enter\">Enter build<") != std::string::npos);
+    CHECK(shelf.find("data-act=\"build-remove\"") != std::string::npos);
+    CHECK(shelf.find(">PDF<") != std::string::npos);
+    CHECK(shelf.find("data-act=\"shelf-download\" data-path=\"out/report.pdf\"") != std::string::npos);
+    CHECK(shelf.find("data-act=\"shelf-delete\"") != std::string::npos);
+    CHECK(shelf.find("Saved to ~/Downloads/report.pdf") != std::string::npos);
+    // A project's build is entered, never deleted from here.
+    const std::string project = page().eval(std::string(drawn_with) +
+        "({ root: '~/work', build: { name: 'work', files: 0, updated: 0, project: true }, items: [] }, null)");
+    CHECK(project.find("Enter build") != std::string::npos);
+    CHECK(project.find("build-remove") == std::string::npos);
+    // Entered, the build has its tabs and the way back.
+    const std::string entered = page().eval(
+        "(function () { var p = state.chatPane; state.chatPane = 'code'; var out = views.chat(); state.chatPane = p; return out; })()");
+    CHECK(entered.find("data-act=\"back-to-shelf\">Back to shelf<") != std::string::npos);
+    CHECK(entered.find("class=\"action small back\"") != std::string::npos);
+    CHECK(entered.find("data-pane=\"code\"") != std::string::npos);
 }
 
 TEST(a_mistake_after_the_first_draw_keeps_the_window) {
@@ -2941,16 +3058,15 @@ TEST(closing_the_window_over_unsaved_code_asks_first) {
     page().eval("delete window.unsavedWork; delete window.closeWindow; state.code.tabs = []; 'ok'");
 }
 
-TEST(a_seat_opens_its_settings) {
-    // There are no agents beside the experts: a seat is an expert, and
-    // clicking one opens the experts' settings.
+TEST(the_side_menu_leaves_who_has_the_turn_to_the_conversation) {
+    // The delegator and the experts are no longer listed there: who has the
+    // turn, and a model's load, are said above the reply.
     const std::string side = page().eval("sideView()");
-    CHECK(side.find("data-act=\"seat-open\"") != std::string::npos);
+    CHECK(side.find("DELEGATOR") == std::string::npos);
+    CHECK(side.find("EXPERTS") == std::string::npos);
+    CHECK(side.find("seat-open") == std::string::npos);
+    CHECK(side.find("class=\"ring\"") == std::string::npos);
     CHECK(side.find(">AGENTS<") == std::string::npos);
-    const std::string went = page().eval(
-        "(function () { var was = enter; var went = ''; enter = function (v, p) { went = v + '/' + p; };"
-        " actions['seat-open']({ dataset: { expert: 'physics' } }); enter = was; return went; })()");
-    CHECK_EQ(went, "settings/experts");
 }
 
 TEST(the_preview_gives_a_page_its_data_calls_and_makes_it_an_app) {

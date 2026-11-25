@@ -272,6 +272,7 @@ json Surface::state_json_of(const Snapshot& frame, bool with_turns) {
     out["session"]          = host_.session_id();
     out["session_name"]     = host_.session_name();
     out["names_filed"]      = host_.names_filed();
+    out["shelf_rev"]        = host_.shelf_revision();
 
     // What Crucible is fetching for itself, while it is, and anything that
     // failed until it is retried. See app/setup.hpp.

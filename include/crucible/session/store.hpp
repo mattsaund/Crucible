@@ -16,6 +16,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "crucible/engine/state.hpp"
+#include "crucible/session/shelf.hpp"
 #include "crucible/session/usage.hpp"
 
 namespace crucible {
@@ -116,6 +117,11 @@ public:
     /// "Math homework" -- written with every save from now on. Empty until
     /// it has been named; see Engine::name_session.
     void set_name(std::string name) { name_ = std::move(name); }
+
+    /// What the experts made in this conversation (see shelf.hpp). Written
+    /// with it by save, read back by adopt, and gone with it.
+    const std::vector<shelf::Entry>& shelf() const { return shelf_; }
+    std::vector<shelf::Entry>&       shelf() { return shelf_; }
     const std::string& name() const { return name_; }
 
     /// Name a stored conversation, in its file. For one that is not the one
@@ -156,6 +162,7 @@ private:
     Project     project_;
     std::string session_id_;
     std::string name_;
+    std::vector<shelf::Entry> shelf_;
     /// What was already counted for this session, so re-saving it does not
     /// add the same tokens to the project total twice.
     TokenUsage  counted_;

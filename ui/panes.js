@@ -16,8 +16,12 @@ const CHAT_PANES = [
   ['preview', 'Preview', 'What it shows'],
 ];
 
-// 'chat' is the shelf collapsed.
+// 'chat' is the shelf collapsed, 'shelf' its list of what the experts made,
+// and the others the build entered from it.
 state.chatPane = 'chat';
+// The shelf's list, as `shelf` answers it, and the download last saved.
+state.shelf = null;
+state.shelfSaved = null;
 // The pane it opens on.
 state.shelfTab = 'code';
 // How much of the width it takes, in percent. Remembered with the window's
@@ -40,8 +44,10 @@ function folderShown() {
   return !!(state.tree.entries && state.tree.entries.length);
 }
 
-/// The pane on screen: the one chosen, while there is a folder to show.
+/// The pane on screen: the list, or the one chosen in a build while there is
+/// a folder to show.
 function shownPane() {
+  if (state.chatPane === 'shelf') return 'shelf';
   return folderShown() ? state.chatPane : 'chat';
 }
 
@@ -58,7 +64,7 @@ function paneNav() {
 
 function setPane(pane) {
   if (pane === 'chat') shelfOpenedFor = promptKey();
-  else state.shelfTab = pane;
+  else if (pane !== 'shelf') state.shelfTab = pane;
   state.chatPane = pane;
   render();
   enterPane(pane);
@@ -88,10 +94,109 @@ function shelfView() {
   const pane = shownPane();
   return `<div class="splitter" id="splitter-shelf" data-act="shelf-edge" title="Drag to resize"></div>
     <section class="shelf" aria-label="Shelf">
-      ${pane === 'chat' ? '<div class="shelf-empty">Nothing</div>'
-                        : `<div class="shelf-head">${paneNav()}</div>${shelfBody(pane)}`}
+      ${pane === 'shelf' || pane === 'chat' ? shelfList()
+        : `<div class="shelf-head">${paneNav()}
+             <button class="action small back" data-act="back-to-shelf">Back to shelf</button></div>${shelfBody(pane)}`}
     </section>`;
 }
+
+// --- the list -------------------------------------------------------------------------
+//
+// What the experts made in this conversation, kept with it: its build, which
+// is entered to read, edit and preview the code, and every other thing,
+// each to download. See session/shelf.hpp.
+
+/// What each kind of download is called on its card.
+const SHELF_KINDS = {
+  pdf: 'PDF', document: 'Document', sheet: 'Spreadsheet', slides: 'Slides', image: 'Picture',
+  audio: 'Recording', video: 'Video', archive: 'Archive', text: 'Text', file: 'File',
+};
+
+/// The list. In a window too narrow for both, the Chat tab is the way back.
+function shelfList() {
+  const listing = state.shelf;
+  const head = `<div class="shelf-head"><div class="pane-nav">
+      <button data-act="chat-pane" data-pane="chat" aria-current="false" title="The conversation">Chat</button></div>
+      <span class="shelf-title">Shelf</span></div>`;
+  if (!listing) return `${head}<div class="shelf-empty">Reading...</div>`;
+  const build = listing.build;
+  const items = listing.items || [];
+  if (!build && !items.length) return `${head}<div class="shelf-empty">Nothing</div>`;
+  const saved = state.shelfSaved;
+  const card = build ? `<div class="shelf-card build">
+      <div class="shelf-kind">Build</div>
+      ${build.name ? `<div class="shelf-name">${escape(build.name)}</div>` : ''}
+      <div class="shelf-meta">${apart(build.files ? `${build.files} file${build.files === 1 ? '' : 's'}` : '',
+                                      build.updated ? ago(build.updated) : '')}</div>
+      <div class="shelf-acts"><button class="action" data-act="build-enter">Enter build</button>
+        ${build.project ? '' : '<button class="link" data-act="build-remove">Delete</button>'}</div></div>` : '';
+  const rest = items.map((item) => `<div class="shelf-card" title="${escape(item.path)}">
+      <div class="shelf-kind">${escape(SHELF_KINDS[item.kind] || 'File')}</div>
+      <div class="shelf-name">${escape(item.name)}</div>
+      <div class="shelf-meta">${apart(bytes(item.bytes), ago(item.added))}</div>
+      <div class="shelf-acts"><button class="action" data-act="shelf-download" data-path="${escape(item.path)}">Download</button>
+        <button class="link" data-act="shelf-delete" data-path="${escape(item.path)}" data-name="${escape(item.name)}">Delete</button></div>
+      ${saved && saved.path === item.path ? `<div class="shelf-saved">${apart(`Saved to ${escape(saved.to)}`,
+          window.showDownloads ? '<button class="link" data-act="shelf-show-downloads">Show</button>' : '')}</div>` : ''}
+    </div>`).join('');
+  return `${head}<div class="shelf-list">${card}${rest}</div>`;
+}
+
+/// Read the list again.
+function loadShelf() {
+  return guard(async () => { state.shelf = await call('shelf'); });
+}
+
+actions['build-enter'] = () => {
+  const build = (state.shelf || {}).build || {};
+  // A build with a page in it opens on the page; any other on its code.
+  if (build.page) {
+    state.chatPane = state.shelfTab = 'preview';
+    loadPreview(build.page);
+    enterPreview();
+    render();
+  } else {
+    setPane(state.shelfTab === 'source' ? 'source' : 'code');
+  }
+};
+actions['back-to-shelf'] = () => setPane('shelf');
+actions['shelf-download'] = (button) => guard(async () => {
+  const got = await call('shelf.download', { path: button.dataset.path });
+  state.shelfSaved = { path: button.dataset.path, to: got.saved };
+});
+actions['shelf-show-downloads'] = () => { if (window.showDownloads) window.showDownloads(); };
+actions['shelf-delete'] = async (button) => {
+  const sure = await confirmIt({ title: `Delete ${button.dataset.name}?`, body: 'The file is deleted.',
+                                 yes: 'Delete', no: 'Keep' });
+  if (sure) await guard(async () => { await call('shelf.remove', { path: button.dataset.path }); await loadShelf(); });
+};
+actions['build-remove'] = async () => {
+  const sure = await confirmIt({ title: 'Delete the build?', body: 'The code the experts wrote here is deleted.',
+                                 yes: 'Delete', no: 'Keep' });
+  if (sure) await guard(async () => { await call('shelf.remove', { build: true }); await loadShelf(); });
+};
+
+/// The list again when it has changed, and the shelf opened on it when a
+/// prompt puts the first thing on it: once a prompt, as before, and never
+/// out from under somebody reading the conversation in a narrow window.
+let shelfRevSeen = null;
+let shelfNamed = '';
+onSnapshot.push(() => {
+  // The build is named as the chat, which is named after its first prompt.
+  const named = state.snapshot.session_name || '';
+  if (named !== shelfNamed) {
+    shelfNamed = named;
+    if (state.shelf && state.shelf.build && !state.shelf.build.project) loadShelf();
+  }
+  const rev = state.snapshot.shelf_rev || 0;
+  if (rev === shelfRevSeen) return;
+  const grew = shelfRevSeen !== null && rev > shelfRevSeen;
+  shelfRevSeen = rev;
+  loadShelf();
+  // Grown, whether as an action landed or as the prompt ended: either is
+  // the prompt's making. A deletion is made from the list, which is open.
+  if (grew) shelfFollows();
+});
 
 /// What the shelf shows, made again only when it may have changed. Coloring
 /// a long file or parsing a page into its frame for every token of a reply
@@ -132,7 +237,7 @@ function dragShelf(handle) {
   document.addEventListener('pointerup', up);
 }
 
-actions['shelf-toggle'] = () => setPane(shelfOpen() ? 'chat' : state.shelfTab);
+actions['shelf-toggle'] = () => setPane(shelfOpen() ? 'chat' : 'shelf');
 
 /// Pressed twice, the edge goes back to the middle.
 actions['shelf-edge'] = (edge, event) => {
@@ -156,31 +261,23 @@ function shelfFits() {
   return pane.clientWidth >= SHELF_ROOM * rem;
 }
 
-/// The first file a prompt writes expands the shelf on it: a page as the
-/// page, anything else as its code. Once a prompt, and the caret stays in the
-/// box. Collapsed during a prompt, it stays collapsed for the rest of it.
-function shelfFollows(written) {
+/// The first thing a prompt puts on the shelf expands it, on its list: a
+/// build is entered by whoever wants to, not by the prompt. Once a prompt,
+/// and the caret stays in the box. Collapsed during a prompt, it stays
+/// collapsed for the rest of it.
+function shelfFollows() {
   const key = promptKey();
-  if (!written.length || shelfOpenedFor === key) return;
+  if (shelfOpenedFor === key) return;
   shelfOpenedFor = key;
   if (state.view !== 'chat' || shownPane() !== 'chat' || !shelfFits()) return;
-  const page = written.find((file) => /\.html?$/i.test(file));
-  if (page) {
-    state.chatPane = state.shelfTab = 'preview';
-    state.preview.url = '';
-    loadPreview(page);
-    enterPreview();
-  } else if (state.preview.page && written.some((file) => /\.(css|js|svg)$/i.test(file))) {
-    state.chatPane = state.shelfTab = 'preview';
-    refreshPreview();
-  } else {
-    openFile(written[0], 0, true);
-  }
+  state.chatPane = 'shelf';
+  render();
 }
 
 /// What a pane reads as it opens. The tree every time: a turn may have
 /// changed it while another pane was up.
 function enterPane(pane) {
+  if (pane === 'shelf') loadShelf();
   if (pane === 'code') {
     loadTree();
     refreshTabs();
@@ -366,7 +463,9 @@ onSnapshot.push(() => {
   if (session === shelfSession) return;
   const was = shelfSession;
   shelfSession = session;
+  state.shelfSaved = null;
   if (was) state.chatPane = 'chat';
+  loadShelf();
 });
 
 /// A project change empties what was read of the old one, and the pane on
@@ -426,7 +525,6 @@ onSnapshot.push(() => {
   // What was up before the shelf may open for this: what it opens on it
   // reads for itself.
   const pane = state.view === 'chat' ? shownPane() : '';
-  shelfFollows(written);
   if (pane === 'code' || (written.length && !folderShown())) loadTree();
   if (pane === 'source') loadSource(false);
   else state.source = null;   // read again when its pane opens

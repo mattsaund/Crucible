@@ -244,7 +244,9 @@ function pageExperts(c) {
           ${e.default ? '<span class="tag ok">default</span>' : ''}
           ${e.phase === 'missing' ? '<span class="tag bad">missing</span>' : ''}
           ${e.provider ? `<span class="tag">${ICONS.cloud} ${escape(e.provider)}</span>` : ''}
-          <button class="link right" data-act="expert-remove" data-id="${escape(e.id)}"
+          <button class="link right" data-act="expert-edit" data-id="${escape(e.id)}"
+                  title="Its name, description, keywords and examples">Edit</button>
+          <button class="link" data-act="expert-remove" data-id="${escape(e.id)}"
                   data-name="${escape(e.name)}"
                   title="Remove from the roster">Eject</button></div>
         <div class="hint" style="margin:.2rem 0 .6rem">${escape(e.blurb)}</div>
@@ -284,6 +286,54 @@ actions['expert-remove'] = async (e) => {
   if (sure) await guard(async () => { await call('expert.remove', { id: e.dataset.id }); await reloadConfig(); });
 };
 actions['default-expert'] = (e) => configure({ routing: { default_expert: e.value } });
+
+/// Everything about an expert but its model, which has its own box: what it
+/// is called, what it is for, and what the delegator routes on.
+actions['expert-edit'] = (e) => {
+  const seat = (state.config.experts || []).find((x) => x.id === e.dataset.id);
+  if (!seat) return;
+  openModal({ kind: 'edit-expert', id: seat.id, name: seat.name || '', tag: seat.tag || '',
+              description: seat.blurb || '', keywords: (seat.keywords || []).join(', '),
+              examples: (seat.examples || []).join('\n') });
+};
+modals['edit-expert'] = (m) => `<div class="modal">
+    <div class="head"><strong>Edit ${escape(m.name || 'expert')}</strong></div>
+    <div class="body-pad">
+      <div class="field"><label for="ee-name">Name</label>
+        <input id="ee-name" data-input="ee-field" data-field="name" data-draft data-focus value="${escape(m.name)}"></div>
+      <div class="field"><label for="ee-tag">Tag</label>
+        <input id="ee-tag" data-input="ee-field" data-field="tag" data-draft maxlength="4" value="${escape(m.tag)}"></div>
+      <div class="field"><label for="ee-what">Description</label>
+        <textarea id="ee-what" rows="4" data-input="ee-field" data-field="description" data-draft>${
+          escape(m.description)}</textarea>
+        <div class="hint">Used for routing.</div></div>
+      <div class="field"><label for="ee-keys">Keywords</label>
+        <input id="ee-keys" data-input="ee-field" data-field="keywords" data-draft value="${escape(m.keywords)}">
+        <div class="hint">Comma separated. Used without a delegator.</div></div>
+      <div class="field"><label for="ee-examples">Examples</label>
+        <textarea id="ee-examples" rows="3" data-input="ee-field" data-field="examples" data-draft>${
+          escape(m.examples)}</textarea>
+        <div class="hint">Questions it should take, one per line.</div></div>
+      ${m.error ? `<div class="bad">${escape(m.error)}</div>` : ''}
+    </div>
+    <div class="feet">
+      <button class="action" data-act="ee-save">Save</button>
+      <button class="action" data-act="modal-close">Cancel</button>
+    </div></div>`;
+actions['ee-field'] = (e) => { state.modal[e.dataset.field] = e.value; };
+actions['ee-save'] = async () => {
+  const m = state.modal;
+  try {
+    await call('expert.edit', { id: m.id, name: m.name, tag: m.tag, description: m.description,
+                                keywords: m.keywords, examples: m.examples });
+  } catch (error) {
+    m.error = error.message;
+    render();
+    return;
+  }
+  await reloadConfig();
+  closeModal();
+};
 
 // --- Providers ---------------------------------------------------------------------------
 
@@ -1130,8 +1180,21 @@ function pageAbout() {
       `<div><span>${label}</span>${escape(path)}</div>`).join('')}</div>
     <h2 style="margin-top:1.8rem">TRUSTED FOLDERS</h2>
     ${a.trusted.length ? a.trusted.map((f) => `<div class="hint">${escape(f)}</div>`).join('')
-                       : '<p class="lede">None.</p>'}`;
+                       : '<p class="lede">None.</p>'}
+    <div class="row" style="margin-top:.8rem"><button class="action" data-act="trust-clear"${
+      a.trusted.length ? '' : ' disabled'}>Clear trusted folders</button></div>`;
 }
+
+/// Forget every trusted folder: each is asked about again when it is next
+/// opened. The project open now stays open.
+actions['trust-clear'] = async () => {
+  const sure = await confirmIt({ title: 'Clear trusted folders?',
+    body: 'Each folder is asked about again the next time it is opened.', yes: 'Clear', no: 'Keep' });
+  if (sure) await guard(async () => {
+    await call('trust.clear');
+    state.about = await call('about');
+  });
+};
 
 /// Whether an update is on its way.
 const updating = () => ['asking', 'downloading', 'starting'].includes((state.updating || {}).phase);

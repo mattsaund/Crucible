@@ -266,6 +266,53 @@ void App::refresh_prices() {
     workers_.post([] { prices::refresh(); });
 }
 
+std::vector<shelf::Entry> App::shelf_entries() const {
+    return store_ ? store_->shelf() : std::vector<shelf::Entry>{};
+}
+
+std::string App::shelf_remove(const std::string& path) {
+    if (!store_) {
+        return "no conversation is open";
+    }
+    std::vector<shelf::Entry>& entries = store_->shelf();
+    const auto kept = std::find_if(entries.begin(), entries.end(),
+                                   [&path](const shelf::Entry& entry) { return entry.path == path; });
+    if (kept == entries.end()) {
+        return path + " is not on the shelf";
+    }
+    // Only ever a file under this conversation's folder, whatever the page sent.
+    const std::filesystem::path file = shelf::inside(project_root(), path);
+    std::error_code ec;
+    if (!file.empty() && std::filesystem::is_regular_file(file, ec)) {
+        std::filesystem::remove(file, ec);
+        if (ec) {
+            return "could not delete " + path + ": " + ec.message();
+        }
+    }
+    entries.erase(kept);
+    ++shelf_revision_;
+    const Snapshot snapshot = state_.snapshot();
+    std::string    error;
+    store_->save(snapshot.turns, snapshot.session_usage, error);
+    return error;
+}
+
+void App::gather_made(bool finished) {
+    if (!store_ || !made_from_) {
+        return;
+    }
+    const std::vector<std::string> made = shelf::made_since(project_root(), *made_from_);
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch()).count();
+    if (shelf::merge(store_->shelf(), made, now)) {
+        ++shelf_revision_;
+    }
+    if (finished) {
+        made_from_.reset();
+        made_actions_ = 0;
+    }
+}
+
 void App::persist_session() {
     // Nothing to write a history into. A conversation cannot have happened
     // without a project -- the composer is closed until one is open -- but this
@@ -275,6 +322,28 @@ void App::persist_session() {
         return;
     }
     const Snapshot snapshot = state_.snapshot();
+    // The shelf. A prompt is looked at from when it began, as each of its
+    // actions lands -- a file written, a command run -- and once more when
+    // it ends, so a page or a PDF is on the shelf as soon as it is made.
+    const Turn* running = nullptr;
+    for (const Turn& turn : snapshot.turns) {
+        if (turn.streaming) {
+            running = &turn;
+        }
+    }
+    if (running != nullptr) {
+        if (!made_from_) {
+            // A moment of slack: a file system that keeps whole seconds would
+            // otherwise put a file written at once before the prompt began.
+            made_from_ = std::filesystem::file_time_type::clock::now() - std::chrono::seconds(2);
+        }
+        if (running->actions.size() > made_actions_) {
+            made_actions_ = running->actions.size();
+            gather_made(false);
+        }
+    } else if (made_from_) {
+        gather_made(true);
+    }
     std::size_t   finished = 0;
     std::uint64_t newest   = 0;
     for (const Turn& turn : snapshot.turns) {
@@ -578,6 +647,10 @@ std::string App::new_session() {
     // conversation in a project is had by opening the project.
     close_project();
     return {};
+}
+
+std::string App::clear_trust() {
+    return trust_.clear() ? std::string() : "could not write " + paths::trust_file().string();
 }
 
 void App::answer_trust(bool trusted) {

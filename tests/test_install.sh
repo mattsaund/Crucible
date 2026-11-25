@@ -1516,6 +1516,26 @@ check     "install.sh takes --branch" grep -qF -- '--branch)    BRANCH=' "$ROOT/
 check     "and install.ps1 -Branch, for the same clone and fetch" \
           grep -qF -- "'--branch', \$Branch" "$ROOT/install.ps1"
 
+echo "  a release waits for nothing twice"
+
+# main gets next's files as a commit of its own. The same files are not
+# checked again, and the release takes the installers of the run that
+# checked them, found by the files rather than the commit.
+WF="$ROOT/.github/workflows"
+check     "build.yml looks for the same files passed first" grep -q "name: Same files passed" "$WF/build.yml"
+check_eq  "and every other job waits on that and skips when they did" \
+          "$(grep -c "if: needs.same.outputs.run == ''" "$WF/build.yml")" "6"
+check     "only on a push straight to a branch, not when the release calls it" \
+          grep -qF '[ "${{ github.workflow }}" = build ]' "$WF/build.yml"
+check     "the release finds installers by the files as well as the commit" \
+          grep -q 'commits/$sha" --jq .commit.tree.sha' "$WF/release.yml"
+# A llama.cpp move on next starts its runtimes beside the checks, kept in a
+# draft the app cannot see, where the release looks first.
+check     "runtimes build on next when llama.cpp moves" \
+          grep -q "      - cmake/CrucibleDependencies.cmake" "$WF/runtimes.yml"
+check     "into the staging draft" grep -q "gh release create runtimes-staging --repo \"\$GITHUB_REPOSITORY\" --draft" "$WF/runtimes.yml"
+check     "which the release takes from first" grep -q "for tag in runtimes-staging " "$WF/runtimes.yml"
+
 echo "  a runtime can arrive already built"
 # Compiling a backend on the machine that runs it is right and slow, and for
 # CUDA it needs a multi-gigabyte toolkit first -- which is the part that stops

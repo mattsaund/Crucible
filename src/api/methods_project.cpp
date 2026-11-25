@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "crucible/config/paths.hpp"
+#include "crucible/session/shelf.hpp"
 #include "crucible/session/store.hpp"
 #include "crucible/util/format.hpp"
 
@@ -49,6 +50,103 @@ Reply project_forget(const json& params, Host&) {
 
 Reply trust_answer(const json& params, Host& host) {
     host.answer_trust(params.value("trusted", false));
+    return good();
+}
+
+// ---------------------------------------------------------------------------
+// The shelf: what the experts made in the conversation on screen
+// ---------------------------------------------------------------------------
+
+/// The shelf as the page draws it: the conversation's build, when there is
+/// code in it or it is a project somebody opened, and every other thing
+/// made, newest first. A file deleted since is left out.
+Reply shelf_list(const json&, Host& host) {
+    const std::filesystem::path root    = host.project_root();
+    const bool                  project = !root.empty() && !is_scratch(root);
+    json                        items   = json::array();
+    std::size_t                 code    = 0;
+    std::int64_t                updated = 0;
+    std::string                 page;
+    for (const shelf::Entry& entry : host.shelf_entries()) {
+        const std::filesystem::path file = shelf::inside(root, entry.path);
+        std::error_code             ec;
+        if (file.empty() || !std::filesystem::is_regular_file(file, ec)) {
+            continue;
+        }
+        if (shelf::is_code(file)) {
+            ++code;
+            updated = std::max(updated, entry.added);
+            const std::string ext = file.extension().string();
+            if (ext == ".html" || ext == ".htm") {
+                page = entry.path;
+            }
+            continue;
+        }
+        items.push_back(json{{"path", entry.path}, {"name", file.filename().string()},
+                             {"kind", shelf::kind_of(file)}, {"bytes", std::filesystem::file_size(file, ec)},
+                             {"added", entry.added}});
+    }
+    std::reverse(items.begin(), items.end());
+    json build = nullptr;
+    if (code > 0 || project) {
+        const std::string named = host.session_name();
+        // Named as the project, or as the chat once it has a name.
+        build = json{{"name", project ? Project::at(root).name : named},
+                     {"files", code}, {"updated", updated}, {"project", project}};
+        if (!page.empty()) {
+            build["page"] = page;
+        }
+    }
+    return good(json{{"root", format::short_path(root)}, {"build", build}, {"items", std::move(items)}});
+}
+
+/// Delete one thing on the shelf, or with `build`, the code the experts
+/// wrote in a conversation with no project: the file goes with its entry.
+Reply shelf_remove(const json& params, Host& host) {
+    if (params.value("build", false)) {
+        const std::filesystem::path root = host.project_root();
+        if (root.empty() || !is_scratch(root)) {
+            return bad("a project's code stays: delete files from it in Code");
+        }
+        for (const shelf::Entry& entry : host.shelf_entries()) {
+            if (shelf::is_code(entry.path)) {
+                if (const std::string error = host.shelf_remove(entry.path); !error.empty()) {
+                    return bad(error);
+                }
+            }
+        }
+        return good();
+    }
+    const std::string error = host.shelf_remove(params.value("path", std::string{}));
+    return error.empty() ? good() : bad(error);
+}
+
+/// Copy one thing on the shelf into the downloads folder, under a name not
+/// taken there, as a browser would.
+Reply shelf_download(const json& params, Host& host) {
+    const auto path = params.value("path", std::string{});
+    const std::vector<shelf::Entry> entries = host.shelf_entries();
+    if (std::none_of(entries.begin(), entries.end(), [&path](const shelf::Entry& e) { return e.path == path; })) {
+        return bad(path + " is not on the shelf");
+    }
+    const std::filesystem::path file = shelf::inside(host.project_root(), path);
+    std::error_code             ec;
+    if (file.empty() || !std::filesystem::is_regular_file(file, ec)) {
+        return bad(path + " is not there any more");
+    }
+    const std::filesystem::path target = shelf::download_target(file.filename().string());
+    std::filesystem::create_directories(target.parent_path(), ec);
+    if (!std::filesystem::copy_file(file, target, ec) || ec) {
+        return bad("could not save it to " + format::short_path(target.parent_path())
+                   + (ec ? ": " + ec.message() : std::string()));
+    }
+    return good(json{{"saved", format::short_path(target)}});
+}
+
+Reply trust_clear(const json&, Host& host) {
+    if (const std::string error = host.clear_trust(); !error.empty()) {
+        return bad(error);
+    }
     return good();
 }
 
@@ -128,6 +226,10 @@ void project_methods(std::vector<Method>& table) {
     table.push_back({"project.open", nullptr, project_open});
     table.push_back({"project.forget", nullptr, project_forget});
     table.push_back({"trust.answer", nullptr, trust_answer});
+    table.push_back({"trust.clear",  nullptr, trust_clear});
+    table.push_back({"shelf",          nullptr, shelf_list});
+    table.push_back({"shelf.remove",   nullptr, shelf_remove});
+    table.push_back({"shelf.download", nullptr, shelf_download});
     table.push_back({"projects",     projects, nullptr});
     table.push_back({"browse",       browse, nullptr});
 }

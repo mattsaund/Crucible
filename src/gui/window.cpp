@@ -58,6 +58,7 @@ extern const unsigned int  kMarkSvg_size;
 #include <gtk/gtk.h>   // the window's name and icon; see App::run
 #endif
 
+#include "crucible/session/shelf.hpp"
 #include "crucible/api/surface.hpp"
 #include "crucible/app/starter.hpp"
 #include "crucible/tools/page_storage.hpp"
@@ -536,6 +537,21 @@ int App::run() {
                   const std::string error = std::filesystem::is_directory(folder, ec)
                                                 ? dialogs::show_folder(folder.string())
                                                 : folder.string() + " is not there any more";
+                  view.resolve(id, 0, json{{"error", error}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+              },
+              nullptr);
+
+    // --- the downloads folder, after a download from the shelf ---------------
+    //
+    // As showFolder: the binding takes no path, so the page can only ever
+    // open this one folder with it.
+    view.bind("showDownloads",
+              [&view](const std::string& id, const std::string&, void*) {
+                  const std::filesystem::path folder = shelf::downloads_dir();
+                  std::error_code             ec;
+                  const std::string error = std::filesystem::is_directory(folder, ec)
+                                                ? dialogs::show_folder(folder.string())
+                                                : folder.string() + " is not there";
                   view.resolve(id, 0, json{{"error", error}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
               },
               nullptr);

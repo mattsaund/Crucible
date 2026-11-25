@@ -26,6 +26,18 @@ name: runtimes
 on:
   workflow_call:
   workflow_dispatch:
+  # A llama.cpp move on next starts its runtimes at once, beside the checks.
+  # They are what a release waits on longest -- CUDA's is an hour and a half
+  # -- and a release that finds them already built takes them in seconds.
+  # See the stage job.
+  push:
+    branches: [next]
+    paths:
+      - cmake/CrucibleDependencies.cmake
+      - .github/scripts/runtime-recipe.sh
+      - .github/workflows/runtimes.yml
+      - include/crucible/runtime/cuda_libraries.hpp
+      - include/crucible/runtime/prebuilt.hpp
 
 permissions:
   contents: write
@@ -81,7 +93,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p dist
-          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 10 \
+          # The staging draft first: what next built when llama.cpp moved.
+          for tag in runtimes-staging $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 10 \
                        --json tagName --jq '.[].tagName'); do
             rm -rf earlier && mkdir earlier
             gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET.recipe" \
@@ -230,6 +243,33 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.recipe
+
+  # What a push to next built, kept for the release that comes after it: in a
+  # draft, which nobody but this repository's writers can see, so the app's
+  # look for a prebuilt runtime never finds one before it is released.
+  stage:
+    name: Keep for the release
+    needs: build
+    if: always() && github.event_name == 'push' && github.workflow == 'runtimes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Into the staging draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view runtimes-staging --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+            || gh release create runtimes-staging --repo "$GITHUB_REPOSITORY" --draft \
+                 --title "Runtimes for the next release" \
+                 --notes "Built on next when llama.cpp moved, for the next release to take. Never published."
+          files="$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.recipe' \))"
+          if [ -n "$files" ]; then
+            # shellcheck disable=SC2086
+            gh release upload runtimes-staging --repo "$GITHUB_REPOSITORY" --clobber $files
+          fi
 
   # Only when this runs on its own. Called from the installers workflow, the
   # github context is that workflow's -- its name is "installers" -- and it

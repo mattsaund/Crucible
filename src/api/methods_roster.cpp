@@ -8,6 +8,7 @@
 #include "methods.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 
 #include "crucible/llm/remote_model.hpp"
@@ -88,6 +89,105 @@ Reply expert_set(const json& params, Host& host) {
 
     const std::string refused = host.apply_config(std::move(edited));
     return refused.empty() ? good() : bad(refused);
+}
+
+/// Lines of text out of a list, or out of one string split at `separator`:
+/// trimmed, and without the empty ones.
+std::vector<std::string> lines_of(const json& value, char separator) {
+    std::vector<std::string> out;
+    const auto keep = [&out](const std::string& one) {
+        if (std::string trimmed = format::trim(one); !trimmed.empty()) {
+            out.push_back(std::move(trimmed));
+        }
+    };
+    if (value.is_array()) {
+        for (const json& one : value) {
+            if (one.is_string()) {
+                keep(one.get<std::string>());
+            }
+        }
+    } else if (value.is_string()) {
+        std::string piece;
+        for (const char c : value.get<std::string>()) {
+            if (c == separator || c == '\n') {
+                keep(piece);
+                piece.clear();
+            } else {
+                piece += c;
+            }
+        }
+        keep(piece);
+    }
+    return out;
+}
+
+/// Change what an expert is called and what it is for: its name, its chip,
+/// its description, its keywords and its worked examples, any of them. The
+/// id stays, so its chats, its model and its settings stay with it.
+///
+/// Keywords written by Crucible are written again from a new name or
+/// description; ones somebody chose are kept. A description changed without
+/// new examples has the delegator write them again, as for a new expert:
+/// examples for what the seat used to be for would route against it.
+Reply expert_edit(const json& params, Host& host) {
+    const auto id = params.value("id", std::string{});
+    Config edited = host.config();
+    const std::optional<std::size_t> at = edited.roster.find(id);
+    if (!at || edited.roster.at(*at).id != id) {
+        return bad("there is no expert called \"" + id + "\"");
+    }
+    const Expert before = edited.roster.at(*at);
+    Expert       after  = before;
+    if (params.contains("name")) {
+        after.name = format::trim(params.value("name", std::string{}));
+    }
+    if (params.contains("description")) {
+        after.blurb = format::trim(params.value("description", std::string{}));
+    }
+    if (params.contains("tag")) {
+        after.tag.clear();
+        for (const char c : format::trim(params.value("tag", std::string{}))) {
+            after.tag += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+    }
+    if (after.name.empty()) {
+        return bad("an expert needs a name");
+    }
+    if (after.blurb.empty()) {
+        return bad("describe what " + after.name + " is trained in, or the delegator has nothing to route on");
+    }
+    if (after.tag.empty() || after.tag.size() > 4) {
+        return bad("a tag is one to four letters");
+    }
+    // Another seat answering to the new name or tag would take its prompts.
+    for (const std::string& key : {after.name, after.tag, make_expert_id(after.name)}) {
+        if (const std::optional<std::size_t> other = edited.roster.find(key); other && *other != *at) {
+            return bad("there is already an expert called " + edited.roster.at(*other).name);
+        }
+    }
+
+    const bool described = after.name != before.name || after.blurb != before.blurb;
+    if (params.contains("keywords")) {
+        after.keywords = lines_of(params["keywords"], ',');
+    } else if (described && before.keywords == derive_keywords(before.name, before.blurb)) {
+        after.keywords = derive_keywords(after.name, after.blurb);
+    }
+    bool rewrite = false;
+    if (params.contains("examples")) {
+        after.examples = lines_of(params["examples"], '\n');
+    } else if (after.blurb != before.blurb) {
+        after.examples.clear();
+        rewrite = true;
+    }
+
+    edited.roster.update(id, after);
+    if (const std::string refused = host.apply_config(std::move(edited)); !refused.empty()) {
+        return bad(refused);
+    }
+    if (rewrite && host.engine() != nullptr) {
+        host.engine()->write_examples(id);
+    }
+    return good();
 }
 
 /// Take a seat off the roster.
@@ -390,6 +490,7 @@ std::string add_expert(Host& host, const std::string& name, const std::string& b
 void roster_methods(std::vector<Method>& table) {
     table.push_back({"expert.add",      nullptr, expert_add});
     table.push_back({"expert.set",      nullptr, expert_set});
+    table.push_back({"expert.edit",     nullptr, expert_edit});
     table.push_back({"expert.remove",   nullptr, expert_remove});
     table.push_back({"providers",       providers, nullptr});
     table.push_back({"provider.save",   nullptr, provider_save});

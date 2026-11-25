@@ -5,6 +5,7 @@
 #include "test_helpers.hpp"
 
 #include <chrono>
+#include <fstream>
 
 #include "crucible/app/relocate.hpp"
 #include "crucible/llm/loaded_model.hpp"
@@ -1165,5 +1166,99 @@ TEST(a_picture_read_whole_is_read_in_one_micro_batch_or_refused) {
     CHECK(answer.find("red") != std::string::npos);
     if (answer.find("red") == std::string::npos) {
         std::printf("      it said: %s\n", answer.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The shelf
+// ---------------------------------------------------------------------------
+
+#include "crucible/session/shelf.hpp"
+
+namespace {
+
+void put_text(const std::filesystem::path& file, const std::string& text) {
+    std::filesystem::create_directories(file.parent_path());
+    std::ofstream(file) << text;
+}
+
+}  // namespace
+
+TEST(the_shelf_tells_code_from_things_to_download) {
+    using crucible::shelf::is_code;
+    using crucible::shelf::kind_of;
+    CHECK(is_code("app/index.html"));
+    CHECK(is_code("main.rs"));
+    CHECK(is_code("Makefile"));
+    CHECK(is_code("package.json"));
+    CHECK(!is_code("report.pdf"));
+    CHECK(!is_code("notes.md"));
+    CHECK(!is_code("chart.PNG"));
+    CHECK_EQ(kind_of("report.pdf"), std::string("pdf"));
+    CHECK_EQ(kind_of("Q3.xlsx"), std::string("sheet"));
+    CHECK_EQ(kind_of("chart.PNG"), std::string("image"));
+    CHECK_EQ(kind_of("release.zip"), std::string("archive"));
+    CHECK_EQ(kind_of("notes.md"), std::string("text"));
+    CHECK_EQ(kind_of("thing.xyz"), std::string("file"));
+}
+
+TEST(what_a_prompt_made_is_found_on_disk_and_nothing_it_did_not) {
+    TempDir dir;
+    const std::filesystem::path root = dir.path() / "chat";
+    put_text(root / "old.txt", "from before");
+    const auto since = std::filesystem::file_time_type::clock::now();
+    std::filesystem::last_write_time(root / "old.txt", since - std::chrono::hours(1));
+    put_text(root / "index.html", "<p>hi</p>");
+    put_text(root / "out" / "report.pdf", "%PDF");          // what a command left
+    put_text(root / "target" / "debug" / "main.o.c", "x");  // a build's own code
+    put_text(root / "node_modules" / "x" / "logo.png", "x");
+    put_text(root / ".git" / "HEAD", "ref");
+    const std::vector<std::string> made = crucible::shelf::made_since(root, since - std::chrono::seconds(2));
+    CHECK(made == std::vector<std::string>({"index.html", "out/report.pdf"}));
+}
+
+TEST(the_shelf_keeps_one_entry_a_file_and_reads_back_what_it_wrote) {
+    std::vector<crucible::shelf::Entry> entries;
+    CHECK(crucible::shelf::merge(entries, {"a.pdf", "b.html"}, 100));
+    CHECK(!crucible::shelf::merge(entries, {"a.pdf"}, 200));
+    CHECK_EQ(entries.size(), std::size_t{2});
+    CHECK_EQ(entries[0].added, std::int64_t{100});
+    const std::vector<crucible::shelf::Entry> back = crucible::shelf::from_json(crucible::shelf::to_json(entries));
+    CHECK_EQ(back.size(), std::size_t{2});
+    CHECK_EQ(back[1].path, std::string("b.html"));
+    CHECK(crucible::shelf::from_json(nlohmann::json("nonsense")).empty());
+}
+
+TEST(nothing_on_the_shelf_reaches_outside_its_folder) {
+    using crucible::shelf::inside;
+    const std::filesystem::path root = "/home/me/chat";
+    CHECK_EQ(inside(root, "out/report.pdf"), std::filesystem::path("/home/me/chat/out/report.pdf"));
+    CHECK(inside(root, "../other/secret.txt").empty());
+    CHECK(inside(root, "/etc/passwd").empty());
+    CHECK(inside(root, "").empty());
+    CHECK(inside(root, ".").empty());
+    CHECK(inside({}, "a.pdf").empty());
+}
+
+TEST(a_download_lands_under_a_name_not_taken) {
+    // The desktop's own downloads folder, wherever user-dirs.dirs puts it.
+    TempDir dir;
+    const char* was = std::getenv("XDG_CONFIG_HOME");
+    const std::string kept = was != nullptr ? was : "";
+    set_env("XDG_CONFIG_HOME", (dir.path() / "config").string());
+    put_text(dir.path() / "config" / "user-dirs.dirs",
+               "XDG_DOWNLOAD_DIR=\"" + (dir.path() / "Got").string() + "\"\n");
+    const std::filesystem::path first = crucible::shelf::download_target("report.pdf");
+#if !defined(_WIN32) && !defined(__APPLE__)
+    CHECK_EQ(first.parent_path(), dir.path() / "Got");
+#endif
+    CHECK_EQ(first.filename().string(), std::string("report.pdf"));
+    put_text(first, "%PDF");
+    CHECK_EQ(crucible::shelf::download_target("report.pdf").filename().string(), std::string("report (2).pdf"));
+    std::filesystem::remove(first);
+    if (was != nullptr) {
+        set_env("XDG_CONFIG_HOME", kept);
+    } else {
+        unset_env("XDG_CONFIG_HOME");
     }
 }

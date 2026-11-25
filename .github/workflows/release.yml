@@ -45,8 +45,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run=""
-          for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --commit "$GITHUB_SHA" \
-                        --status success --json databaseId --jq '.[].databaseId'); do
+          # The runs that passed on this commit, then those that passed on the
+          # same files under another one: next's, before main took its tree.
+          tree="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq .commit.tree.sha)"
+          candidates="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --commit "$GITHUB_SHA" \
+                          --status success --json databaseId --jq '.[].databaseId')"
+          for pair in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --status success --limit 30 \
+                          --json databaseId,headSha --jq '.[] | "\(.databaseId):\(.headSha)"'); do
+            sha="${pair#*:}"
+            [ "$sha" != "$GITHUB_SHA" ] || continue
+            other="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq .commit.tree.sha 2> /dev/null || true)"
+            [ -n "$tree" ] && [ "$other" = "$tree" ] && candidates="$candidates ${pair%%:*}"
+          done
+          for id in $candidates; do
             have="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
                       --jq '[.artifacts[] | select(.expired | not) | .name
                              | select(. == "Crucible-macOS" or . == "Crucible-Windows" or . == "Crucible-Linux"

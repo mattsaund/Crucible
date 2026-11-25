@@ -29,6 +29,26 @@ function turnWho(turn) {
     bits.map((b) => `<span>${escape(b)}</span>`).join('')}</div>`;
 }
 
+/// Who has the turn still arriving: the delegator while it chooses, then the
+/// expert it chose, in the program's color above where the reply will be,
+/// with a model's load as a ring beside the name while it loads. Read from
+/// the program's state rather than the turn's, since an expert can hand the
+/// turn to another partway through.
+function liveWho(turn) {
+  const s = state.snapshot;
+  const id = s.mood === 'routing' ? '' : s.linked || (turn.route && turn.route.expert) || '';
+  const expert = id ? (s.experts || []).find((e) => e.id === id) : null;
+  if (!expert) {
+    const problem = s.delegator_problem || '';
+    const tip = problem ? `${(s.delegator || {}).model}: ${problem}\nRouting on keywords` : 'Choosing an expert';
+    return `<div class="who live" title="${escape(tip)}"><span class="seat">◆ Delegator</span>${
+      s.delegator_progress !== undefined ? ring(s.delegator_progress) : ''}</div>`;
+  }
+  return `<div class="who live" title="${escape(expert.model || '')}"><span class="seat">◆ ${escape(expert.name)}</span>${
+    expert.phase === 'loading' ? ring(expert.progress) : ''}${
+    expert.provider ? `<span>answered by ${escape(expert.provider)}</span>` : ''}</div>`;
+}
+
 /// What the turn cost, under it.
 function turnMeta(turn) {
   const bits = [];
@@ -116,7 +136,11 @@ function turnView(turn, index, busy, where) {
   if (turn.failed) {
     reply = `<div class="body failed">${escape(turn.reply || 'it could not answer')}</div>`;
   } else if (!turn.reply && turn.streaming) {
-    reply = '<div class="body thinking">...</div>';
+    // While the delegator chooses or a model loads, the name above says so.
+    // Once an expert has the turn, a word, and none beside a fold of its
+    // thinking, which already says it.
+    const waiting = state.snapshot.mood === 'routing' || state.snapshot.mood === 'loading';
+    reply = waiting || turn.reasoning ? '' : '<div class="body thinking">thinking</div>';
   } else if (live) {
     reply = `<div class="body md" id="${where}-reply">${streamedMarkdown(turn.reply, `${where}-reply`)}</div>`;
   } else {
@@ -137,7 +161,7 @@ function turnView(turn, index, busy, where) {
     : '';
   return `${turnControls(turn, index, busy)}
       ${attachedChips(turn.attachments)}${turn.prompt ? `<div class="said">${escape(turn.prompt)}</div>` : ''}
-      ${turnWho(turn)}${thought}${turnActions(turn)}${reply}${turnMeta(turn)}`;
+      ${turn.streaming ? liveWho(turn) : turnWho(turn)}${thought}${turnActions(turn)}${reply}${turnMeta(turn)}`;
 }
 
 /// The markup for every turn, remembered.
@@ -196,6 +220,9 @@ function turnsView(turns, from, where) {
   const at = where || 'transcript';
   const shown = turnsShown[at] || new Set();
   const first = at === 'transcript' ? Math.max(from, transcriptStart(turns)) : from;
+  // The names above the replies are the roster's, so a renamed expert is a
+  // different drawing of every turn it answered.
+  const names = (state.snapshot.experts || []).map((e) => `${e.id}=${e.name}`).join(',');
   const out = [];
   for (let index = first; index < turns.length; index += 1) {
     const turn = turns[index];
@@ -210,7 +237,7 @@ function turnsView(turns, from, where) {
     const content = turn.rev ? `r${turn.rev}` : `${(turn.attachments || []).length}|${turn.prompt.length}|${
       turn.reply.length}|${(turn.reasoning || '').length}|${(turn.actions || []).length}|${
       turn.failed}|${turn.canceled}|${turn.output_tokens}`;
-    const signature = `${thoughtKey(index)}|${busy}|${thoughtsOpen.has(thoughtKey(index))}|${content}`;
+    const signature = `${thoughtKey(index)}|${busy}|${thoughtsOpen.has(thoughtKey(index))}|${content}|${names}`;
     if (shown.has(`t${index}|${signature}`)) {
       out.push(`<div class="turn" data-key="t${index}" data-sig="${escape(signature)}" data-stub></div>`);
       continue;
@@ -439,9 +466,9 @@ function routeTarget() {
   return id && pickableExperts().some((e) => e.id === id) ? id : '';
 }
 
-function pickerButton(which, mode, icon, label, title) {
+function pickerButton(which, mode, icon, label, title, trouble) {
   const open = state.menu === `${which}:${mode}`;
-  return `<button type="button" class="picker" data-act="${which}-menu" aria-haspopup="menu"
+  return `<button type="button" class="picker${trouble ? ' trouble' : ''}" data-act="${which}-menu" aria-haspopup="menu"
       aria-expanded="${open}"${title ? ` title="${escape(title)}"` : ''}>${icon}<span class="label">${
       escape(label)}</span>${PICK.chevron}</button>`;
 }
@@ -457,15 +484,20 @@ function routePicker(mode) {
   const label = target ? expertName(target) : 'Delegator';
   const open = state.menu === `route:${mode}`;
   const experts = pickableExperts();
+  // A delegator that would not load is said here, on the one thing that
+  // names it: prompts go out on keywords until it does.
+  const problem = state.snapshot.delegator_problem || '';
+  const trouble = problem ? `${(state.snapshot.delegator || {}).model}: ${problem}\nRouting on keywords` : '';
   const menu = open ? `<div class="popmenu picks" role="menu">
       ${menuItem('route-pick', '', 'Delegator', '', !target, PICK.route)}
+      ${trouble ? `<div class="mi-note bad">${escape(trouble)}</div>` : ''}
       <div class="mi-caption">EXPERTS</div>
       ${experts.length ? experts.map((e) => menuItem('route-pick', e.id, e.name, '', target === e.id,
           `<span class="mi-seat">${e.provider ? ICONS.cloud : PICK.seat}</span>`)).join('')
         : '<div class="mi-empty">None with a model.</div>'}
     </div>` : '';
   return `<div class="menu-wrap">${pickerButton('route', mode, target ? PICK.seat : PICK.route, label,
-      target ? `Everything goes to ${label}` : 'The delegator picks the expert')}${menu}</div>`;
+      target ? `Everything goes to ${label}` : trouble || 'The delegator picks the expert', !target && !!trouble)}${menu}</div>`;
 }
 
 function effortPicker(mode) {

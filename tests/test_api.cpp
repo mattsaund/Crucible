@@ -16,7 +16,9 @@
 #include <nlohmann/json.hpp>
 
 #include "crucible/api/surface.hpp"
+#include "crucible/config/config.hpp"
 #include "crucible/lab/recipe.hpp"
+#include "crucible/routing/expert.hpp"
 
 using namespace crucible;
 using json = nlohmann::json;
@@ -39,7 +41,78 @@ json ask(api::Surface& surface, const std::string& request) {
     return json::parse(surface.handle(request), nullptr, false);
 }
 
+/// A host that keeps a configuration and takes every one it is given.
+class RosterHost : public api::Host {
+public:
+    Config      config() const override { return config_; }
+    std::string apply_config(Config config) override {
+        config_ = std::move(config);
+        return {};
+    }
+    Config config_;
+};
+
+/// The seat `id` on `host`'s roster.
+const Expert& seat_of(const RosterHost& host, const std::string& id) {
+    return host.config_.roster.at(*host.config_.roster.find(id));
+}
+
 }  // namespace
+
+TEST(an_expert_is_edited_after_it_was_made_and_keeps_its_id) {
+    RosterHost host;
+    host.config_.roster = Roster::bare();
+    std::string error;
+    Expert math;
+    math.name  = "Mathematics";
+    math.blurb = "algebra and calculus";
+    CHECK(host.config_.roster.add(math, error));
+    Expert physics;
+    physics.name  = "Physics";
+    physics.blurb = "forces and fields";
+    CHECK(host.config_.roster.add(physics, error));
+    api::Surface surface(host);
+
+    // Renamed, retagged and described again, under the id its chats are kept by.
+    json reply = ask(surface, R"({"method":"expert.edit","params":{"id":"mathematics","name":"Math Tutor",)"
+                              R"("tag":"mt","description":"proofs and geometry"}})");
+    CHECK(reply["ok"] == true);
+    CHECK_EQ(seat_of(host, "mathematics").id, ExpertId("mathematics"));
+    CHECK_EQ(seat_of(host, "mathematics").name, std::string("Math Tutor"));
+    CHECK_EQ(seat_of(host, "mathematics").tag, std::string("MT"));
+    CHECK_EQ(seat_of(host, "mathematics").blurb, std::string("proofs and geometry"));
+    // The keywords Crucible wrote follow the new description, and examples
+    // for what the seat used to be for are gone.
+    CHECK(seat_of(host, "mathematics").keywords == derive_keywords("Math Tutor", "proofs and geometry"));
+    CHECK(seat_of(host, "mathematics").examples.empty());
+
+    // Keywords and examples given are kept as given, without the empty ones.
+    reply = ask(surface, R"({"method":"expert.edit","params":{"id":"mathematics",)"
+                         R"("keywords":"proof, lemma ,","examples":"Prove it\n\nIs 7 prime?"}})");
+    CHECK(reply["ok"] == true);
+    CHECK(seat_of(host, "mathematics").keywords == std::vector<std::string>({"proof", "lemma"}));
+    CHECK(seat_of(host, "mathematics").examples == std::vector<std::string>({"Prove it", "Is 7 prime?"}));
+    // Chosen keywords stay through a new description; examples do not.
+    reply = ask(surface, R"({"method":"expert.edit","params":{"id":"mathematics","description":"number theory"}})");
+    CHECK(reply["ok"] == true);
+    CHECK(seat_of(host, "mathematics").keywords == std::vector<std::string>({"proof", "lemma"}));
+    CHECK(seat_of(host, "mathematics").examples.empty());
+
+    // Refused, and nothing changed: a name or tag another seat answers to, a
+    // tag too long, no description, and a seat that is not there.
+    const std::string physics_tag = seat_of(host, "physics").tag;
+    for (const std::string& refused : {
+             std::string(R"({"method":"expert.edit","params":{"id":"mathematics","name":"physics"}})"),
+             R"({"method":"expert.edit","params":{"id":"mathematics","tag":")" + physics_tag + R"("}})",
+             std::string(R"({"method":"expert.edit","params":{"id":"mathematics","tag":"TOOLONG"}})"),
+             std::string(R"({"method":"expert.edit","params":{"id":"mathematics","description":"  "}})"),
+             std::string(R"({"method":"expert.edit","params":{"id":"nobody","name":"Someone"}})"),
+         }) {
+        CHECK(ask(surface, refused)["ok"] == false);
+    }
+    CHECK_EQ(seat_of(host, "mathematics").name, std::string("Math Tutor"));
+    CHECK_EQ(seat_of(host, "mathematics").tag, std::string("MT"));
+}
 
 TEST(a_reply_always_has_the_same_shape_even_for_nonsense) {
     api::Surface surface = bare();

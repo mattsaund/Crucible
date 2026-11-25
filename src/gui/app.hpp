@@ -87,8 +87,12 @@ private:
     std::string           session_id() const override;
     std::string           session_name() const override;
     std::size_t           names_filed() const override { return names_filed_; }
+    std::vector<shelf::Entry> shelf_entries() const override;
+    std::uint64_t         shelf_revision() const override { return shelf_revision_; }
+    std::string           shelf_remove(const std::string& path) override;
     std::filesystem::path pending_trust() const override;
     void                  answer_trust(bool trusted) override;
+    std::string           clear_trust() override;
 
     std::string open_session(const std::string& id) override;
     std::string delete_session(const std::string& id, const std::filesystem::path& root) override;
@@ -281,6 +285,17 @@ private:
     /// change after it finished, and that is a change to save as much as a
     /// new turn is.
     std::uint64_t persisted_revision_ = 0;
+
+    // The shelf (see shelf.hpp): when the prompt running now began, so what
+    // it made can be found when it ends; how many of its actions have been
+    // looked at; and how often the shelf has changed, for the page.
+    std::optional<std::filesystem::file_time_type> made_from_;
+    std::size_t   made_actions_   = 0;
+    std::uint64_t shelf_revision_ = 0;
+
+    /// Look for what the prompt running now has made since it began, and put
+    /// it on the shelf. `finished` says the prompt is over.
+    void gather_made(bool finished);
     std::string save_error_;   ///< the last save that failed, said once
 
     /// A rebuild of Crucible's own source, when somebody asks for one. See

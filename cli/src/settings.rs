@@ -201,9 +201,15 @@ fn experts(app: &App) -> Vec<Row> {
             title.push_str("  (MISSING)");
         }
         rows.push(Row::head(&title));
-        if !e.blurb.is_empty() {
-            rows.push(Row::note(&e.blurb));
-        }
+        let words = |key: &str, between: &str| -> String {
+            seat.and_then(|x| x.get(key)).and_then(Value::as_array)
+                .map(|l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(between)).unwrap_or_default()
+        };
+        rows.push(Row::text(&format!("expert-edit:name:{}", e.id), "Name", &e.name, "", ""));
+        rows.push(Row::text(&format!("expert-edit:tag:{}", e.id), "Tag", &seat.map(|x| s(x, "tag")).unwrap_or_default(), "", "One to four letters."));
+        rows.push(Row::long(&format!("expert-edit:description:{}", e.id), "Description", &e.blurb, "Used for routing."));
+        rows.push(Row::text(&format!("expert-edit:keywords:{}", e.id), "Keywords", &words("keywords", ", "), "", "Comma separated. Used without a delegator."));
+        rows.push(Row::long(&format!("expert-edit:examples:{}", e.id), "Examples", &words("examples", "\n"), "Questions it should take, one per line."));
         rows.push(Row::picks(&format!("expert:{}", e.id), "Model", &value, model_options(app, &value, false), ""));
         rows.push(Row::button(&format!("expert-remove:{}\n{}", e.id, e.name), "Eject", "The model file stays."));
     }
@@ -615,9 +621,11 @@ fn about(app: &App) -> Vec<Row> {
     if trusted.is_empty() {
         rows.push(Row::note("None."));
     }
+    let none = trusted.is_empty();
     for folder in trusted {
         rows.push(Row::note(folder.as_str().unwrap_or("")));
     }
+    rows.push(Row::button("@trust-clear", "Clear trusted folders", "").disabled(none));
     rows
 }
 
@@ -657,6 +665,12 @@ fn doing(app: &mut App, method: &str, params: Value, refresh: &'static [&'static
 
 fn change(app: &mut App, id: &str, value: Value) {
     let text = value.as_str().unwrap_or("").to_string();
+    if let Some((field, expert)) = id.strip_prefix("expert-edit:").and_then(|rest| rest.split_once(':')) {
+        let mut params = json!({"id": expert});
+        params[field] = json!(text);
+        doing(app, "expert.edit", params, &[]);
+        return;
+    }
     if let Some(expert) = id.strip_prefix("expert:") {
         let (provider, model) = split_model(&text);
         doing(app, "expert.set", json!({"id": expert, "model": model, "provider": provider}), &[]);
@@ -984,6 +998,11 @@ fn button(app: &mut App, id: &str) {
             app.back_to_chat();
         }
         "@self-rebuild" => doing(app, "self.rebuild", json!({}), &["self.source"]),
+        "@trust-clear" => app.ask("Clear trusted folders?", &["Each folder is asked about again the next time it is opened."], "Clear", "Keep", |app, yes| {
+            if yes {
+                doing(app, "trust.clear", json!({}), &["about"]);
+            }
+        }),
         _ => {}
     }
 }

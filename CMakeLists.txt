@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     1.1.1
+    VERSION     1.5.0
     DESCRIPTION "An all in one local AI workshop: build software and chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
@@ -154,6 +154,7 @@ add_library(crucible_core STATIC
 
     # session: token accounting and per-project conversation history
     src/session/usage.cpp
+    src/session/shelf.cpp
     src/session/store.cpp
 
     # lab: making a model rather than running one -- what a custom model is

@@ -88,6 +88,11 @@ bool TrustStore::trust(const std::filesystem::path& dir) {
     return save();
 }
 
+bool TrustStore::clear() {
+    trusted_.clear();
+    return save();
+}
+
 bool TrustStore::save() const {
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::system_clock::now().time_since_epoch())

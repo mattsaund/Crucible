@@ -706,6 +706,10 @@ FileRead reading_for(const ModelParams& params, const std::vector<ComputeDevice>
     return kPrefetchHelps && cached >= 0.0 && cached < 0.8 ? FileRead::Prefetched : FileRead::Mapped;
 }
 
+bool flash_attention_outright(const ModelParams& params) {
+    return params.flash_attn && !params.path.empty() && read_model_shape(params.path).looped;
+}
+
 namespace {
 
 int resolve_threads(int configured) {
@@ -773,8 +777,9 @@ llama_context_params context_params_for(const ModelParams& params) {
     context_params.n_batch         = static_cast<std::uint32_t>(std::max(1, params.n_batch));
     context_params.n_threads       = resolve_threads(params.n_threads);
     context_params.n_threads_batch = resolve_batch_threads(params.n_threads);
-    context_params.flash_attn_type = params.flash_attn ? LLAMA_FLASH_ATTN_TYPE_AUTO
-                                                       : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    context_params.flash_attn_type = !params.flash_attn                ? LLAMA_FLASH_ATTN_TYPE_DISABLED
+                                   : flash_attention_outright(params) ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+                                                                      : LLAMA_FLASH_ATTN_TYPE_AUTO;
     // llama.cpp's default is the whole context on every layer; see
     // ModelParams::window_cache for when it is not.
     context_params.swa_full = !params.window_cache;
@@ -1752,6 +1757,17 @@ std::unique_ptr<LoadedModel> ModelHost::load(const ModelParams& requested,
 
     const auto weighed = std::chrono::steady_clock::now();
     llama_context* ctx = llama_init_from_model(model, context_params_for(params));
+    // A context grown past the seat's own for a turn's work is a ceiling, not
+    // a demand (see with_room): when the cards do not hold it after all, the
+    // seat's own is tried on the weights already loaded before giving up.
+    if (ctx == nullptr && requested.n_ctx > 0 && params.n_ctx > requested.n_ctx) {
+        note(std::filesystem::path(params.path).filename().string() + ": a context of "
+             + std::to_string(params.n_ctx) + " tokens did not fit after all, so "
+             + std::to_string(requested.n_ctx) + " as the seat asks");
+        params.n_ctx        = requested.n_ctx;
+        params.window_cache = requested.window_cache;
+        ctx = llama_init_from_model(model, context_params_for(params));
+    }
     if (ctx == nullptr) {
         llama_model_free(model);
         error = "could not create a context for " + params.path

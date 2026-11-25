@@ -813,6 +813,21 @@ TEST(a_looped_models_passes_are_layers_that_carry_only_a_cache) {
     const std::filesystem::path plain = dir.path() / "plain.gguf";
     write_sliding_gguf(plain, "plainarch", 4, 0, {});
     CHECK_EQ(read_model_shape(plain).layers, std::uint32_t{4});
+    CHECK(shape.looped);
+    CHECK(!read_model_shape(plain).looped);
+
+    // And it asks for flash attention outright, where llama.cpp's "auto"
+    // would read a pass on another card from its block's weights as a card
+    // that cannot do it, and turn it off. A plain model keeps "auto".
+    ModelParams looped_seat;
+    looped_seat.path       = file.string();
+    looped_seat.flash_attn = true;
+    CHECK(flash_attention_outright(looped_seat));
+    ModelParams plain_seat = looped_seat;
+    plain_seat.path = plain.string();
+    CHECK(!flash_attention_outright(plain_seat));
+    looped_seat.flash_attn = false;
+    CHECK(!flash_attention_outright(looped_seat));
 }
 
 TEST(the_header_says_which_layers_slide) {

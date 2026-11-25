@@ -538,6 +538,7 @@ void SessionStore::begin_new_session() {
     session_id_ = timestamp_id();
     counted_    = TokenUsage{};
     name_.clear();
+    shelf_.clear();
 }
 
 void SessionStore::adopt(std::string id) {
@@ -552,12 +553,16 @@ void SessionStore::adopt(std::string id) {
     } else {
         counted_ = TokenUsage{};
     }
-    // And its name, so the next save keeps it.
+    // And its name and its shelf, so the next save keeps them.
     name_.clear();
+    shelf_.clear();
     std::ifstream in(session_file(session_id_));
     const json document = json::parse(in, nullptr, /*allow_exceptions=*/false);
     if (document.is_object()) {
         name_ = document.value("name", "");
+        if (const auto kept = document.find("shelf"); kept != document.end()) {
+            shelf_ = shelf::from_json(*kept);
+        }
     }
 }
 
@@ -625,6 +630,9 @@ bool SessionStore::save_stored(const json& stored_turns, const TokenUsage& usage
     };
     if (!name_.empty()) {
         document["name"] = name_;
+    }
+    if (!shelf_.empty()) {
+        document["shelf"] = shelf::to_json(shelf_);
     }
 
     // Write beside the target and rename, so an interrupted save cannot leave

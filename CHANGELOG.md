@@ -6,6 +6,44 @@ macOS, Windows and Linux that its commit's checks built. Running Crucible checks
 for a newer release once a day and says so in **Settings, About**, where Update
 now installs it and keeps your config, models and history.
 
+## 1.5.0 (2026-11-25)
+
+The shelf, who is working above every reply, and Inkling 2 Mini across
+several graphics cards.
+
+- **The shelf keeps what the experts make.** Everything a chat produces is
+  listed on the shelf, newest first, and stays there with the chat. Its code is
+  one Build: Enter build opens Code, Source and Preview, and Back to shelf
+  returns to the list. Every document, picture, recording or archive has
+  Download, which saves it to your Downloads folder, and Delete. Files a
+  command made count too, so a PDF written by a script is there. Things leave
+  the shelf only when you delete them or the chat.
+- **Who is working is said above the reply.** In orange: Delegator while it
+  chooses, then the expert it chose, with the loading ring beside the name
+  while that model loads. Once the expert is working, "thinking" in gray
+  replaces the dots.
+- **A quieter side menu.** The delegator and expert lists are gone from it, and
+  so is the line above Local. A delegator that will not load says so on the
+  Delegator picker under the box.
+- **Experts can be edited after they are made.** Edit on each one in Settings,
+  Experts changes its name, tag, description, keywords and examples. Its chats
+  stay with it. The same is in the terminal's settings.
+- **Clear trusted folders** in Settings, About, and in the terminal's. Each
+  folder is asked about again the next time it is opened.
+- **Inkling 2 Mini runs across several graphics cards.** Its repeated layers
+  use weights on one card and keep their cache on another, and llama.cpp took
+  that for a card that cannot do flash attention and turned it off. Without
+  it, 32K of context asked for tens of gigabytes. Crucible now asks for flash
+  attention outright for models like it. And a context grown past a seat's own
+  for a turn's work falls back to the seat's own when it cannot be made,
+  instead of failing.
+- **A small window stays put while a model loads.** The page grew past the
+  window's edge to fit the loading status, and took everything on its right
+  with it.
+- **Faster releases.** Files already checked on one branch are not checked
+  again on another, and the runtimes start building as soon as llama.cpp
+  moves.
+
 ## 1.1.1 (2026-11-24)
 
 Inkling 2 Mini, and an install you can watch.
