@@ -153,22 +153,26 @@ function Stop-Script ([int] $Code) {
 # ---------------------------------------------------------------------------
 # Progress
 #
-# One bar, for the whole install:
+# A waterfall of everything the install does, with one bar under it for the
+# whole install, from the first check to the last download:
 #
-#     install  [##########..................]  38%  cloning the source
+#     ==> Installing compute runtimes
+#             cuda: downloading runtime-cuda-windows-x64-b1-k1.tar.gz (412.0 MB) from github.com
+#             cuda ready
+#         install  [##########..................]  38%  cuda: downloading 41.0 MB of 412.0 MB
 #
-# It is the only thing on screen while the install runs. There used to be a
-# step heading and a run of notes for every part -- what was detected, what was
-# installed, what each phase achieved -- which turned a one-line display into a
-# page of scrollback. Everything they said is in the label beside the bar, in
-# the moment it is true.
+# Every line a part prints, winget's, git's, cmake's, the program's own setup,
+# goes by above the bar as it happens. The bar stays on the bottom row and only
+# moves forward. A line that only moves a number on from the last moves the
+# bar instead of being written again.
 #
 # The figure is not a guess about elapsed time. Each part carries a weight and
 # the parts are nothing like equal in length: building is minutes and checking
-# for git is milliseconds, so a bar that moved a quarter per part would sit at
-# 75% for almost the whole install.
+# for git is milliseconds, so a bar that moved a seventh per part would sit
+# most of the way along for almost the whole install.
 # ---------------------------------------------------------------------------
-$StepWeights = @(2, 26, 8, 64)   # system, build tools, source, build+install
+# system, build tools, source, build and install, Python, runtimes, fine-tuner
+$StepWeights = @(1, 18, 4, 41, 6, 10, 20)
 $IsConsole   = $Host.Name -eq 'ConsoleHost'
 
 function Get-OverallPercent {
@@ -226,6 +230,7 @@ function Step-Begin ($Label) {
     $State.StepIndex = $State.StepIndex + 1
     $State.StepPct   = 0
     $State.BarLabel  = $Label
+    Write-Line "==> $Label" 'Cyan' ''
     Show-Bar
 }
 
@@ -271,24 +276,20 @@ function Write-Banner {
 '@ -ForegroundColor DarkYellow
 }
 
-# Notes speak only where there is no bar to speak for them -- the dry run, and
-# the uninstall. A warning is exempt: it says something is not as asked, and
-# that has to reach the screen whatever else is on it.
-function Write-Note ($Message) {
-    if (-not $State.BarShown) { Write-Host "    $Message" -ForegroundColor DarkGray }
-}
-function Write-Ok   ($Message) {
-    if (-not $State.BarShown) { Write-Host "    OK $Message" -ForegroundColor Green }
-}
-function Write-Warn ($Message) {
-    # Only put the bar back if there was one. After Stop-Progress there is
-    # not, and redrawing it would leave a finished 100% bar sitting under the
-    # closing summary.
+# One line of the waterfall, written above the bar, which goes back under it.
+# Only if there was one: after Stop-Progress there is not, and redrawing it
+# would leave a finished 100% bar sitting under the closing summary.
+function Write-Line ([string] $Text, [string] $Color = 'DarkGray', [string] $Indent = '        ') {
     $was = $State.BarShown
     Hide-Bar
-    Write-Host "    !  $Message" -ForegroundColor Yellow
+    Write-Host "$Indent$Text" -ForegroundColor $Color
     if ($was) { Show-Bar }
 }
+
+# All of it is said, bar or no bar.
+function Write-Note ($Message) { Write-Line $Message 'Gray' '    ' }
+function Write-Ok   ($Message) { Write-Line "OK $Message" 'Green' '    ' }
+function Write-Warn ($Message) { Write-Line "!  $Message" 'Yellow' '    ' }
 function Stop-Install ($Message) {
     Hide-Bar
     Write-Host ""
@@ -330,6 +331,80 @@ function Invoke-Native ([string] $Program, [string[]] $Arguments = @()) {
     & $Program @Arguments 2>&1 | ForEach-Object { "$_" }
 }
 
+# A size as a program wrote it, "41.0 MB", in bytes. Read the same way
+# whatever this machine takes a decimal point to be.
+function ConvertFrom-Size ([string] $Value, [string] $Unit) {
+    $number = 0.0
+    if (-not [double]::TryParse($Value, [Globalization.NumberStyles]::Float,
+                                [Globalization.CultureInfo]::InvariantCulture, [ref] $number)) {
+        return 0
+    }
+    $scale = 1
+    if ($Unit -like 'K*') { $scale = 1KB }
+    elseif ($Unit -like 'M*') { $scale = 1MB }
+    elseif ($Unit -like 'G*') { $scale = 1GB }
+    elseif ($Unit -like 'T*') { $scale = 1TB }
+    return $number * $scale
+}
+
+# A program run as Invoke-Native runs one, with everything it says in the
+# waterfall above the bar. A line that only moves a number on from the last
+# ("downloading 41.0 MB of 412.0 MB", git's "Receiving objects: 45%") moves
+# the bar between $From and $To of the part instead of being written again.
+# Where the program first names the parts it goes through ("Installing compute
+# runtimes: cpu cuda"), each takes its share. Hands back every line, for
+# Show-Tail when it fails; whether it did is $LASTEXITCODE.
+function Invoke-Streamed ([string] $Program, [string[]] $Arguments = @(), [int] $From = 0, [int] $To = 100) {
+    $ErrorActionPreference = 'Continue'
+    $said  = ''
+    $parts = @()
+    $part  = 0
+    & $Program @Arguments 2>&1 | ForEach-Object {
+        $line = "$_"
+        $line
+        $text = (($line -split "`r")[-1] -replace "$([char]27)\[[0-9;?]*[A-Za-z]", '').Trim()
+        $text = $text -replace '^remote: ', ''
+        # winget's spinner and the glyphs of its bar say nothing a line can.
+        if ($text -notmatch '[A-Za-z]{2}') { return }
+
+        if ($text -match '^Installing compute runtimes: (.+)$') { $parts = @($Matches[1] -split ' ') }
+        if ($parts.Count -gt 0 -and $text -match '^([A-Za-z0-9_.+-]+):? ') {
+            $index = [Array]::IndexOf($parts, $Matches[1])
+            if ($index -ge 0) { $part = $index }
+        }
+
+        # The label keeps sizes but not a percentage: the bar has the one
+        # percentage on the screen.
+        $pct   = -1
+        $label = $text
+        if ($text -match '(\d{1,3})%$') {
+            $pct   = [int]$Matches[1]
+            $label = $text.Substring(0, $text.Length - $Matches[0].Length).TrimEnd()
+        } elseif ($text -match '^Receiving objects:\s+(\d{1,3})%') {
+            $pct   = [int]$Matches[1]
+            $label = 'receiving objects'
+        } elseif ($text -match '([0-9.]+) ?([KMGT]i?B) (of|/) (about )?([0-9.]+) ?([KMGT]i?B)') {
+            $all = ConvertFrom-Size $Matches[5] $Matches[6]
+            if ($all -gt 0) { $pct = [int](100 * (ConvertFrom-Size $Matches[1] $Matches[2]) / $all) }
+        }
+        if ($pct -ge 0) {
+            $pct = [Math]::Min(100, $pct)
+            if ($parts.Count -gt 0) { $pct = [int](($part * 100 + $pct) / $parts.Count) }
+            Step-At ($From + [int](($To - $From) * $pct / 100)) $label
+        }
+
+        # Its figures out, a size with its unit as one: "0 B of 72.7 MB" and
+        # "4.9 MB of 72.7 MB" are the same line moving on.
+        $shape = ($text -replace '[0-9][0-9.]* ?[KMGT]?i?B', '#') -replace '[0-9]', ''
+        if ($shape -eq $said) { return }
+        $said = $shape
+        # winget's "1.00 MB / 2.00 MB" is only ever how far along it is.
+        if ($text -match '^[0-9.]+ ?[KMGT]i?B / ') { return }
+        $color = if ($text -match 'was not installed|could not be|failed:') { 'Yellow' } else { 'DarkGray' }
+        Write-Line $text $color
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Dependencies
 #
@@ -338,16 +413,16 @@ function Invoke-Native ([string] $Program, [string[]] $Arguments = @()) {
 # not, this says what to install by hand rather than installing a package
 # manager to install a compiler.
 # ---------------------------------------------------------------------------
-function Install-Package ($Id, $What, [string] $Override = '') {
+function Install-Package ($Id, $What, [string] $Override = '', [int] $From = 0, [int] $To = 0) {
     if (-not (Test-Command 'winget')) {
         Stop-Install "$What could not be found, and winget is not here to install it. Install $What by hand, then run this again."
     }
     $State.BarLabel = "installing $What"
-    Show-Bar
+    Write-Note "installing $What with winget ($Id)"
     $arguments = @('install', '--id', $Id, '--exact', '--silent',
                    '--accept-source-agreements', '--accept-package-agreements')
     if ($Override) { $arguments += @('--override', $Override) }
-    $State.InstallLog = @(Invoke-Native 'winget' $arguments)
+    $State.InstallLog = @(Invoke-Streamed 'winget' $arguments $From ([Math]::Max($From, $To)))
     # winget puts new tools on PATH for future sessions, not this one.
     $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
                 [Environment]::GetEnvironmentVariable('PATH', 'User')
@@ -389,7 +464,7 @@ function Install-BuildTools {
         # stopped. --wait keeps the bootstrapper from returning before the
         # install it started underneath has finished.
         Install-Package 'Microsoft.VisualStudio.2022.BuildTools' 'the Visual Studio build tools' `
-            '--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
+            '--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended' 66 100
         return
     }
 
@@ -402,6 +477,7 @@ function Install-BuildTools {
     $workload = if ("$product" -like '*BuildTools') { 'Microsoft.VisualStudio.Workload.VCTools' } else { 'Microsoft.VisualStudio.Workload.NativeDesktop' }
     $setup    = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\setup.exe'
     $State.BarLabel = 'adding the C++ compiler to Visual Studio'
+    Write-Note "adding the C++ compiler to the Visual Studio at $existing"
     Show-Bar
     $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
         'modify', '--installPath', "`"$existing`"", '--add', $workload,
@@ -608,20 +684,32 @@ function Invoke-Install {
         Stop-Script 0
     }
 
-    Step-Begin 'checking the machine'
+    # A part left out gives its share of the bar to the build.
+    if ($NoRuntimes) { $StepWeights[3] += $StepWeights[5]; $StepWeights[5] = 0 }
+    if ($NoTrainer)  { $StepWeights[3] += $StepWeights[6]; $StepWeights[6] = 0 }
+
+    Step-Begin 'Checking the machine'
     $jobCount = if ($Jobs -gt 0) { $Jobs } else { [Environment]::ProcessorCount }
+    Write-Note "Windows $([Environment]::OSVersion.Version), $jobCount processors"
+    Write-Note "installing into $Prefix"
     Step-Done
 
-    Step-Begin 'installing the build tools'
-    if (-not $NoDeps) {
+    Step-Begin 'Installing the build tools'
+    if ($NoDeps) {
+        Write-Note 'skipping the build tools (-NoDeps)'
+    } else {
         if (-not (Test-Command 'git')) {
-            Install-Package 'Git.Git' 'git'
+            Install-Package 'Git.Git' 'git' '' 0 33
             Assert-Installed (Test-Command 'git') 'git'
+        } else {
+            Write-Note 'git is already here'
         }
         Step-At 33
         if (-not (Test-Command 'cmake')) {
-            Install-Package 'Kitware.CMake' 'cmake'
+            Install-Package 'Kitware.CMake' 'cmake' '' 33 66
             Assert-Installed (Test-Command 'cmake') 'cmake'
+        } else {
+            Write-Note 'cmake is already here'
         }
         Step-At 66
         if ($null -eq (Find-VisualStudio)) {
@@ -638,8 +726,10 @@ Visual Studio Build Tools, then run this again:
     }
     Step-Done
 
-    Step-Begin 'fetching the source'
-    if ($fetch) {
+    Step-Begin 'Fetching the source'
+    if (-not $fetch) {
+        Write-Note "building the checkout at $buildSrc"
+    } else {
         if ((Test-Path $SrcDir) -and -not (Test-Path (Join-Path $SrcDir '.git'))) {
             # Left behind by a clone that did not finish. git will not clone
             # into a directory that is not empty, so one failed first attempt
@@ -647,13 +737,15 @@ Visual Studio Build Tools, then run this again:
             Remove-Item -Recurse -Force $SrcDir
         }
         if (Test-Path (Join-Path $SrcDir '.git')) {
-            $fetchLog = @(Invoke-Native 'git' @('-C', $SrcDir, 'fetch', '--depth', '1', 'origin', $Branch))
+            Write-Note "updating $SrcDir from $RepoUrl ($Branch)"
+            $fetchLog = @(Invoke-Streamed 'git' @('-C', $SrcDir, 'fetch', '--progress', '--depth', '1', 'origin', $Branch))
             if ($LASTEXITCODE -eq 0) {
                 $fetchLog += @(Invoke-Native 'git' @('-C', $SrcDir, 'checkout', '-q', 'FETCH_HEAD'))
             }
         } else {
+            Write-Note "cloning $RepoUrl ($Branch) into $SrcDir"
             New-Item -ItemType Directory -Force -Path (Split-Path $SrcDir) | Out-Null
-            $fetchLog = @(Invoke-Native 'git' @('clone', '--depth', '1', '--branch', $Branch, $RepoUrl, $SrcDir))
+            $fetchLog = @(Invoke-Streamed 'git' @('clone', '--progress', '--depth', '1', '--branch', $Branch, $RepoUrl, $SrcDir))
         }
         if ($LASTEXITCODE -ne 0) {
             Show-Tail $fetchLog
@@ -662,7 +754,8 @@ Visual Studio Build Tools, then run this again:
     }
     Step-Done
 
-    Step-Begin 'configuring'
+    Step-Begin 'Building Crucible'
+    $State.BarLabel = 'configuring'
     $buildDir = Join-Path $buildSrc 'build'
 
     # Ninja when it is there and MSBuild when it is not. Ninja is several times
@@ -677,7 +770,7 @@ Visual Studio Build Tools, then run this again:
         # builds and runs them on every push.
         '-DCRUCIBLE_BUILD_TESTS=OFF')
 
-    $configureLog = @(Invoke-Native 'cmake' $configure)
+    $configureLog = @(Invoke-Streamed 'cmake' $configure 0 12)
     if ($LASTEXITCODE -ne 0 -and (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
         # Configure failed over a build directory that was already there. By
         # far the likeliest reason is a cache from an earlier run with another
@@ -686,7 +779,7 @@ Visual Studio Build Tools, then run this again:
         # thing install.sh and the runtime builder do.
         Write-Warn 'the existing build directory is stale; clearing it and trying again'
         Remove-Item -Recurse -Force $buildDir
-        $configureLog = @(Invoke-Native 'cmake' $configure)
+        $configureLog = @(Invoke-Streamed 'cmake' $configure 0 12)
     }
     if ($LASTEXITCODE -ne 0) {
         Show-Tail $configureLog 'CMake Error|error:'
@@ -710,6 +803,8 @@ Visual Studio Build Tools, then run this again:
                 $done = [int](100 * [int]$Matches[1] / [int]$Matches[2])
             }
             if ($done -ge 0) { Step-At (12 + [int]($done * 0.82)) 'compiling' }
+            $shown = ("$_" -replace '^\s*\[\s*\d+(%|/\d+)\]\s*', '').Trim()
+            if ($shown) { Write-Line $shown }
         }
     if ($LASTEXITCODE -ne 0) {
         Show-Tail $buildLog
@@ -721,8 +816,8 @@ Visual Studio Build Tools, then run this again:
     # and ggml carry their own install rules written for people installing them
     # as a library, and a plain install would scatter their headers and import
     # libraries through the prefix.
-    $installLog = @(Invoke-Native 'cmake' @('--install', $buildDir, '--config', 'Release',
-                                            '--component', 'crucible'))
+    $installLog = @(Invoke-Streamed 'cmake' @('--install', $buildDir, '--config', 'Release',
+                                              '--component', 'crucible') 94 100)
     if ($LASTEXITCODE -ne 0) {
         Show-Tail $installLog
         Stop-Install 'the install failed'
@@ -739,40 +834,41 @@ Visual Studio Build Tools, then run this again:
         [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
         $addedToPath = $true
     }
+    Step-Done
+
     # Crucible's own Python, which routing and the chat run on and the trainer is
     # built from. Always, -NoTrainer or not: without it no prompt is routed.
     # Never fatal: the window fetches it on first start if this could not.
-    Stop-Progress
-    Write-Host ''
+    # It, the runtimes and the fine-tuner all go under the same bar.
     Step-Begin "Fetching Crucible's Python"
-    & (Join-Path $binDir 'crucible.exe') --install-python
+    $null = @(Invoke-Streamed (Join-Path $binDir 'crucible.exe') @('--install-python'))
     $pythonReady = ($LASTEXITCODE -eq 0)
     if (-not $pythonReady) {
-        Write-Host ''
         Write-Warn "Crucible's Python did not install. The window will try again when it starts."
         Write-Note "or try again now with:  $(Join-Path $binDir 'crucible.exe') --install-python"
     }
+    Step-Done
 
     # The compute backends. Quick -- tens of megabytes over the wire -- so they
     # go before the fine-tuner, and a machine that gives up partway through
     # the big download still ends up able to run a model.
     $runtimesReady = $false
-    if (-not $NoRuntimes) {
-        Stop-Progress
-        Write-Host ''
-        Step-Begin 'Installing compute runtimes'
-        & (Join-Path $binDir 'crucible.exe') --install-runtimes
+    Step-Begin 'Installing compute runtimes'
+    if ($NoRuntimes) {
+        Write-Note 'skipping the compute runtimes (-NoRuntimes)'
+    } else {
+        $null = @(Invoke-Streamed (Join-Path $binDir 'crucible.exe') @('--install-runtimes'))
         # 2 is "already in place", which is what an update finds when
         # llama.cpp has not moved. Read as a failure, it warned on every such
         # update.
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
             $runtimesReady = $true
         } else {
-            Write-Host ''
             Write-Warn 'not every runtime installed. Crucible will use whichever did.'
             Write-Note "see what is there with:  $(Join-Path $binDir 'crucible.exe') --runtime-status"
         }
     }
+    Step-Done
 
     # The fine-tuner's Python environment, done by the program rather than
     # here: `crucible --install-trainer` drives the same code the settings
@@ -784,19 +880,18 @@ Visual Studio Build Tools, then run this again:
     # reason to fail an install of a program that runs models perfectly well
     # without a trainer.
     $trainerReady = $false
-    if (-not $NoTrainer) {
-        Stop-Progress
-        Write-Host ''
-        Step-Begin 'Setting up the fine-tuner'
+    Step-Begin 'Setting up the fine-tuner'
+    if ($NoTrainer) {
+        Write-Note 'skipping the fine-tuner (-NoTrainer)'
+    } else {
         $trainerArgs = @('--install-trainer')
         if ($TrainerFlavor) { $trainerArgs += @('--trainer-flavor', $TrainerFlavor) }
-        & (Join-Path $binDir 'crucible.exe') @trainerArgs
+        $null = @(Invoke-Streamed (Join-Path $binDir 'crucible.exe') $trainerArgs)
         # 2 is "already in place", as it is for the runtimes.
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
             $trainerReady = $true
         } else {
-            Write-Host ''
-            Write-Warn 'the fine-tuner is not set up. Crucible works without it; training does not.'
+            Write-Warn 'the fine-tuner is not set up. Crucible works without it, but training does not.'
             Write-Note "try again later with:  $(Join-Path $binDir 'crucible.exe') --install-trainer"
         }
     }

@@ -6,6 +6,31 @@ macOS, Windows and Linux that its commit's checks built. Running Crucible checks
 for a newer release once a day and says so in **Settings, About**, where Update
 now installs it and keeps your config, models and history.
 
+## 1.1.1 (2026-11-24)
+
+Inkling 2 Mini, and an install you can watch.
+
+- **Inkling 2 Mini runs.** llama.cpp moved to b12701, which runs
+  `inkling2_loop` models with their vision projector and their tool calls.
+  Crucible was telling people its llama.cpp could not run one yet.
+- **Models that loop over their layers are planned right.** Inkling 2 Mini runs
+  twelve of its layers three times, and every pass keeps a cache of its own.
+  The plan for which layers go on which graphics card now counts every pass,
+  the way llama.cpp lays them out, instead of only the layers in the file.
+- **The installer shows everything it does.** A heading for each part, and
+  under it every line: what it found, each download with its size and where it
+  comes from, what the package manager, git and CMake print, and every package
+  of the fine-tuner. One bar sits under all of it for the whole install, and
+  the questions it asks are the same. Python, the runtimes and the fine-tuner
+  used to take the bar down and draw progress of their own. They run under the
+  one bar now, on Linux, macOS and Windows.
+- **A runtime's download says how far along it is**, and names the file, its
+  size and the site it comes from, in Settings and in the terminal. So does
+  each of NVIDIA's libraries for the CUDA runtime.
+- `crucible --install-runtimes`, `--install-python` and `--install-trainer`
+  write plain lines when their output goes to a file or another program, one
+  for each step and each download, instead of redrawing one line in place.
+
 ## 1.1.0 (2026-11-23)
 
 Getting the normal chat to finish real work, making the program faster, and

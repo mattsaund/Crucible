@@ -22,6 +22,7 @@
 // one string in the program that must not be.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -93,8 +94,14 @@ Response send(const Request& request, const std::function<bool()>& stop = {});
 /// Fetch `url` into the file at `to`, following redirects. For the downloads
 /// that are too large to hold: a prebuilt runtime is hundreds of megabytes.
 /// Ended by shut_down() like any other request, and by `stop` when given.
+/// `arrived`, when given, is told how many bytes are in, a few times a second.
 bool download(const std::string& url, const std::filesystem::path& to,
-              int timeout_seconds, std::string& error, const std::function<bool()>& stop = {});
+              int timeout_seconds, std::string& error, const std::function<bool()>& stop = {},
+              const std::function<void(std::uint64_t)>& arrived = {});
+
+/// The host a URL names, "github.com" for a release asset: what a line about
+/// a download says it is coming from.
+std::string host_of(const std::string& url);
 
 /// Stop every request in flight, and refuse to start another.
 ///

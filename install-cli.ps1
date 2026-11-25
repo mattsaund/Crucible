@@ -59,8 +59,9 @@ try {
     } else {
         $url = if ($Version) { "https://github.com/$repo/releases/download/$Version/$asset" }
                else { "https://github.com/$repo/releases/latest/download/$asset" }
-        Write-Host 'Downloading Crucible CLI'
+        Write-Host "Downloading $asset, $(if ($Version) { $Version } else { 'the newest release' }), from github.com"
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip
+        Write-Host ("  {0:N1} MB downloaded" -f ((Get-Item $zip).Length / 1MB))
         $expected = ''
         try {
             $sum = Invoke-WebRequest -UseBasicParsing -Uri "$url.sha256"
@@ -70,7 +71,10 @@ try {
     if ($expected -and ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $expected.ToUpper())) {
         throw 'The download is damaged. Try again.'
     }
+    if ($expected) { Write-Host "  checksum matches $asset.sha256" }
+    else { Write-Host '  no checksum published with it, so none was checked' }
 
+    Write-Host "Unpacking into $root"
     Expand-Archive -Path $zip -DestinationPath $work -Force
     $unpacked = Join-Path $work 'cruciblecli'
     foreach ($needed in 'bin\cruciblecli.exe', 'bin\crucible-engine.exe') {
@@ -98,6 +102,7 @@ try {
 
 if ($parts -notcontains $bin) {
     Set-UserPath (@($parts) + $bin)
+    Write-Host "Added $bin to your PATH"
 }
 if (($env:PATH -split ';') -notcontains $bin) { $env:PATH = "$env:PATH;$bin" }
 

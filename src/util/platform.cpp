@@ -31,6 +31,14 @@ bool stdin_is_a_terminal() {
 #endif
 }
 
+bool stdout_is_a_terminal() {
+#if defined(_WIN32)
+    return ::_isatty(::_fileno(stdout)) != 0;
+#else
+    return ::isatty(STDOUT_FILENO) != 0;
+#endif
+}
+
 void use_utf8_console() {
 #if defined(_WIN32)
     // Output only. The input code page belongs to whoever is reading keys, and

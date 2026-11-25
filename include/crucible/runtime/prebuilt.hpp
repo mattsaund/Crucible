@@ -20,6 +20,7 @@
 // to the user.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -71,7 +72,9 @@ std::string releases_url();
 /// Walks every release rather than only the newest: the asset is keyed to a
 /// llama.cpp tag, and the release that first shipped that tag keeps carrying it
 /// after newer Crucible releases have moved on.
-std::string find_asset(std::string_view releases_json, std::string_view name);
+/// `bytes`, when given, receives the asset's size, or 0 when the reply has none.
+std::string find_asset(std::string_view releases_json, std::string_view name,
+                       std::uint64_t* bytes = nullptr);
 
 /// Ask GitHub for the release list. Blocking.
 bool fetch_releases(std::string& body, std::string& error);
@@ -83,7 +86,7 @@ bool fetch_releases(std::string& body, std::string& error);
 /// before writing a manifest entry that claims it did.
 bool install(BackendKind kind, const std::string& url, const std::filesystem::path& into,
              std::vector<std::filesystem::path>& written, std::string& error,
-             const std::function<void(std::string)>& say);
+             const std::function<void(std::string)>& say, std::uint64_t bytes = 0);
 
 /// The whole thing: is there one, and can it be put in place? False means
 /// "compile it", not "something went wrong" -- unless `error` says what did:

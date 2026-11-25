@@ -18,6 +18,9 @@ BIN_DIR="$HOME_DIR/.local/bin"
 MARK="# added by the cruciblecli installer"
 
 say()  { printf '%s\n' "$*"; }
+# A size in bytes, as people write it.
+human() { awk -v b="$1" 'BEGIN { split("B KB MB GB", u); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ }
+                                  printf (i == 1 ? "%d %s" : "%.1f %s"), b, u[i] }'; }
 die()  { printf 'cruciblecli: %s\n' "$*" >&2; exit 1; }
 
 VERSION=""
@@ -94,8 +97,9 @@ if [ -n "${CRUCIBLE_CLI_ARCHIVE:-}" ]; then
         cp "$CRUCIBLE_CLI_ARCHIVE.sha256" "$WORK/$ASSET.sha256"
     fi
 else
-    say "Downloading Crucible CLI"
+    say "Downloading $ASSET, ${VERSION:-the newest release}, from github.com"
     fetch "$URL" "$WORK/$ASSET" || die "could not download $URL"
+    say "  $(human "$(wc -c < "$WORK/$ASSET" | tr -d ' ')") downloaded"
     # The checksum is checked when the release has one.
     if ! fetch "$URL.sha256" "$WORK/$ASSET.sha256" 2>/dev/null; then
         rm -f "${WORK:?}/${ASSET:?}.sha256"
@@ -111,8 +115,12 @@ if [ -f "$WORK/$ASSET.sha256" ]; then
             shasum -a 256 -c "$ASSET.sha256" >/dev/null 2>&1
         fi
     ) || die "the download is damaged. Try again."
+    say "  checksum matches $ASSET.sha256"
+else
+    say "  no checksum published with it, so none was checked"
 fi
 
+say "Unpacking into $LIB_DIR"
 tar -xzf "$WORK/$ASSET" -C "$WORK" || die "the download could not be unpacked"
 [ -x "$WORK/cruciblecli/bin/cruciblecli" ] || die "the download has no cruciblecli in it"
 [ -x "$WORK/cruciblecli/bin/crucible-engine" ] || die "the download has no engine in it"
@@ -127,6 +135,7 @@ fi
 mv "$LIB_DIR.new" "$LIB_DIR"
 rm -rf "${LIB_DIR:?}.old"
 ln -sf "$LIB_DIR/bin/cruciblecli" "$BIN_DIR/cruciblecli"
+say "Linked $BIN_DIR/cruciblecli"
 
 # So that it can be typed in any terminal from now on.
 on_path=0
@@ -138,16 +147,19 @@ if [ "$on_path" = 0 ]; then
     found="$(profiles)"
     if [ -z "$found" ]; then
         printf '%s\n' "$line" > "$HOME_DIR/.profile"
+        say "Added $BIN_DIR to PATH in $HOME_DIR/.profile"
     else
         printf '%s\n' "$found" | while IFS= read -r file; do
             if ! grep -qF "$MARK" "$file"; then
                 printf '\n%s\n' "$line" >> "$file"
+                say "Added $BIN_DIR to PATH in $file"
             fi
         done
     fi
     if command -v fish >/dev/null 2>&1; then
         mkdir -p "$HOME_DIR/.config/fish/conf.d"
         printf 'fish_add_path -g $HOME/.local/bin %s\n' "$MARK" > "$HOME_DIR/.config/fish/conf.d/cruciblecli.fish"
+        say "Added $BIN_DIR to PATH for fish"
     fi
 fi
 

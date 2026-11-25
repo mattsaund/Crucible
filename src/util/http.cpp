@@ -424,8 +424,18 @@ Response send(const Request& request, const std::function<bool()>& stop) {
     return response;
 }
 
+std::string host_of(const std::string& url) {
+    const std::size_t scheme = url.find("://");
+    const std::size_t from   = scheme == std::string::npos ? 0 : scheme + 3;
+    const std::size_t end    = url.find_first_of("/?#", from);
+    std::string       host   = url.substr(from, end == std::string::npos ? std::string::npos : end - from);
+    const std::size_t at     = host.rfind('@');
+    return at == std::string::npos ? host : host.substr(at + 1);
+}
+
 bool download(const std::string& url, const std::filesystem::path& to,
-              int timeout_seconds, std::string& error, const std::function<bool()>& stop) {
+              int timeout_seconds, std::string& error, const std::function<bool()>& stop,
+              const std::function<void(std::uint64_t)>& arrived) {
     if (!available(error)) {
         return false;
     }
@@ -438,11 +448,26 @@ bool download(const std::string& url, const std::filesystem::path& to,
     // with the window, as every request is: a runtime half fetched is no
     // reason for a program nobody can see to go on for half an hour.
     const int seconds = std::max(timeout_seconds, 1);
+    // How much is in, read off the file curl is writing, from the loop that
+    // is waiting on curl anyway.
+    auto          looked = std::chrono::steady_clock::now();
+    std::uint64_t told   = 0;
+    const auto    watch  = [&] {
+        if (arrived && std::chrono::steady_clock::now() - looked >= std::chrono::milliseconds(250)) {
+            looked = std::chrono::steady_clock::now();
+            std::error_code      ec;
+            const std::uintmax_t size = std::filesystem::file_size(to, ec);
+            if (!ec && size != told) {
+                told = size;
+                arrived(size);
+            }
+        }
+        return g_closed.load() || (stop && stop());
+    };
     const Ran ran = run({"curl", "--location", "--fail", "--silent", "--show-error",
                          "--retry", "2", "--retry-delay", "2",
                          "--max-time", std::to_string(seconds), "--output", to.string(), url},
-                        {}, {}, seconds + 30,
-                        [&stop] { return g_closed.load() || (stop && stop()); }, 64 * 1024);
+                        {}, {}, seconds + 30, watch, 64 * 1024);
     if (!ran.started) {
         error = ran.error;
         return false;

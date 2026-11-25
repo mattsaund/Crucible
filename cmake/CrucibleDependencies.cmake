@@ -41,7 +41,7 @@ find_package(Threads REQUIRED)
 # the tag it was first configured with and went on building that one. The
 # override below builds against another. (runtimes.yml reads the tag from the
 # first line here that names it.)
-set(CRUCIBLE_LLAMA_TAG b11846)
+set(CRUCIBLE_LLAMA_TAG b12701)
 set(CRUCIBLE_LLAMA_TAG_OVERRIDE "" CACHE STRING "llama.cpp git tag to build against instead of this version's")
 if(CRUCIBLE_LLAMA_TAG_OVERRIDE)
     set(CRUCIBLE_LLAMA_TAG ${CRUCIBLE_LLAMA_TAG_OVERRIDE})
@@ -696,6 +696,7 @@ add_library(crucible_llama_chat STATIC
     "${_chat_dir}/chat-auto-parser-helpers.cpp"
     "${_chat_dir}/chat-diff-analyzer.cpp"
     "${_chat_dir}/chat-peg-parser.cpp"
+    "${_chat_dir}/chat-tts-norm.cpp"
     "${_chat_dir}/peg-parser.cpp"
     "${_chat_dir}/json.cpp"
     "${_chat_dir}/json-schema.cpp"

@@ -15,9 +15,11 @@
 // its warnings go where llama.cpp's own do, Crucible's log, and nothing below
 // a warning goes anywhere.
 #include <algorithm>
+#include <climits>
 #include <cstdarg>
 #include <cstdio>
 #include <limits>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +29,26 @@
 #include "sampling.h"
 
 // --- common.cpp -----------------------------------------------------------------
+
+std::string string_format(const char* fmt, ...) {
+    va_list ap;
+    va_list ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    const int size = std::vsnprintf(nullptr, 0, fmt, ap);
+    GGML_ASSERT(size >= 0 && size < INT_MAX);
+    std::vector<char> buf(static_cast<std::size_t>(size) + 1);
+    const int size2 = std::vsnprintf(buf.data(), static_cast<std::size_t>(size) + 1, fmt, ap2);
+    GGML_ASSERT(size2 == size);
+    va_end(ap2);
+    va_end(ap);
+    return std::string(buf.data(), static_cast<std::size_t>(size));
+}
+
+std::string regex_escape(const std::string& s) {
+    static const std::regex special_chars("[.^$|()*+?\\[\\]{}\\\\]");
+    return std::regex_replace(s, special_chars, "\\$&");
+}
 
 std::string string_join(const std::vector<std::string>& values, const std::string& separator) {
     std::string out;

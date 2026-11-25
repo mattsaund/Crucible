@@ -293,9 +293,9 @@ check     "CMakeLists passes the tag to the compiler" \
 echo
 echo "  overall_percent"
 
-check_eq  "weights cover exactly the whole install" \
-          "$(( ${STEP_WEIGHTS[1]} + ${STEP_WEIGHTS[2]} + ${STEP_WEIGHTS[3]} \
-              + ${STEP_WEIGHTS[4]} + ${STEP_WEIGHTS[5]} ))" "100"
+WEIGHT_SUM=0
+for ((_w = 1; _w <= STEP_TOTAL; _w++)); do WEIGHT_SUM=$((WEIGHT_SUM + STEP_WEIGHTS[_w])); done
+check_eq  "weights cover exactly the whole install" "$WEIGHT_SUM" "100"
 check_eq  "one weight per part, plus the unused zeroth" \
           "${#STEP_WEIGHTS[@]}" "$((STEP_TOTAL + 1))"
 
@@ -310,8 +310,8 @@ STEP_NUM=2; check_eq "entering part 2"                    "$(overall_percent)" "
 STEP_NUM=5; check_eq "entering part 5"                    "$(overall_percent)" "$BEFORE_5"
 STEP_PCT=50
 check_eq  "part 5 half done" "$(overall_percent)" "$((BEFORE_5 + STEP_WEIGHTS[5] / 2))"
-STEP_PCT=100
-check_eq  "part 5 complete"  "$(overall_percent)" "100"
+STEP_NUM="$STEP_TOTAL"; STEP_PCT=100
+check_eq  "the last part complete" "$(overall_percent)" "100"
 
 # The build is the part worth weighting for: it must not read as nearly done.
 STEP_NUM=5; STEP_PCT=0
@@ -1094,22 +1094,105 @@ check     "it says how to run it as a file" \
           grep -qF -- '-ExecutionPolicy Bypass -File .\install.ps1' "$ROOT/install.ps1"
 
 echo
-echo "  one progress bar, and nothing else"
+echo "  a waterfall, with one bar under it"
 
-# The bar used to have five step headings scrolling above it and a running
-# commentary under each -- what was detected, what was installed, what every
-# phase achieved. All of it was already said by the label beside the bar, in
-# the moment it was true.
-check_not "a part no longer announces itself with a heading" \
-          grep -q '==>%s %s\[%d/%d\]' "$ROOT/install.sh"
-check     "the running commentary is silent while the bar is up" \
-          grep -q 'info()  { if \[ "$PROGRESS_ON" != 1 \]' "$ROOT/install.sh"
-check     "so is the per-phase 'done' line" \
-          grep -q 'ok()    { if \[ "$PROGRESS_ON" != 1 \]' "$ROOT/install.sh"
-# A warning is exempt: it says something is not as asked -- a desktop app that
-# cannot be built here -- and that has to reach the screen whatever is on it.
-check     "a warning still gets through" \
-          grep -q 'warn()  { note ' "$ROOT/install.sh"
+# Everything the install does goes by above the bar: a heading for each part,
+# what was found and installed, and every line the tools it runs print. The
+# bar stays on the bottom row, and there is one of it from start to end.
+check     "a part announces itself with a heading" \
+          grep -qF "printf '%s==>%s %s%s%s\\n'" "$ROOT/install.sh"
+WATER="$( PROGRESS_ON=1; IS_TTY=0; LOG_LAST=0; STEP_NUM=1; STEP_PCT=0
+          info "found a compiler"; ok "cloned main"; muted "a quieter note"; warn "a warning" )"
+check     "what was found is said while the bar is up" grep -q "found a compiler" <<< "$WATER"
+check     "and what was done"                          grep -q "cloned main"      <<< "$WATER"
+check     "and the quieter notes"                      grep -q "a quieter note"   <<< "$WATER"
+check     "and a warning, as ever"                     grep -q "a warning"        <<< "$WATER"
+
+# A line goes in above the bar, and the bar goes back under it as it was.
+ABOVE="$( IS_TTY=1; PROGRESS_ON=1; BLOCK_SHOWN=1; BAR_TEXT="THE-BAR"; C_RESET=""
+          say_line "" "a line of output" )"
+check     "a line is written above the bar" \
+          grep -q "a line of output" <<< "$ABOVE"
+check_eq  "and the bar is drawn again under it" \
+          "$(printf '%s' "$ABOVE" | tail -n 1)" "THE-BAR"
+
+# What a command says, through stream_command: each new thing once, a line
+# that only moves a number on moves the bar instead, and the parts a command
+# names first each take their share of it.
+cat > "$TMP/talker" <<'TALK'
+#!/bin/sh
+echo "Installing compute runtimes: cpu cuda"
+echo "  cpu: downloading runtime-cpu-x.tar.gz (12.0 MB) from github.com"
+echo "  cpu: downloading 0 B of 12.0 MB"
+echo "  cpu: downloading 1.0 MB of 12.0 MB"
+echo "  cpu: downloading 6.0 MB of 12.0 MB"
+echo "  cpu ready"
+echo "  cuda: downloading 2.0 MB of 4.0 MB"
+echo "  installing torch (797.2 MB)  12%"
+echo "  cuda was not installed: no luck" >&2
+exit 3
+TALK
+chmod +x "$TMP/talker"
+STREAM_LOG="$TMP/talker.log"; : > "$STREAM_LOG"
+PROGRESS_ON=1; IS_TTY=0; LOG_LAST=0; STEP_NUM=7; STEP_PCT=0; PHASE_LABEL="x"
+phase 100 "fetching runtimes" > /dev/null
+# install.sh, sourced above, turned errexit on: the status is caught, not left
+# to end this script.
+TALK_STATUS=0
+stream_command "$TMP/talker" > "$TMP/talked" || TALK_STATUS=$?
+STREAM_LOG=""
+check_eq  "a command's exit status comes back through it"   "$TALK_STATUS" "3"
+check     "each download is named in the waterfall" \
+          grep -q "cpu: downloading runtime-cpu-x.tar.gz (12.0 MB) from github.com" "$TMP/talked"
+check     "the first of a run of progress lines is shown" \
+          grep -q "cpu: downloading 0 B of 12.0 MB" "$TMP/talked"
+check_not "and the rest of the run moves the bar instead, whatever unit it is in" \
+          grep -qE "cpu: downloading (1|6).0 MB of 12.0 MB" "$TMP/talked"
+check     "what the command said on stderr is there too" \
+          grep -q "cuda was not installed: no luck" "$TMP/talked"
+check_eq  "every line is kept for when something fails" \
+          "$(grep -c '' "$TMP/talker.log")" "9"
+check_eq  "the bar moved across both parts, to cuda's half way" "$STEP_PCT" "75"
+check_eq  "the label beside the bar has no percentage of its own" \
+          "$PHASE_LABEL" "installing torch (797.2 MB)"
+PROGRESS_ON=0; STEP_NUM=0; STEP_PCT=0
+
+# A quiet command still gets a moving clock: the bar is redrawn when no line
+# has come for half a second. Whatever part of a line had come by then is
+# kept, not lost, so a line written in two halves still arrives whole.
+if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+    printf '#!/bin/sh\nprintf "first half, "\nsleep 1.2\nprintf "second half\\n"\n' > "$TMP/halves"
+    chmod +x "$TMP/halves"
+    STREAM_LOG="$TMP/halves.log"; : > "$STREAM_LOG"
+    ( IS_TTY=1; PROGRESS_ON=1; BLOCK_SHOWN=0; STEP_NUM=1; STEP_PCT=0; PHASE_START=0; TERM_COLS=80
+      stream_command "$TMP/halves" ) > "$TMP/halves.out" 2>&1 || true
+    STREAM_LOG=""
+    check_eq  "a line that came in two halves arrives whole" \
+              "$(cat "$TMP/halves.log")" "first half, second half"
+    check     "and the bar was redrawn while it waited" \
+              test "$(grep -o 'install' "$TMP/halves.out" | wc -l)" -ge 3
+fi
+
+# A part that is left out gives its share of the bar to the build, so the bar
+# still reaches its end where the install does.
+LEFT_OUT="$( INSTALL_RUNTIMES=0; INSTALL_TRAINER=0; weigh_steps
+             _sum=0; for ((_w = 1; _w <= STEP_TOTAL; _w++)); do _sum=$((_sum + STEP_WEIGHTS[_w])); done
+             printf '%s %s %s %s' "${STEP_WEIGHTS[7]}" "${STEP_WEIGHTS[8]}" "${STEP_WEIGHTS[BUILD_STEP]}" "$_sum" )"
+check_eq  "--no-runtimes and --no-trainer give their share to the build" \
+          "$LEFT_OUT" "0 0 $(( STEP_WEIGHTS[BUILD_STEP] + STEP_WEIGHTS[7] + STEP_WEIGHTS[8] )) 100"
+
+# Python, the runtimes and the fine-tuner used to take the bar down and print
+# their own progress under it, a second display after the first. They run
+# under the same bar now, and the program prints plain lines when its output
+# is read by something other than a person.
+for _part in install_python install_runtimes install_trainer; do
+    check_not "$_part runs under the one bar" \
+              bash -c 'sed -n "/^$1()/,/^}/p" "$2" | grep -q progress_end' _ "$_part" "$ROOT/install.sh"
+    check     "and streams what the program says" \
+              bash -c 'sed -n "/^$1()/,/^}/p" "$2" | grep -q stream_command' _ "$_part" "$ROOT/install.sh"
+done
+check     "the program redraws in place only for a person at a terminal" \
+          grep -q "stdout_is_a_terminal" "$ROOT/include/crucible/app/progress_line.hpp"
 check     "Windows draws one bar too" \
           grep -q "function Show-Bar" "$ROOT/install.ps1"
 # Same trap, same fix: a bar padded to a width the window does not have wraps,
@@ -1118,8 +1201,14 @@ check     "and measures the console rather than assuming a width" \
           grep -q 'RawUI.WindowSize.Width' "$ROOT/install.ps1"
 check_not "with no hard-coded row width left to be wrong about" \
           grep -qE "PadRight\(78\)|' \* 78" "$ROOT/install.ps1"
-check     "and keeps its notes quiet while it is up" \
-          grep -q 'if (-not \$State.BarShown) { Write-Host "    \$Message"' "$ROOT/install.ps1"
+check     "and writes its waterfall above it" \
+          grep -q '^function Write-Line' "$ROOT/install.ps1"
+check     "with every note going the same way" \
+          grep -q "^function Write-Note (\$Message) { Write-Line " "$ROOT/install.ps1"
+check     "and what the programs it runs say" \
+          test "$(grep -c 'Invoke-Streamed (Join-Path \$binDir' "$ROOT/install.ps1")" -eq 3
+check_not "with no second display for Python, the runtimes or the fine-tuner" \
+          grep -q "^        Stop-Progress" "$ROOT/install.ps1"
 
 # The closing text. No "Next:" list -- it told you to go and build a runtime,
 # put models somewhere and assign them, which is the program's first-run job

@@ -418,11 +418,15 @@ bool fetch(std::string& error, const std::function<void(std::string)>& say) {
         const std::string file_name = archive.url.substr(archive.url.rfind('/') + 1);
         const std::filesystem::path local = staging / file_name;
 
-        tell("downloading NVIDIA's CUDA libraries, " + format::bytes(done) + " of "
-             + format::bytes(total));
+        tell("downloading " + file_name + " (" + format::bytes(archive.size) + ") from "
+             + util::http::host_of(archive.url));
+        const auto arrived = [&](std::uint64_t got) {
+            tell("downloading NVIDIA's CUDA libraries, " + format::bytes(done + got) + " of "
+                 + format::bytes(total));
+        };
         // An hour: cuBLAS is most of a gigabyte, and a timeout halfway through
         // reads as "it does not work" rather than "the line is slow".
-        if (std::string why; !util::http::download(archive.url, local, 3600, why)) {
+        if (std::string why; !util::http::download(archive.url, local, 3600, why, {}, arrived)) {
             error = "the CUDA libraries could not be downloaded: " + why;
             clean();
             return false;
