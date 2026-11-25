@@ -163,9 +163,15 @@ jobs:
           XDG_CONFIG_HOME: ${{ runner.temp }}/crucible-config
           LLAMA_TAG: ${{ inputs.llama_tag }}
         run: |
-          backends="$XDG_DATA_HOME/crucible/runtimes/backends/$LLAMA_TAG"
+          # The folder as Git Bash names it on Windows (cygpath), as it is
+          # everywhere else: the same folder the smoke tool reads.
+          data="$(cygpath -u "$XDG_DATA_HOME" 2> /dev/null || printf '%s' "$XDG_DATA_HOME")"
+          backends="$data/crucible/runtimes/backends/$LLAMA_TAG"
           mkdir -p "$backends"
-          tar -xzf cpu/runtime-cpu-*.tar.gz -C "$backends"
+          # Unpacked from inside the folder: Git Bash's tar takes "D:\..." for
+          # a host and a path, and $PWD is the one form every system's reads.
+          archive="$(ls "$PWD"/cpu/runtime-cpu-*.tar.gz)"
+          (cd "$backends" && tar -xzf "$archive")
           printf '{"cpu": {"llama_tag": "%s", "source": "downloaded"}}\n' "$LLAMA_TAG" > "$backends/manifest.json"
           build/bin/crucible-smoke --host tiny-models/stories260K-f32.gguf tiny-models/stories15M-q4_0.gguf
 
