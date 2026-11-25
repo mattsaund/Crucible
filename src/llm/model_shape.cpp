@@ -472,6 +472,7 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
     }
 
     shape.layers = static_cast<std::uint32_t>(slots);
+    shape.looped = looped;
     shape.known  = layers > 0;
     gguf_free(gguf);
     return shape;

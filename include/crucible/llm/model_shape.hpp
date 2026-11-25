@@ -53,6 +53,12 @@ struct ModelShape {
 
     std::uint64_t weights = 0;  ///< the file, which is what the tensors weigh
     std::uint32_t layers  = 0;
+
+    /// Whether the model runs some of its blocks more than once (Inkling's
+    /// loop.count). `layers` then counts every pass, as llama.cpp lays them
+    /// out, and a pass uses the weights of a block that can be on another
+    /// card from its own cache.
+    bool looped = false;
     std::uint32_t vocab   = 0;
 
     /// The context the model was trained to, or zero when the file does not

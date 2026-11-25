@@ -25,6 +25,10 @@ public:
     /// startup cannot lose the answer the user just gave.
     bool trust(const std::filesystem::path& dir);
 
+    /// Forget every folder, so each is asked about again when it is opened.
+    /// Persisted at once, as trust() is.
+    bool clear();
+
     const std::vector<std::filesystem::path>& entries() const { return trusted_; }
 
 private:

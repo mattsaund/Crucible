@@ -40,6 +40,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "crucible/session/shelf.hpp"
 #include "crucible/app/update.hpp"
 #include "crucible/config/config.hpp"
 #include "crucible/engine/engine.hpp"
@@ -160,9 +161,26 @@ public:
     /// began. The page reads the recent chats again when it changes.
     virtual std::size_t names_filed() const { return 0; }
 
+    /// What the experts made in the conversation on screen (see shelf.hpp),
+    /// relative to project_root().
+    virtual std::vector<shelf::Entry> shelf_entries() const { return {}; }
+
+    /// How many times the shelf has changed. The page reads it again when
+    /// this moves.
+    virtual std::uint64_t shelf_revision() const { return 0; }
+
+    /// Take `path` off the shelf and delete the file. Returns why it could
+    /// not, or empty.
+    virtual std::string shelf_remove(const std::string&) { return "this interface has no shelf"; }
+
     /// Answer it. True trusts the folder and opens it; false leaves both
     /// alone. Trust is granted once per directory and remembered.
     virtual void answer_trust(bool) {}
+
+    /// Forget every trusted folder. Returns why it could not, or empty. A
+    /// project already open stays open; the next folder opened is asked
+    /// about again.
+    virtual std::string clear_trust() { return "this interface keeps no trusted folders"; }
 
     // --- the transcript ----------------------------------------------------
 

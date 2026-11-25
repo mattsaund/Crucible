@@ -349,4 +349,12 @@ FileRead reading_for(const ModelParams& params, const std::vector<ComputeDevice>
 /// not say). `n_ctx` when none of them fits.
 int roomiest_context(int n_ctx, int most, std::uint32_t trained, const std::function<bool(int)>& fits);
 
+/// Whether `params` asks llama.cpp for flash attention outright rather than
+/// "auto". Auto turns it off for any layer whose attention lands on another
+/// device than the layer, which is how missing support shows. A model that
+/// loops over its blocks, split over cards, looks the same: a pass uses a
+/// block's weights on one card and keeps its cache on another. Turned off
+/// there, a long context's attention was tens of gigabytes of working memory.
+bool flash_attention_outright(const ModelParams& params);
+
 }  // namespace crucible

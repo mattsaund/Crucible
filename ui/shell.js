@@ -426,67 +426,16 @@ afterDraw.push(() => {
   recentsTimer = setTimeout(() => need('recents', 'recents', true), 300);
 });
 
-/// What a seat row says when the pointer rests on it.
-function seatTip(e) {
-  const where = e.provider ? `${e.model}, answered by ${e.provider}`
-              : e.model ? e.model + (e.phase === 'missing' ? '  (missing)' : '')
-              : 'no model yet';
-  return `${e.blurb ? e.blurb + '\n' : ''}${where}`;
-}
-
-/// Click a seat: its settings.
-actions['seat-open'] = () => enter('settings', 'experts');
-
 function sideView() {
   if (!sideShown()) return '';
   const s = state.snapshot;
-  const experts = s.experts || [];
   const delegator = s.delegator || {};
-  const loading = s.delegator_progress !== undefined;
-  const routing = s.mood === 'routing' || loading;
-  // Where the work is, as a line: from the delegator down to whichever seat
-  // has the turn. It is the picture of what the program does, and it is the
-  // one thing here that moves.
-  const linked = experts.findIndex((e) => e.id === s.linked);
-  // Assigned is enough to draw it as present. With the delegator set to load
-  // on demand it is out of memory most of the time, and that is the design
-  // working rather than a seat with nothing in it.
-  const problem = s.delegator_problem || '';
-  const delegatorPhase = routing ? 'active' : problem ? 'missing'
-                       : delegator.model ? 'dormant' : 'unconfigured';
-
-  // The line from the delegator runs down the list to the seat with the
-  // turn, so a seat's place on it is its index in the roster.
-  const seatRow = (e, i) => {
-    const classes = ['seat'];
-    if (linked >= 0 && i < linked) classes.push('on-trunk');
-    if (i === linked) classes.push('elbow', 'linked');
-    return `<button class="${classes.join(' ')}" data-act="seat-open" data-expert="${escape(e.id)}"
-        data-phase="${i === linked && e.phase !== 'loading' ? 'active' : e.phase}"
-        title="${escape(seatTip(e))}">
-      <span class="dot"></span><span class="name">${escape(e.name)}</span>
-      ${e.provider ? `<span class="cloud" title="Answered by ${escape(e.provider)}">${ICONS.cloud}</span>` : ''}
-      ${e.phase === 'loading' ? ring(e.progress) : ''}
-    </button>`;
-  };
-  const seats = experts.map(seatRow).join('') || '<div class="status">None yet.</div>';
-
   const loaded = !!s.resident || (s.delegator_ready && !!delegator.model);
-  // A region (see region): seldom changed by a push.
+  // Who has a turn, and a model's load, are said above the reply instead,
+  // where they are being read (see liveWho in chat.js). A region (see
+  // region): seldom changed by a push.
   return region('side', `<aside id="side" style="width:${sidebarWidth()}rem">
       <div class="roster-scroll">
-        <h2${linked >= 0 ? ' class="on-trunk-gap"' : ''}>DELEGATOR</h2>
-        <button class="seat${routing ? ' linked' : ''}${linked >= 0 ? ' trunk-start' : ''}"
-                data-act="settings-page" data-page="general" data-phase="${delegatorPhase}"
-                title="${escape(problem
-                  ? `${delegator.model}: ${problem}\nRouting on keywords`
-                  : delegator.model ? delegator.model
-                  : 'No delegator. Routing on keywords')}">
-          <span class="dot"></span><span class="name">${escape(delegator.model || '(none)')}</span>
-          ${loading ? ring(s.delegator_progress) : ''}
-        </button>
-        <h2 class="experts-head${linked >= 0 ? ' on-trunk' : ''}">EXPERTS</h2>${seats}
-        <button class="action wide" data-act="settings-page" data-page="experts">Manage experts</button>
         ${recentsView()}
       </div>
       <div class="roster-foot">

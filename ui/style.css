@@ -47,7 +47,12 @@ html, body {
   /* Numbers that change in place (a count, a rate) keep their width. */
   font-variant-numeric: tabular-nums;
 }
-body { display: grid; grid-template-rows: auto 1fr; }
+/* One column, never wider than the window. Sized "auto", it grew to the
+   widest thing in it: a load's status and a chat's folder in the top bar,
+   in a narrow window, pushed the whole page past its right edge and kept it
+   there. Each part shrinks to fit instead. */
+body { display: grid; grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); }
+body > * { min-width: 0; }
 button, input, select, textarea { font: inherit; color: var(--text); }
 pre, code, kbd, samp, .code, .diff, .code-editor-wrap { font-family: var(--code); }
 
@@ -143,7 +148,7 @@ button.recent .r-meta { color: var(--faint); font-size: .85em; margin-top: .1rem
 /* The models at work, at the menu's foot: local above, frontier below. It
    scrolls by itself when there are many, so the lists above keep their room. */
 .usage {
-  border-top: 1px solid var(--panel-edge); margin: 0 -1rem; padding: .9rem 1rem 0;
+  margin: 0 -1rem; padding: .9rem 1rem 0;
   max-height: 34vh; overflow-y: auto;
 }
 .usage h2 { margin: 0 0 .4rem; padding-left: 0; }
@@ -220,6 +225,13 @@ h2 {
 /* Who answered, and how the delegator got there. */
 .who { display: flex; align-items: baseline; gap: 1rem; margin: 0 0 1.1rem; }
 .who .seat { color: var(--flame-lit); font-weight: 500; }
+/* The turn still arriving: the delegator, then the expert, with a load's ring
+   beside the name. A fixed height, so the ring coming and going does not move
+   the reply under it. */
+.who.live { align-items: center; gap: .6rem; min-height: 28px; }
+.who .ring { margin-left: 0; width: 28px; height: 28px; }
+/* A delegator that would not load, on the picker that names it. */
+.picker.trouble .label { color: var(--error); }
 .who span:not(.seat) { color: var(--faint); font-size: .92em; }
 /* The parts of a line, set apart by space where a dot used to go. */
 .part + .part { margin-left: 1.1em; }
@@ -569,20 +581,7 @@ nav button.update-link {
 nav button.update-link:hover { color: var(--text); background: var(--hover); }
 
 /* --- the side menu ---------------------------------------------------------- */
-button.seat {
-  width: 100%; background: none; border: 0; border-radius: 5px;
-  color: inherit; text-align: left; cursor: pointer; position: relative;
-  /* A fixed height, so that a ring appearing beside a name does not push
-     every row under it down by a few pixels and back. */
-  padding: 0 .4rem 0 .9rem; height: 2.5rem;
-}
-button.seat:hover { background: var(--raised); }
-.seat .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.seat.linked .name { color: var(--flame); font-weight: 700; }
-.seat[data-phase="missing"] .name { color: var(--error); }
-.seat .cloud { color: var(--faint); display: flex; flex: none; }
 aside h2 { position: relative; padding-left: .9rem; }
-aside h2.experts-head { margin: 0; padding-top: 1.6rem; padding-bottom: .7rem; }
 
 /* The load, as a ring with the figure in the middle of it. */
 .ring { flex: none; margin-left: auto; }
@@ -596,15 +595,6 @@ aside h2.experts-head { margin: 0; padding-top: 1.6rem; padding-bottom: .7rem; }
   text-anchor: middle; dominant-baseline: central;
 }
 
-/* The line from the delegator to whichever seat has the turn: out of the
-   delegator's row, down a trunk in the gutter, and into the seat. */
-.trunk-start::before, .on-trunk::before, .elbow::before {
-  content: ''; position: absolute; left: .25rem; pointer-events: none;
-  border-left: 1px solid var(--flame);
-}
-.on-trunk::before    { top: 0; bottom: 0; }
-.trunk-start::before { top: 50%; bottom: 0; width: .4rem; border-top: 1px solid var(--flame); }
-.elbow::before       { top: 0; height: 50%; width: .4rem; border-bottom: 1px solid var(--flame); }
 
 /* --- the conversation --------------------------------------------------------- */
 .scroller { position: relative; min-height: 0; display: grid; }
@@ -696,7 +686,10 @@ button.picker {
   padding: 0 .55rem; background: transparent; border: 0; border-radius: 8px;
   color: var(--dim); cursor: pointer; white-space: nowrap;
 }
-button.picker .label { overflow: hidden; text-overflow: ellipsis; }
+button.picker .label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* In a narrow window the two menus' words give way, not the window. */
+.box-bar .menu-wrap { min-width: 0; }
+.box-bar .menu-wrap > button.picker { max-width: min(16rem, 100%); }
 button.picker .chev { opacity: .7; flex: none; }
 button.picker svg { flex: none; }
 button.picker:hover:not(:disabled), button.picker[aria-expanded="true"] {
@@ -712,6 +705,7 @@ button.picker:disabled { color: var(--faint); cursor: default; }
 .popmenu .mi-seat { color: var(--dim); display: inline-flex; width: 14px; justify-content: center; }
 .popmenu .mi-empty, .popmenu .mi-note { color: var(--faint); font-size: .85em; padding: .4rem .65rem; white-space: normal; }
 .popmenu .mi-note { border-top: 1px solid var(--panel-edge); margin-top: .3rem; padding-top: .55rem; max-width: 17rem; }
+.popmenu .mi-note.bad { color: var(--error); }
 
 /* Send is an arrow in the flame; Stop, while something runs, the same box
    in gray with a square in it. */
@@ -858,7 +852,10 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .pane.chat-pane { grid-template-rows: minmax(0, 1fr); container: chat-pane / inline-size; }
 .split { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; }
 .split.open { grid-template-columns: minmax(0, 1fr) auto minmax(0, var(--shelf, 50%)); }
-.talk { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.talk { display: grid; grid-template-rows: minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
+         min-width: 0; min-height: 0; }
+/* The composer's bar gives way in a narrow window rather than widening it. */
+.talk > * { min-width: 0; }
 .split.open #transcript { padding-left: 1.6rem; padding-right: 1.6rem; }
 .shelf {
   display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0;
@@ -868,6 +865,21 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .shelf-head .pane-nav { flex: 1; min-width: 0; padding: 0 .5rem; border-bottom: 0; }
 .shelf-empty { grid-row: 2; display: grid; place-items: center; color: var(--faint); }
 .shelf #pane-body { min-width: 0; min-height: 0; padding: .9rem 1rem; }
+/* The shelf's list: what the experts made, newest under the build. */
+.shelf-title { color: var(--dim); padding: .4rem .8rem; margin-right: auto; }
+.shelf-head .pane-nav:has(> button:only-child) { flex: none; }
+.shelf-head .back { margin: 0 .8rem 0 auto; white-space: nowrap; }
+.shelf-list { min-height: 0; overflow-y: auto; padding: .9rem 1rem; display: grid; gap: .7rem; align-content: start; }
+.shelf-card {
+  border: 1px solid var(--panel-edge); border-radius: 8px; padding: .7rem .85rem; background: var(--ink);
+  min-width: 0;
+}
+.shelf-card.build { border-color: var(--flame); }
+.shelf-kind { color: var(--flame-lit); font-size: .85em; letter-spacing: .04em; }
+.shelf-name { font-weight: 500; overflow-wrap: anywhere; }
+.shelf-meta { color: var(--faint); font-size: .88em; margin: .1rem 0 .55rem; }
+.shelf-acts { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.shelf-saved { color: var(--dim); font-size: .88em; margin-top: .45rem; overflow-wrap: anywhere; }
 body.dragging-x iframe { pointer-events: none; }
 /* Each side lays itself out alone. A token arriving in the conversation
    otherwise made the page measure a long file open beside it, thousands of

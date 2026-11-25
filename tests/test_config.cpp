@@ -926,6 +926,28 @@ TEST(trust_persists_and_covers_subdirectories) {
     CHECK(reloaded.is_trusted(project / "src" / "deep"));
 }
 
+TEST(clearing_trust_forgets_every_folder_for_good) {
+    TempDir dir;
+    const auto store_file = dir.path() / "trust.json";
+    const auto one        = dir.path() / "one";
+    const auto two        = dir.path() / "two";
+    std::filesystem::create_directories(one);
+    std::filesystem::create_directories(two);
+
+    TrustStore store(store_file);
+    CHECK(store.trust(one));
+    CHECK(store.trust(two));
+    CHECK(store.clear());
+    CHECK(store.entries().empty());
+    CHECK(!store.is_trusted(one));
+    // Written at once, so a later trust() does not bring the others back.
+    CHECK(TrustStore(store_file).entries().empty());
+    CHECK(store.trust(two));
+    const TrustStore reloaded(store_file);
+    CHECK(!reloaded.is_trusted(one));
+    CHECK(reloaded.is_trusted(two));
+}
+
 TEST(trust_does_not_leak_across_sibling_prefixes) {
     TempDir dir;
     const auto store_file = dir.path() / "trust.json";
