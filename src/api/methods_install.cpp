@@ -120,7 +120,7 @@ Reply runtimes(const json&, const Scene&) {
     return good(json{{"runtimes",  std::move(listed)},
                      // For reading, not for opening: written with ~ for the
                      // home directory, as the top bar writes the project.
-                     {"directory", format::short_path(paths::runtimes_dir())},
+                     {"directory", format::short_path(paths::backends_dir())},
                      {"bytes",     total},
                      // False for a build with its backend compiled in, where
                      // there is nothing to install and the page says so.

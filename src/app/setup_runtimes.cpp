@@ -87,7 +87,7 @@ int run_runtime_status() {
     const std::vector<RuntimeStatus> installed = RuntimeRegistry::scan();
     bool                             any_active = false;
 
-    std::cout << "runtimes in " << paths::runtimes_dir().string() << "\n";
+    std::cout << "runtimes in " << paths::backends_dir().string() << "\n";
     for (const RuntimeStatus& status : installed) {
         if (!status.installed) {
             continue;

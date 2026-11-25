@@ -140,7 +140,7 @@ TEST(a_runtime_built_against_another_llama_cpp_is_reported_as_stale) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
 
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     // Vulkan, and named the way this platform names a module. CUDA is not
     // offered on a Mac at all, so a fake CUDA module there is never looked at;
@@ -197,7 +197,7 @@ TEST(a_stale_runtime_stays_closed_at_startup) {
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
 
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     for (const char* id : {"vulkan", "cpu"}) {
         std::ofstream out(runtimes / (std::string(module_prefix()) + id + std::string(module_suffix())));
@@ -243,7 +243,7 @@ TEST(runtimes_are_loaded_and_listed_on_several_threads_at_once) {
     // from a thread.
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     {
         std::ofstream out(runtimes / (std::string(module_prefix()) + "vulkan" + std::string(module_suffix())));
@@ -292,7 +292,7 @@ TEST(a_runtime_arriving_during_a_load_waits_and_the_load_reads_on) {
     // waiting for the first, and the load would wait for itself for good.
     TempDir temp;
     const ScopedDataHome scoped(temp.path());
-    const std::filesystem::path runtimes = paths::runtimes_dir();
+    const std::filesystem::path runtimes = paths::backends_dir();
     std::filesystem::create_directories(runtimes);
     {
         std::ofstream out(runtimes / (std::string(module_prefix()) + "vulkan" + std::string(module_suffix())));
@@ -1092,4 +1092,29 @@ TEST(a_processor_name_is_a_name_not_a_legal_notice) {
     CHECK_EQ(util::parse_cpu_name("model name : Intel(R) Xeon(R) CPU E5-2670 @ 2.60GHz\n"),
              "Intel Xeon E5-2670");
     CHECK(util::parse_cpu_name("flags : fpu vme\n").empty());
+}
+
+
+TEST(backends_from_before_a_folder_each_move_into_their_llama_cpps) {
+    // An install from before each llama.cpp had its own folder: the modules,
+    // their manifest and NVIDIA's libraries loose in runtimes/. The first look
+    // moves them where this runtime reads them, rather than downloading them
+    // all again.
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    const std::filesystem::path runtimes = paths::runtimes_dir();
+    std::filesystem::create_directories(runtimes / "cuda");
+    const std::string module = std::string("libggml-cpu-test") + std::string(crucible::module_suffix());
+    std::ofstream(runtimes / module) << "x";
+    std::ofstream(runtimes / "cuda" / "libcublas.so.12") << "x";
+    std::ofstream(runtimes / "manifest.json")
+        << R"({"cpu": {"llama_tag": ")" << CRUCIBLE_LLAMA_TAG << R"(", "source": "downloaded"}})";
+
+    (void)RuntimeRegistry::scan();
+
+    CHECK(std::filesystem::exists(paths::backends_dir() / module));
+    CHECK(std::filesystem::exists(paths::backends_dir() / "manifest.json"));
+    CHECK(std::filesystem::exists(paths::backends_dir() / "cuda" / "libcublas.so.12"));
+    CHECK(!std::filesystem::exists(runtimes / module));
+    CHECK(!std::filesystem::exists(runtimes / "manifest.json"));
 }

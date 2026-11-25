@@ -76,6 +76,9 @@ std::filesystem::path models_dir()  { return data_dir() / "models"; }
 std::filesystem::path log_file()    { return data_dir() / "crucible.log"; }
 
 std::filesystem::path runtimes_dir()      { return data_dir() / "runtimes"; }
+#if defined(CRUCIBLE_LLAMA_TAG)
+std::filesystem::path backends_dir()      { return runtimes_dir() / "backends" / CRUCIBLE_LLAMA_TAG; }
+#endif
 std::filesystem::path runtime_src_dir()   { return data_dir() / "runtime-src"; }
 std::filesystem::path runtime_build_dir() { return data_dir() / "runtime-build"; }
 std::filesystem::path projects_dir()      { return data_dir() / "projects"; }

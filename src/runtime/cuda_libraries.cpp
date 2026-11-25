@@ -110,7 +110,7 @@ std::vector<std::string> g_preloaded;
 }  // namespace
 
 std::filesystem::path dir() {
-    return paths::runtimes_dir() / "cuda";
+    return paths::backends_dir() / "cuda";
 }
 
 std::vector<std::string> wanted() {

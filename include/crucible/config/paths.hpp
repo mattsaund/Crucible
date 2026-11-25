@@ -32,6 +32,12 @@ std::filesystem::path log_file();
 /// installing or uninstalling a runtime means.
 std::filesystem::path runtimes_dir();
 
+/// Where this runtime's compute backends are: runtimes/backends/<the llama.cpp
+/// tag it was built with>. A backend is built against one llama.cpp and loads
+/// with no other, so each version of llama.cpp keeps its own, and a CUDA module
+/// is shared by every Crucible built with the same one.
+std::filesystem::path backends_dir();
+
 /// data_dir()/runtime-src -- the llama.cpp source GPU runtimes are built
 /// from. Fetched by the first build that needs it, and again when it is for
 /// another llama.cpp than this binary's. See RuntimeBuilder::ensure_source.
