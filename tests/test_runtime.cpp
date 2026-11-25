@@ -703,7 +703,8 @@ namespace {
 /// `window` in its header and, unless `pattern` is empty, the flag per block
 /// that says which ones use it -- the way flint writes them.
 void write_sliding_gguf(const std::filesystem::path& file, const std::string& arch, std::uint32_t layers,
-                        std::uint32_t window, const std::vector<bool>& pattern) {
+                        std::uint32_t window, const std::vector<bool>& pattern,
+                        const std::function<void(gguf_context*)>& more = nullptr) {
     ggml_init_params init{};
     init.mem_size   = static_cast<std::size_t>(layers + 8) * 4 * ggml_tensor_overhead();
     init.mem_buffer = nullptr;
@@ -715,6 +716,9 @@ void write_sliding_gguf(const std::filesystem::path& file, const std::string& ar
     gguf_set_val_u32(gguf, (arch + ".block_count").c_str(), layers);
     gguf_set_val_u32(gguf, (arch + ".embedding_length").c_str(), 64);
     gguf_set_val_u32(gguf, (arch + ".attention.sliding_window").c_str(), window);
+    if (more) {
+        more(gguf);
+    }
     if (!pattern.empty()) {
         std::vector<std::int8_t> flags;
         for (const bool slides : pattern) {
@@ -776,6 +780,39 @@ TEST(a_window_cache_charges_a_sliding_layer_its_window_and_a_batch) {
     plain.known        = true;
     plain.kv_per_token = 2048;
     CHECK_EQ(plain.sliding_cells(32768, 512, true), std::uint64_t{0});
+}
+
+TEST(a_looped_models_passes_are_layers_that_carry_only_a_cache) {
+    // Inkling 2 Mini's shape in miniature: blocks 1 and 2 of four run three
+    // times, and llama.cpp lays the second and third passes out after the
+    // four blocks, as layers of their own.
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "looped.gguf";
+    write_sliding_gguf(file, "loopy", 4, 0, {}, [](gguf_context* gguf) {
+        gguf_set_val_u32(gguf, "loopy.loop.count", 3);
+        gguf_set_val_u32(gguf, "loopy.loop.start", 1);
+        gguf_set_val_u32(gguf, "loopy.loop.end", 3);
+    });
+    const ModelShape shape = read_model_shape(file);
+    CHECK(shape.known);
+    CHECK_EQ(shape.layers, std::uint32_t{8});
+    CHECK_EQ(shape.units.size(), std::size_t{9});
+    if (shape.units.size() != 9) {
+        return;
+    }
+    // Each pass caches what its block caches, and weighs nothing: the weights
+    // are the block's, and stay with it.
+    for (std::size_t slot = 4; slot < 8; ++slot) {
+        CHECK_EQ(shape.units[slot].weights, std::uint64_t{0});
+        CHECK_EQ(shape.units[slot].kv_per_token, shape.units[1].kv_per_token);
+    }
+    CHECK(shape.units[1].weights > 0);
+    CHECK_EQ(shape.kv_per_token, std::uint64_t{8} * shape.units[0].kv_per_token);
+
+    // And one that is not looped is the blocks it has.
+    const std::filesystem::path plain = dir.path() / "plain.gguf";
+    write_sliding_gguf(plain, "plainarch", 4, 0, {});
+    CHECK_EQ(read_model_shape(plain).layers, std::uint32_t{4});
 }
 
 TEST(the_header_says_which_layers_slide) {

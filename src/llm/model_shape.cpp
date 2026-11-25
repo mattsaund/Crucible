@@ -312,6 +312,20 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
     const std::vector<bool> sliding =
         window > 0 ? sliding_blocks(gguf, arch, layers) : std::vector<bool>(layers, false);
 
+    // A looped model, Inkling 2 Mini's inkling2_loop: blocks [start, end) run
+    // `count` times. llama.cpp counts every pass after the first as layers of
+    // their own, after the real ones, and splits and offloads by that count:
+    // 48 layers where the file has 24. Placed by the file's own 24, a model
+    // that was meant to be half on a card had none of its weights there.
+    const std::uint64_t passes     = first_or(unsigned_values(gguf, key("loop.count")), 0);
+    const std::uint64_t loop_start = first_or(unsigned_values(gguf, key("loop.start")), 0);
+    const std::uint64_t loop_end   = first_or(unsigned_values(gguf, key("loop.end")), 0);
+    const bool          looped     = passes > 1 && loop_start < loop_end && loop_end <= layers;
+    const std::uint64_t slots      = looped ? layers + (passes - 1) * (loop_end - loop_start) : layers;
+    const auto looped_block = [&](std::uint64_t slot) {
+        return loop_start + (slot - layers) % (loop_end - loop_start);
+    };
+
     shape.layers  = static_cast<std::uint32_t>(layers);
     shape.window  = static_cast<std::uint32_t>(window);
     shape.trained = static_cast<std::uint32_t>(
@@ -432,19 +446,33 @@ ModelShape parse_model_shape(const std::filesystem::path& file) {
             shape.sliding_kv_per_token += unit.sliding ? unit.kv_per_token : 0;
             shape.units.push_back(unit);
         }
+        // A looped model's further passes, as llama.cpp lays them out: after
+        // the blocks, one slot per block per pass, each with a cache and a
+        // state of its own and the weights of the block it repeats, which
+        // stay with that block. So they are placed like layers and weigh
+        // only what they cache.
+        for (std::uint64_t slot = layers; slot < slots; ++slot) {
+            ModelUnit unit = shape.units[static_cast<std::size_t>(looped_block(slot))];
+            unit.weights   = 0;
+            shape.kv_per_token += unit.kv_per_token;
+            shape.sliding_kv_per_token += unit.sliding ? unit.kv_per_token : 0;
+            shape.units.push_back(unit);
+        }
         shape.units.push_back(ModelUnit{output_weights, 0, 0, false});
     } else {
         // A file with metadata but no tensor table. Nothing here can be placed
         // layer by layer, so `units` stays empty and the split falls back to
         // dividing proportionally -- but the cache is still worth knowing, and
         // the header alone is enough for that.
-        for (std::uint64_t index = 0; index < layers; ++index) {
+        for (std::uint64_t slot = 0; slot < slots; ++slot) {
+            const std::uint64_t index = slot < layers ? slot : looped_block(slot);
             shape.kv_per_token += stated_kv(index);
             shape.sliding_kv_per_token += sliding[static_cast<std::size_t>(index)] ? stated_kv(index) : 0;
         }
     }
 
-    shape.known = layers > 0;
+    shape.layers = static_cast<std::uint32_t>(slots);
+    shape.known  = layers > 0;
     gguf_free(gguf);
     return shape;
 }

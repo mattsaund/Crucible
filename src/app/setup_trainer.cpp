@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/app/setup_trainer.hpp"
+#include "crucible/app/progress_line.hpp"
 
 #include "crucible/kit/kit.hpp"
 
@@ -12,44 +13,13 @@
 #include "crucible/lab/pyenv.hpp"
 #include "crucible/lab/python.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/http.hpp"
 #include "crucible/util/platform.hpp"
 
 namespace crucible {
 namespace {
 
 namespace pyenv = lab::pyenv;
-
-/// Overwrite one line, or print a new one when there is no terminal to
-/// overwrite on. A log file full of eight hundred progress lines is not a
-/// log file, and a terminal that only ever shows the first one is not
-/// progress -- so which it is depends on whether anybody is watching.
-class Line {
-public:
-    explicit Line(bool interactive) : interactive_(interactive) {}
-
-    void show(const std::string& text) {
-        if (text == last_) {
-            return;
-        }
-        last_ = text;
-        std::printf(interactive_ ? "\r\033[2K    %s" : "    %s\n", text.c_str());
-        // Flushed either way. Redirected to a file -- which is what an
-        // installer's log is -- stdout is block buffered, and four kilobytes
-        // of progress lines is most of a download's worth of silence.
-        std::fflush(stdout);
-    }
-
-    void done() const {
-        if (interactive_) {
-            std::printf("\r\033[2K");
-            std::fflush(stdout);
-        }
-    }
-
-private:
-    bool        interactive_;
-    std::string last_;
-};
 
 std::string describe(const pyenv::Status& status) {
     if (!status.present) {
@@ -130,14 +100,27 @@ int run_trainer_setup(const std::string& flavor_id, bool force, bool quiet) {
     // No Python is needed from the machine: the environment is built from
     // Crucible's own, which the installer below fetches first if it is not
     // already here.
-    const bool  interactive = util::stdin_is_a_terminal() && !quiet;
-    Line        line(interactive);
+    const bool       interactive = progress_is_interactive(quiet);
+    ProgressLine     line(interactive);
+    SaidLines        said;
     pyenv::Installer installer;
-    installer.start(flavor, {});
+    // Every package pip starts on is a step of its own, and several can go by
+    // between two looks: queued, so each one is named.
+    installer.start(flavor, [&said, &installer] {
+        const pyenv::Progress now = installer.progress();
+        if (!now.finished()) {
+            said.push(now.label());
+        }
+    });
 
     for (;;) {
+        for (const std::string& step : said.take()) {
+            if (!quiet) {
+                line.show(step);
+            }
+        }
         const pyenv::Progress progress = installer.progress();
-        if (!quiet) {
+        if (!quiet && !progress.finished()) {
             line.show(progress.label());
         }
         if (progress.finished()) {
@@ -179,10 +162,10 @@ int run_python_setup(bool quiet, bool force) {
     }
     if (!quiet) {
         std::cout << "  Fetching Crucible's Python " << build->version << " ("
-                  << format::bytes(build->bytes) << ").\n";
+                  << format::bytes(build->bytes) << ") from " << util::http::host_of(build->url) << ".\n";
     }
-    const bool interactive = util::stdin_is_a_terminal() && !quiet;
-    Line line(interactive);
+    const bool   interactive = progress_is_interactive(quiet);
+    ProgressLine line(interactive);
     std::string error;
     const bool ok = lab::python::install(
         [&](const lab::python::Progress& progress) {
@@ -214,13 +197,13 @@ int run_kit_setup(bool quiet) {
         }
         return 0;
     }
-    const bool interactive = util::stdin_is_a_terminal() && !quiet;
+    const bool interactive = progress_is_interactive(quiet);
     int failed = 0;
     for (const kit::Piece& piece : wanted) {
         if (!quiet) {
             std::cout << "  Fetching " << piece.label << ", for " << piece.why << ".\n";
         }
-        Line line(interactive);
+        ProgressLine line(interactive);
         std::string error;
         const bool ok = kit::install(
             piece.id,

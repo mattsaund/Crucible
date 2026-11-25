@@ -104,16 +104,20 @@ BAR_WIDTH=26
 # --------------------------------------------------------------------------
 # Progress
 #
-# One bar, for the whole install:
+# A waterfall of everything the install does, and one bar under it for the
+# whole install, from the first check to the last download:
 #
-#     install  ██████████░░░░░░░░░░░░░░░░  38%  / cloning source (14s)
+#     ==> Installing compute runtimes
+#             cuda: downloading 412 MB of 412 MB
+#             cuda ready
+#         install  ██████████░░░░░░░░░░░░░░░░  38%  / cuda: downloading (14s)
 #
-# It appears before the first part begins and only ever moves forward, to 100%.
-# There used to be a second bar underneath for the part running now, which
-# meant two numbers to read and two of them disagreeing about how far along
-# things were. The part being worked on is already named in the `==> [3/5]`
-# heading above and in the label beside the bar, so the second bar was saying
-# nothing the screen did not already say.
+# Every line a step prints, a package manager's, CMake's, a download's, the
+# program's own setup, scrolls by above the bar as it happens. The bar stays on
+# the bottom row and only ever moves forward, to 100%. A line that only says
+# how far along something is moves the bar rather than being printed again:
+# "compiling 41%" is said once. Python, the runtimes and the fine-tuner run
+# under the same bar as the build, so there is one bar from start to end.
 #
 # The figure is not a guess about elapsed time. Each of the five parts carries
 # a weight (STEP_WEIGHTS) and each phase within a part owns a slice of it, with
@@ -140,6 +144,10 @@ PHASE_START=-1
 # Whether the bar is currently on screen. Every write to the terminal has to
 # know, because the bar is erased and redrawn rather than scrolled past.
 BLOCK_SHOWN=0
+
+# The bar as it was last drawn, so a line can be printed above it without
+# working the bar out again: a compile prints hundreds.
+BAR_TEXT=""
 
 # Whether there is an install to report on at all. The bar is put up before the
 # first part starts -- so it is on screen from the beginning rather than
@@ -349,12 +357,139 @@ block_draw() {
     # Erase and redraw in a single write. Two separate printfs would leave the
     # terminal briefly showing an erased bar, which reads as a flicker on every
     # frame the spinner draws.
-    printf '%s    %sinstall%s  %s  %s%s%s%s\n' \
-        "$(block_erase_seq)" \
+    BAR_TEXT="$(printf '    %sinstall%s  %s  %s%s%s%s' \
         "$C_DIM" "$C_RESET" "$(draw_bar "$(overall_percent)" "$C_GRN")" \
-        "$C_CYN" "$glyph" "$C_RESET" " $label$elapsed"
+        "$C_CYN" "$glyph" "$C_RESET" " $label$elapsed")"
+    printf '%s%s\n' "$(block_erase_seq)" "$BAR_TEXT"
     BLOCK_SHOWN=1
     return 0
+}
+
+# One line of the waterfall: printed above the bar, which is put back as it
+# was. Taken as it is, never read for escapes: it is what a tool printed.
+say_line() {
+    local style="$1" text="$2"
+    if [ "$IS_TTY" = 1 ] && [ "$PROGRESS_ON" = 1 ] && [ "$BLOCK_SHOWN" = 1 ] && [ -n "$BAR_TEXT" ]; then
+        printf '\033[1A\r\033[J        %s%s%s\n%s\n' "$style" "$text" "$C_RESET" "$BAR_TEXT"
+    else
+        block_clear
+        printf '        %s%s%s\n' "$style" "$text" "$C_RESET"
+        block_draw
+    fi
+}
+
+# A size in words, "12.3 MB", as bytes.
+size_bytes() {
+    awk -v v="$1" -v u="$2" 'BEGIN {
+        m = 1
+        if (u ~ /^K/) m = 1024; else if (u ~ /^M/) m = 1048576
+        else if (u ~ /^G/) m = 1073741824; else if (u ~ /^T/) m = 1099511627776
+        printf "%d", v * m }'
+}
+
+# Run a command with everything it says in the waterfall and its progress on
+# the bar. A line that differs from the last only in its numbers is progress
+# rather than news: it moves the bar and is not printed again, and the label
+# beside the bar carries its live figures. Where the command first names the
+# parts it works through ("Installing compute runtimes: cpu cuda"), each part
+# takes its share of the bar, so the bar goes once across all of them instead
+# of back to the start for each.
+#
+# The command's input is closed, so nothing it runs can sit waiting on a
+# question nobody sees. STREAM_LOG, when set, keeps every line it said for
+# when something fails.
+stream_command() {
+    local status=0 line text label said="" shape pct total part=0 i pending="" frame=0 got
+    local frames='|/-\' tick=""
+    local -a parts=()
+    # A quiet command still gets a moving clock: the bar is redrawn when no
+    # line has come for half a second. Bash 3.2, which is what a Mac has, has
+    # no fraction of a second to wait for, so there it waits for the line.
+    [ "${BASH_VERSINFO[0]:-3}" -ge 4 ] && [ "$IS_TTY" = 1 ] && tick=0.5
+    while :; do
+        got=0
+        if [ -n "$tick" ]; then
+            IFS= read -r -t "$tick" line || got=$?
+        else
+            IFS= read -r line || got=$?
+        fi
+        if [ "$got" -gt 128 ]; then
+            # Timed out, with whatever part of a line had come kept for later.
+            pending="$pending$line"
+            frame=$((frame + 1))
+            block_draw "${frames:$((frame % 4)):1}"
+            continue
+        fi
+        line="$pending$line"
+        pending=""
+        if [ "$got" -ne 0 ] && [ -z "$line" ]; then
+            break
+        fi
+        case "$line" in
+            "__crucible_exit "*) status="${line#__crucible_exit }"; continue ;;
+        esac
+        if [ -n "${STREAM_LOG:-}" ] && [ -n "$line" ]; then
+            printf '%s\n' "$line" >> "$STREAM_LOG"
+        fi
+        # What a progress line redrew in place, as where it ended up, and its
+        # colors and cursor moves out of it.
+        line="${line##*$'\r'}"
+        while [[ "$line" =~ $'\033'\[[0-9\;?]*[A-Za-z] ]]; do
+            line="${line/"${BASH_REMATCH[0]}"/}"
+        done
+        text="${line#"${line%%[![:space:]]*}"}"
+        text="${text%"${text##*[![:space:]]}"}"
+        [ -n "$text" ] || continue
+
+        if [[ "$text" =~ ^Installing\ compute\ runtimes:\ (.+)$ ]]; then
+            read -r -a parts <<< "${BASH_REMATCH[1]}"
+        fi
+        if [ "${#parts[@]}" -gt 0 ] && [[ "$text" =~ ^([A-Za-z0-9_.+-]+):?\  ]]; then
+            for i in "${!parts[@]}"; do
+                if [ "${parts[$i]}" = "${BASH_REMATCH[1]}" ]; then part="$i"; fi
+            done
+        fi
+
+        # How far, from "41%" at the end of a line or "41.0 MB of 412.0 MB"
+        # anywhere in it. The label keeps the sizes but not the percentage:
+        # the bar has the one percentage on the screen.
+        pct=""
+        label="$text"
+        if [[ "$text" =~ ([0-9]{1,3})%$ ]]; then
+            pct="${BASH_REMATCH[1]}"
+            label="${text%"${BASH_REMATCH[0]}"}"
+            label="${label%"${label##*[![:space:]]}"}"
+        elif [[ "$text" =~ ([0-9.]+)\ ?([KMGT]?B)\ of\ (about\ )?([0-9.]+)\ ?([KMGT]?B) ]]; then
+            total="$(size_bytes "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}")"
+            if [ "${total:-0}" -gt 0 ]; then
+                pct=$(( $(size_bytes "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") * 100 / total ))
+            fi
+        fi
+        if [ -n "$pct" ]; then
+            [ "$pct" -gt 100 ] && pct=100
+            PHASE_LABEL="$label"
+            if [ "${#parts[@]}" -gt 0 ]; then
+                phase_at $(( (part * 100 + pct) / ${#parts[@]} ))
+            else
+                phase_at "$pct"
+            fi
+        fi
+
+        # Its figures out, a size with its unit as one: "0 B of 72.7 MB" and
+        # "4.9 MB of 72.7 MB" are the same line moving on.
+        shape="$text"
+        while [[ "$shape" =~ [0-9][0-9.]*\ ?[KMGT]?B ]]; do
+            shape="${shape/"${BASH_REMATCH[0]}"/#}"
+        done
+        shape="${shape//[0-9]/}"
+        [ "$shape" = "$said" ] && continue
+        said="$shape"
+        case "$text" in
+            *"was not installed"*|*"could not be"*|*"failed:"*) say_line "$C_YEL" "$text" ;;
+            *) say_line "$C_DIM" "$text" ;;
+        esac
+    done < <( { rc=0; "$@" < /dev/null 2>&1 || rc=$?; printf '\n__crucible_exit %s\n' "$rc"; } )
+    return "$status"
 }
 
 # Print something above the block. Everything the installer says goes through
@@ -369,13 +504,7 @@ note() {
 # Steps and phases
 # --------------------------------------------------------------------------
 
-# Begin one of the five parts.
-#
-# It prints nothing. The part used to announce itself with an `==> [3/5]`
-# heading, which meant the one bar had five headings scrolling above it and the
-# install read as a list of things that had happened rather than as one thing
-# happening. The part being worked on is named beside the bar, which is the
-# only place it needs to be.
+# Begin one of the parts, with its heading in the waterfall above the bar.
 step() {
     # Close the previous part out at 100% first: the phases of a part do not
     # always add up to it (an optional dependency may be skipped), and leaving
@@ -394,6 +523,7 @@ step() {
     PHASE_SPAN=0
     PHASE_LABEL="$*"
     PHASE_START=-1
+    printf '%s==>%s %s%s%s\n' "$C_CYN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
     block_draw
 }
 
@@ -480,20 +610,31 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 STEP_NUM=0
-STEP_TOTAL=5
+STEP_TOTAL=8
 
 # --------------------------------------------------------------------------
 # How long each part takes, relative to the others.
 #
 # These are rough measurements of a cold install on a mid-range machine, not
-# guesses; they only have to be right about the shape. Part 5 dominates because
-# it compiles Crucible, and part 2 is second because installing a toolchain (and
-# possibly a Vulkan SDK) is the only other thing here that touches the network
-# for minutes at a time.
+# guesses; they only have to be right about the shape. The build dominates,
+# then the fine-tuner (PyTorch is gigabytes) and the toolchain, which are the
+# other things here that touch the network for minutes at a time. A part that
+# is left out (--no-runtimes, --no-trainer) gives its share to the build.
 #
-# Indexed by step number, so [0] is unused and the rest sum to 100.
+# Indexed by step number, so [0] is unused and the rest sum to 100: checking,
+# dependencies, CMake, the source, the build, Python, runtimes, fine-tuner.
 # --------------------------------------------------------------------------
-STEP_WEIGHTS=(0 2 26 2 8 62)
+STEP_WEIGHTS=(0 1 14 1 4 40 6 10 24)
+BUILD_STEP=5
+
+weigh_steps() {
+    if [ "$INSTALL_RUNTIMES" != 1 ]; then
+        STEP_WEIGHTS[BUILD_STEP]=$((STEP_WEIGHTS[BUILD_STEP] + STEP_WEIGHTS[7])); STEP_WEIGHTS[7]=0
+    fi
+    if [ "$INSTALL_TRAINER" != 1 ]; then
+        STEP_WEIGHTS[BUILD_STEP]=$((STEP_WEIGHTS[BUILD_STEP] + STEP_WEIGHTS[8])); STEP_WEIGHTS[8]=0
+    fi
+}
 
 
 # Everything the installer says goes through note(), warnings included.
@@ -503,21 +644,12 @@ STEP_WEIGHTS=(0 2 26 2 8 62)
 # message would both be wrong from then on. Only die() writes to stderr
 # directly, and it retires the block first because it is the last thing said.
 #
-# While the bar is up, the bar is all there is. info(), ok() and muted() are
-# running commentary -- what was detected, what was installed, what a phase
-# achieved -- and every one of them was already said by the label beside the
-# bar, in the moment it was true. Printing them as well turned a one-line
-# display into forty lines of scrollback with a bar at the bottom of it, which
-# is not a progress bar, it is a log with a bar in it. They still speak in the
-# dry run and the uninstaller, where there is no bar to speak for them.
-#
-# warn() is exempt on purpose: it says something is not as asked -- a desktop
-# app that cannot be built here, a package that would not install -- and that
-# has to reach the screen whatever else is on it.
-info()  { if [ "$PROGRESS_ON" != 1 ]; then note "    $*"; fi; }
-muted() { if [ "$PROGRESS_ON" != 1 ]; then note "    $C_DIM$*$C_RESET"; fi; }
+# All of it is said, bar or no bar: the install is a waterfall of what it is
+# doing, with the bar under it (see Progress above).
+info()  { note "    $*"; }
+muted() { note "    $C_DIM$*$C_RESET"; }
 warn()  { note "$C_YEL !! $C_RESET $*"; }
-ok()    { if [ "$PROGRESS_ON" != 1 ]; then note "    ${C_GRN}✓${C_RESET} $*"; fi; }
+ok()    { note "    ${C_GRN}✓${C_RESET} $*"; }
 die()   { block_clear; show_cursor; printf '\n%serror:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 banner() {
@@ -743,31 +875,34 @@ detect_platform() {
 }
 
 PKG_LOG=""
+STREAM_LOG=""
+
+pkg_apt() {
+    $SUDO apt-get update && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y "$@"
+}
 
 pkg_install() {
     [ $# -gt 0 ] || return 0
     local status=0
     PKG_LOG="$(mktemp)"
 
-    # Package managers report progress in their own incompatible ways and none
-    # of it is reliably parseable, so this phase animates with an elapsed clock
-    # rather than showing a bar that would have to invent the percentage.
+    # What the package manager says, it says in the waterfall: what it
+    # fetches and what it installs. Its own progress is not reliably
+    # parseable, so the bar moves when the part does.
     PHASE_LABEL="installing $*"
-    spinner_start
+    STREAM_LOG="$PKG_LOG"
     case "$PKG" in
-        apt)    { $SUDO apt-get update -qq \
-                  && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq "$@"; } \
-                  > "$PKG_LOG" 2>&1 || status=$? ;;
-        brew)   brew install "$@"                          > "$PKG_LOG" 2>&1 || status=$? ;;
-        dnf)    $SUDO dnf install -y -q "$@"                > "$PKG_LOG" 2>&1 || status=$? ;;
+        apt)    stream_command pkg_apt "$@" || status=$? ;;
+        brew)   stream_command brew install "$@" || status=$? ;;
+        dnf)    stream_command $SUDO dnf install -y "$@" || status=$? ;;
         # -S, not -Sy: refreshing the package lists without upgrading is the
         # partial upgrade Arch says never to do, and can pull in a webkit2gtk
         # built against newer libraries than the rest of the system has.
-        pacman) $SUDO pacman -S --needed --noconfirm "$@"   > "$PKG_LOG" 2>&1 || status=$? ;;
-        zypper) $SUDO zypper --non-interactive install -y "$@" > "$PKG_LOG" 2>&1 || status=$? ;;
-        *)      spinner_stop; warn "cannot install $* automatically"; return 1 ;;
+        pacman) stream_command $SUDO pacman -S --needed --noconfirm "$@" || status=$? ;;
+        zypper) stream_command $SUDO zypper --non-interactive install -y "$@" || status=$? ;;
+        *)      STREAM_LOG=""; warn "cannot install $* automatically"; return 1 ;;
     esac
-    spinner_stop
+    STREAM_LOG=""
 
     if [ "$status" -eq 0 ]; then
         ok "installed $*"
@@ -842,6 +977,13 @@ download_with_progress() {
         | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {v=$2} END{gsub(/[^0-9]/,"",v); print v}')"
 
     rm -f "$out"
+    local host="${url#*://}"
+    host="${host%%/*}"
+    if [ -n "$total" ] && [ "$total" -gt 0 ] 2>/dev/null; then
+        info "downloading $label, $(human_bytes "$total"), from $host"
+    else
+        info "downloading $label from $host"
+    fi
     curl -fsSL "$url" -o "$out" &
     pid=$!
 
@@ -1061,17 +1203,28 @@ git_clone_with_progress() {
     log="$(mktemp)"
 
     set +e
+    info "cloning $url, $branch"
     git clone --depth 1 --branch "$branch" --progress "$url" "$dest" 2>&1 \
-        | while IFS= read -r line; do
+        | tr '\r' '\n' | while IFS= read -r line; do
               printf '%s\n' "$line" >> "$log"
+              # Each of git's stages named once, as it starts. Only receiving
+              # moves the bar: it is the one that takes the time, and the
+              # others each run to 100% of their own first.
+              line="${line#remote: }"
               case "$line" in
-                  *"Receiving objects:"*|*"Resolving deltas:"*)
+                  "Counting objects:"*|"Compressing objects:"*|"Receiving objects:"*|"Resolving deltas:"*)
+                      what="${line%%:*}"
+                      if [ "$what" != "${said:-}" ]; then
+                          said="$what"
+                          say_line "$C_DIM" "$what"
+                      fi
+                      [ "$what" = "Receiving objects" ] || continue
                       percent="${line#*: }"
                       percent="${percent%%\%*}"
                       percent="${percent// /}"
                       case "$percent" in
                           ''|*[!0-9]*) ;;
-                          *) PHASE_LABEL="${line%%:*}"; phase_at "$percent" ;;
+                          *) PHASE_LABEL="receiving objects"; phase_at "$percent" ;;
                       esac
                       ;;
               esac
@@ -1190,14 +1343,25 @@ choose_build_dir() {
     return 0
 }
 
+# The tests, run from inside the build directory with the ctest beside the
+# CMake that configured it: the one on PATH can be older than a CMake this
+# script fetched, and older than `ctest --test-dir`.
+run_ctest() {
+    local ctest_bin="ctest" cmake_path
+    cmake_path="$(command -v "$CMAKE" 2>/dev/null || true)"
+    if [ -n "$cmake_path" ] && [ -x "$(dirname "$cmake_path")/ctest" ]; then
+        ctest_bin="$(dirname "$cmake_path")/ctest"
+    fi
+    cd "$1" && "$ctest_bin" --output-on-failure
+}
+
 # The configure invocation, in one place so the retry below cannot drift from
 # the first attempt.
 run_configure() {
-    "$CMAKE" -S "$SRC_DIR" -B "$BUILD_DIR" \
+    STREAM_LOG="$BUILD_LOG" stream_command "$CMAKE" -S "$SRC_DIR" -B "$BUILD_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-        -DCRUCIBLE_BACKEND_DL=ON \
-        > "$BUILD_LOG" 2>&1 || status=$?
+        -DCRUCIBLE_BACKEND_DL=ON || status=$?
     return 0
 }
 
@@ -1274,9 +1438,7 @@ build_and_install() {
     # backends, so a compute backend is a file the settings screen manages
     # rather than a decision frozen here.
     phase 12 "configuring"
-    spinner_start
     run_configure
-    spinner_stop
 
     # Configure failed with a build directory already there. By far the most
     # likely reason is a CMakeCache.txt remembering paths this tree no longer
@@ -1294,9 +1456,7 @@ build_and_install() {
         rm -rf "$build_dir"
         mkdir -p "$build_dir"
         status=0
-        spinner_start
         run_configure
-        spinner_stop
     fi
 
     if [ "$status" -ne 0 ]; then
@@ -1329,6 +1489,12 @@ build_and_install() {
                               phase_at "$percent"
                               ;;
                       esac
+                      say_line "$C_DIM" "${line#*] }"
+                      ;;
+                  *)
+                      if [ -n "${line// /}" ]; then
+                          say_line "$C_DIM" "$line"
+                      fi
                       ;;
               esac
           done
@@ -1343,10 +1509,8 @@ build_and_install() {
 
     # --- tests -------------------------------------------------------------
     phase 6 "running tests"
-    spinner_start
     status=0
-    (cd "$build_dir" && ctest --output-on-failure >> "$BUILD_LOG" 2>&1) || status=$?
-    spinner_stop
+    STREAM_LOG="$BUILD_LOG" stream_command run_ctest "$build_dir" || status=$?
     if [ "$status" -eq 0 ]; then
         phase_end "tests passed"
     else
@@ -1358,19 +1522,17 @@ build_and_install() {
 
     # --- install -----------------------------------------------------------
     phase 6 "installing to ${PREFIX}/bin"
-    spinner_start
     status=0
     if [ -w "$PREFIX" ] || [ "$(id -u)" -eq 0 ]; then
-        "$CMAKE" --install "$build_dir" --component crucible >> "$BUILD_LOG" 2>&1 || status=$?
+        STREAM_LOG="$BUILD_LOG" stream_command "$CMAKE" --install "$build_dir" --component crucible || status=$?
     else
         mkdir -p "$PREFIX/bin" 2>/dev/null || true
         if [ -w "$PREFIX/bin" ]; then
-            "$CMAKE" --install "$build_dir" --component crucible >> "$BUILD_LOG" 2>&1 || status=$?
+            STREAM_LOG="$BUILD_LOG" stream_command "$CMAKE" --install "$build_dir" --component crucible || status=$?
         else
-            $SUDO "$CMAKE" --install "$build_dir" --component crucible >> "$BUILD_LOG" 2>&1 || status=$?
+            STREAM_LOG="$BUILD_LOG" stream_command $SUDO "$CMAKE" --install "$build_dir" --component crucible || status=$?
         fi
     fi
-    spinner_stop
     if [ "$status" -ne 0 ]; then
         show_log_tail "$BUILD_LOG"
         die "install failed"
@@ -1641,14 +1803,14 @@ path_advice() {
 # Tens of megabytes, so it goes first. Never fatal: the window fetches it on
 # first start if this could not.
 install_python() {
-    progress_end
-    printf '\n'
     step "Fetching Crucible's Python"
-    if "$PREFIX/bin/crucible" --install-python; then
+    phase 100 "fetching Python"
+    if stream_command "$PREFIX/bin/crucible" --install-python; then
         PYTHON_READY=1
+        phase_end
     else
         PYTHON_READY=0
-        printf '\n'
+        phase_end
         warn "Crucible's Python did not install. The window will try again when it starts."
         info "or try again now with:  $PREFIX/bin/crucible --install-python"
     fi
@@ -1659,20 +1821,19 @@ install_python() {
 # before the trainer, and a machine that gives up partway through the big
 # download still ends up able to run a model.
 install_runtimes() {
+    step "Installing compute runtimes"
     [ "$INSTALL_RUNTIMES" = 1 ] || { muted "skipping the compute runtimes (--no-runtimes)"; return 0; }
 
-    progress_end
-    printf '\n'
-    step "Installing compute runtimes"
+    phase 100 "fetching runtimes"
     # 2 is "already in place", which is what an update finds when llama.cpp
     # has not moved. Read as a failure, it warned on every such update.
     local status=0
-    "$PREFIX/bin/crucible" --install-runtimes || status=$?
+    stream_command "$PREFIX/bin/crucible" --install-runtimes || status=$?
+    phase_end
     if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
         RUNTIMES_READY=1
     else
         RUNTIMES_READY=0
-        printf '\n'
         warn "not every runtime installed. Crucible will use whichever did."
         info "see what is there with:  $PREFIX/bin/crucible --runtime-status"
     fi
@@ -1690,27 +1851,23 @@ install_runtimes() {
 # runs models perfectly well without a trainer. It says what happened and
 # names the command that tries again.
 install_trainer() {
+    step "Setting up the fine-tuner"
     [ "$INSTALL_TRAINER" = 1 ] || { muted "skipping the fine-tuner (--no-trainer)"; return 0; }
 
     local args=(--install-trainer)
     [ -n "$TRAINER_FLAVOR" ] && args+=(--trainer-flavor "$TRAINER_FLAVOR")
 
-    # Progress goes straight to the terminal, so the block-drawing progress
-    # display has to be out of the way first: this is minutes of downloading
-    # and a bar that cannot move for four of them is worse than the lines pip
-    # is already printing.
-    progress_end
-    printf '\n'
-    step "Setting up the fine-tuner"
+    # Minutes of downloading, every package of it in the waterfall.
+    phase 100 "fetching the fine-tuner"
     # 2 is "already in place", as it is for the runtimes.
     local status=0
-    "$PREFIX/bin/crucible" "${args[@]}" || status=$?
+    stream_command "$PREFIX/bin/crucible" "${args[@]}" || status=$?
+    phase_end
     if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
         TRAINER_READY=1
     else
         TRAINER_READY=0
-        printf '\n'
-        warn "the fine-tuner is not set up. Crucible works without it; training does not."
+        warn "the fine-tuner is not set up. Crucible works without it, but training does not."
         info "try again later with:  $PREFIX/bin/crucible --install-trainer"
     fi
     return 0
@@ -1784,6 +1941,7 @@ main() {
     banner
     [ "$DO_UNINSTALL" = 1 ] && uninstall
 
+    weigh_steps
     progress_begin
 
     step "Checking your system"
@@ -1821,8 +1979,8 @@ main() {
     # onto somewhere that exists rather than reporting a path that does not.
     make_directories
 
-    # Both after the binary exists, because it is the binary that does them.
-    # Each ends the progress display itself.
+    # After the binary exists, because it is the binary that does them, and
+    # under the same bar as everything before.
     install_python
     install_runtimes
     install_trainer

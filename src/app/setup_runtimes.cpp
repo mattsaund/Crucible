@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crucible/app/setup_runtimes.hpp"
+#include "crucible/app/progress_line.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -18,34 +19,6 @@
 
 namespace crucible {
 namespace {
-
-/// Overwrite one line, or print a new one where nobody is watching. The same
-/// reasoning as the trainer's: a log full of eight hundred progress lines is
-/// not a log, and a terminal showing only the first one is not progress.
-class Line {
-public:
-    explicit Line(bool interactive) : interactive_(interactive) {}
-
-    void show(const std::string& text) {
-        if (text == last_) {
-            return;
-        }
-        last_ = text;
-        std::printf(interactive_ ? "\r\033[2K    %s" : "    %s\n", text.c_str());
-        std::fflush(stdout);
-    }
-
-    void done() const {
-        if (interactive_) {
-            std::printf("\r\033[2K");
-            std::fflush(stdout);
-        }
-    }
-
-private:
-    bool        interactive_;
-    std::string last_;
-};
 
 /// Which backends this machine should actually end up with.
 ///
@@ -175,17 +148,30 @@ int run_runtime_setup(bool quiet, bool force, const std::vector<BackendKind>& wa
         std::cout << "\n  Downloaded where a build is published for this platform.\n";
     }
 
-    const bool interactive = util::stdin_is_a_terminal() && !quiet;
+    const bool interactive = progress_is_interactive(quiet);
     int        failed      = 0;
 
     for (const BackendKind kind : todo) {
-        Line           line(interactive);
+        ProgressLine   line(interactive);
+        SaidLines      said;
         RuntimeBuilder builder;
-        builder.start(kind, {});
+        // Every step it reports, in order: each download is named once, by
+        // the step that starts it, and that can be over between two looks.
+        builder.start(kind, [&said, &builder] {
+            const BuildProgress now = builder.progress();
+            if (!now.finished()) {
+                said.push(now.label());
+            }
+        });
 
         for (;;) {
+            for (const std::string& step : said.take()) {
+                if (!quiet) {
+                    line.show(name_of(kind) + ": " + step);
+                }
+            }
             const BuildProgress progress = builder.progress();
-            if (!quiet) {
+            if (!quiet && !progress.finished()) {
                 line.show(name_of(kind) + ": " + progress.label());
             }
             if (progress.finished()) {

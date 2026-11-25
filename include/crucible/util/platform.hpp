@@ -54,6 +54,10 @@ std::tm utc_time(std::time_t when);
 /// ever opening a window -- which is exactly what clicking the icon used to do.
 bool stdin_is_a_terminal();
 
+/// Is standard output a terminal, rather than a file or a pipe? What decides
+/// whether progress is redrawn in place or written as lines.
+bool stdout_is_a_terminal();
+
 /// Put this program's console output into UTF-8, where that is a thing.
 ///
 /// A no-op everywhere but Windows, whose console starts on a legacy code page

@@ -17,7 +17,7 @@
   #define StageDir "stage"
 #endif
 #ifndef Version
-  #define Version "1.1.0"
+  #define Version "1.1.1"
 #endif
 ; The numbers alone, for the file version Windows shows, which takes nothing
 ; else: a pre-release's Version carries a suffix ("-pre.1").

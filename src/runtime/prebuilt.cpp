@@ -9,6 +9,7 @@
 #include "crucible/runtime/builder.hpp"
 #include "crucible/runtime/cuda_libraries.hpp"
 #include "crucible/runtime/registry.hpp"
+#include "crucible/util/format.hpp"
 #include "crucible/util/http.hpp"
 #include "crucible/util/subprocess.hpp"
 
@@ -84,7 +85,7 @@ std::string releases_url() {
          + "/releases?per_page=30";
 }
 
-std::string find_asset(std::string_view releases_json, std::string_view name) {
+std::string find_asset(std::string_view releases_json, std::string_view name, std::uint64_t* bytes) {
     const json parsed = json::parse(releases_json, nullptr, /*allow_exceptions=*/false);
     if (!parsed.is_array()) {
         return {};   // a rate-limit note, an error, or nothing published yet
@@ -102,6 +103,10 @@ std::string find_asset(std::string_view releases_json, std::string_view name) {
                 continue;
             }
             if (asset_name_field->get<std::string>() == name) {
+                if (bytes != nullptr) {
+                    const auto size = asset.find("size");
+                    *bytes = size != asset.end() && size->is_number_unsigned() ? size->get<std::uint64_t>() : 0;
+                }
                 return url->get<std::string>();
             }
         }
@@ -126,7 +131,7 @@ bool fetch_releases(std::string& body, std::string& error) {
 
 bool install(BackendKind kind, const std::string& url, const std::filesystem::path& into,
              std::vector<std::filesystem::path>& written, std::string& error,
-             const std::function<void(std::string)>& say) {
+             const std::function<void(std::string)>& say, std::uint64_t bytes) {
     if (!util::http::available(error)) {
         return false;
     }
@@ -159,8 +164,13 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
     // can take real time over; ten minutes was a number picked for the small
     // ones, and a timeout mid-download reads to the user as "it does not work"
     // rather than "your connection is slow".
-    say("downloading");
-    if (std::string why; !util::http::download(url, archive, 1800, why)) {
+    const std::string size = bytes > 0 ? format::bytes(bytes) : std::string();
+    say("downloading " + url.substr(url.rfind('/') + 1) + (size.empty() ? "" : " (" + size + ")")
+        + " from " + util::http::host_of(url));
+    const auto arrived = [&](std::uint64_t got) {
+        say("downloading " + format::bytes(got) + (size.empty() ? "" : " of " + size));
+    };
+    if (std::string why; !util::http::download(url, archive, 1800, why, {}, arrived)) {
         error = "the download failed: " + why;
         clean();
         return false;
@@ -285,11 +295,12 @@ bool try_install(BackendKind kind, const std::filesystem::path& into,
     if (!fetch_releases(body, error)) {
         return false;
     }
-    const std::string url = find_asset(body, name);
+    std::uint64_t     bytes = 0;
+    const std::string url   = find_asset(body, name, &bytes);
     if (url.empty()) {
         return false;   // this backend is not published, or not for this tag
     }
-    if (!install(kind, url, into, written, error, say)) {
+    if (!install(kind, url, into, written, error, say, bytes)) {
         // The module in place and its libraries not: said, and taken back
         // out, so the runtime is not listed as there and broken.
         if (!written.empty()) {

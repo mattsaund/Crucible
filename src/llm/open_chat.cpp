@@ -301,6 +301,17 @@ const common_chat_templates* LoadedModel::chat_templates(std::string& error) {
     return templates_.get();
 }
 
+namespace {
+
+/// Whether a chat template says it can do `what`, one of the capabilities
+/// llama.cpp reads off it ("supports_tools" and the like).
+bool template_can(const common_chat_templates* templates, const char* what) {
+    const common_json caps = common_chat_templates_get_caps(templates);
+    return caps.contains(what) && caps.at(what).is_boolean() && caps.at(what).get<bool>();
+}
+
+}  // namespace
+
 bool LoadedModel::speaks_tools() {
     const std::lock_guard<std::recursive_mutex> lock(use_);
     std::string                  why;
@@ -308,10 +319,7 @@ bool LoadedModel::speaks_tools() {
     if (templates == nullptr) {
         return false;
     }
-    const std::map<std::string, bool> caps = common_chat_templates_get_caps(templates);
-    const auto                        tools = caps.find("supports_tools");
-    const auto                        calls = caps.find("supports_tool_calls");
-    return tools != caps.end() && tools->second && calls != caps.end() && calls->second;
+    return template_can(templates, "supports_tools") && template_can(templates, "supports_tool_calls");
 }
 
 OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSink& sink) {
@@ -345,10 +353,8 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
                 common_json::parse(request.tools_text.empty() ? request.tools.dump() : request.tools_text));
         }
         inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(request.tool_choice);
-        const std::map<std::string, bool> caps = common_chat_templates_get_caps(templates);
-        const auto parallel = caps.find("supports_parallel_tool_calls");
-        inputs.parallel_tool_calls =
-            request.parallel_tool_calls.value_or(parallel != caps.end() && parallel->second);
+        inputs.parallel_tool_calls = request.parallel_tool_calls.value_or(
+            template_can(templates, "supports_parallel_tool_calls"));
     } catch (const std::exception& e) {
         return refused(e.what());
     }

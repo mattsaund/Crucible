@@ -66,6 +66,16 @@ private:
 
 }  // namespace
 
+TEST(a_download_says_which_host_it_comes_from) {
+    using crucible::util::http::host_of;
+    CHECK_EQ(host_of("https://github.com/o/r/releases/download/v1/a.tar.gz"), "github.com");
+    CHECK_EQ(host_of("https://developer.download.nvidia.com/compute/cuda/redist/x.tar.xz"),
+             "developer.download.nvidia.com");
+    CHECK_EQ(host_of("https://user:secret@example.com:8443/path?q=1"), "example.com:8443");
+    CHECK_EQ(host_of("http://example.com"), "example.com");
+    CHECK_EQ(host_of("example.com/x"), "example.com");
+}
+
 TEST(a_request_names_its_url_method_and_headers) {
     Request request;
     request.method  = "POST";

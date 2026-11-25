@@ -349,7 +349,10 @@ bool RuntimeBuilder::start(BackendKind kind, std::function<void()> on_change) {
         const std::lock_guard<std::mutex> lock(mutex_);
         progress_          = BuildProgress{};
         progress_.kind     = kind;
-        progress_.phase    = BuildProgress::Phase::Configuring;
+        // What run() does first, so the first thing read is not a step it
+        // has not got to.
+        progress_.phase    = BuildProgress::Phase::FetchingSource;
+        progress_.step     = "looking for a prebuilt runtime";
         progress_.started  = std::chrono::steady_clock::now();
         progress_.log_file = paths::data_dir() / ("runtime-build-" +
                                                   std::string(backend_info(kind).id) + ".log");

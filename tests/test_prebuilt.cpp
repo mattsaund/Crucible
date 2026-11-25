@@ -79,6 +79,20 @@ TEST(the_asset_is_found_on_whichever_release_carries_it) {
     CHECK_EQ(url, "https://example.invalid/runtime.tar.gz");
 }
 
+TEST(an_assets_size_comes_with_it_so_its_download_can_say_how_big) {
+    const std::string name = prebuilt::asset_name(BackendKind::Cpu);
+    const std::string body = R"([{ "tag_name": "v1", "assets": [
+        { "name": ")" + name + R"(", "size": 12582912,
+          "browser_download_url": "https://example.invalid/runtime.tar.gz" } ] }])";
+    std::uint64_t bytes = 1;
+    CHECK_EQ(prebuilt::find_asset(body, name, &bytes), "https://example.invalid/runtime.tar.gz");
+    CHECK_EQ(bytes, 12582912U);
+    // A reply that does not say reads as unknown, not as a size someone made up.
+    bytes = 1;
+    CHECK(!prebuilt::find_asset(releases_with(name), name, &bytes).empty());
+    CHECK_EQ(bytes, 0U);
+}
+
 TEST(an_asset_that_is_not_there_is_not_invented) {
     const std::string name = prebuilt::asset_name(BackendKind::Cpu);
     CHECK(prebuilt::find_asset(releases_with("runtime-cpu-somewhere-else-b1.tar.gz"),
