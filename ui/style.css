@@ -116,7 +116,8 @@ aside .roster-foot { padding-top: .6rem; }
    edge to edge, so the highlight on the open one is a band rather than a box
    floating inside it. */
 #side .roster-scroll { margin: 0 -1rem; padding: 0 1rem 1rem; }
-.recents { margin: 1.6rem -1rem 0; }
+/* First in the menu now, so nothing above it to be kept apart from. */
+.recents { margin: 0 -1rem; }
 .r-head {
   display: flex; align-items: center; justify-content: space-between; gap: .6rem;
   padding: 0 1rem; margin-bottom: .45rem; min-height: 1.9rem;
@@ -243,6 +244,9 @@ h2 {
 .body { white-space: pre-wrap; }
 .body.md { white-space: normal; }
 .thinking { color: var(--dim); }
+/* Inside the thinking fold before the thinking has started. */
+.thought .waiting { color: var(--faint); letter-spacing: .2em; animation: waiting 1.4s ease-in-out infinite; }
+@keyframes waiting { 50% { opacity: .35; } }
 .failed { color: var(--error); }
 .empty { color: var(--faint); text-align: center; margin-top: 18vh; }
 .status { color: var(--faint); }

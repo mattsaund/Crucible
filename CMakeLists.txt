@@ -122,6 +122,7 @@ add_library(crucible_core STATIC
     # util: small standalone helpers with no Crucible dependencies
     src/util/text.cpp
     src/util/format.cpp
+    src/util/gguf.cpp
     src/util/diff.cpp
     src/util/platform.cpp
     src/util/fonts.cpp

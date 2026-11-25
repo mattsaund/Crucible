@@ -932,6 +932,15 @@ TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
         " const out = views.chat(); state.snapshot.mood = was; return out; })()"));
     CHECK(choosing.find("◆ Delegator") != std::string::npos);
     CHECK(choosing.find(">42%<") != std::string::npos);
+    // And choosing with nothing to load, a ring turning beside it.
+    const std::string deciding = live_header(page().eval(
+        "(() => { const was = [state.snapshot.mood, state.snapshot.delegator_progress];"
+        " state.snapshot.mood = 'routing'; delete state.snapshot.delegator_progress;"
+        " const out = views.chat(); state.snapshot.mood = was[0]; state.snapshot.delegator_progress = was[1];"
+        " return out; })()"));
+    CHECK(deciding.find("◆ Delegator") != std::string::npos);
+    CHECK(deciding.find("aria-label=\"loading\"") != std::string::npos);
+    CHECK(deciding.find("animateTransform") != std::string::npos);
     CHECK(choosing.find("Physics") == std::string::npos);
     // An expert answered somewhere else says where.
     const std::string away = live_header(page().eval(
@@ -942,15 +951,29 @@ TEST(a_load_is_a_ring_with_the_figure_in_it_beside_the_name) {
     CHECK(away.find("class=\"ring\"") == std::string::npos);
 }
 
-TEST(an_expert_at_work_says_thinking_in_a_word_not_dots) {
-    const char* const thinking =
-        "(() => { const was = state.snapshot.mood; state.snapshot.mood = 'thinking';"
-        " const out = views.chat(); state.snapshot.mood = was; return out; })()";
-    const std::string chat = page().eval(thinking);
-    CHECK(chat.find("<div class=\"body thinking\">thinking</div>") != std::string::npos);
-    CHECK(chat.find("<div class=\"body thinking\">...</div>") == std::string::npos);
-    // Not while a model loads: the ring above says that.
-    CHECK(page().eval("views.chat()").find("body thinking") == std::string::npos);
+TEST(the_thinking_can_be_opened_before_it_starts) {
+    // A turn still arriving with nothing said yet has the fold at once, from
+    // its first moment, and dots in it until the thinking starts.
+    const char* const live_turn =
+        "(function (open, reasoning, reply) { var turns = state.snapshot.turns, last = turns[turns.length - 1];"
+        " var was = [last.reasoning, last.reply]; last.reasoning = reasoning; last.reply = reply;"
+        " var key = thoughtKey(turns.length - 1); if (open) thoughtsOpen.add(key); else thoughtsOpen.delete(key);"
+        " var out = views.chat(); thoughtsOpen.delete(key); last.reasoning = was[0]; last.reply = was[1];"
+        " return out; })";
+    const std::string shut = page().eval(std::string(live_turn) + "(false, '', '')");
+    CHECK(shut.find("<summary>thinking</summary>") != std::string::npos);
+    CHECK(shut.find("class=\"waiting\"") == std::string::npos);
+    const std::string opened = page().eval(std::string(live_turn) + "(true, '', '')");
+    CHECK(opened.find("<span class=\"waiting\">...</span>") != std::string::npos);
+    // The thinking itself once it has started.
+    const std::string started = page().eval(std::string(live_turn) + "(true, 'weighing the forces', '')");
+    CHECK(started.find("weighing the forces") != std::string::npos);
+    CHECK(started.find("class=\"waiting\"") == std::string::npos);
+    // A model answering without thinking loses the fold with its first word.
+    const std::string answered = page().eval(std::string(live_turn) + "(false, '', 'Hello')");
+    CHECK(answered.find("<summary>thinking</summary>", answered.find("still going")) == std::string::npos);
+    // And no word below it in place of the dots any more.
+    CHECK(opened.find("body thinking") == std::string::npos);
 }
 
 TEST(the_provider_dialog_asks_for_an_address_a_key_and_a_model) {

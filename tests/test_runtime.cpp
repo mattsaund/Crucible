@@ -7,9 +7,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <optional>
+#include <fstream>
 #include <thread>
 
 #include "crucible/llm/model_host.hpp"
+#include "crucible/util/gguf.hpp"
 #include "crucible/runtime/builder.hpp"
 
 // ---------------------------------------------------------------------------
@@ -748,6 +751,66 @@ void write_sliding_gguf(const std::filesystem::path& file, const std::string& ar
 }
 
 }  // namespace
+
+TEST(crucibles_own_gguf_reader_reads_what_ggml_wrote) {
+    // A model is read without llama.cpp: whichever runtime is in use, or none.
+    TempDir dir;
+    const std::filesystem::path file = dir.path() / "read.gguf";
+    {
+        ggml_init_params init{};
+        init.mem_size   = 16 * ggml_tensor_overhead() + 4 * 64 * 64 * sizeof(float);
+        init.mem_buffer = nullptr;
+        init.no_alloc   = false;
+        ggml_context* ctx  = ggml_init(init);
+        gguf_context* gguf = gguf_init_empty();
+        gguf_set_val_str(gguf, "general.architecture", "testarch");
+        gguf_set_val_u32(gguf, "testarch.block_count", 2);
+        gguf_set_val_i32(gguf, "testarch.negative", -5);
+        gguf_set_val_f32(gguf, "testarch.rope", 0.5F);
+        const std::int32_t heads[] = {4, 0, 4};
+        gguf_set_arr_data(gguf, "testarch.attention.head_count_kv", GGUF_TYPE_INT32, heads, 3);
+        const char* tokens[] = {"a", "bc", "def"};
+        gguf_set_arr_str(gguf, "tokenizer.ggml.tokens", tokens, 3);
+        for (const char* name : {"token_embd.weight", "blk.0.attn_q.weight", "blk.1.attn_q.weight"}) {
+            ggml_tensor* tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, 16);
+            ggml_set_name(tensor, name);
+            gguf_add_tensor(gguf, tensor);
+        }
+        gguf_write_to_file(gguf, file.string().c_str(), /*only_meta=*/false);
+        gguf_free(gguf);
+        ggml_free(ctx);
+    }
+    std::string error;
+    const std::optional<gguf::File> read = gguf::File::read(file, &error);
+    CHECK(read.has_value());
+    CHECK(error.empty());
+    if (!read) {
+        return;
+    }
+    CHECK_EQ(read->text("general.architecture"), std::string("testarch"));
+    CHECK(read->unsigneds("testarch.block_count") == std::vector<std::uint64_t>({2}));
+    CHECK(read->unsigneds("testarch.negative") == std::vector<std::uint64_t>({0}));
+    CHECK(read->unsigneds("testarch.attention.head_count_kv") == std::vector<std::uint64_t>({4, 0, 4}));
+    CHECK(read->unsigneds("testarch.rope").empty());
+    CHECK_EQ(read->length("tokenizer.ggml.tokens"), std::uint64_t{3});
+    CHECK(read->text("missing").empty());
+    CHECK_EQ(read->tensors().size(), std::size_t{3});
+    CHECK_EQ(read->tensors()[1].name, std::string("blk.0.attn_q.weight"));
+    CHECK(read->tensors()[1].ne == std::vector<std::int64_t>({64, 16}));
+    for (const gguf::Tensor& tensor : read->tensors()) {
+        CHECK_EQ(tensor.size, std::uint64_t{64 * 16 * sizeof(float)});
+    }
+
+    // Not a GGUF, and one cut short, are nothing, and say why.
+    const std::filesystem::path text = dir.path() / "not.gguf";
+    std::ofstream(text) << "hello";
+    CHECK(!gguf::File::read(text, &error).has_value());
+    CHECK(error.find("not a GGUF") != std::string::npos);
+    const std::filesystem::path cut = dir.path() / "cut.gguf";
+    std::filesystem::copy_file(file, cut);
+    std::filesystem::resize_file(cut, 40);
+    CHECK(!gguf::File::read(cut, &error).has_value());
+}
 
 TEST(a_window_cache_charges_a_sliding_layer_its_window_and_a_batch) {
     // flint's shape in miniature: three of four layers slide, 513 back.
