@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     1.5.0
+    VERSION     1.6.0
     DESCRIPTION "An all in one local AI workshop: build software and chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
