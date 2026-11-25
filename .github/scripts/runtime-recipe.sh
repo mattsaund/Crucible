@@ -25,8 +25,13 @@ sha() {
 # A file's content as Git holds it, whatever line endings the checkout gave it.
 content() { tr -d '\r' < "$1"; }
 
-tag="$(grep -m1 'CRUCIBLE_LLAMA_TAG' "$here/cmake/CrucibleDependencies.cmake" \
-       | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
+# The tag this checkout pins, or LLAMA_TAG: a newer llama.cpp built for a
+# Crucible already released (llama.yml).
+tag="${LLAMA_TAG:-}"
+if [ -z "$tag" ]; then
+    tag="$(grep -m1 'CRUCIBLE_LLAMA_TAG' "$here/cmake/CrucibleDependencies.cmake" \
+           | sed -E 's/.*CRUCIBLE_LLAMA_TAG[[:space:]]+([^[:space:])]+).*/\1/')"
+fi
 test -n "$tag"
 
 # CUDA's name says which kernels it has (prebuilt::kCudaKernels), and it is

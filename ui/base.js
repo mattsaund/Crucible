@@ -47,7 +47,7 @@ const state = {
   fonts: null,
 
   // Long jobs, as last reported.
-  build: null, install: null, run: null,
+  build: null, install: null, run: null, llama: null, mlx: null,
 
   // What is open over the view, or null. One at a time: a modal that opens
   // another is replaced by it and comes back when that one closes.

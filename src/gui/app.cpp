@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <cstdio>
 #include <filesystem>
@@ -23,10 +24,13 @@
 #include <utility>
 
 
+
 #include "crucible/app/starter.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/llm/prices.hpp"
 #include "crucible/runtime/backend.hpp"
+#include "crucible/runtime/llama_versions.hpp"
+#include "crucible/lab/mlx_runtime.hpp"
 #include "crucible/util/http.hpp"
 #include "crucible/util/platform.hpp"
 #include "crucible/util/subprocess.hpp"
@@ -145,6 +149,43 @@ void App::housekeeping() {
     absorb_finished_run();
     absorb_finished_build();
     collect_update_check();
+    keep_runtimes_current();
+}
+
+void App::keep_runtimes_current() {
+    // A newer llama.cpp the daily update fetched and chose, said once.
+    if (const llama_versions::Fetching fetch = llama_versions::fetching();
+        fetch.automatic && !fetch.ready.empty() && fetch.ready != runtime_announced_) {
+        runtime_announced_ = fetch.ready;
+        say("llama.cpp " + fetch.ready + " is in: Crucible runs on it from the next start");
+    }
+    // Once a day, and only when asked to: the box in Settings, Runtimes. Not
+    // where nothing is to be fetched on its own (CRUCIBLE_NO_SETUP, as Setup).
+    const auto  now      = std::chrono::steady_clock::now();
+    const char* no_setup = std::getenv("CRUCIBLE_NO_SETUP");
+    if (!config_.ui.runtime_updates || (no_setup != nullptr && *no_setup != '\0' && std::string(no_setup) != "0")
+        || runtime_checking_.exchange(true)) {
+        return;
+    }
+    if (runtime_checked_ != std::chrono::steady_clock::time_point{}
+        && now - runtime_checked_ < std::chrono::hours(24)) {
+        runtime_checking_ = false;
+        return;
+    }
+    runtime_checked_ = now;
+    workers_.post([this] {
+        std::string error;
+        if (llama_versions::refresh_releases(error)) {
+            if (const std::string newer = llama_versions::newer_than_here(); !newer.empty()) {
+                llama_versions::start_fetch(newer, /*automatic=*/true);
+            }
+        }
+        // MLX's packages, where there are any: the same box keeps them current.
+        if (lab::mlx::versions().present && lab::mlx::check(error) && lab::mlx::update_available()) {
+            lab::mlx::start_update();
+        }
+        runtime_checking_ = false;
+    });
 }
 
 void App::absorb_finished_run() {

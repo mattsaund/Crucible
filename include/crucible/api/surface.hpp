@@ -105,6 +105,11 @@ public:
     /// a rebuilt Crucible does once the new one has started.
     virtual void quit() {}
 
+    /// Start this Crucible again, as it was started, and close this one:
+    /// empty when under way, else why not. Only where there is a window to
+    /// close; elsewhere it would open a second Crucible beside this one.
+    virtual std::string restart() { return "this interface cannot start itself again"; }
+
     // --- the configuration -------------------------------------------------
 
     /// The configuration in force. A copy each time rather than a reference:

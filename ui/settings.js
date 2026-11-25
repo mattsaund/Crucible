@@ -611,6 +611,171 @@ actions['gpu-move'] = (e) => {
 
 // --- Runtimes ------------------------------------------------------------------------------------
 
+/// A fetch's step in a few words, with how far a download is as a ring: the
+/// server says "downloading 4.2 MB of 17.1 MB", "unpacking" and the like.
+const SIZE_UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+function fetchStep(said) {
+  const of = /^downloading ([\d.]+) (B|KB|MB|GB|TB) of ([\d.]+) (B|KB|MB|GB|TB)/.exec(said || '');
+  if (of) {
+    const fraction = (of[1] * SIZE_UNITS[of[2]]) / (of[3] * SIZE_UNITS[of[4]]);
+    return `${ring(fraction)}<span class="status">Downloading</span>`;
+  }
+  const word = /^(downloading|unpacking)/.exec(said || '');
+  return `${ring(-1)}<span class="status">${word ? (word[1] === 'unpacking' ? 'Unpacking' : 'Downloading')
+                                                  : 'Installing'}</span>`;
+}
+
+/// Which llama.cpp Crucible runs on: the versions here and published, as LM
+/// Studio lists its runtimes. One runs at a time; another is chosen for the
+/// next start, and Restart starts on it now.
+function llamaView() {
+  const l = state.llama;
+  if (!l) return '';
+  const fetching = l.fetching;
+  const newest = l.newer;
+  const shown = l.versions.filter((v) => v.running || v.chosen || v.installed || v.disk > 0 || v.tag === newest);
+  const rows = shown.map((v) => {
+    const tags = [];
+    if (v.running) tags.push('<span class="tag ok">running</span>');
+    if (v.chosen && !v.running) tags.push('<span class="tag">next start</span>');
+    const size = v.installed || v.disk ? (v.disk ? bytes(v.disk) : '') : v.bytes ? bytes(v.bytes) : '';
+    let buttons = '';
+    if (fetching === v.tag) {
+      buttons = `<span class="llama-step">${fetchStep(l.said)}</span>`;
+    } else {
+      if (!v.installed && v.published) {
+        buttons += `<button class="action" data-act="llama-install" data-tag="${escape(v.tag)}"${
+          fetching ? ' disabled' : ''}>Install</button>`;
+      }
+      if (v.installed && !v.chosen) {
+        buttons += `<button class="action" data-act="llama-use" data-tag="${escape(v.tag)}">Use</button>`;
+      }
+      if (v.chosen && !v.running) {
+        buttons += `<button class="action" data-act="llama-use" data-tag="${escape(v.tag)}">Restart</button>`;
+      }
+      if (!v.running && !v.bundled && !v.chosen && v.disk > 0) {
+        buttons += `<button class="action" data-act="llama-delete" data-tag="${escape(v.tag)}">Delete</button>`;
+      }
+    }
+    return `<div class="order-row llama-row">
+        <span class="order-name"><strong>${escape(v.tag)}</strong> ${tags.join(' ')}
+          ${size ? `<span class="status">${escape(size)}</span>` : ''}</span>
+        ${buttons}</div>`;
+  }).join('');
+  return `<h2>LLAMA.CPP</h2>
+    ${l.passed_over ? `<p class="lede bad">${escape(l.passed_over)}</p>` : ''}
+    <div class="order">${rows}</div>
+    ${l.error ? `<div class="hint bad">${escape(l.error)}</div>` : ''}`;
+}
+
+/// Keeping llama.cpp and MLX current: once a day on its own, or now.
+function updatesView() {
+  const l = state.llama;
+  const m = state.mlx;
+  const checking = (l && l.checking) || (m && m.checking);
+  const problem = (l && l.check_error) || (m && m.present && m.check_error);
+  return `<div class="row llama-foot">
+      ${setting('ui.runtime_updates', 'Auto-update', 'bool', '')}
+      <button class="action" data-act="llama-check"${checking ? ' disabled' : ''}>${
+        checking ? 'Checking' : 'Check'}</button>
+      <span class="status">${problem ? `<span class="bad">${escape(problem)}</span>`
+        : l && l.checked_at ? `Checked ${escape(ago(l.checked_at))}` : ''}</span>
+    </div>`;
+}
+
+/// MLX's packages, where MLX runs: what is installed and an update to them.
+function mlxView() {
+  const m = state.mlx;
+  if (!m || (!m.present && !m.here)) return '';
+  if (!m.present) {
+    return `<h2 style="margin-top:1.6rem">MLX</h2>
+      <div class="order"><div class="order-row llama-row">
+        <span class="order-name"><span class="status">Not installed</span></span>
+        <button class="action" data-act="trainer-install" data-flavor="mlx">Install</button></div></div>`;
+  }
+  const newer = (m.newest_mlx_lm && m.newest_mlx_lm !== m.mlx_lm) || (m.newest_mlx && m.newest_mlx !== m.mlx);
+  const action = m.updating ? `<span class="llama-step">${ring(-1)}<span class="status">Updating</span></span>`
+    : newer ? `<button class="action" data-act="mlx-update" title="${
+        escape(`mlx-lm ${m.newest_mlx_lm}, mlx ${m.newest_mlx}`)}">Update to ${escape(m.newest_mlx_lm || m.newest_mlx)}</button>`
+    : '';
+  return `<h2 style="margin-top:1.6rem">MLX</h2>
+    <div class="order"><div class="order-row llama-row">
+      <span class="order-name"><strong>mlx-lm ${escape(m.mlx_lm || '?')}</strong>
+        <span class="status">mlx ${escape(m.mlx)}</span></span>
+      ${action}</div></div>
+    ${m.error ? `<div class="hint bad">${escape(m.error)}</div>` : ''}`;
+}
+
+/// Asked again while a version is being fetched or MLX updated, which
+/// nothing else wakes the page for, and the backends reread when it is in.
+let followingLlama = false;
+function followLlama() {
+  const fetching = state.llama && state.llama.fetching;
+  const updating = state.mlx && state.mlx.updating;
+  if (followingLlama || (!fetching && !updating)) return;
+  followingLlama = true;
+  setTimeout(async () => {
+    try {
+      if (fetching) {
+        state.llama = await call('llama.versions');
+        if (!state.llama.fetching) refreshRuntimes();
+      }
+      if (updating) state.mlx = await call('mlx.versions');
+    } catch (e) { /* asked again below */ }
+    followingLlama = false;
+    render();
+    followLlama();
+  }, 700);
+}
+
+/// Both at once, each answering for itself: MLX's takes pip a few seconds.
+actions['llama-check'] = async () => {
+  if (state.llama) state.llama = { ...state.llama, checking: true };
+  if (state.mlx) state.mlx = { ...state.mlx, checking: true };
+  render();
+  const mlxHere = state.mlx && state.mlx.present;
+  const [llama, mlx] = await Promise.allSettled([
+    call('llama.check'), mlxHere ? call('mlx.check') : Promise.resolve(null)]);
+  if (llama.status === 'fulfilled') state.llama = llama.value;
+  else if (state.llama) state.llama = { ...state.llama, checking: false, check_error: llama.reason.message };
+  if (mlx.status === 'fulfilled' && mlx.value) state.mlx = mlx.value;
+  else if (state.mlx) state.mlx = { ...state.mlx, checking: false,
+    check_error: mlx.status === 'rejected' ? mlx.reason.message : '' };
+  render();
+  followLlama();
+};
+actions['mlx-update'] = () => guard(async () => {
+  await call('mlx.update');
+  state.mlx = await call('mlx.versions');
+  followLlama();
+});
+actions['llama-install'] = (e) => guard(async () => {
+  await call('llama.install', { tag: e.dataset.tag });
+  state.llama = await call('llama.versions');
+  followLlama();
+});
+actions['llama-use'] = async (e) => {
+  const tag = e.dataset.tag;
+  const running = state.llama && state.llama.running === tag;
+  if (!running) {
+    const sure = await confirmIt({ title: `Restart on llama.cpp ${tag}?`,
+      body: 'Crucible closes and opens again.', yes: 'Restart', no: 'Cancel' });
+    if (!sure) return;
+  }
+  await guard(async () => {
+    const said = await call('llama.use', { tag });
+    if (!said.restarting) state.llama = await call('llama.versions');
+  });
+};
+actions['llama-delete'] = async (e) => {
+  const sure = await confirmIt({ title: `Delete llama.cpp ${e.dataset.tag}?`,
+    body: 'Its files are deleted.', yes: 'Delete', no: 'Keep' });
+  if (sure) await guard(async () => {
+    await call('llama.remove', { tag: e.dataset.tag });
+    state.llama = await call('llama.versions');
+  });
+};
+
 function pageRuntimes() {
   const data = state.runtimes;
   if (!data) return '<h1>Runtimes</h1><p class="lede">Looking...</p>';
@@ -653,9 +818,13 @@ function pageRuntimes() {
       </div>`;
   }).join('');
   return `<h1>Runtimes</h1>
+    ${updatesView()}
+    ${llamaView()}
+    <h2 style="margin-top:1.6rem">BACKENDS</h2>
     ${progressView(state.build, 'Installing ' + ((state.build && state.build.backend) || ''),
                    'runtime-cancel', 'runtime-dismiss')}
     ${cards}
+    ${mlxView()}
     <p class="lede" style="margin-top:1.2rem">${apart(escape(data.directory), bytes(data.bytes))}</p>`;
 }
 
@@ -1269,6 +1438,8 @@ entering.settings = () => {
   // startup, before the engine has loaded any runtime, and that answer --
   // every runtime idle, driving nothing -- is wrong a second later.
   need('runtimes', 'runtimes', true);
+  call('llama.versions').then((got) => { state.llama = got; render(); followLlama(); }).catch(() => {});
+  call('mlx.versions').then((got) => { state.mlx = got; render(); followLlama(); }).catch(() => {});
   need('devices', 'devices');
   need('trainer', 'trainer');
   need('flavors', 'trainer.flavors');

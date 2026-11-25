@@ -148,6 +148,7 @@ add_library(crucible_core STATIC
     # runtime: the loadable compute backends and the devices they expose
     src/runtime/backend.cpp
     src/runtime/prebuilt.cpp
+    src/runtime/llama_versions.cpp
     src/runtime/cuda_libraries.cpp
     src/runtime/registry.cpp
     src/runtime/builder.cpp
@@ -163,6 +164,7 @@ add_library(crucible_core STATIC
     src/lab/recipe.cpp
     src/lab/hub.cpp
     src/lab/pyenv.cpp
+    src/lab/mlx_runtime.cpp
     src/lab/trainer.cpp
     src/lab/condense.cpp
     src/lab/imatrix.cpp
@@ -386,6 +388,9 @@ function(crucible_launcher target module)
     add_dependencies(${target} ${module})
 endfunction()
 crucible_launcher(crucible crucible_program)
+# Which llama.cpp the runtime beside the launcher was built with, for the
+# program to say what it can go back to. See runtime/llama_versions.hpp.
+file(WRITE "${CMAKE_BINARY_DIR}/bin/llama-tag" "${CRUCIBLE_LLAMA_TAG}\n")
 
 # The platform's own file dialog: one function, and the implementation that
 # belongs to wherever this is being built. See src/gui/dialogs.hpp. And the
@@ -625,6 +630,8 @@ endif()
 install(TARGETS crucible_program
         LIBRARY DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_INSTALL_COMPONENT}
         RUNTIME DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+install(FILES "${CMAKE_BINARY_DIR}/bin/llama-tag" DESTINATION ${_crucible_runtime_dir}
+        COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
 
 # The terminal download is its own component: the engine, the libraries it
 # needs and nothing of the window. packaging/cli/package.sh adds cruciblecli,
@@ -636,6 +643,8 @@ install(TARGETS crucible-engine
 install(TARGETS crucible_engine_program
         LIBRARY DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_CLI_COMPONENT}
         RUNTIME DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_CLI_COMPONENT})
+install(FILES "${CMAKE_BINARY_DIR}/bin/llama-tag" DESTINATION ${_crucible_runtime_dir}
+        COMPONENT ${CRUCIBLE_CLI_COMPONENT})
 # --- the desktop entry ------------------------------------------------------
 #
 # What puts Crucible in the application menu. Linux only: macOS wants an .app

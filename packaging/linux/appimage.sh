@@ -11,10 +11,12 @@
 #   packaging/linux/appimage.sh <installed-prefix> <output.AppImage>
 #
 # The prefix is one `cmake --install build --component crucible` has already
-# written -- bin/crucible plus lib/crucible/*.so -- because the layout inside the
-# AppDir is the install layout, unchanged. That is the whole trick: the binary's
-# RPATH is $ORIGIN/../lib/crucible, so a prefix copied into usr/ finds its
-# libraries with nothing patched and nothing set in the environment.
+# written: bin/crucible, the launcher, and lib/crucible/, the program as a
+# module beside llama.cpp's libraries. The layout inside the AppDir is the
+# install layout, unchanged. That is the whole trick: the launcher finds
+# the module at ../lib/crucible, whose RPATH is $ORIGIN, so a prefix copied
+# into usr/ finds its libraries with nothing patched and nothing set in the
+# environment.
 set -euo pipefail
 
 PREFIX="${1:?usage: appimage.sh <installed-prefix> <output.AppImage>}"
@@ -23,6 +25,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
 [ -x "$PREFIX/bin/crucible" ] || { echo "no crucible in $PREFIX/bin" >&2; exit 1; }
+# The program itself, which is what links the window.
+PROGRAM="lib/crucible/libcrucible-program.so"
+[ -f "$PREFIX/$PROGRAM" ] || { echo "no $PROGRAM in $PREFIX" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -41,8 +46,8 @@ cp -a "$PREFIX/lib" "$APPDIR/usr/lib"
 # starts and then shows nothing, which is a worse failure than not starting.
 # Every desktop Linux that ships GNOME already has the runtime package, so the
 # dependency is declared and checked rather than carried.
-if ! ldd "$PREFIX/bin/crucible" | grep -q libwebkit2gtk; then
-    echo "error: the binary is not linked against WebKitGTK -- build it with the window" >&2
+if ! ldd "$PREFIX/$PROGRAM" | grep -q libwebkit2gtk; then
+    echo "error: the program is not linked against WebKitGTK. Build it with the window." >&2
     exit 1
 fi
 
@@ -69,7 +74,7 @@ APPDIR="$(dirname "$(readlink -f "$0")")"
 # The one dependency this file does not carry. Said plainly here, because the
 # alternative is the dynamic loader's "cannot open shared object file" on a
 # line nobody reads, for a package with a different name on every distribution.
-if ! ldd "$APPDIR/usr/bin/crucible" 2>/dev/null | grep -q 'libwebkit2gtk.*=> /'; then
+if ! ldd "$APPDIR/usr/lib/crucible/libcrucible-program.so" 2>/dev/null | grep -q 'libwebkit2gtk.*=> /'; then
     printf 'Crucible needs WebKitGTK, which this system does not have.\n\n' >&2
     printf '  Debian, Ubuntu:  sudo apt-get install libwebkit2gtk-4.1-0\n' >&2
     printf '  Fedora:          sudo dnf install webkit2gtk4.1\n' >&2

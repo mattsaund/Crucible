@@ -130,6 +130,10 @@ public:
     /// Look at the runtimes directory and at what ggml actually registered.
     static std::vector<RuntimeStatus> scan();
 
+    /// The module files of `kind` in `dir`: this llama.cpp's backends folder,
+    /// or another's (runtimes/backends/<tag>).
+    static std::vector<std::filesystem::path> modules_of(const std::filesystem::path& dir, BackendKind kind);
+
     /// The devices ggml has registered, in its order, which is the order
     /// llama.cpp numbers them in. Read ggml's list here and nowhere else.
     ///

@@ -2,6 +2,9 @@
 #include "crucible/runtime/prebuilt.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -67,17 +70,26 @@ std::string platform_tag() {
 }
 
 std::string asset_name(BackendKind kind) {
+    return asset_name(kind, CRUCIBLE_LLAMA_TAG);
+}
+
+std::string asset_name(BackendKind kind, std::string_view tag) {
     const std::string platform = platform_tag();
     if (platform.empty()) {
         return {};
     }
     // CUDA's says which kernels it has, so one published before them is
     // never taken for one published after: same llama.cpp, same name, else.
-    return "runtime-" + std::string(backend_info(kind).id) + "-" + platform + "-" + CRUCIBLE_LLAMA_TAG
+    return "runtime-" + std::string(backend_info(kind).id) + "-" + platform + "-" + std::string(tag)
          + (kind == BackendKind::Cuda ? "-k" + std::to_string(kCudaKernels) : std::string()) + ".tar.gz";
 }
 
 std::string releases_url() {
+    // Another list, for trying a runtime before it is published: a file://
+    // address of a list in GitHub's form.
+    if (const char* other = std::getenv("CRUCIBLE_RELEASES_URL"); other != nullptr && *other != '\0') {
+        return other;
+    }
     // One page is plenty: an asset older than thirty releases is one for a
     // llama.cpp this binary was not built against, which is not downloadable
     // by name anyway.
@@ -115,6 +127,16 @@ std::string find_asset(std::string_view releases_json, std::string_view name, st
 }
 
 bool fetch_releases(std::string& body, std::string& error) {
+    // A list on disk, for trying runtimes before they are published.
+    if (const std::string url = releases_url(); url.rfind("file://", 0) == 0) {
+        std::ifstream in(std::filesystem::path(url.substr(7)), std::ios::binary);
+        if (!in) {
+            error = "the release list could not be read from " + url.substr(7);
+            return false;
+        }
+        body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return true;
+    }
     util::http::Request request;
     request.url             = releases_url();
     request.headers         = {{"Accept", "application/vnd.github+json"}};
@@ -165,8 +187,9 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
     // ones, and a timeout mid-download reads to the user as "it does not work"
     // rather than "your connection is slow".
     const std::string size = bytes > 0 ? format::bytes(bytes) : std::string();
+    const std::string host = util::http::host_of(url);
     say("downloading " + url.substr(url.rfind('/') + 1) + (size.empty() ? "" : " (" + size + ")")
-        + " from " + util::http::host_of(url));
+        + (host.empty() ? "" : " from " + host));
     const auto arrived = [&](std::uint64_t got) {
         say("downloading " + format::bytes(got) + (size.empty() ? "" : " of " + size));
     };
@@ -216,14 +239,13 @@ bool install(BackendKind kind, const std::string& url, const std::filesystem::pa
     // Best-effort on purpose: on Windows a module that is loaded right now
     // cannot be unlinked, and those are precisely the ones about to be
     // replaced by name anyway.
-    for (const RuntimeStatus& installed : RuntimeRegistry::scan()) {
-        if (installed.kind != kind) {
-            continue;
-        }
-        for (const std::filesystem::path& old_module : installed.files) {
-            std::error_code ignored;
-            std::filesystem::remove(old_module, ignored);
-        }
+    //
+    // Only from where these go. Each llama.cpp has a folder of backends, and
+    // fetching another's (llama_versions::install) once took the running
+    // one's from under it.
+    for (const std::filesystem::path& old_module : RuntimeRegistry::modules_of(into, kind)) {
+        std::error_code ignored;
+        std::filesystem::remove(old_module, ignored);
     }
 
     for (const std::filesystem::path& module : found) {

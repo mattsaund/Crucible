@@ -11,7 +11,10 @@
 #include <fstream>
 #include <thread>
 
+#include "crucible/lab/mlx_runtime.hpp"
+#include "crucible/lab/pyenv.hpp"
 #include "crucible/llm/model_host.hpp"
+#include "crucible/runtime/llama_versions.hpp"
 #include "crucible/util/gguf.hpp"
 #include "crucible/runtime/builder.hpp"
 
@@ -1114,7 +1117,170 @@ TEST(backends_from_before_a_folder_each_move_into_their_llama_cpps) {
 
     CHECK(std::filesystem::exists(paths::backends_dir() / module));
     CHECK(std::filesystem::exists(paths::backends_dir() / "manifest.json"));
-    CHECK(std::filesystem::exists(paths::backends_dir() / "cuda" / "libcublas.so.12"));
+    // NVIDIA's libraries stay where every llama.cpp's CUDA module finds them.
+    CHECK(std::filesystem::exists(runtimes / "cuda" / "libcublas.so.12"));
     CHECK(!std::filesystem::exists(runtimes / module));
     CHECK(!std::filesystem::exists(runtimes / "manifest.json"));
+}
+
+// ---------------------------------------------------------------------------
+// Which llama.cpp: runtimes of this Crucible built with others
+// ---------------------------------------------------------------------------
+
+
+namespace {
+
+/// A release list with this Crucible's runtime published for each of `tags`.
+std::string releases_offering(const std::vector<std::pair<std::string, std::string>>& tags) {
+    nlohmann::json assets = nlohmann::json::array();
+    for (const auto& [tag, url] : tags) {
+        assets.push_back({{"name", llama_versions::core_asset(tag)}, {"browser_download_url", url}, {"size", 2048}});
+    }
+    return nlohmann::json::array({{{"tag_name", "llama-b99999"}, {"draft", false}, {"assets", assets}}}).dump();
+}
+
+}  // namespace
+
+TEST(llama_cpp_versions_are_listed_newest_first_with_what_is_running) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    CHECK(llama_versions::is_tag("b12701"));
+    CHECK(!llama_versions::is_tag("v1.5.0"));
+    CHECK(!llama_versions::is_tag("b12/../x"));
+    CHECK_EQ(llama_versions::tag_number("b13000"), 13000LL);
+    CHECK(llama_versions::core_asset("b13000").find(std::string("-") + CRUCIBLE_VERSION + "-b13000.tar.gz")
+          != std::string::npos);
+
+    const std::vector<llama_versions::Version> listed =
+        llama_versions::list(releases_offering({{"b99998", "https://x/a"}, {"b1", "https://x/b"}}));
+    CHECK(listed.size() >= 3);
+    CHECK_EQ(listed.front().tag, std::string("b99998"));
+    CHECK(!listed.front().installed);
+    CHECK_EQ(listed.front().url, std::string("https://x/a"));
+    const auto running = std::find_if(listed.begin(), listed.end(),
+                                      [](const auto& v) { return v.tag == CRUCIBLE_LLAMA_TAG; });
+    CHECK(running != listed.end());
+    CHECK(running != listed.end() && running->running && running->installed && running->chosen);
+}
+
+TEST(a_newer_llama_cpp_is_installed_chosen_and_kept_apart) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    // A runtime package as the release would publish it, served from disk.
+    const std::filesystem::path pack = temp.path() / "pack";
+    std::filesystem::create_directories(pack);
+    std::ofstream(pack / "runtime.json") << R"({"crucible": ")" << CRUCIBLE_VERSION << R"(", "llama_tag": "b99998"})";
+    std::ofstream(pack / "libcrucible-program.so") << "x";
+    const std::filesystem::path archive = temp.path() / "core.tar.gz";
+    util::Subprocess tar;
+    std::string      error;
+    CHECK(tar.start({"tar", "-czf", archive.string(), "-C", pack.string(), "."}, {}, {}, error));
+    std::string line;
+    while (tar.read_line(line)) {
+    }
+    CHECK_EQ(tar.wait(), 0);
+    const std::string offered = releases_offering({{"b99998", "file://" + archive.generic_string()}});
+
+    std::vector<std::string> said;
+    CHECK(llama_versions::install("b99998", offered, error, [&said](std::string s) { said.push_back(std::move(s)); }));
+    CHECK(error.empty());
+    CHECK(std::filesystem::exists(llama_versions::core_dir("b99998") / "runtime.json"));
+    CHECK(!said.empty() && said.front().find("downloading " + llama_versions::core_asset("b99998")) == 0);
+
+    // Chosen, it is what the next start loads; it cannot then be deleted.
+    CHECK(llama_versions::choose("b99998", error));
+    CHECK_EQ(llama_versions::chosen_tag(), std::string("b99998"));
+    CHECK(!llama_versions::remove("b99998", error));
+    // Nor the running one; and one that is not installed cannot be chosen.
+    CHECK(!llama_versions::remove(CRUCIBLE_LLAMA_TAG, error));
+    CHECK(!llama_versions::choose("b99997", error));
+    // Back to the one the installer brought, and then it goes.
+    CHECK(llama_versions::choose("", error));
+    CHECK(llama_versions::chosen_tag().empty());
+    CHECK(llama_versions::remove("b99998", error));
+    CHECK(!std::filesystem::exists(llama_versions::core_dir("b99998")));
+
+    // A package that says it is another Crucible's, or another llama.cpp's,
+    // is not put in place.
+    std::ofstream(pack / "runtime.json") << R"({"crucible": "0.0.1", "llama_tag": "b99998"})";
+    std::filesystem::remove(archive);
+    util::Subprocess again;
+    CHECK(again.start({"tar", "-czf", archive.string(), "-C", pack.string(), "."}, {}, {}, error));
+    while (again.read_line(line)) {
+    }
+    CHECK_EQ(again.wait(), 0);
+    CHECK(!llama_versions::install("b99998", offered, error));
+    CHECK(!std::filesystem::exists(llama_versions::core_dir("b99998")));
+}
+
+TEST(a_llama_cpp_chosen_under_another_crucible_is_not_chosen_here) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    // What an older Crucible chose: its runtime is in core/<its version>/,
+    // and this one has none for it. The launcher loads the bundled one.
+    std::filesystem::create_directories(paths::runtimes_dir() / "core" / "0.0.1" / "b99998");
+    std::ofstream(paths::runtimes_dir() / "core" / "0.0.1" / "b99998" / "runtime.json") << "{}";
+    std::ofstream(paths::runtimes_dir() / "active") << "b99998\n";
+    CHECK(llama_versions::chosen_tag().empty());
+    const auto listed  = llama_versions::list("[]");
+    const auto chosen  = std::count_if(listed.begin(), listed.end(), [](const auto& v) { return v.chosen; });
+    const auto running = std::find_if(listed.begin(), listed.end(), [](const auto& v) { return v.running; });
+    CHECK_EQ(chosen, std::ptrdiff_t{1});
+    CHECK(running != listed.end() && running->chosen);
+}
+
+// ---------------------------------------------------------------------------
+// MLX's packages as a runtime
+// ---------------------------------------------------------------------------
+
+
+TEST(mlxs_versions_are_read_off_its_packages_records) {
+    CHECK_EQ(lab::mlx::version_in("mlx-0.29.1.dist-info", "mlx"), std::string("0.29.1"));
+    CHECK_EQ(lab::mlx::version_in("mlx_lm-0.28.0.dist-info", "mlx-lm"), std::string("0.28.0"));
+    // Another package whose name starts the same is not this one.
+    CHECK(lab::mlx::version_in("mlx_lm-0.28.0.dist-info", "mlx").empty());
+    CHECK(lab::mlx::version_in("mlx_metal-0.29.1.dist-info", "mlx").empty());
+    CHECK(lab::mlx::version_in("mlx-0.29.1", "mlx").empty());
+
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    CHECK(!lab::mlx::versions().present);
+#if defined(_WIN32)
+    const std::filesystem::path site = lab::pyenv::venv_dir() / "Lib" / "site-packages";
+#else
+    const std::filesystem::path site = lab::pyenv::venv_dir() / "lib" / "python3.14" / "site-packages";
+#endif
+    std::filesystem::create_directories(site / "mlx-0.29.1.dist-info");
+    std::filesystem::create_directories(site / "mlx_lm-0.28.0.dist-info");
+    std::filesystem::create_directories(site / "mlx_metal-0.29.1.dist-info");
+    const lab::mlx::Versions found = lab::mlx::versions();
+    CHECK(found.present);
+    CHECK_EQ(found.mlx, std::string("0.29.1"));
+    CHECK_EQ(found.mlx_lm, std::string("0.28.0"));
+    // Before a check, what is newest reads as what is here: nothing to update.
+    CHECK_EQ(found.newest_mlx_lm, std::string("0.28.0"));
+    CHECK(!lab::mlx::update_available());
+}
+
+TEST(what_pip_would_install_is_read_from_its_report) {
+    std::string mlx;
+    std::string mlx_lm;
+    CHECK(lab::mlx::read_report(R"({"version": "1", "install": [
+        {"metadata": {"name": "mlx-lm", "version": "0.28.2"}},
+        {"metadata": {"name": "transformers", "version": "4.57.0"}},
+        {"metadata": {"name": "MLX", "version": "0.29.3"}}]})", mlx, mlx_lm));
+    CHECK_EQ(mlx, std::string("0.29.3"));
+    CHECK_EQ(mlx_lm, std::string("0.28.2"));
+    // Nothing to install is nothing newer.
+    std::string none_mlx;
+    std::string none_lm;
+    CHECK(lab::mlx::read_report(R"({"version": "1", "install": []})", none_mlx, none_lm));
+    CHECK(none_mlx.empty() && none_lm.empty());
+    CHECK(!lab::mlx::read_report("pip says no", none_mlx, none_lm));
+    // A warning in the same stream as the report is passed over.
+    std::string warned;
+    CHECK(lab::mlx::read_report("WARNING: a cache is not writable\n"
+                                R"({"install": [{"metadata": {"name": "mlx", "version": "0.30.0"}}]})",
+                                warned, none_lm));
+    CHECK_EQ(warned, std::string("0.30.0"));
 }

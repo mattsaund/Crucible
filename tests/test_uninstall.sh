@@ -32,8 +32,22 @@ fi
 # The parentheses matter: without them find reads this as
 # "(-name '*.cpp') OR ('*.hpp' AND -newer)", which matches every source file
 # whatever its age.
-NEWER="$(find "$HERE/../src" "$HERE/../include" \
-         \( -name '*.cpp' -o -name '*.hpp' \) -newer "$CRUCIBLE" -print 2>/dev/null | head -1)"
+#
+# `crucible` is a launcher, rebuilt only when its own source changes; the
+# program is the module beside it, and that is what a change elsewhere makes
+# stale. The launcher's source is held against the launcher.
+PROGRAM="$CRUCIBLE"
+for module in "$(dirname "$CRUCIBLE")"/libcrucible-program.so "$(dirname "$CRUCIBLE")"/crucible-program.dll; do
+    if [ -f "$module" ]; then
+        PROGRAM="$module"
+        break
+    fi
+done
+NEWER="$(find "$HERE/../src" "$HERE/../include" -path "$HERE/../src/launcher" -prune -o \
+         \( -name '*.cpp' -o -name '*.hpp' \) -newer "$PROGRAM" -print 2>/dev/null | head -1)"
+if [ -z "$NEWER" ]; then
+    NEWER="$(find "$HERE/../src/launcher" -name '*.cpp' -newer "$CRUCIBLE" -print 2>/dev/null | head -1)"
+fi
 if [ -n "$NEWER" ]; then
     echo "$CRUCIBLE is older than $NEWER -- rebuild, or pass the right binary" >&2
     exit 2
@@ -278,8 +292,10 @@ cp "$CRUCIBLE" "$ROOT/bin/crucible"
 # XDG_CACHE_HOME as well, for the same reason as run_uninstall above: the
 # uninstaller removes the build cache, and an unsandboxed run of this test
 # would remove the real one belonging to whoever is running the suite.
+# bin/crucible is a launcher, and the program it loads is the build's, so
+# nothing else need be in the prefix.
 printf 'n\n' | XDG_CONFIG_HOME="$ROOT/cfg" XDG_DATA_HOME="$ROOT/dat" \
-    XDG_CACHE_HOME="$ROOT/cache" \
+    XDG_CACHE_HOME="$ROOT/cache" CRUCIBLE_RUNTIME_DIR="$(dirname "$CRUCIBLE")" \
     "$ROOT/bin/crucible" --uninstall >/dev/null 2>&1
 check "exit code"             "$?"                                       "0"
 

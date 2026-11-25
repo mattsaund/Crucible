@@ -306,6 +306,12 @@ bool RuntimeRegistry::loadable_backends_supported() {
 #endif
 }
 
+std::vector<std::filesystem::path> RuntimeRegistry::modules_of(const std::filesystem::path& dir, BackendKind kind) {
+    auto found = modules_in(dir);
+    const auto mine = found.find(kind);
+    return mine == found.end() ? std::vector<std::filesystem::path>{} : std::move(mine->second);
+}
+
 bool RuntimeRegistry::any_installed() {
     return !modules_in(paths::backends_dir()).empty();
 }
@@ -412,7 +418,7 @@ void adopt_loose_backends() {
         const std::string name = entry.path().filename().string();
         const bool module = entry.is_regular_file(ec) && name.size() > suffix.size()
                          && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
-        if (module || name == "manifest.json" || name == "cuda") {
+        if (module || name == "manifest.json") {
             std::error_code moved;
             std::filesystem::rename(entry.path(), into / name, moved);
         }

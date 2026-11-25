@@ -1281,3 +1281,11 @@ button.bench-name:hover { color: var(--flame); }
 /* One result: its chart beside its benchmarks, under them when narrow. */
 .bench-compare.bench-one { align-items: flex-start; margin-top: .6rem; }
 .bench-one .bench-table.detail { flex: 0 1 auto; min-width: 0; }
+
+/* Settings, Runtimes: which llama.cpp. */
+.llama-row .order-name { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.llama-row .status { margin-left: .2rem; }
+.llama-foot { align-items: center; gap: .8rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.llama-foot .field { margin: 0; }
+.llama-step { display: inline-flex; align-items: center; gap: .4rem; }
+.llama-step .ring { width: 1.4rem; height: 1.4rem; }

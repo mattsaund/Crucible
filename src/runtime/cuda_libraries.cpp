@@ -110,7 +110,10 @@ std::vector<std::string> g_preloaded;
 }  // namespace
 
 std::filesystem::path dir() {
-    return paths::backends_dir() / "cuda";
+    // Shared by every llama.cpp's CUDA module: they follow the CUDA release
+    // the module was built for (kRelease), not the llama.cpp, and are most of
+    // a gigabyte to fetch again.
+    return paths::runtimes_dir() / "cuda";
 }
 
 std::vector<std::string> wanted() {

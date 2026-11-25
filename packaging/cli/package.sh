@@ -4,8 +4,9 @@
 #
 #   packaging/cli/package.sh <cmake-build-dir> <cruciblecli> <output.tar.gz>
 #
-# The layout is an ordinary install, bin/ and lib/crucible/, because the
-# engine's RPATH is $ORIGIN/../lib/crucible. A checksum goes beside it.
+# The layout is an ordinary install: bin/crucible-engine, a launcher, and
+# lib/crucible/, the engine itself as a module beside llama.cpp's libraries,
+# found by its RPATH, $ORIGIN. A checksum goes beside it.
 set -euo pipefail
 
 BUILD="${1:?usage: package.sh <build-dir> <cruciblecli> <output.tar.gz>}"
@@ -22,16 +23,19 @@ install -m 755 "$CLI" "$STAGE/bin/cruciblecli"
 case "$(uname -s)" in
     Linux)
         # OpenMP's runtime is not on a minimal server, and the engine will not
-        # start without it. The RPATH finds this copy first.
-        gomp="$(ldd "$STAGE/bin/crucible-engine" | awk '/libgomp/ {print $3}')"
-        if [ -n "$gomp" ]; then
-            cp -L "$gomp" "$STAGE/lib/crucible/"
+        # start without it. The RPATH finds this copy first. The module is
+        # what links it: the launcher in bin/ links nothing of llama.cpp's.
+        gomp="$(ldd "$STAGE/lib/crucible/libcrucible-engine-program.so" | awk '/libgomp/ {print $3}')"
+        if [ -z "$gomp" ]; then
+            echo "error: the engine does not link OpenMP, or its module is not in lib/crucible" >&2
+            exit 1
         fi
+        cp -L "$gomp" "$STAGE/lib/crucible/"
         ;;
     Darwin)
         # Installing rewrites each file's paths, which breaks the signature
         # the linker gave it, and Apple Silicon will not run an unsigned file.
-        find "$STAGE" -type f \( -name '*.dylib' -o -perm -u+x \) -print0 |
+        find "$STAGE" -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \) -print0 |
             xargs -0 codesign --force --sign -
         ;;
 esac

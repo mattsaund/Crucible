@@ -12,16 +12,18 @@
 // most need to do either is the one where nothing can run yet.
 #include "methods.hpp"
 
-#include "crucible/app/setup.hpp"
-
+#include <algorithm>
+#include <cstdlib>
 #include <mutex>
 
+#include "crucible/app/setup.hpp"
 #include "crucible/config/paths.hpp"
+#include "crucible/lab/mlx_runtime.hpp"
 #include "crucible/lab/pyenv.hpp"
 #include "crucible/runtime/backend.hpp"
+#include "crucible/runtime/llama_versions.hpp"
 #include "crucible/runtime/registry.hpp"
 #include "crucible/util/format.hpp"
-#include "crucible/util/platform.hpp"
 
 namespace crucible::api {
 namespace {
@@ -125,6 +127,121 @@ Reply runtimes(const json&, const Scene&) {
                      // False for a build with its backend compiled in, where
                      // there is nothing to install and the page says so.
                      {"loadable",  RuntimeRegistry::loadable_backends_supported()}});
+}
+
+// ---------------------------------------------------------------------------
+// Which llama.cpp the program runs on: runtime/llama_versions.hpp
+// ---------------------------------------------------------------------------
+
+/// Every version here and published, which runs, which is chosen for the next
+/// start, and a fetch under way: the page polls this while one is.
+json llama_listing(bool automatic) {
+    json versions = json::array();
+    for (const llama_versions::Version& one : llama_versions::list(llama_versions::releases())) {
+        versions.push_back(json{{"tag", one.tag}, {"running", one.running}, {"bundled", one.bundled},
+                                {"chosen", one.chosen}, {"installed", one.installed},
+                                {"published", !one.url.empty()}, {"bytes", one.bytes}, {"disk", one.disk}});
+    }
+    const llama_versions::Fetching fetch = llama_versions::fetching();
+    const char*                    passed = std::getenv("CRUCIBLE_RUNTIME_PASSED_OVER");
+    return json{{"versions", std::move(versions)},
+                {"running", llama_versions::running_tag()},
+                {"newer", llama_versions::newer_than_here()},
+                {"checked_at", llama_versions::checked_at()},
+                {"check_error", llama_versions::check_error()},
+                {"fetching", fetch.tag},
+                {"said", fetch.said},
+                {"error", fetch.error},
+                {"ready", fetch.ready},
+                // The chosen one would not load, and this is the one after it.
+                {"passed_over", passed != nullptr ? passed : ""},
+                {"auto", automatic}};
+}
+
+Reply llama_list(const json&, const Scene& scene) {
+    return good(llama_listing(scene.config.ui.runtime_updates));
+}
+
+/// Ask GitHub what is published now.
+Reply llama_check(const json&, Host& host) {
+    std::string error;
+    if (!llama_versions::refresh_releases(error)) {
+        return bad(error);
+    }
+    return good(llama_listing(host.config().ui.runtime_updates));
+}
+
+/// Fetch a version and its backends, on a thread of its own.
+Reply llama_install(const json& params, Host&) {
+    const auto tag = params.value("tag", std::string{});
+    if (!llama_versions::is_tag(tag)) {
+        return bad("no such llama.cpp version");
+    }
+    if (!llama_versions::start_fetch(tag)) {
+        return bad("llama.cpp " + llama_versions::fetching().tag + " is being fetched");
+    }
+    return good();
+}
+
+/// Run on a version: chosen for the next start, and Crucible started again on
+/// it, unless it is the one running.
+Reply llama_use(const json& params, Host& host) {
+    const auto  tag     = params.value("tag", std::string{});
+    std::string error;
+    const auto  listed  = llama_versions::list(llama_versions::releases());
+    const auto  bundled = std::find_if(listed.begin(), listed.end(), [](const auto& v) { return v.bundled; });
+    // The installer's own is chosen by choosing nothing.
+    const bool to_bundled = bundled != listed.end() && bundled->tag == tag;
+    if (!llama_versions::choose(to_bundled ? std::string() : tag, error)) {
+        return bad(error);
+    }
+    if (tag == llama_versions::running_tag()) {
+        return good(json{{"restarting", false}});
+    }
+    // From the terminal there is no window to close: the next start runs on it.
+    const std::string why = host.restart();
+    return good(json{{"restarting", why.empty()}, {"next_start", !why.empty()}});
+}
+
+Reply llama_remove(const json& params, Host&) {
+    std::string error;
+    if (!llama_versions::remove(params.value("tag", std::string{}), error)) {
+        return bad(error);
+    }
+    return good();
+}
+
+// ---------------------------------------------------------------------------
+// MLX's packages: lab/mlx_runtime.hpp
+// ---------------------------------------------------------------------------
+
+json mlx_listing() {
+    const lab::mlx::Versions v = lab::mlx::versions();
+    return json{{"present", v.present},          {"mlx", v.mlx},
+                {"mlx_lm", v.mlx_lm},             {"newest_mlx", v.newest_mlx},
+                {"newest_mlx_lm", v.newest_mlx_lm}, {"checked_at", v.checked_at},
+                {"check_error", v.check_error},   {"updating", v.updating},
+                {"said", v.said},                 {"error", v.error},
+                // Where MLX runs at all: where the environment would be built
+                // with it, Apple silicon.
+                {"here", lab::pyenv::flavor_here() == lab::pyenv::Flavor::Mlx}};
+}
+
+Reply mlx_versions(const json&, const Scene&) { return good(mlx_listing()); }
+
+Reply mlx_check(const json&, Host&) {
+    std::string error;
+    if (!lab::mlx::check(error)) {
+        return bad(error);
+    }
+    return good(mlx_listing());
+}
+
+Reply mlx_update(const json& params, Host&) {
+    if (!lab::mlx::start_update(params.value("mlx_lm", std::string{}))) {
+        return bad(lab::mlx::versions().present ? "MLX is being updated" : "MLX is not installed");
+    }
+    return good();
 }
 
 Reply runtime_build(const json& params, Host& host) {
@@ -349,6 +466,14 @@ void install_methods(std::vector<Method>& table) {
     table.push_back({"setup.retry",      nullptr, setup_retry});
     table.push_back({"setup.stop",       nullptr, setup_stop});
     table.push_back({"runtimes",         runtimes, nullptr});
+    table.push_back({"llama.versions",   llama_list, nullptr});
+    table.push_back({"llama.check",      nullptr, llama_check});
+    table.push_back({"llama.install",    nullptr, llama_install});
+    table.push_back({"llama.use",        nullptr, llama_use});
+    table.push_back({"llama.remove",     nullptr, llama_remove});
+    table.push_back({"mlx.versions",     mlx_versions, nullptr});
+    table.push_back({"mlx.check",        nullptr, mlx_check});
+    table.push_back({"mlx.update",       nullptr, mlx_update});
     table.push_back({"runtime.build",    nullptr, runtime_build});
     table.push_back({"runtime.cancel",   nullptr, runtime_cancel});
     table.push_back({"runtime.dismiss",  nullptr, runtime_dismiss});

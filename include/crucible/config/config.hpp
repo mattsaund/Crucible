@@ -449,6 +449,12 @@ struct UiConfig {
     /// unless somebody asks for what is not finished.
     bool prereleases = false;
 
+    /// Keep the runtimes up to date, as LM Studio does: once a day, a newer
+    /// llama.cpp published for this Crucible is fetched, with its backends,
+    /// and the next start runs on it. Nothing of the program changes. See
+    /// runtime/llama_versions.hpp.
+    bool runtime_updates = true;
+
     /// Where Crucible's own source is, when it is not where the running
     /// program was built from: a checkout somebody pointed it at, so that
     /// Crucible can be built on like any other project. See self_source.hpp.

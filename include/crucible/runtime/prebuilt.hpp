@@ -64,6 +64,10 @@ std::string platform_tag();
 /// the platform, and the llama.cpp tag.
 std::string asset_name(BackendKind kind);
 
+/// The same for a runtime built with another llama.cpp, `tag`: what a newer
+/// llama.cpp's backends are called before it is running.
+std::string asset_name(BackendKind kind, std::string_view tag);
+
 /// Where the release list is read from.
 std::string releases_url();
 

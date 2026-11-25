@@ -38,6 +38,8 @@
 #  include <windows.h>
 #else
 #  include <dlfcn.h>
+#  include <signal.h>
+#  include <unistd.h>
 #  if defined(__APPLE__)
 #    include <mach-o/dyld.h>
 #  endif
@@ -112,9 +114,49 @@ std::string first_line(const std::filesystem::path& file) {
     return line;
 }
 
+/// Tell the program something about where it was loaded from.
+void say(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
+/// A Crucible starting itself again on another runtime names itself in
+/// CRUCIBLE_AFTER: wait for it to be gone, at most fifteen seconds, so two
+/// never hold a model in the same card's memory.
+void wait_for_the_one_before() {
+    const char* named = std::getenv("CRUCIBLE_AFTER");
+    if (named == nullptr || *named == '\0') {
+        return;
+    }
+    const unsigned long pid = std::strtoul(named, nullptr, 10);
+    say("CRUCIBLE_AFTER", "");
+    if (pid == 0) {
+        return;
+    }
+#if defined(_WIN32)
+    if (HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid)); process != nullptr) {
+        WaitForSingleObject(process, 15000);
+        CloseHandle(process);
+    }
+#else
+    for (int tenths = 0; tenths < 150 && kill(static_cast<pid_t>(pid), 0) == 0; ++tenths) {
+        usleep(100000);
+    }
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    wait_for_the_one_before();
+    // What the Crucible that started this one was told is not true of this
+    // one: a runtime it passed over may be the one chosen now.
+    for (const char* told : {"CRUCIBLE_RUNTIME_PASSED_OVER", "CRUCIBLE_RUNTIME_FILE", "CRUCIBLE_BUNDLED_RUNTIME"}) {
+        say(told, "");
+    }
     const std::filesystem::path here = own_dir();
     std::vector<std::filesystem::path> candidates;
     if (const char* dir = std::getenv("CRUCIBLE_RUNTIME_DIR"); dir != nullptr && *dir != '\0') {
@@ -127,18 +169,23 @@ int main(int argc, char** argv) {
     }
     candidates.push_back(here / CRUCIBLE_MODULE_FILE);
     candidates.push_back(here / ".." / "lib" / "crucible" / CRUCIBLE_MODULE_FILE);
+    // Where the installer's runtime is, which a choice can always go back to.
+    for (const std::filesystem::path& bundled : {here, here / ".." / "lib" / "crucible"}) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(bundled / CRUCIBLE_MODULE_FILE, ec)) {
+            say("CRUCIBLE_BUNDLED_RUNTIME", bundled.lexically_normal().string());
+            break;
+        }
+    }
 
     std::string passed_over;
     for (const std::filesystem::path& file : candidates) {
         std::string why;
         if (const Entry entry = open(file, why)) {
             if (!passed_over.empty()) {
-#if defined(_WIN32)
-                _putenv_s("CRUCIBLE_RUNTIME_PASSED_OVER", passed_over.c_str());
-#else
-                setenv("CRUCIBLE_RUNTIME_PASSED_OVER", passed_over.c_str(), 1);
-#endif
+                say("CRUCIBLE_RUNTIME_PASSED_OVER", passed_over);
             }
+            say("CRUCIBLE_RUNTIME_FILE", file.lexically_normal().string());
             return entry(argc, argv);
         }
         // A runtime that is simply not there is not worth reporting: most
