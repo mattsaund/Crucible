@@ -354,19 +354,38 @@ function(crucible_utf8_manifest target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# crucible -- the program
+# crucible -- the program, as a runtime
 #
-# One binary, and it is the window. There was a terminal face beside it sharing
-# this engine; it is gone rather than left to rot half-maintained, and the
-# history has it if it is ever wanted back. Everything it knew lives in
-# crucible::core, which is why removing it took no engine with it.
+# The program is a loadable module, crucible_program, with the llama.cpp it is
+# built with beside it, and `crucible` in bin/ is a launcher that chooses which
+# such runtime to load (see src/launcher/launcher.cpp). So a newer llama.cpp is
+# a runtime to download and choose, as LM Studio's are, not a new Crucible.
+# The launcher links no ggml: one process holds one, and it is the runtime's.
 # ---------------------------------------------------------------------------
-add_executable(crucible
+add_library(crucible_program MODULE
     src/gui/main.cpp
     src/gui/app.cpp
     src/gui/crash.cpp
     src/gui/window.cpp)
-target_link_libraries(crucible PRIVATE crucible::core)
+target_compile_definitions(crucible_program PRIVATE CRUCIBLE_AS_MODULE)
+target_link_libraries(crucible_program PRIVATE crucible::core)
+set_target_properties(crucible_program PROPERTIES
+    OUTPUT_NAME crucible-program
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# The launcher: the runtime's file name and this Crucible's version, and the
+# data folder's rules (src/config/paths.cpp) to find a chosen runtime in.
+function(crucible_launcher target module)
+    add_executable(${target} src/launcher/launcher.cpp src/config/paths.cpp)
+    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(${target} PRIVATE
+        CRUCIBLE_MODULE_FILE="$<TARGET_FILE_NAME:${module}>"
+        CRUCIBLE_VERSION="${CRUCIBLE_VERSION}")
+    target_link_libraries(${target} PRIVATE ${CMAKE_DL_LIBS})
+    add_dependencies(${target} ${module})
+endfunction()
+crucible_launcher(crucible crucible_program)
 
 # The platform's own file dialog: one function, and the implementation that
 # belongs to wherever this is being built. See src/gui/dialogs.hpp. And the
@@ -374,20 +393,21 @@ target_link_libraries(crucible PRIVATE crucible::core)
 # src/gui/drops.hpp. And the close that waits while work is unsaved: see
 # src/gui/closing.hpp.
 if(WIN32)
-    target_sources(crucible PRIVATE src/gui/dialogs_win.cpp src/gui/drops_none.cpp src/gui/closing_win.cpp)
+    target_sources(crucible_program PRIVATE src/gui/dialogs_win.cpp src/gui/drops_none.cpp src/gui/closing_win.cpp)
     # IFileOpenDialog is COM: ole32 makes the object, uuid names its class.
     # dbghelp: a crash's stack by name, in crash.log. See src/gui/crash.hpp.
-    target_link_libraries(crucible PRIVATE ole32 uuid shell32 dbghelp)
+    target_link_libraries(crucible_program PRIVATE ole32 uuid shell32 dbghelp)
+    # The manifest and the icon go on what is run: the launcher.
     crucible_utf8_manifest(crucible)
     # The icon, inside the program. See packaging/windows/icon.rc.in.
     set(CRUCIBLE_ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/crucible.ico")
     configure_file(packaging/windows/icon.rc.in "${CMAKE_CURRENT_BINARY_DIR}/crucible_icon.rc" @ONLY)
     target_sources(crucible PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/crucible_icon.rc")
 elseif(APPLE)
-    target_sources(crucible PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp src/gui/closing_mac.cpp)
-    target_link_libraries(crucible PRIVATE "-framework AppKit")
+    target_sources(crucible_program PRIVATE src/gui/dialogs_mac.cpp src/gui/drops_none.cpp src/gui/closing_mac.cpp)
+    target_link_libraries(crucible_program PRIVATE "-framework AppKit")
 else()
-    target_sources(crucible PRIVATE src/gui/dialogs_gtk.cpp src/gui/drops_gtk.cpp src/gui/closing_gtk.cpp)
+    target_sources(crucible_program PRIVATE src/gui/dialogs_gtk.cpp src/gui/drops_gtk.cpp src/gui/closing_gtk.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -395,15 +415,20 @@ endif()
 # over a pipe. See src/gui/headless.cpp and cli/. It links nothing of a desktop,
 # so the terminal download runs on a machine that has none.
 # ---------------------------------------------------------------------------
-add_executable(crucible-engine
+add_library(crucible_engine_program MODULE
     src/gui/main.cpp
     src/gui/app.cpp
     src/gui/crash.cpp
     src/gui/headless.cpp)
-target_compile_definitions(crucible-engine PRIVATE CRUCIBLE_HEADLESS)
-target_link_libraries(crucible-engine PRIVATE crucible::core)
+target_compile_definitions(crucible_engine_program PRIVATE CRUCIBLE_HEADLESS CRUCIBLE_AS_MODULE)
+target_link_libraries(crucible_engine_program PRIVATE crucible::core)
+set_target_properties(crucible_engine_program PROPERTIES
+    OUTPUT_NAME crucible-engine-program
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+crucible_launcher(crucible-engine crucible_engine_program)
 if(WIN32)
-    target_link_libraries(crucible-engine PRIVATE shell32 dbghelp)
+    target_link_libraries(crucible_engine_program PRIVATE shell32 dbghelp)
     crucible_utf8_manifest(crucible-engine)
 endif()
 
@@ -416,7 +441,9 @@ if(CRUCIBLE_WARNINGS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         -Wshadow -Wnon-virtual-dtor -Wcast-align
         -Wunused -Woverloaded-virtual -Wdouble-promotion)
     target_compile_options(crucible_core PRIVATE ${_crucible_warnings})
-    target_compile_options(crucible      PRIVATE ${_crucible_warnings})
+    target_compile_options(crucible_program PRIVATE ${_crucible_warnings})
+    target_compile_options(crucible_engine_program PRIVATE ${_crucible_warnings})
+    target_compile_options(crucible        PRIVATE ${_crucible_warnings})
     target_compile_options(crucible-engine PRIVATE ${_crucible_warnings})
 endif()
 
@@ -562,10 +589,13 @@ endif()
 #
 # Windows has no such thing at all: it looks beside the executable, so there
 # the DLLs are installed into bin/ and nothing has to be baked in.
+# The runtimes find llama.cpp beside themselves, wherever they are: in
+# lib/crucible/ where the installer put one, in the data folder where one was
+# downloaded. The launchers load them by their full path and need nothing.
 if(CRUCIBLE_BACKEND_DL AND NOT WIN32)
-    set_target_properties(crucible crucible-engine PROPERTIES
-        BUILD_RPATH   "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}"
-        INSTALL_RPATH "${CRUCIBLE_ORIGIN}/../${CRUCIBLE_LIBDIR}")
+    set_target_properties(crucible_program crucible_engine_program PROPERTIES
+        BUILD_RPATH   "${CRUCIBLE_ORIGIN}"
+        INSTALL_RPATH "${CRUCIBLE_ORIGIN}")
 endif()
 
 # Everything Crucible installs goes in one component, and the install is run as
@@ -584,6 +614,17 @@ set(CRUCIBLE_INSTALL_COMPONENT crucible)
 install(TARGETS crucible
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
+# The runtime the installer brings, beside llama.cpp's libraries: lib/crucible
+# on Linux and macOS, bin/ on Windows, where a DLL is looked for beside the
+# program.
+if(WIN32)
+    set(_crucible_runtime_dir ${CMAKE_INSTALL_BINDIR})
+else()
+    set(_crucible_runtime_dir ${CRUCIBLE_LIBDIR})
+endif()
+install(TARGETS crucible_program
+        LIBRARY DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_INSTALL_COMPONENT}
+        RUNTIME DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_INSTALL_COMPONENT})
 
 # The terminal download is its own component: the engine, the libraries it
 # needs and nothing of the window. packaging/cli/package.sh adds cruciblecli,
@@ -592,6 +633,9 @@ set(CRUCIBLE_CLI_COMPONENT cli)
 install(TARGETS crucible-engine
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT ${CRUCIBLE_CLI_COMPONENT})
+install(TARGETS crucible_engine_program
+        LIBRARY DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_CLI_COMPONENT}
+        RUNTIME DESTINATION ${_crucible_runtime_dir} COMPONENT ${CRUCIBLE_CLI_COMPONENT})
 # --- the desktop entry ------------------------------------------------------
 #
 # What puts Crucible in the application menu. Linux only: macOS wants an .app
@@ -620,22 +664,22 @@ endif()
 # than to the core library: it is a way of drawing Crucible, and crucible_core
 # is what any other way of driving it would share.
 if(CRUCIBLE_HAS_WEBVIEW AND CRUCIBLE_WEBUI_CPP)
-    target_sources(crucible PRIVATE ${CRUCIBLE_WEBUI_CPP})
-    add_dependencies(crucible crucible_page)
-    target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
+    target_sources(crucible_program PRIVATE ${CRUCIBLE_WEBUI_CPP})
+    add_dependencies(crucible_program crucible_page)
+    target_compile_definitions(crucible_program PRIVATE CRUCIBLE_HAS_WEB_INDEX CRUCIBLE_HAS_WEBVIEW)
     if(CRUCIBLE_PAGE_PROBE)
-        target_compile_definitions(crucible PRIVATE CRUCIBLE_PAGE_PROBE)
+        target_compile_definitions(crucible_program PRIVATE CRUCIBLE_PAGE_PROBE)
     endif()
-    target_link_libraries(crucible PRIVATE webview::core_static)
+    target_link_libraries(crucible_program PRIVATE webview::core_static)
     # The page draws in the same typeface the window did and shows the same
     # flame, both handed over as data URIs rather than hoped for from the
     # system or looked for on disk.
     if(TARGET crucible_fonts)
-        target_link_libraries(crucible PRIVATE crucible_fonts)
+        target_link_libraries(crucible_program PRIVATE crucible_fonts)
     endif()
     if(CRUCIBLE_MARK_CPP)
-        target_sources(crucible PRIVATE ${CRUCIBLE_MARK_CPP})
-        target_compile_definitions(crucible PRIVATE CRUCIBLE_HAS_EMBEDDED_MARK)
+        target_sources(crucible_program PRIVATE ${CRUCIBLE_MARK_CPP})
+        target_compile_definitions(crucible_program PRIVATE CRUCIBLE_HAS_EMBEDDED_MARK)
     endif()
     message(STATUS "web interface: compiled in")
 else()
