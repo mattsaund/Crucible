@@ -432,11 +432,13 @@ stream_command() {
             printf '%s\n' "$line" >> "$STREAM_LOG"
         fi
         # What a progress line redrew in place, as where it ended up, and its
-        # colors and cursor moves out of it.
+        # colors and cursor moves out of it: by sed, and only when there are
+        # any, since a pattern built from what was matched is a glob to some
+        # versions of bash.
         line="${line##*$'\r'}"
-        while [[ "$line" =~ $'\033'\[[0-9\;?]*[A-Za-z] ]]; do
-            line="${line/"${BASH_REMATCH[0]}"/}"
-        done
+        case "$line" in
+            *$'\033'*) line="$(printf '%s' "$line" | sed $'s/\033\\[[0-9;?]*[A-Za-z]//g')" ;;
+        esac
         text="${line#"${line%%[![:space:]]*}"}"
         text="${text%"${text##*[![:space:]]}"}"
         [ -n "$text" ] || continue
