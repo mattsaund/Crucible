@@ -122,7 +122,9 @@ Reply runtimes(const json&, const Scene&) {
     return good(json{{"runtimes",  std::move(listed)},
                      // For reading, not for opening: written with ~ for the
                      // home directory, as the top bar writes the project.
-                     {"directory", format::short_path(paths::backends_dir())},
+                     // The folder they are all in: this llama.cpp's backends,
+                     // NVIDIA's libraries beside them, and other llama.cpps.
+                     {"directory", format::short_path(paths::runtimes_dir())},
                      {"bytes",     total},
                      // False for a build with its backend compiled in, where
                      // there is nothing to install and the page says so.
@@ -140,7 +142,8 @@ json llama_listing(bool automatic) {
     for (const llama_versions::Version& one : llama_versions::list(llama_versions::releases())) {
         versions.push_back(json{{"tag", one.tag}, {"running", one.running}, {"bundled", one.bundled},
                                 {"chosen", one.chosen}, {"installed", one.installed},
-                                {"published", !one.url.empty()}, {"bytes", one.bytes}, {"disk", one.disk}});
+                                {"published", !one.url.empty()}, {"bytes", one.bytes}, {"disk", one.disk},
+                                {"lacking", one.lacking}});
     }
     const llama_versions::Fetching fetch = llama_versions::fetching();
     const char*                    passed = std::getenv("CRUCIBLE_RUNTIME_PASSED_OVER");

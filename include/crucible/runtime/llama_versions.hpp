@@ -37,6 +37,11 @@ struct Version {
     std::uint64_t bytes     = 0;     ///< its program's download, when published
     std::string   url;               ///< where that is, when published
     std::uint64_t disk      = 0;     ///< what it takes here: its program and backends
+
+    /// The backends in use now that this one has none of ("CUDA"): one not
+    /// published for it, which running on it would go without. Only for one
+    /// installed and not running.
+    std::vector<std::string> lacking;
 };
 
 /// The llama.cpp this runtime was built with.
@@ -96,7 +101,7 @@ Fetching fetching();
 
 /// Fetch `tag` on a thread of its own, from releases(). False when one is
 /// already being fetched. `automatic`, the daily update's: chosen for the
-/// next start once it is in.
+/// next start once it is in, unless it lacks a backend in use now.
 bool start_fetch(std::string tag, bool automatic = false);
 
 /// The newest published version newer than both the running and the chosen

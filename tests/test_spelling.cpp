@@ -51,7 +51,9 @@ std::vector<std::filesystem::path> project_files() {
         const std::string name = path.filename().string();
         if (it->is_directory(ec)) {
             // .claude holds other checkouts of this tree, each tested in its own.
-            if (name == "build" || name == ".git" || name == "node_modules" || name == ".claude") {
+            // build-*/ beside it too: other builds, as .gitignore has them.
+            if (name == "build" || name == ".git" || name == "node_modules" || name == ".claude"
+                || (path.parent_path() == root && name.rfind("build-", 0) == 0)) {
                 it.disable_recursion_pending();
             }
             continue;

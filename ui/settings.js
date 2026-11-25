@@ -638,6 +638,7 @@ function llamaView() {
     const tags = [];
     if (v.running) tags.push('<span class="tag ok">running</span>');
     if (v.chosen && !v.running) tags.push('<span class="tag">next start</span>');
+    if (v.lacking && v.lacking.length) tags.push(`<span class="tag bad">no ${escape(v.lacking.join(', '))}</span>`);
     const size = v.installed || v.disk ? (v.disk ? bytes(v.disk) : '') : v.bytes ? bytes(v.bytes) : '';
     let buttons = '';
     if (fetching === v.tag) {

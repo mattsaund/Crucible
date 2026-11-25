@@ -4526,7 +4526,7 @@ TEST(the_llama_cpp_versions_are_listed_with_what_each_can_do) {
         state.llama = { running: 'b12701', newer: 'b13100', fetching: '', said: '', error: '', passed_over: '',
           checked_at: 0, check_error: '', versions: [
             { tag: 'b13100', published: true, installed: false, bytes: 18000000, disk: 0 },
-            { tag: 'b13000', installed: true, chosen: true, disk: 30000000 },
+            { tag: 'b13000', installed: true, chosen: true, disk: 30000000, lacking: ['CUDA'] },
             { tag: 'b12900', installed: false, disk: 4000000 },
             { tag: 'b12701', running: true, bundled: true, installed: true, disk: 0 },
             { tag: 'b12600', published: true, installed: false, bytes: 18000000, disk: 0 } ] };
@@ -4537,6 +4537,8 @@ TEST(the_llama_cpp_versions_are_listed_with_what_each_can_do) {
     CHECK(listed.find("data-act=\"llama-install\" data-tag=\"b13100\"") != std::string::npos);
     CHECK(listed.find("data-act=\"llama-use\" data-tag=\"b13000\">Restart") != std::string::npos);
     CHECK(listed.find("next start") != std::string::npos);
+    // A backend in use now that it has none of, said on its row.
+    CHECK(listed.find("no CUDA") != std::string::npos);
     CHECK(listed.find("data-act=\"llama-delete\" data-tag=\"b12900\"") != std::string::npos);
     // The running one cannot be deleted, nor the one the next start loads.
     CHECK(listed.find("data-act=\"llama-delete\" data-tag=\"b12701\"") == std::string::npos);

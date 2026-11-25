@@ -1284,3 +1284,28 @@ TEST(what_pip_would_install_is_read_from_its_report) {
                                 warned, none_lm));
     CHECK_EQ(warned, std::string("0.30.0"));
 }
+
+TEST(a_llama_cpp_without_a_backend_in_use_says_so_and_is_not_chosen_on_its_own) {
+    TempDir              temp;
+    const ScopedDataHome home(temp.path());
+    // The processor's backend in use now, and a newer llama.cpp with none.
+    const std::string cpu = std::string(crucible::module_prefix()) + "cpu-x64" + std::string(crucible::module_suffix());
+    std::filesystem::create_directories(paths::backends_dir());
+    std::ofstream(paths::backends_dir() / cpu) << "x";
+    std::filesystem::create_directories(llama_versions::core_dir("b99998"));
+    std::ofstream(llama_versions::core_dir("b99998") / "runtime.json") << "{}";
+    const auto lacking = [] {
+        for (const llama_versions::Version& v : llama_versions::list("[]")) {
+            if (v.tag == "b99998") {
+                return v.lacking;
+            }
+        }
+        return std::vector<std::string>{"not listed"};
+    };
+    CHECK_EQ(lacking().size(), std::size_t{1});
+    CHECK(!lacking().empty() && lacking().front() == std::string(backend_info(BackendKind::Cpu).name));
+    // With its own, nothing is lacking.
+    std::filesystem::create_directories(paths::runtimes_dir() / "backends" / "b99998");
+    std::ofstream(paths::runtimes_dir() / "backends" / "b99998" / cpu) << "x";
+    CHECK(lacking().empty());
+}

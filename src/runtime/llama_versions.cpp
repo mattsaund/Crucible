@@ -99,6 +99,18 @@ std::uint64_t size_of(const std::filesystem::path& dir) {
     return total;
 }
 
+/// The backends in use now that `tag`'s folder has no module of.
+std::vector<std::string> lacking_for(std::string_view tag) {
+    std::vector<std::string>    lacking;
+    const std::filesystem::path theirs = paths::runtimes_dir() / "backends" / std::string(tag);
+    for (const RuntimeStatus& now : RuntimeRegistry::scan()) {
+        if (now.installed && RuntimeRegistry::modules_of(theirs, now.kind).empty()) {
+            lacking.emplace_back(backend_info(now.kind).name);
+        }
+    }
+    return lacking;
+}
+
 void tell(const std::function<void(std::string)>& say, std::string what) {
     if (say) {
         say(std::move(what));
@@ -177,6 +189,9 @@ std::vector<Version> list(std::string_view releases_json) {
     }
     for (auto& [tag, version] : found) {
         version.disk = size_of(core_dir(tag)) + size_of(paths::runtimes_dir() / "backends" / tag);
+        if (version.installed && !version.running) {
+            version.lacking = lacking_for(tag);
+        }
     }
     // Chosen is what the next start loads: the bundled one when nothing is.
     const std::string chosen = chosen_tag();
@@ -431,8 +446,15 @@ bool start_fetch(std::string tag, bool automatic) {
             const std::lock_guard<std::mutex> lock(background().mutex);
             background().fetch.said = std::move(step);
         });
+        // The daily update does not move anybody off a backend they use: a
+        // version without CUDA, say, waits until it has it.
         if (ok && automatic) {
-            ok = choose(tag, error);
+            if (const std::vector<std::string> lacking = lacking_for(tag); !lacking.empty()) {
+                ok    = false;
+                error = "llama.cpp " + tag + " has no " + lacking.front() + " yet";
+            } else {
+                ok = choose(tag, error);
+            }
         }
         const std::lock_guard<std::mutex> lock(background().mutex);
         Fetching& fetch = background().fetch;
