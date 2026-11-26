@@ -144,9 +144,14 @@ struct Ran {
 /// needs, in one place. Past `keep` bytes, output is cut from the middle --
 /// how it started and how it ended are what a log is read for -- so a loop
 /// printing forever costs that much memory and no more.
+///
+/// `on_line`, when given, is handed each line as it is printed, its newline
+/// on the end, on a thread of the run's own: what lets a command be watched
+/// while it runs rather than read once it has finished.
 Ran run(const std::vector<std::string>& argv, const std::filesystem::path& cwd,
         const std::vector<std::string>& extra_env, int timeout_seconds,
-        const std::function<bool()>& stop = {}, std::size_t keep = std::size_t{4} << 20);
+        const std::function<bool()>& stop = {}, std::size_t keep = std::size_t{4} << 20,
+        const std::function<void(std::string_view)>& on_line = {});
 
 /// Stop every run() going and refuse new ones: for when the window closes,
 /// and nothing a command was run for is wanted any more.

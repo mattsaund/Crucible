@@ -92,15 +92,73 @@ std::string dump(const json& document) {
     return document.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
-bool is_effort(std::string_view effort) {
-    return effort == "low" || effort == "medium" || effort == "high";
-}
-
 /// Gemini, reached through its chat-completions door. Its own API beside the
 /// door is the one that says how long a context a model takes.
 bool gemini(const Provider& provider) {
     return provider.kind != "anthropic"
         && contains(format::to_lower(provider.endpoint()), "generativelanguage.googleapis.com");
+}
+
+/// Where a chat-completions request goes, as far as thinking is concerned:
+/// most take `reasoning_effort`, and three are told another way.
+enum class Door {
+    Plain,       ///< reasoning_effort, "none" for no thinking where a model takes it
+    DeepSeek,    ///< thinking: {type: enabled|disabled}, and reasoning_effort
+    OpenRouter,  ///< reasoning: {effort} or {enabled: false}
+    Local,       ///< a server on this machine or network, told through the template
+};
+
+Door door_of(std::string_view endpoint) {
+    const std::string where = format::to_lower(endpoint);
+    if (contains(where, "deepseek.com")) {
+        return Door::DeepSeek;
+    }
+    if (contains(where, "openrouter.ai")) {
+        return Door::OpenRouter;
+    }
+    Provider probe;
+    probe.base_url = std::string(endpoint);
+    return !where.empty() && probe.on_your_network() ? Door::Local : Door::Plain;
+}
+
+/// The words of the effort scale a provider's refusal lists as the ones it
+/// takes, "Supported values are: 'low', 'medium', and 'high'" or "valid
+/// values are high, low, medium, none", in the scale's order; and whether
+/// "none" was among them. Empty when it lists none of them.
+std::vector<std::string> listed_efforts(std::string_view said, bool& none) {
+    none = false;
+    std::size_t from = std::string_view::npos;
+    for (const std::string_view lead : {std::string_view("supported values"), std::string_view("valid values"),
+                                        std::string_view("must be one of"), std::string_view("one of:"),
+                                        std::string_view("expected one of"), std::string_view("allowed values")}) {
+        if (const std::size_t at = said.find(lead); at != std::string_view::npos) {
+            from = std::min(from, at + lead.size());
+        }
+    }
+    if (from == std::string_view::npos) {
+        return {};
+    }
+    const std::string_view rest = said.substr(from);
+    // A word is one when it stands alone: "xhigh" holds "high".
+    const auto stands = [&rest](std::string_view word) {
+        for (std::size_t at = rest.find(word); at != std::string_view::npos; at = rest.find(word, at + 1)) {
+            const bool left  = at == 0 || std::isalnum(static_cast<unsigned char>(rest[at - 1])) == 0;
+            const std::size_t end = at + word.size();
+            const bool right = end >= rest.size() || std::isalnum(static_cast<unsigned char>(rest[end])) == 0;
+            if (left && right) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::vector<std::string> out;
+    for (const std::string& level : reasoning::scale()) {
+        if (stands(level)) {
+            out.push_back(level);
+        }
+    }
+    none = stands("none");
+    return out;
 }
 
 /// The list in a model listing, under whichever key the provider put it --
@@ -247,14 +305,37 @@ std::string anthropic_body(std::string_view model, const ChatRequest& request,
         // API to notice.
         body["cache_control"] = json{{"type", "ephemeral"}};
     }
-    if (facts.adaptive_thinking && !quirks.no_thinking) {
+    // How hard it thinks, and whether: the level it takes nearest the one
+    // asked for, and thinking as the box says where it can be switched.
+    const reasoning::Profile profile = profile_of("anthropic", "", model, facts, quirks);
+    std::string effort = reasoning::nearest(profile.levels, request.effort);
+    const bool  off    = request.thinking == "off" && profile.can_switch() && !quirks.no_thinking;
+    const bool  on     = request.thinking == "on" && !quirks.no_thinking;
+    // A model described as taking a budget rather than an effort.
+    const bool budget  = facts.thinking_budget && !facts.adaptive_thinking;
+    if (off) {
+        // "between_tools" where "disabled" is refused: Claude Sonnet 5.5
+        // answers without thinking first that way. Neither is taken above
+        // high, so a higher effort comes down to it.
+        const bool between = facts.described && !facts.thinking_off && facts.between_tools;
+        body["thinking"]   = json{{"type", between ? "between_tools" : "disabled"}};
+        if (reasoning::rank(effort) > reasoning::rank("high")) {
+            effort = reasoning::nearest(profile.levels, "high");
+        }
+    } else if (facts.adaptive_thinking && !quirks.no_thinking) {
         // "summarized", because the default is to think invisibly: the reply
         // would begin with a pause of unexplained length. The summary is what
         // the transcript's thinking disclosure shows.
         body["thinking"] = json{{"type", "adaptive"}, {"display", "summarized"}};
+    } else if (const int tokens = thinking_budget(effort.empty() ? "medium" : effort, limit); on && budget && tokens > 0) {
+        // Claude 4.5's Sonnet and Haiku and before: thinking is switched on
+        // with a budget, which the level asked for sizes.
+        body["thinking"] = json{{"type", "enabled"}, {"budget_tokens", tokens}};
     }
-    if (facts.effort && !quirks.no_effort && is_effort(request.effort)) {
-        body["output_config"] = json{{"effort", request.effort}};
+    // The effort itself, to a model that takes one. Not to one thinking on a
+    // budget, where the budget is what the level became.
+    if (facts.effort && !quirks.no_effort && !effort.empty()) {
+        body["output_config"] = json{{"effort", effort}};
     }
     if (facts.server_fallback && !quirks.no_fallbacks) {
         body["fallbacks"] = "default";
@@ -263,7 +344,7 @@ std::string anthropic_body(std::string_view model, const ChatRequest& request,
 }
 
 std::string openai_body(std::string_view model, const ChatRequest& request,
-                        const ModelFacts& facts, const Quirks& quirks) {
+                        const ModelFacts& facts, const Quirks& quirks, std::string_view endpoint) {
     json messages = json::array();
     for (const ChatMessage& message : request.messages) {
         const bool with_images = !message.images.empty() && message.role == "user" && !quirks.no_images;
@@ -323,13 +404,138 @@ std::string openai_body(std::string_view model, const ChatRequest& request,
     if (limit > 0) {
         body[quirks.completion_tokens ? "max_completion_tokens" : "max_tokens"] = limit;
     }
-    if (facts.effort && !quirks.no_effort && is_effort(request.effort)) {
-        // Gemini's door turns this into the model's own thinking level. Only
-        // a provider known to take it is sent it: a field a server does not
-        // know is a 400 at most of the rest.
-        body["reasoning_effort"] = request.effort;
+    // How hard it thinks, and whether. Only to a model known to take it, by
+    // its name or by what the provider has refused since: a field a server
+    // does not know is a 400 at most of them. Gemini's door turns the effort
+    // into the model's own thinking level.
+    const reasoning::Profile profile = profile_of("openai", endpoint, model, facts, quirks);
+    const std::string        effort  = quirks.no_effort ? std::string() : reasoning::nearest(profile.levels, request.effort);
+    const bool               off     = request.thinking == "off" && profile.can_switch();
+    const bool               on      = request.thinking == "on" && profile.can_switch();
+    switch (door_of(endpoint)) {
+        case Door::DeepSeek:
+            // A switch of its own, and an effort beside it while it thinks.
+            if ((off || on) && !quirks.no_think_switch) {
+                body["thinking"] = json{{"type", off ? "disabled" : "enabled"}};
+            }
+            if (!off && !effort.empty()) {
+                body["reasoning_effort"] = effort;
+            }
+            break;
+        case Door::OpenRouter:
+            // One object for both, which OpenRouter turns into whatever the
+            // model behind it takes.
+            if (off && !quirks.no_think_switch) {
+                body["reasoning"] = json{{"enabled", false}};
+            } else if (!effort.empty()) {
+                body["reasoning"] = json{{"effort", effort}};
+            } else if (on && !quirks.no_think_switch) {
+                body["reasoning"] = json{{"enabled", true}};
+            }
+            break;
+        case Door::Local:
+            // llama-server and LM Studio hand these to the model's own
+            // template, which is where a Qwen is switched; a server that does
+            // not know the field says so once, and is not sent it again.
+            if ((off || on) && !quirks.no_think_switch) {
+                body["chat_template_kwargs"] = json{{"enable_thinking", on}};
+            }
+            if (!off && !effort.empty()) {
+                body["reasoning_effort"] = effort;
+            }
+            break;
+        case Door::Plain:
+            if (off && profile.off_is_none && !quirks.no_none && !quirks.no_effort) {
+                body["reasoning_effort"] = "none";
+            } else if (!effort.empty()) {
+                body["reasoning_effort"] = effort;
+            } else if (on && !profile.thinks_unasked && profile.takes_effort() && !quirks.no_effort) {
+                // A model that does not think unless asked (gpt-5.1), told
+                // to at the level it would have used.
+                body["reasoning_effort"] =
+                    profile.standard.empty() ? reasoning::nearest(profile.levels, "medium") : profile.standard;
+            }
+            break;
     }
     return dump(body);
+}
+
+reasoning::Profile profile_of(std::string_view kind, std::string_view endpoint, std::string_view model,
+                              const ModelFacts& facts, const Quirks& quirks) {
+    reasoning::Profile profile;
+    if (kind == "anthropic") {
+        // Only what the Models API said it takes: a gateway in front of
+        // Claude that does not describe its models is sent the plainest
+        // request there is, which every one of them accepts.
+        profile = facts.reasoning;
+        if (profile.levels.empty() && facts.effort) {
+            // It takes an effort without saying which: the three every
+            // Claude that takes one does.
+            profile.levels = {"low", "medium", "high"};
+        }
+        if (profile.thinking == reasoning::Thinking::None && (facts.adaptive_thinking || facts.thinking_budget)) {
+            profile.thinking = facts.thinking_off || facts.between_tools ? reasoning::Thinking::Optional
+                                                                         : reasoning::Thinking::Always;
+            profile.thinks_unasked = facts.adaptive_thinking;
+        }
+        if (profile.source.empty() && (facts.effort || facts.adaptive_thinking || facts.thinking_budget)) {
+            profile.source = "provider";
+        }
+    } else {
+        profile = reasoning::from_name(endpoint, model);
+        // A door known to take an effort for any model it serves, as
+        // Gemini's does: the three every one of them takes.
+        if (profile.levels.empty() && facts.effort) {
+            profile.levels = {"low", "medium", "high"};
+            if (profile.thinking == reasoning::Thinking::None) {
+                profile.thinking = reasoning::Thinking::Always;
+            }
+        }
+        // Whatever the provider said it takes when it refused a level is
+        // what it takes, whatever the name suggested.
+        if (!quirks.efforts.empty()) {
+            profile.levels = quirks.efforts;
+            if (std::find(profile.levels.begin(), profile.levels.end(), profile.standard) == profile.levels.end()) {
+                profile.standard.clear();
+            }
+        }
+        if (quirks.no_none && profile.off_is_none) {
+            profile.off_is_none = false;
+            profile.thinking    = reasoning::Thinking::Always;
+        }
+    }
+    if (quirks.no_effort) {
+        profile.levels.clear();
+        profile.standard.clear();
+    }
+    if ((kind == "anthropic" && quirks.no_thinking) || (kind != "anthropic" && quirks.no_think_switch && !profile.off_is_none)) {
+        if (profile.thinking == reasoning::Thinking::Optional) {
+            profile.thinking = reasoning::Thinking::Always;
+        }
+    }
+    return profile;
+}
+
+int thinking_budget(std::string_view level, int limit) {
+    // How Claude's budgets have been mapped to efforts everywhere they have
+    // been compared (Inspect, LiteLLM): a few thousand at the bottom, thirty
+    // two thousand at the top.
+    int tokens = 10000;
+    switch (reasoning::rank(level)) {
+        case 0: tokens = 2048;  break;   // minimal
+        case 1: tokens = 4096;  break;   // low
+        case 2: tokens = 10000; break;   // medium
+        case 3: tokens = 16000; break;   // high
+        case 4: tokens = 24000; break;   // xhigh
+        case 5: tokens = 32000; break;   // max
+        default: break;
+    }
+    // The budget is part of the reply's cap, and has to leave room for the
+    // answer after it. 1024 is the least Anthropic takes.
+    if (limit > 0) {
+        tokens = std::min(tokens, limit - 1024);
+    }
+    return tokens >= 1024 ? tokens : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -623,11 +829,33 @@ bool adapt(Quirks& quirks, std::string_view kind, std::string_view message) {
     if (contains(said, "stream_options") || contains(said, "include_usage")) {
         learn(quirks.no_stream_usage);
     }
-    // Only Gemini is sent an effort, and a model there that does not think
-    // may well complain about thinking rather than name the field.
+    // The field a local server is told to switch thinking with, refused.
+    if (contains(said, "chat_template_kwargs") || contains(said, "enable_thinking")) {
+        learn(quirks.no_think_switch);
+        return changed;
+    }
+    // A level it does not take, refused with the ones it does: kept, and
+    // the nearest of them asked for instead. "none" missing from them is
+    // thinking that cannot be switched off there.
+    if (contains(said, "effort") || contains(said, "reasoning")) {
+        bool                           none   = false;
+        const std::vector<std::string> listed = listed_efforts(said, none);
+        if (!listed.empty() && listed != quirks.efforts) {
+            quirks.efforts = listed;
+            changed        = true;
+            if (!none) {
+                learn(quirks.no_none);
+            }
+            return changed;
+        }
+    }
+    // Anything else said of the effort, and of thinking, which a model that
+    // does not think complains about rather than naming the field: neither is
+    // sent again.
     if (contains(said, "reasoning_effort") || contains(said, "reasoning effort")
         || contains(said, "thinking")) {
         learn(quirks.no_effort);
+        learn(quirks.no_think_switch);
     }
     return changed;
 }
@@ -677,9 +905,14 @@ ModelFacts facts_from_model(std::string_view body) {
     facts.max_output     = int_at(node, "max_tokens", 0);
 
     const json& capabilities = child(node, "capabilities");
-    facts.adaptive_thinking =
-        supported(child(child(child(capabilities, "thinking"), "types"), "adaptive"));
-    facts.effort = supported(child(capabilities, "effort"));
+    const json& types        = child(child(capabilities, "thinking"), "types");
+    facts.adaptive_thinking  = supported(child(types, "adaptive"));
+    facts.thinking_off       = supported(child(types, "disabled"));
+    facts.between_tools      = supported(child(types, "between_tools"));
+    facts.thinking_budget    = supported(child(types, "enabled"));
+    facts.effort             = supported(child(capabilities, "effort"));
+    facts.reasoning          = reasoning::from_anthropic(capabilities);
+    facts.described          = capabilities.is_object();
 
     const json& fallbacks = child(node, "allowed_fallback_models");
     facts.server_fallback = fallbacks.is_array() && !fallbacks.empty();
@@ -969,9 +1202,8 @@ public:
             // says a lower one can make it loop; Gemini 4 ignores the field.
             // The Generation page's sliders are about a local model's logits
             // anyway. What its door does take is an effort, which it turns
-            // into the model's thinking level.
+            // into the model's thinking level: see reasoning::from_name.
             quirks_.no_sampling = true;
-            facts_.effort       = true;
         }
     }
 
@@ -1035,12 +1267,17 @@ public:
         return !quirks_.no_images;
     }
 
-    /// Claude's that say so in the Models API, and Gemini's. Nobody else is
-    /// sent one.
+    /// Claude's that say so in the Models API, and the others known by name
+    /// to take one, until the provider refuses it.
     bool takes_effort() const override {
+        return reasoning().takes_effort();
+    }
+
+    /// What the request is shaped by: see detail::profile_of.
+    reasoning::Profile reasoning() const override {
         const_cast<Client*>(this)->learn_facts();
         const std::lock_guard<std::mutex> lock(learned_);
-        return facts_.effort && !quirks_.no_effort;
+        return detail::profile_of(provider_.kind, provider_.endpoint(), model_, facts_, quirks_);
     }
 
 private:
@@ -1137,7 +1374,7 @@ private:
             outgoing.body = detail::anthropic_body(model_, request, facts, quirks);
         } else {
             outgoing.url  = provider_.endpoint() + "/chat/completions";
-            outgoing.body = detail::openai_body(model_, request, facts, quirks);
+            outgoing.body = detail::openai_body(model_, request, facts, quirks, provider_.endpoint());
         }
 
         http::Stream stream;
@@ -1520,6 +1757,41 @@ std::vector<std::string> list_models(const Provider& provider, std::string& erro
                 "name the model by hand";
     }
     return ids;
+}
+
+reasoning::Profile provider_profile(const Provider& provider, std::string_view model) {
+    if (provider.kind != "anthropic") {
+        return detail::profile_of(provider.kind, provider.endpoint(), model, ModelFacts{}, Quirks{});
+    }
+    // What the Models API said of each Claude, kept for the session: the box
+    // asks every time an expert is chosen, and the answer does not change.
+    static std::mutex                        mutex;
+    static std::map<std::string, ModelFacts> described;
+    const std::string key = provider.endpoint() + '\n' + std::string(model);
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (const auto found = described.find(key); found != described.end()) {
+            return detail::profile_of("anthropic", provider.endpoint(), model, found->second, Quirks{});
+        }
+    }
+    ModelFacts facts;
+    if (!provider.resolved_key().empty()) {
+        http::Request request;
+        request.url             = detail::facts_url(provider, model);
+        request.timeout_seconds = 15;
+        request.headers         = headers_for(provider, false);
+        const http::Response response = http::send(request);
+        if (response.ok()) {
+            facts = detail::facts_from_model(response.body);
+        } else if (response.status == 0) {
+            // The network, this time: asked again the next time, and known
+            // by name meanwhile.
+            return detail::profile_of("anthropic", provider.endpoint(), model, facts, Quirks{});
+        }
+    }
+    const std::lock_guard<std::mutex> lock(mutex);
+    described[key] = facts;
+    return detail::profile_of("anthropic", provider.endpoint(), model, facts, Quirks{});
 }
 
 }  // namespace crucible::remote

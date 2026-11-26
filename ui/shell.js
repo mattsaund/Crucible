@@ -621,8 +621,10 @@ actions['ne-train'] = () => { closeModal(); enter('create'); actions['recipe-new
 const turnsByRev = new Map();
 let fetchingTurns = false;
 
-/// The snapshot's turns with every stub put back, or null when one names a
-/// turn the page does not have: after the page was reloaded, say.
+/// The snapshot's turns with every stub put back, and every turn sent as
+/// what it adds to one the page has put together again (api::PageTurns), or
+/// null when one names a turn the page does not have: after the page was
+/// reloaded, say.
 function resolveTurns(turns) {
   if (!Array.isArray(turns)) return [];
   const out = [];
@@ -631,11 +633,34 @@ function resolveTurns(turns) {
       const kept = turnsByRev.get(turn.rev);
       if (!kept) return null;
       out.push(kept);
+    } else if (turn && turn.from) {
+      const was = turnsByRev.get(turn.from);
+      if (!was) return null;
+      out.push(grownTurn(was, turn));
     } else {
       out.push(turn);
     }
   }
   return out;
+}
+
+/// `was` gone as far as `grew` says: its reply and its thinking with what
+/// was written since, its actions with those taken since, its small parts
+/// as they are now.
+function grownTurn(was, grew) {
+  const turn = Object.assign({}, was, grew);
+  turn.reply = (was.reply || '') + (grew.reply_add || '');
+  const reasoning = (was.reasoning || '') + (grew.reasoning_add || '');
+  if (reasoning) turn.reasoning = reasoning;
+  turn.actions = grew.actions_from === undefined ? was.actions
+    : (was.actions || []).slice(0, grew.actions_from).concat(grew.actions || []);
+  if (!turn.actions) delete turn.actions;
+  if (!grew.route) delete turn.route;
+  delete turn.from;
+  delete turn.reply_add;
+  delete turn.reasoning_add;
+  delete turn.actions_from;
+  return turn;
 }
 
 /// Keep exactly the turns of the transcript now, so the map is as long as
@@ -725,6 +750,10 @@ function start() {
     state.snapshot = snapshot;
     state.config = config;
     trustWatch();
+    // The expert the box was left on, told to the engine now rather than
+    // with the first prompt: until then it took the delegator to be wanted.
+    // Nothing is loaded for it until a prompt is sent.
+    if (routeTarget()) call('route.pick', { expert: routeTarget(), load: false }).catch(() => {});
   });
   // What the empty chat needs to know before it can say what is missing.
   need('runtimes', 'runtimes');

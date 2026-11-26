@@ -360,15 +360,25 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
     }
     inputs.json_schema      = request.schema;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-    if (request.effort == "none") {
+    // What this template takes: the levels it reads and how its thinking is
+    // switched. A level it does not take is the nearest one it does, since a
+    // template can refuse the rest outright (Qwen 3.8's takes low, medium
+    // and xhigh, and raises on max).
+    const reasoning::Profile profile  = reasoning();
+    const bool               no_think = request.effort == "none" || request.thinking == "off";
+    if (no_think && profile.thinking != reasoning::Thinking::Always) {
         // Read by a template that can leave its thinking out (Qwen3's writes
-        // an empty block). One that opens a block whatever it is told is shut
-        // below instead: see `closing`.
+        // an empty block), and by one that takes "none" as its effort
+        // (Inkling 2 Mini's). One that opens a block whatever it is told is
+        // shut below instead: see `closing`.
         inputs.enable_thinking = false;
-    } else if (!request.effort.empty()) {
+        if (profile.off_is_none) {
+            inputs.chat_template_kwargs["reasoning_effort"] = nlohmann::json("none").dump();
+        }
+    } else if (const std::string level = reasoning::nearest(profile.levels, request.effort); !level.empty()) {
         // The template's own variable, which gpt-oss's writes into its
         // system message.
-        inputs.chat_template_kwargs["reasoning_effort"] = nlohmann::json(request.effort).dump();
+        inputs.chat_template_kwargs["reasoning_effort"] = nlohmann::json(level).dump();
     }
 
     // The pictures' bytes, and which message each came with: a picture's
@@ -451,7 +461,7 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
                 }
             }
             closing.clear();
-            if (request.effort == "none" && !session->thinking_end_tags().empty()
+            if (no_think && !session->thinking_end_tags().empty()
                 && detail::inside_thinking(session->generation_prompt(), session->thinking_start_tag(),
                                            session->thinking_end_tags())) {
                 closing = session->thinking_end_tags().front();
@@ -478,8 +488,9 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         }
         // Measured before it is read rather than cut to fit: a model that
         // loses the start of a conversation, its instructions and its tools
-        // with it, answers some other question.
-        const int asked = count_tokens(prompt);
+        // with it, answers some other question. Tokenized once, for both.
+        std::vector<llama_token> tokens = prompt_tokens(prompt);
+        const int                asked  = static_cast<int>(tokens.size());
         if (asked >= context) {
             result.too_long = asked;
             result.error    = "This model's context is " + std::to_string(context) + " tokens, and the request is "
@@ -489,7 +500,7 @@ OpenChatResult LoadedModel::open_chat(const OpenChat& request, const OpenChatSin
         if (sink.on_start) {
             sink.on_start();
         }
-        if (!read_prompt(prompt, request.params, sink.cancel, result.stats)) {
+        if (!read_tokens(std::move(tokens), request.params, sink.cancel, result.stats, sink.on_reading)) {
             if (!result.stats.canceled) {
                 result.error = "the model could not read the prompt";
             }
@@ -806,7 +817,7 @@ std::string LoadedModel::sample_shaped(const ModelParams& params, const Shaping&
         llama_batch batch = llama_batch_get_one(&next, 1);
         if (llama_decode(ctx_, batch) != 0) {
             stats.canceled = cancel && cancel();
-            forget();
+            keep_what_was_read();
             break;
         }
         cached_.push_back(next);

@@ -593,6 +593,58 @@ TEST(the_page_is_sent_a_turn_it_already_has_as_a_stub) {
     CHECK(json::parse(page.turns_json(hand.turns))[0]["prompt"] == "hi");
 }
 
+TEST(the_window_is_sent_a_reply_still_arriving_as_what_it_adds) {
+    Turn streaming;
+    streaming.prompt    = "write it";
+    streaming.reply     = "Here is";
+    streaming.reasoning = "Plan: a page";
+    streaming.streaming = true;
+    streaming.revision  = 21;
+    TurnAction wrote;
+    wrote.summary  = "wrote index.html  +40 -0";
+    wrote.body     = std::string(5000, 'x');
+    wrote.language = "index.html";
+    streaming.actions.push_back(wrote);
+    const auto frame = [](const Turn& turn) {
+        Snapshot one;
+        one.turns.push_back(turn);
+        return one;
+    };
+
+    api::PageTurns page;
+    CHECK(json::parse(page.turns_json(frame(streaming).turns, true))[0]["reply"] == "Here is");
+    // Gone further: only what it adds, and its small parts, none of the file.
+    streaming.reply += " the page: caf\xc3\xa9";
+    streaming.reasoning += ", then check it";
+    streaming.output_tokens = 9;
+    streaming.revision = 22;
+    const std::string text = page.turns_json(frame(streaming).turns, true);
+    const json        grew = json::parse(text)[0];
+    CHECK(grew["from"] == 21);
+    CHECK(grew["rev"] == 22);
+    CHECK(grew["reply_add"] == " the page: caf\xc3\xa9");
+    CHECK(grew["reasoning_add"] == ", then check it");
+    CHECK(grew["output_tokens"] == 9);
+    CHECK(!grew.contains("reply") && !grew.contains("prompt") && !grew.contains("actions"));
+    CHECK(text.size() < 1000);
+    // An action taken since: those from where they differ.
+    TurnAction ran;
+    ran.summary = "ran ls";
+    streaming.actions.push_back(ran);
+    streaming.revision = 23;
+    const json acted = json::parse(page.turns_json(frame(streaming).turns, true))[0];
+    CHECK(acted["actions_from"] == 1);
+    CHECK(acted["actions"].size() == 1 && acted["actions"][0]["summary"] == "ran ls");
+    // Rewritten rather than gone further, it goes whole; and to a page that
+    // cannot put one together, always whole.
+    streaming.reply    = "Something else";
+    streaming.revision = 24;
+    CHECK(json::parse(page.turns_json(frame(streaming).turns, true))[0]["reply"] == "Something else");
+    streaming.reply += " again";
+    streaming.revision = 25;
+    CHECK(json::parse(page.turns_json(frame(streaming).turns, false))[0]["reply"] == "Something else again");
+}
+
 TEST(the_page_is_sent_a_large_part_once_while_it_stays_the_same) {
     auto edit  = std::make_shared<const PendingEdit>(PendingEdit{"a.py", "a = 1\n", "a = 2\n"});
     auto bench = std::make_shared<const json>(json{{"running", true}, {"models", json::array()}});

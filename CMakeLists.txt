@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(crucible
-    VERSION     1.6.0
+    VERSION     1.7.0
     DESCRIPTION "An all in one local AI workshop: build software and chat with experts, and get, make and measure local models"
     LANGUAGES   C CXX)
 
@@ -134,6 +134,7 @@ add_library(crucible_core STATIC
     src/util/workers.cpp
     src/util/subprocess.cpp
     src/util/sha256.cpp
+    src/util/zip.cpp
     src/lab/python.cpp
     src/orchestra/link.cpp
     src/orchestra/package.cpp
@@ -177,6 +178,7 @@ add_library(crucible_core STATIC
     # llm: everything that touches llama.cpp
     src/llm/model_catalog.cpp
     src/llm/model_shape.cpp
+    src/llm/reasoning.cpp
     src/llm/response_filter.cpp
     src/tools/web_search.cpp
     src/tools/attachments.cpp
@@ -190,6 +192,7 @@ add_library(crucible_core STATIC
     src/tools/fetch.cpp
     src/tools/computer.cpp
     src/tools/processes.cpp
+    src/tools/terminal.cpp
     src/tools/preview.cpp
     src/tools/apps.cpp
     src/tools/mcp.cpp
@@ -514,6 +517,8 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_api.cpp
         tests/test_http.cpp
         tests/test_remote.cpp
+        tests/test_reasoning.cpp
+        tests/test_terminal.cpp
         tests/test_lab.cpp
         tests/test_mlx_delegator.cpp
         tests/test_trainer.cpp
@@ -532,6 +537,9 @@ if(CRUCIBLE_BUILD_TESTS)
         tests/test_server.cpp
         tests/test_bench.cpp)
     target_link_libraries(crucible_tests PRIVATE crucible::core)
+    # An archive the shelf writes is read back with miniz, as strict a
+    # reader as any.
+    target_link_libraries(crucible_tests PRIVATE crucible_miniz)
     # The interface's markdown, syntax coloring and diffs are JavaScript now.
     # They are tested by running ui/render.js in JavaScriptCore -- the same
     # engine the webview uses -- rather than left untested for being on the

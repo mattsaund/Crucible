@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// The file dialog on Windows: IFileOpenDialog, the one Explorer uses.
+// The file dialog on Windows: IFileOpenDialog and IFileSaveDialog, the ones
+// Explorer uses.
 //
 // COM is already initialized on this thread -- WebView2 needs it and the
 // webview sets it up -- so this only has to ask for the dialog.
@@ -51,10 +52,21 @@ std::string narrow(const wchar_t* text) {
 void pick(void* window, const Request& request, std::function<void(Answer)> done) {
     Answer answer;
 
-    IFileOpenDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dialog)))
-        || dialog == nullptr) {
+    // Both are an IFileDialog, which is all but the last step of either. The
+    // open one is kept by its own type too, for the paths of several.
+    IFileDialog*     dialog  = nullptr;
+    IFileOpenDialog* opening = nullptr;
+    if (request.save) {
+        IFileSaveDialog* saving = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(&saving)))) {
+            dialog = saving;
+        }
+    } else if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                          IID_PPV_ARGS(&opening)))) {
+        dialog = opening;
+    }
+    if (dialog == nullptr) {
         answer.supported = false;
         done(std::move(answer));
         return;
@@ -65,9 +77,13 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
     // Real paths only: a library or a search result is a thing Explorer can
     // show and nothing here can open.
     options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
-    options |= request.folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST;
-    if (!request.folder && request.multiple) {
-        options |= FOS_ALLOWMULTISELECT;
+    if (request.save) {
+        options |= FOS_OVERWRITEPROMPT;
+    } else {
+        options |= request.folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST;
+        if (!request.folder && request.multiple) {
+            options |= FOS_ALLOWMULTISELECT;
+        }
     }
     dialog->SetOptions(options);
 
@@ -75,10 +91,19 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
         dialog->SetTitle(wide(request.title).c_str());
     }
 
+    if (request.save && !request.name.empty()) {
+        dialog->SetFileName(wide(request.name).c_str());
+        // Kept on a name typed without it: "report" saves as report.pdf.
+        const std::size_t dot = request.name.rfind('.');
+        if (dot != std::string::npos && dot + 1 < request.name.size()) {
+            dialog->SetDefaultExtension(wide(request.name.substr(dot + 1)).c_str());
+        }
+    }
+
     // Kept alive until Show returns: the filter spec holds pointers into them.
     std::wstring filter_name;
     std::wstring patterns;
-    if (!request.folder && !request.extensions.empty()) {
+    if (!request.save && !request.folder && !request.extensions.empty()) {
         filter_name = wide(request.filter_name.empty() ? "Matching files"
                                                        : request.filter_name);
         for (const std::string& extension : request.extensions) {
@@ -114,7 +139,8 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
         // GetResults for a dialog that allowed several; GetResult, which
         // fails on one that did, otherwise.
         IShellItemArray* several = nullptr;
-        if (request.multiple && SUCCEEDED(dialog->GetResults(&several)) && several != nullptr) {
+        if (opening != nullptr && request.multiple && SUCCEEDED(opening->GetResults(&several))
+            && several != nullptr) {
             DWORD count = 0;
             several->GetCount(&count);
             for (DWORD i = 0; i < count; ++i) {

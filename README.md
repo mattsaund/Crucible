@@ -108,7 +108,9 @@ ___
   of expertise, the delegator picks who takes it, and that expert carries on
   with the same conversation.
 - Each action is shown above the reply, with the diff it made or the output it
-  printed.
+  printed. While it works, the reply says what it is doing: reading the
+  prompt, thinking, the file it is writing as it writes it, or a command and
+  what it prints.
 - **A change is a sentence.** "Make the button blue" is made and shown.
 - Every prompt is a turn of the conversation, so "now add dark mode" knows the
   project.
@@ -116,8 +118,10 @@ ___
 ### Code
 
 - **An editor** beside the conversation, with tabs, a file tree, find and replace,
-  search across the project, Ctrl+P to open a file by a few letters, and a
-  terminal.
+  search across the project, Ctrl+P to open a file by a few letters, and the
+  terminal under it.
+- **A real terminal.** Your own shell in the project, in as many tabs as you
+  like, with colors, line editing and full-screen programs like vim and top.
 - A file an expert changes while it is open reloads. Unsaved work is never
   written over.
 
@@ -127,8 +131,10 @@ ___
 
 - **The shelf** on the right of the chat lists what the experts made there,
   and keeps it with the chat. Code is a **Build**, which opens with Code,
-  Source and Preview. Anything else, like a PDF or a spreadsheet, downloads
-  from its card.
+  Source, Preview and Terminal. Anything else opens in place: a PDF in the
+  window's own reader, pictures, recordings and films, documents, tables and
+  archives. **Download** saves it to your Downloads folder and **Save as**
+  where you choose, and the build goes as one .zip.
 - **Preview** shows the page being made and reloads as an expert writes it.
 - **Pick an element**, then nudge padding, margin, fonts, colors and more.
   **Apply to source** hands the change to an expert, who writes it into the
@@ -145,7 +151,11 @@ ___
 - **A roster of experts.** A small router model, the delegator, sends each
   prompt to the expert that fits. It scores the roster, so it cannot name one
   that does not exist.
-- Pin a prompt to one expert from the box, or with `/name`.
+- Pin a prompt to one expert from the box, or with `/name`. Its model loads
+  at once and the delegator steps aside.
+- **Effort and thinking follow the model.** The effort menu offers exactly the
+  levels the chosen model takes, and a Thinking switch shows for a model that
+  can think or not.
 - Replies show Markdown, code and math, typeset from LaTeX.
 - **Providers** are Anthropic and anything that speaks the OpenAI API, like
   OpenAI, Gemini, DeepSeek, Kimi, OpenRouter, Groq or a server on your network.

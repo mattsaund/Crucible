@@ -45,6 +45,7 @@
 #include <unistd.h>
 #endif
 
+#include "crucible/tools/terminal.hpp"
 #include "crucible/api/surface.hpp"
 #include "crucible/app/starter.hpp"
 #include "crucible/util/resources.hpp"
@@ -349,6 +350,8 @@ int App::run() {
 
     running.store(nullptr);
     engine_->stop();
+    // No shell outlives the program it was opened in.
+    tools::terminal::close_all();
     set_wake(nullptr);
     return 0;
 }

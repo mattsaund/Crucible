@@ -68,11 +68,13 @@ void on_response(GtkNativeDialog* dialog, gint response, gpointer data) {
 }  // namespace
 
 void pick(void* window, const Request& request, std::function<void(Answer)> done) {
+    const GtkFileChooserAction action = request.save     ? GTK_FILE_CHOOSER_ACTION_SAVE
+                                      : request.folder   ? GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER
+                                                         : GTK_FILE_CHOOSER_ACTION_OPEN;
     GtkFileChooserNative* native = gtk_file_chooser_native_new(
         request.title.empty() ? nullptr : request.title.c_str(),
-        window != nullptr ? GTK_WINDOW(window) : nullptr,
-        request.folder ? GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER : GTK_FILE_CHOOSER_ACTION_OPEN,
-        request.folder ? "_Choose" : "_Open", "_Cancel");
+        window != nullptr ? GTK_WINDOW(window) : nullptr, action,
+        request.save ? "_Save" : request.folder ? "_Choose" : "_Open", "_Cancel");
     if (native == nullptr) {
         Answer none;
         none.supported = false;
@@ -80,6 +82,16 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
         return;
     }
     GtkFileChooser* chooser = GTK_FILE_CHOOSER(native);
+
+    if (request.save) {
+        // GTK 4 always asks before replacing a file; GTK 3 asks when told to.
+#if GTK_MAJOR_VERSION < 4
+        gtk_file_chooser_set_do_overwrite_confirmation(chooser, TRUE);
+#endif
+        if (!request.name.empty()) {
+            gtk_file_chooser_set_current_name(chooser, request.name.c_str());
+        }
+    }
 
     if (!request.start.empty()) {
 #if GTK_MAJOR_VERSION >= 4
@@ -91,11 +103,11 @@ void pick(void* window, const Request& request, std::function<void(Answer)> done
 #endif
     }
 
-    if (!request.folder && request.multiple) {
+    if (!request.save && !request.folder && request.multiple) {
         gtk_file_chooser_set_select_multiple(chooser, TRUE);
     }
 
-    if (!request.folder && !request.extensions.empty()) {
+    if (!request.save && !request.folder && !request.extensions.empty()) {
         GtkFileFilter* wanted = gtk_file_filter_new();
         gtk_file_filter_set_name(wanted, request.filter_name.empty()
                                              ? "Matching files" : request.filter_name.c_str());

@@ -370,7 +370,10 @@ void Engine::choose(std::optional<ExpertId> seat, bool load) {
     if (changed) {
         choices_.fetch_add(1);
     }
-    if (!load) {
+    // Said again with every prompt, unchanged and without a load: nothing to
+    // do. A change is acted on even without one, so the models the last
+    // choice left behind go now rather than when the next prompt needs room.
+    if (!load && !changed) {
         return;
     }
     {
@@ -379,6 +382,7 @@ void Engine::choose(std::optional<ExpertId> seat, bool load) {
             return;
         }
         prepare_seat_ = std::move(seat);
+        prepare_load_ = load;
         ++prepare_asked_;
         if (!prepare_thread_.joinable()) {
             prepare_thread_ = std::thread(&Engine::prepare_loop, this);
@@ -392,6 +396,7 @@ void Engine::prepare_loop() {
     for (;;) {
         std::optional<ExpertId> seat;
         std::uint64_t           choice = 0;
+        bool                    load   = false;
         {
             std::unique_lock<std::mutex> lock(prepare_mutex_);
             prepare_wanted_.wait(lock, [this, &done] {
@@ -401,12 +406,13 @@ void Engine::prepare_loop() {
                 return;
             }
             seat   = prepare_seat_;
+            load   = prepare_load_;
             done   = prepare_asked_;
             choice = choices_.load();
         }
         // A load that throws -- a corrupt GGUF -- is said, not fatal.
         try {
-            do_prepare(seat, choice);
+            do_prepare(seat, choice, load);
         } catch (const std::exception& e) {
             state_.set_mood(Mood::Error, e.what());
         } catch (...) {
@@ -437,27 +443,33 @@ bool Engine::seat_chosen() const {
     return chosen_.has_value();
 }
 
-void Engine::do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice) {
+void Engine::do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice, bool load) {
     // Nothing loads for a turn while a benchmark runs, and no turn is
     // answered then either: the choice is kept, and loads with the first
     // prompt after the run.
     if (benching()) {
         return;
     }
+    // A newer choice in the box stops whatever this one started, a
+    // delegator load among them: the delegator coming back for a choice
+    // already taken back would hold the cards the new expert wants.
+    const CancelCallback cancel = [this, choice] {
+        return choices_.load(std::memory_order_relaxed) != choice || !running_.load(std::memory_order_relaxed);
+    };
     // Back to the delegator: the table as any prompt leaves it.
     if (!seat) {
-        tidy_models();
+        tidy_models(cancel);
         return;
     }
     const Config      config = this->config();
     const ModelParams params = config.expert(*seat);
-    if (params.model.empty() || params.remote()) {
+    // An expert chosen: the delegator and every other model nobody is using
+    // go now, whether this one is loaded now or by the next prompt, and
+    // whether it is a model here or a provider's.
+    clear_for(params);
+    if (!load || params.model.empty() || params.remote() || cancel()) {
         return;   // a provider's model is a request away, not a load
     }
-    make_room_for(params);
-    const CancelCallback cancel = [this, choice] {
-        return choices_.load(std::memory_order_relaxed) != choice || !running_.load(std::memory_order_relaxed);
-    };
     long        load_ms = 0;
     std::string error;
     const std::string name = expert_label(config.roster, *seat);
@@ -1022,10 +1034,10 @@ void Engine::ensure_router(const CancelCallback& cancel) {
     }
 }
 
-void Engine::ready_delegator() {
+void Engine::ready_delegator(const CancelCallback& cancel) {
     const ModelParams router = config().router;
     if (router.model.empty()) {
-        load_router();   // nothing to load; says so on the delegator's row
+        load_router(cancel);   // nothing to load; says so on the delegator's row
         return;
     }
     if (mlx_delegator_.serving(router.path)) {
@@ -1048,7 +1060,11 @@ void Engine::ready_delegator() {
     if (router_failed_for_ == router.path) {
         return;
     }
-    load_router();
+    // Stop as well as `cancel`: a load the box's choice started is stopped by
+    // either, and one after a prompt by Stop alone, as before.
+    load_router([this, &cancel] {
+        return (cancel && cancel()) || cancel_.load(std::memory_order_relaxed);
+    });
     // load_router leaves the status saying it is loading; the work is over.
     state_.set_mood(Mood::Idle);
 }
@@ -1064,7 +1080,7 @@ void Engine::settle() {
     tidy_models();
 }
 
-void Engine::tidy_models() {
+void Engine::tidy_models(const CancelCallback& cancel) {
     if (!running_.load(std::memory_order_relaxed)) {
         return;
     }
@@ -1072,6 +1088,11 @@ void Engine::tidy_models() {
     const Config      config = this->config();
     const bool        demand = !config.routing.keep_delegator_loaded;
     const std::string chosen = chosen_path();
+    // With an expert chosen in the box nothing is routed: the delegator would
+    // only take the chosen one's room, or with a provider's chosen, be
+    // gigabytes loaded for nothing. So it is not brought back, kept loaded
+    // or not, and one still here goes (see choose()).
+    const bool picked = seat_chosen();
     // The API server's model stays too, when it is serving one: the next
     // request is for it. Both give way when the delegator needs their room.
     const std::string served = config.server.enabled && !config.server.model.empty() ? served_file(config)
@@ -1089,17 +1110,26 @@ void Engine::tidy_models() {
             && mlx_.served().string() != served) {
             stop_mlx();
         }
-        // With an expert chosen nothing is routed, and on demand the
-        // delegator would only take the chosen one's room, or with a
-        // provider's chosen, be gigabytes loaded for nothing.
-        if (!demand || !seat_chosen()) {
+        if (!picked) {
             const std::optional<ExpertId> was = host_->loaded_expert();
-            ready_delegator();
+            ready_delegator(cancel);
             if (was && host_->loaded_expert() != was) {
                 state_.set_seat(*was, SeatPhase::Dormant);
             }
             state_.set_resident(host_->loaded_expert());
             show_loaded();
+        }
+    }
+    if (picked) {
+        bool here = false;
+        {
+            const std::lock_guard<std::mutex> host(host_mutex_);
+            here = delegator_here();
+        }
+        // Waited for only when it is here: a route could be using it, and
+        // nothing else needs waiting on.
+        if (here) {
+            release_router_between_routes();
         }
     }
     // Whatever the last request ended by saying -- "canceled", an error -- is
@@ -1132,6 +1162,39 @@ void Engine::release_router_between_routes() {
     }
     // Otherwise a route is still using it: it stays, and the next prompt or
     // seat that wants the room frees it.
+}
+
+void Engine::clear_for(const ModelParams& params) {
+    // The delegator first, between routes: a turn already under way may be
+    // in the middle of one, and is let finish it.
+    bool delegating = false;
+    {
+        const std::lock_guard<std::mutex> host(host_mutex_);
+        delegating = delegator_here();
+    }
+    if (delegating) {
+        release_router_between_routes();
+    }
+    const std::lock_guard<std::mutex> host(host_mutex_);
+    // Every other expert nobody is using. The chosen one stays when it is
+    // here already: unloading it only to load it again is the wait this is
+    // here to save. A model in use stays until it is let go, as for Eject.
+    const std::string     keep = params.remote() ? std::string() : params.path;
+    const ModelHost::Keep busy = in_use();
+    host_->release_experts([&busy, &keep](const std::string& path) {
+        return (busy && busy(path)) || (!keep.empty() && path == keep);
+    });
+    // And an MLX model's server, unless it is the chosen one's or in use.
+    if (mlx_.running() && mlx_.served().string() != keep && !leases_.held(mlx_.served().string())) {
+        stop_mlx();
+    }
+    // The seats that were let go read as resting again (set_resident lights
+    // only the one still here), and the panel says what is in memory.
+    state_.set_resident(host_->loaded_expert());
+    show_loaded();
+    if (wake_) {
+        wake_();
+    }
 }
 
 void Engine::make_room_for(const ModelParams& expert, const std::function<void()>& waiting) {
@@ -1521,14 +1584,13 @@ nlohmann::json Engine::serve(const std::string& method, const nlohmann::json& pa
     };
     if (method == "delegator.ready") {
         // Something that can do without it -- a conversation's name -- does
-        // not load it while an expert is chosen in the box, when it is loaded
-        // on demand: over a local expert it would take that expert's room
-        // (see choose()), and beside a provider's it is gigabytes read for
-        // three words. The name waits for a prompt that loads it anyway. And
-        // what says "load": false -- an old conversation named in passing --
-        // uses it only if it is here.
-        const bool spare = (said("optional", false) && !config().routing.keep_delegator_loaded && seat_chosen())
-                        || !said("load", true);
+        // not load it while an expert is chosen in the box, kept loaded or
+        // not: over a local expert it would take that expert's room (see
+        // choose()), and beside a provider's it is gigabytes read for three
+        // words. The opening words name the chat instead. And what says
+        // "load": false, an old conversation named in passing, uses it only
+        // if it is here.
+        const bool spare = (said("optional", false) && seat_chosen()) || !said("load", true);
         const std::lock_guard<std::mutex> host(host_mutex_);
         if (!spare) {
             ensure_router(cancel);

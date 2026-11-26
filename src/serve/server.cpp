@@ -301,10 +301,11 @@ std::string read_shared(const json& body, Ask& ask, Shape& shape, std::string& p
         shape.stops.erase(std::remove(shape.stops.begin(), shape.stops.end(), std::string()), shape.stops.end());
     }
     if (const auto effort = body.find("reasoning_effort"); effort != body.end() && effort->is_string()) {
+        // Any level OpenAI's API takes. The model is given the nearest one
+        // it does (reasoning::nearest), and "none" is no thinking where it
+        // can be switched off.
         const std::string level = effort->get<std::string>();
-        if (level == "minimal" || level == "low") {
-            ask.effort = "low";
-        } else if (level == "medium" || level == "high" || level == "none") {
+        if (level == "none" || reasoning::rank(level) >= 0) {
             ask.effort = level;
         }
     }

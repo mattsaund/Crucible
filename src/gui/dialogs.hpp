@@ -11,8 +11,9 @@
 //
 // One function with three implementations: GtkFileChooserNative on Linux
 // (which hands off to the desktop's portal where there is one, so a KDE
-// session gets KDE's dialog), IFileOpenDialog on Windows, NSOpenPanel on
-// macOS. Each is in its own file and the build takes the one that applies.
+// session gets KDE's dialog), IFileOpenDialog and IFileSaveDialog on
+// Windows, NSOpenPanel and NSSavePanel on macOS. Each is in its own file and
+// the build takes the one that applies.
 // Beside it, the other way round: a folder shown in the desktop's own file
 // browser.
 #pragma once
@@ -38,6 +39,12 @@ struct Request {
     /// More than one may be chosen. Files only: every platform's folder
     /// dialog chooses one.
     bool multiple = false;
+
+    /// Somewhere to save a file rather than something to open: the dialog
+    /// asks for a name, offering `name`, and asks before it replaces a file
+    /// that is there. `folder` and `multiple` are ignored.
+    bool        save = false;
+    std::string name;
 };
 
 /// What came back.

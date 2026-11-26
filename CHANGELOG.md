@@ -6,6 +6,54 @@ macOS, Windows and Linux that its commit's checks built. Running Crucible checks
 for a newer release once a day and says so in **Settings, About**, where Update
 now installs it and keeps your config, models and history.
 
+## 1.7.0 (2026-11-25)
+
+A real terminal on the shelf, what is on it viewed in place, replies that say
+what they are doing, and effort and thinking that follow each model.
+
+- **A real terminal.** The shelf's new Terminal tab runs your own shell in the
+  project on a pseudo-terminal, so prompts, colors, line editing, pagers and
+  full-screen programs like vim and top work as they do in any terminal. Open
+  as many as you like, each in a tab. Code's Terminal button shows the same
+  shells under the editor. Ctrl+Shift+C copies, or Ctrl+C with text chosen,
+  and Ctrl+V pastes (Cmd on a Mac).
+- **View what is on the shelf.** View, or a click on a card's name, opens it on
+  the shelf. A PDF opens in the window's own reader, with Text beside it for
+  its words. Pictures, recordings and films play in place, a document shows
+  its words, Markdown is set, a CSV is a table, and an archive lists what is
+  in it.
+- **Save as, and the build as a zip.** Every card has Download, into your
+  Downloads folder, and Save as, which asks where with your system's own
+  dialog. The build has both too, and goes as one .zip with its folders and
+  file permissions, leaving out version control and dependencies.
+- **Replies say what they are doing.** Under a reply still arriving, with a
+  turning ring and the time it has taken: reading the prompt and how far
+  through, thinking, the file a tool call is writing with its size and its
+  last lines as they arrive, a command with what it prints as it prints it, a
+  search. A script making a PDF no longer sits there for a minute.
+- **Choosing an expert sends the delegator away.** The model you pick in the
+  box loads at once, the delegator and other experts in its room are unloaded,
+  and a pinned prompt shows the expert from its first moment. Picking
+  Delegator brings it back.
+- **Effort follows the model.** The effort menu offers exactly the levels the
+  chosen expert takes, and hides for one with none: Claude's from Anthropic's
+  model list, a local model's from its own chat template, the rest from what
+  each provider accepts and what it has refused. With the Delegator it is the
+  effort every expert gets, each at its nearest level, and Default says what
+  that is.
+- **A Thinking switch** under the box for a model that can think or not, kept
+  per expert. A model that always thinks says so. Each is told in its own
+  words: Claude's thinking settings, Qwen's and Inkling's templates, DeepSeek,
+  OpenRouter and servers on your network.
+- **Faster.** A round cut short, by Stop, by thinking that ran too long or by
+  a loop, no longer makes the next one read the whole conversation again: it
+  reads on from where the cut left it, or for a model like Qwen 3.8 with a
+  state of its own, from near the end of the prompt. On a long conversation
+  that was tens of seconds each time. A long prompt is read in larger steps,
+  as llama-server reads it, and tokenized once instead of twice. The window
+  is sent only what a streaming reply adds, not the whole reply each time,
+  and the files a turn wrote are drawn once instead of on every token.
+
 ## 1.6.0 (2026-11-25)
 
 Runtimes that update on their own, without a new Crucible.

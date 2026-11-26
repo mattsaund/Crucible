@@ -94,11 +94,16 @@ public:
 
     /// Where the box sends prompts from now on: one expert, or the delegator
     /// (nullopt). With `load`, that one is loaded now, so the first prompt
-    /// to it does not wait for it. With the delegator on demand, an expert
-    /// chosen here also stays loaded between prompts while the delegator
-    /// stays away: nothing is routed while it is chosen, and the two
-    /// together would leave the expert less of the cards. Said again with
-    /// every prompt, without `load`; only a change stops a load under way.
+    /// to it does not wait for it. Said again with every prompt, without
+    /// `load`; only a change stops a load under way.
+    ///
+    /// An expert chosen here is the only model that has any business being
+    /// in memory: nothing is routed while it is chosen. So a change to one
+    /// lets go of the delegator and of every other expert nobody is using,
+    /// at once and whatever "keep the delegator loaded" says, and the
+    /// delegator stays away until the box is set back to it. Going back to
+    /// the delegator brings it back, and the experts stay while there is
+    /// room beside it.
     void choose(std::optional<ExpertId> seat, bool load);
 
     /// Drop every loaded model and load the router again.
@@ -276,7 +281,7 @@ private:
     /// expert when they both fit, on the processor when they do not and that
     /// is allowed, and in the expert's place otherwise. One on the processor
     /// goes back to the cards once they have room for it again.
-    void ready_delegator();
+    void ready_delegator(const CancelCallback& cancel = {});
 
     /// Put the table back after a prompt, however it ended: the chat's own
     /// Stop is cleared, and then tidy_models.
@@ -288,7 +293,17 @@ private:
     /// a benchmark is over, so the window is free to take the next prompt
     /// while it happens -- the prompt simply waits its turn behind the load.
     /// Any thread.
-    void tidy_models();
+    ///
+    /// With an expert chosen in the box the delegator is not brought back
+    /// at all, and one still here is let go: see choose(). `cancel` stops a
+    /// delegator load this starts, as a newer choice in the box does.
+    void tidy_models(const CancelCallback& cancel = {});
+
+    /// What choose() does on the prepare thread when an expert is chosen:
+    /// the delegator goes, between routes, and so does every expert and MLX
+    /// model nobody is using that is not the one `params` names. Takes
+    /// host_mutex_; call without it.
+    void clear_for(const ModelParams& params);
 
     /// Make sure the delegator is loaded: beside the experts, on the
     /// processor, or in the place of one nobody is using, as
@@ -344,11 +359,12 @@ private:
     /// one made while an earlier is loading stops that load. The worker
     /// joins it before the models go.
     void prepare_loop();
-    void do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice);
+    void do_prepare(const std::optional<ExpertId>& seat, std::uint64_t choice, bool load);
     std::thread                prepare_thread_;
     std::mutex                 prepare_mutex_;
     std::condition_variable    prepare_wanted_;
     std::optional<ExpertId>    prepare_seat_;        ///< under prepare_mutex_
+    bool                       prepare_load_  = false;   ///< under prepare_mutex_: load it as well
     std::uint64_t              prepare_asked_ = 0;   ///< under prepare_mutex_: loads asked for
     std::atomic<std::uint64_t> choices_{0};          ///< how many times the choice has changed
     void do_name_session(const Request& request);

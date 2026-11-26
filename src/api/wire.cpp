@@ -7,6 +7,7 @@
 // the page every time the engine wakes it.
 #include "methods.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_set>
 
@@ -63,10 +64,11 @@ std::string_view route_source_word(RouteSource source) {
     return "fallback";
 }
 
-json turn_json(const Turn& turn) {
+/// A turn's small parts: everything but what it said, what it thought, what
+/// it did and what it was asked with. What a turn still arriving is sent
+/// whole each time, beside what it adds to the rest (see PageTurns).
+json turn_head(const Turn& turn) {
     json out{
-        {"prompt",            turn.prompt},
-        {"reply",             turn.reply},
         {"streaming",         turn.streaming},
         {"canceled",          turn.canceled},
         {"failed",            turn.failed},
@@ -76,15 +78,6 @@ json turn_json(const Turn& turn) {
         {"load_ms",           turn.load_ms},
         {"rev",               turn.revision},
     };
-    // Reasoning is sent but kept apart from the reply, for the same reason the
-    // window draws it apart: it is not the answer, and an interface that
-    // concatenated them would make a reasoning model look broken.
-    if (!turn.reasoning.empty()) {
-        out["reasoning"] = turn.reasoning;
-    }
-    if (!turn.attachments.empty()) {
-        out["attachments"] = attachments_json(turn.attachments);
-    }
     if (turn.route) {
         // How the decision was reached, not just what it was. "the delegator
         // chose this, 100%" and "nothing chose it, this is the fallback" are
@@ -96,17 +89,85 @@ json turn_json(const Turn& turn) {
             {"detail",     turn.route->detail},
         };
     }
+    return out;
+}
+
+/// The actions of a turn from the `from`th on.
+json actions_json(const std::vector<TurnAction>& actions, std::size_t from = 0) {
+    json out = json::array();
+    for (std::size_t i = from; i < actions.size(); ++i) {
+        const TurnAction& action = actions[i];
+        json one{{"summary", action.summary}};
+        if (!action.body.empty())     { one["body"]     = action.body; }
+        if (!action.language.empty()) { one["language"] = action.language; }
+        if (!action.picture.empty())  { one["picture"]  = action.picture; }
+        if (action.thought_at != std::string::npos) { one["thought_at"] = action.thought_at; }
+        out.push_back(std::move(one));
+    }
+    return out;
+}
+
+json turn_json(const Turn& turn) {
+    json out = turn_head(turn);
+    out["prompt"] = turn.prompt;
+    out["reply"]  = turn.reply;
+    // Reasoning is sent but kept apart from the reply, for the same reason the
+    // window draws it apart: it is not the answer, and an interface that
+    // concatenated them would make a reasoning model look broken.
+    if (!turn.reasoning.empty()) {
+        out["reasoning"] = turn.reasoning;
+    }
+    if (!turn.attachments.empty()) {
+        out["attachments"] = attachments_json(turn.attachments);
+    }
     if (!turn.actions.empty()) {
-        json actions = json::array();
-        for (const TurnAction& action : turn.actions) {
-            json one{{"summary", action.summary}};
-            if (!action.body.empty())     { one["body"]     = action.body; }
-            if (!action.language.empty()) { one["language"] = action.language; }
-            if (!action.picture.empty())  { one["picture"]  = action.picture; }
-            if (action.thought_at != std::string::npos) { one["thought_at"] = action.thought_at; }
-            actions.push_back(std::move(one));
-        }
-        out["actions"] = std::move(actions);
+        out["actions"] = actions_json(turn.actions);
+    }
+    return out;
+}
+
+/// Whether `now` begins with all of `was`, and goes on from a whole
+/// character: what it adds is then text of its own.
+bool grows_from(const std::string& was, const std::string& now) {
+    return now.size() >= was.size() && now.compare(0, was.size(), was) == 0
+        && (now.size() == was.size() || (static_cast<unsigned char>(now[was.size()]) & 0xC0U) != 0x80U);
+}
+
+bool same_action(const TurnAction& a, const TurnAction& b) {
+    return a.summary == b.summary && a.body == b.body && a.language == b.language && a.picture == b.picture
+        && a.thought_at == b.thought_at;
+}
+
+bool same_attachments(const std::vector<attach::Tile>& a, const std::vector<attach::Tile>& b) {
+    return a.size() == b.size()
+        && std::equal(a.begin(), a.end(), b.begin(), [](const attach::Tile& x, const attach::Tile& y) {
+               return x.path == y.path && x.name == y.name && x.label == y.label && x.kind == y.kind;
+           });
+}
+
+/// `now` as what it adds to `was`, a turn the page has: what it has said and
+/// thought since, the actions it took since, and its small parts whole.
+/// Null when `now` is not `was` gone further, which goes whole.
+json turn_grown(const Turn& was, const Turn& now) {
+    if (was.prompt != now.prompt || !same_attachments(was.attachments, now.attachments)
+        || !grows_from(was.reply, now.reply) || !grows_from(was.reasoning, now.reasoning)) {
+        return nullptr;
+    }
+    json out = turn_head(now);
+    out["from"] = was.revision;
+    if (now.reply.size() > was.reply.size()) {
+        out["reply_add"] = now.reply.substr(was.reply.size());
+    }
+    if (now.reasoning.size() > was.reasoning.size()) {
+        out["reasoning_add"] = now.reasoning.substr(was.reasoning.size());
+    }
+    std::size_t same = 0;
+    while (same < was.actions.size() && same < now.actions.size() && same_action(was.actions[same], now.actions[same])) {
+        ++same;
+    }
+    if (same != was.actions.size() || same != now.actions.size()) {
+        out["actions_from"] = same;
+        out["actions"]      = actions_json(now.actions, same);
     }
     return out;
 }
@@ -143,6 +204,7 @@ json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
         {"platform",         platform},
         {"mood",             mood_word(snapshot.mood)},
         {"status",           snapshot.status},
+        {"status_since",     snapshot.status_since},
         {"busy",             snapshot.busy},
         {"delegator_ready",  snapshot.delegator_ready},
         {"context_used",     snapshot.context_used},
@@ -165,6 +227,19 @@ json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
     }
     if (snapshot.resident) { out["resident"] = *snapshot.resident; }
     if (snapshot.linked)   { out["linked"]   = *snapshot.linked; }
+
+    // What the turn is doing this moment, while it is doing something worth
+    // watching apart from the reply. See Activity.
+    if (const std::optional<Activity>& doing = snapshot.activity) {
+        json one{{"kind", doing->kind}, {"label", doing->label}, {"since", doing->since}};
+        if (!doing->detail.empty())   { one["detail"]   = doing->detail; }
+        if (doing->progress >= 0.0F)  { one["progress"] = doing->progress; }
+        if (doing->bytes > 0)         { one["bytes"]    = doing->bytes; }
+        if (doing->lines > 0)         { one["lines"]    = doing->lines; }
+        if (!doing->tail.empty())     { one["tail"]     = doing->tail; }
+        if (!doing->language.empty()) { one["language"] = doing->language; }
+        out["activity"] = std::move(one);
+    }
 
     // What is in this machine's memory, for the foot of the right-hand panel.
     json local = json::array();
@@ -225,10 +300,12 @@ json snapshot_to_json(const Snapshot& snapshot, bool with_turns) {
     return out;
 }
 
-std::string PageTurns::turns_json(const TurnList& turns) {
+std::string PageTurns::turns_json(const TurnList& turns, bool grown) {
     const std::lock_guard<std::mutex> lock(mutex_);
     std::string out = "[";
     std::unordered_set<std::uint64_t> now;
+    std::vector<TurnList::Shared>     placed;
+    placed.reserve(turns.size());
     for (std::size_t i = 0; i < turns.size(); ++i) {
         const Turn& turn = turns[i];
         if (i > 0) {
@@ -236,20 +313,29 @@ std::string PageTurns::turns_json(const TurnList& turns) {
         }
         // A revision the page was sent is the same turn word for word, and
         // the page keeps every turn it was sent by revision: a stub names it.
-        // A turn with none was made by hand, and goes whole.
+        // A turn with none was made by hand, and goes whole. A turn that has
+        // gone further since the page was sent it, the one still arriving,
+        // goes as what it adds, where the page can take that.
+        const TurnList::Shared* was = i < last_.size() ? &last_[i] : nullptr;
+        json grew;
         if (turn.revision != 0 && sent_.count(turn.revision) != 0) {
             out += "{\"rev\":" + std::to_string(turn.revision) + ",\"stub\":true}";
+        } else if (grown && turn.revision != 0 && was != nullptr && *was && (*was)->revision != 0
+                   && sent_.count((*was)->revision) != 0 && !(grew = turn_grown(**was, turn)).is_null()) {
+            out += grew.dump(-1, ' ', false, json::error_handler_t::replace);
         } else {
             out += turn_json(turn).dump(-1, ' ', false, json::error_handler_t::replace);
         }
         if (turn.revision != 0) {
             now.insert(turn.revision);
         }
+        placed.push_back(turns.shared(i));
     }
     out += ']';
     // What the page holds after this push: the turns of this transcript and
     // no others, so the set is as long as the conversation, not its history.
     sent_ = std::move(now);
+    last_ = std::move(placed);
     return out;
 }
 

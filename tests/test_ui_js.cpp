@@ -1962,12 +1962,46 @@ TEST(the_box_has_who_answers_how_hard_it_thinks_auto_and_an_arrow) {
     CHECK(route.find("mi-hint") == std::string::npos);
     CHECK(route.find("data-act=\"route-pick\"") != std::string::npos);
     CHECK(route.find("data-value=\"physics\"") != std::string::npos);
+    // With the delegator, the box's own effort: every level there is, for
+    // whichever expert it chooses, and a thinking switch.
     const std::string effort = page().eval(std::string(open_box) + "('effort:chat')");
-    CHECK(effort.find("REASONING EFFORT") != std::string::npos);
-    CHECK(effort.find("Reasoning models only") != std::string::npos);
-    CHECK(effort.find("mi-hint") == std::string::npos);
+    CHECK(effort.find(">EFFORT<") != std::string::npos);
     CHECK(effort.find("data-act=\"effort-pick\"") != std::string::npos);
     CHECK(effort.find("data-value=\"low\"") != std::string::npos);
+    CHECK(effort.find("data-value=\"xhigh\"") != std::string::npos);
+    CHECK(effort.find(">Extra high<") != std::string::npos);
+    CHECK(effort.find("data-value=\"max\"") != std::string::npos);
+    CHECK(shut.find("data-act=\"thinking-toggle\"") != std::string::npos);
+
+    // With an expert chosen, exactly what its model takes. GPT OSS's three,
+    // and thinking it cannot turn off, held on.
+    const char* const chosen =
+        "(function (profile, menu) { var key = profileKey('physics');"
+        " profiles[key] = profile; state.route = 'physics'; state.menu = menu;"
+        " var out = views.chat(); state.route = ''; state.menu = null; delete profiles[key];"
+        " return out; })";
+    const std::string oss = page().eval(std::string(chosen)
+        + "({levels: ['low', 'medium', 'high'], standard: 'medium', thinking: 'always'}, 'effort:chat')");
+    CHECK(oss.find("data-value=\"high\"") != std::string::npos);
+    CHECK(oss.find("data-value=\"xhigh\"") == std::string::npos);
+    CHECK(oss.find("data-value=\"max\"") == std::string::npos);
+    CHECK(oss.find("title=\"Always thinks\"") != std::string::npos);
+    // The box's high, as the level it comes to on this model, is the default.
+    CHECK(oss.find(">High effort<") != std::string::npos);
+    // Claude's five, and a switch that switches.
+    const std::string claude = page().eval(std::string(chosen)
+        + "({levels: ['low', 'medium', 'high', 'xhigh', 'max'], standard: '', thinking: 'optional',"
+          " thinks_unasked: true}, 'effort:chat')");
+    CHECK(claude.find("data-value=\"max\"") != std::string::npos);
+    CHECK(claude.find("data-act=\"thinking-toggle\"") != std::string::npos);
+    CHECK(claude.find("title=\"Always thinks\"") == std::string::npos);
+    CHECK(claude.find(">Thinking<") != std::string::npos);
+    // A model with neither: no menu and no switch.
+    const std::string plain = page().eval(std::string(chosen) + "({levels: [], standard: '', thinking: 'none'}, null)");
+    CHECK(plain.find("data-act=\"effort-menu\"") == std::string::npos);
+    CHECK(plain.find("data-act=\"thinking-toggle\"") == std::string::npos);
+    CHECK_EQ(drawn(std::string(chosen) + "({levels: ['low', 'high'], standard: 'low', thinking: 'optional'}, 'effort:chat')"),
+             "ok");
 
     // A seat chosen in the menu is where a prompt goes; one that has lost its
     // model sends prompts back to the delegator.
@@ -1976,6 +2010,47 @@ TEST(the_box_has_who_answers_how_hard_it_thinks_auto_and_an_arrow) {
     page().eval("(state.route = '')");
     CHECK(page().eval("(state.snapshot.auto_edits = true, views.chat())").find(">Auto on<") != std::string::npos);
     page().eval("(state.snapshot.auto_edits = false)");
+}
+
+TEST(a_turn_still_arriving_says_what_it_is_doing_and_shows_what_it_writes) {
+    const char* const with =
+        "(function (activity) { var s = state.snapshot, a = s.activity, b = s.busy;"
+        " s.activity = activity; s.busy = true; var out = views.chat(); s.activity = a; s.busy = b;"
+        " return out; })";
+    // Reading a long prompt, and how far through.
+    const std::string reading = page().eval(std::string(with)
+        + "({kind: 'read', label: 'Reading the prompt', since: Date.now() - 5000, progress: 0.42})");
+    CHECK(reading.find("Reading the prompt") != std::string::npos);
+    CHECK(reading.find(">42%<") != std::string::npos);
+    CHECK(reading.find("class=\"elapsed\" data-since=") != std::string::npos);
+    CHECK(reading.find(">5s<") != std::string::npos);
+    // A file being written through a call: its name, how much, and its last
+    // lines, colored as what it is.
+    const std::string writing_file = std::string(with)
+        + "({kind: 'write', label: 'Writing', detail: 'index.html', since: 1, bytes: 2048, lines: 3,"
+          " tail: '<html>\\n<body>\\n</body>', language: 'index.html'})";
+    const std::string writing = page().eval(writing_file);
+    CHECK(writing.find(">Writing<") != std::string::npos);
+    CHECK(writing.find(">index.html<") != std::string::npos);
+    CHECK(writing.find(">2.0 KB<") != std::string::npos);
+    CHECK(writing.find(">3 lines<") != std::string::npos);
+    CHECK(writing.find("doing-tail") != std::string::npos);
+    CHECK(writing.find("<body>") == std::string::npos);   // the file's text, never markup
+    CHECK_EQ(drawn(writing_file), "ok");
+    // A command, and what it has printed so far.
+    const std::string command = std::string(with)
+        + "({kind: 'run', label: 'Running', detail: 'python make_pdf.py', since: 1, lines: 2,"
+          " tail: 'page 1\\npage 2\\n', language: 'shell'})";
+    const std::string running = page().eval(command);
+    CHECK(running.find("python make_pdf.py") != std::string::npos);
+    CHECK(running.find("doing-tail output") != std::string::npos);
+    CHECK(running.find("page 2") != std::string::npos);
+    CHECK_EQ(drawn(command), "ok");
+    // Nothing once the turn is over.
+    CHECK(page().eval("(function () { var s = state.snapshot, a = s.activity;"
+                      " s.activity = {kind: 'read', label: 'Reading the prompt', since: 1};"
+                      " var busy = s.busy; s.busy = false; var out = views.chat(); s.busy = busy; s.activity = a;"
+                      " return out; })()").find("Reading the prompt") == std::string::npos);
 }
 
 TEST(what_came_from_a_model_is_never_markup) {
@@ -2811,6 +2886,180 @@ TEST(the_shelf_lists_the_build_and_each_thing_to_download) {
     CHECK(entered.find("data-pane=\"code\"") != std::string::npos);
 }
 
+TEST(each_thing_on_the_shelf_is_viewed_on_the_shelf_as_what_it_is) {
+    // The viewer as it draws `viewer`, which is state.viewer for the call.
+    const char* const with =
+        "(function (viewer) { var v = state.viewer, p = state.chatPane; state.viewer = viewer; state.chatPane = 'view';"
+        " var out = views.chat(); state.viewer = v; state.chatPane = p; return out; })";
+    const auto view = [&with](const std::string& viewer) { return page().eval(std::string(with) + "(" + viewer + ")"); };
+    const auto sound = [&with](const std::string& viewer) { return drawn(std::string(with) + "(" + viewer + ")"); };
+
+    // A PDF, in the window's own reader, and read as its words.
+    const std::string pdf = "{ path: 'out/report.pdf', name: 'report.pdf', kind: 'pdf', show: 'pdf', bytes: 9,"
+                            " mime: 'application/pdf', url: 'blob:null/1', mode: 'page', loading: false }";
+    const std::string page_of = view(pdf);
+    CHECK(page_of.find("<iframe class=\"viewer-frame\" src=\"blob:null/1\"") != std::string::npos);
+    CHECK(page_of.find("data-act=\"back-to-shelf\"") != std::string::npos);
+    CHECK(page_of.find("data-mode=\"text\"") != std::string::npos);
+    CHECK(page_of.find("data-act=\"shelf-download\" data-path=\"out/report.pdf\"") != std::string::npos);
+    CHECK_EQ(sound(pdf), std::string("ok"));
+    const std::string words = view("{ path: 'a.pdf', name: 'a.pdf', show: 'pdf', url: 'blob:x', mode: 'text',"
+                                   " words: 'Total <b>9</b>', wordsCut: true, loading: false }");
+    CHECK(words.find("Total &lt;b&gt;9&lt;/b&gt;") != std::string::npos);
+    CHECK(words.find("Only the start of it is shown") != std::string::npos);
+    CHECK(words.find("<iframe") == std::string::npos);
+
+    // Markdown set, a table as one, pictures and players from their blobs.
+    CHECK(view("{ path: 'n.md', name: 'n.md', show: 'text', language: 'md', text: '# Plan\\n\\nTwo *words*.' }")
+              .find("<h1") != std::string::npos);
+    const std::string table = view("{ path: 't.csv', name: 't.csv', show: 'text', language: 'csv',"
+                                   " text: 'name,note\\nA,\"says \"\"<hi>\"\", twice\"\\nB,2\\n' }");
+    CHECK(table.find("<th>name</th><th>note</th>") != std::string::npos);
+    CHECK(table.find("<td>says &quot;&lt;hi&gt;&quot;, twice</td>") != std::string::npos);
+    CHECK(view("{ path: 'p.png', name: 'p.png', show: 'image', url: 'blob:p' }").find("<img src=\"blob:p\"")
+          != std::string::npos);
+    CHECK(view("{ path: 'v.mp4', name: 'v.mp4', show: 'video', url: 'blob:v' }").find("<video controls src=\"blob:v\"")
+          != std::string::npos);
+
+    // What is in an archive, and that there is more of it.
+    const std::string archive = view("{ path: 'a.zip', name: 'a.zip', show: 'archive', count: 5,"
+                                     " entries: [{ name: 'src/<x>.js', bytes: 10 }, { name: 'b', bytes: 2048 }] }");
+    CHECK(archive.find("src/&lt;x&gt;.js") != std::string::npos);
+    CHECK(archive.find("2.0 KB") != std::string::npos);
+    CHECK(archive.find("and 3 more files") != std::string::npos);
+
+    // On its way, and nothing to show.
+    CHECK(view("{ path: 'v.mp4', name: 'v.mp4', loading: true, got: 50, bytes: 100 }").find("Reading... 50%")
+          != std::string::npos);
+    CHECK(view("{ path: 'b.bin', name: 'b.bin', kind: 'file', show: 'none', bytes: 3 }").find("Nothing to show here")
+          != std::string::npos);
+    CHECK_EQ(sound("{ path: 'b.bin', name: 'b.bin', kind: 'file', show: 'none', bytes: 3 }"), std::string("ok"));
+
+    // A viewer put away is the list.
+    CHECK_EQ(page().eval("(function () { var v = state.viewer, p = state.chatPane; state.viewer = null;"
+                         " state.chatPane = 'view'; var out = shownPane(); state.viewer = v; state.chatPane = p;"
+                         " return out; })()"),
+             std::string("shelf"));
+    // The build's card keeps it as one archive.
+    CHECK(page().eval("(function () { var s = state.shelf, p = state.chatPane; state.chatPane = 'shelf';"
+                      " state.shelf = { build: { name: 'Budget', files: 2, updated: 1, project: false }, items: [] };"
+                      " var out = views.chat(); state.shelf = s; state.chatPane = p; return out; })()")
+              .find("data-act=\"shelf-download\" data-path=\"/build\"") != std::string::npos);
+}
+
+TEST(a_reply_sent_as_what_it_adds_is_put_back_together) {
+    const std::string got = page().eval(
+        "(function () { var kept = Array.from(turnsByRev.values());"
+        " keepTurns([{ rev: 5, prompt: 'p', reply: 'Here', reasoning: 'Plan', streaming: true,"
+        "   route: { expert: 'x' }, actions: [{ summary: 'wrote a' }] }]);"
+        " var one = resolveTurns([{ rev: 6, from: 5, reply_add: ' it is', reasoning_add: ', done', streaming: true,"
+        "   output_tokens: 4, route: { expert: 'x' } }])[0];"
+        " keepTurns([one]);"
+        " var two = resolveTurns([{ rev: 7, from: 6, streaming: false, actions_from: 1,"
+        "   actions: [{ summary: 'ran b' }] }])[0];"
+        " var lost = resolveTurns([{ rev: 9, from: 8, reply_add: 'x' }]);"
+        " keepTurns(kept);"
+        " return [one.prompt, one.reply, one.reasoning, one.output_tokens, one.actions.length, 'from' in one,"
+        "   two.reply, two.actions.map(function (a) { return a.summary; }).join('+'), 'route' in two, two.streaming,"
+        "   lost].join('|'); })()");
+    CHECK_EQ(got, std::string("p|Here it is|Plan, done|4|1|false|Here it is|wrote a+ran b|false|false|"));
+}
+
+TEST(the_terminal_plays_what_a_program_prints_as_a_terminal_would) {
+    // A screen `cols` by `rows`, fed each of `pieces` in turn: what is on it.
+    const auto played = [](int cols, int rows, const std::string& pieces) {
+        return page().eval("(function () { var said = []; var s = termScreen(" + std::to_string(cols) + ", "
+                           + std::to_string(rows) + ", function (r) { said.push(r); });"
+                           " [" + pieces + "].forEach(function (p) { s.feed(p); });"
+                           " return s.text().replace(/\\n+$/, '') + (said.length ? '|' + JSON.stringify(said) : ''); })()");
+    };
+    // Lines, a carriage return over what was there, erasing to the end.
+    CHECK_EQ(played(20, 4, "'hello\\r\\nworld'"), std::string("hello\nworld"));
+    CHECK_EQ(played(20, 4, "'abcdef\\x1b[3D\\x1b[K'"), std::string("abc"));
+    CHECK_EQ(played(20, 4, "'12345\\rab'"), std::string("ab345"));
+    // A long line wraps, and a full screen scrolls, the top line kept above.
+    CHECK_EQ(played(5, 3, "'abcdefg'"), std::string("abcde\nfg"));
+    CHECK_EQ(played(5, 3, "'a\\r\\nb\\r\\nc\\r\\nd'"), std::string("b\nc\nd"));
+    CHECK_EQ(page().eval("(function () { var s = termScreen(5, 2, function () {}); s.feed('one\\r\\ntwo\\r\\nthree');"
+                         " return s.gone().lines.map(function (l) { return l.ch.join('').trim(); }).join(','); })()"),
+             std::string("one"));
+    // Moved to, written over, and across a sequence split between reads.
+    CHECK_EQ(played(10, 3, "'\\x1b[2;4HX', '\\x1b[1', ';1HY'"), std::string("Y\n   X"));
+    // The other screen, and back to the first as it was.
+    CHECK_EQ(played(10, 3, "'shell$ ', '\\x1b[?1049h\\x1b[2J\\x1b[Hvim', '\\x1b[?1049l'"), std::string("shell$"));
+    // Inserting and deleting characters and lines.
+    CHECK_EQ(played(10, 3, "'abcd\\x1b[1;2H\\x1b[2@'"), std::string("a  bcd"));
+    CHECK_EQ(played(10, 3, "'abcd\\x1b[1;2H\\x1b[2P'"), std::string("ad"));
+    CHECK_EQ(played(10, 3, "'1\\r\\n2\\r\\n3\\x1b[1;1H\\x1b[M'"), std::string("2\n3"));
+    // A box in the line-drawing set, and a wide character taking two cells.
+    CHECK_EQ(played(10, 3, "'\\x1b(0lqk\\x1b(Bx'"), std::string("\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90x"));
+    CHECK_EQ(page().eval("(function () { var s = termScreen(10, 2, function () {}); s.feed('\\u6f22x');"
+                         " return JSON.stringify(s.line(0).ch.slice(0, 3)) + s.cursor().x; })()"),
+             std::string("[\"\xe6\xbc\xa2\",\"\",\"x\"]3"));
+    // Asked where its cursor is and what it is, it answers.
+    CHECK_EQ(played(10, 3, "'ab\\x1b[6n'"), std::string("ab|[\"\\u001b[1;3R\"]"));
+    CHECK(played(10, 3, "'\\x1b[c'").find("\\u001b[?62;22c") != std::string::npos);
+    // A title, and what is never drawn: a link's address, a clipboard.
+    CHECK_EQ(page().eval("(function () { var s = termScreen(10, 2, function () {});"
+                         " s.feed('\\x1b]0;build: make\\x07\\x1b]8;;https://x.test\\x1b\\\\link\\x1b]8;;\\x1b\\\\');"
+                         " return s.title + '|' + s.text().trim(); })()"),
+             std::string("build: make|link"));
+    // Colors, as the markup of a line has them, never markup of their own.
+    const std::string red = page().eval("(function () { var s = termScreen(20, 2, function () {});"
+                                        " s.feed('\\x1b[1;31mred\\x1b[0m <b>\\x1b[38;2;1;2;3mrgb');"
+                                        " return termLineHtml(s.line(0), -1); })()");
+    CHECK(red.find("color:#FF7B72;font-weight:700\">red</span>") != std::string::npos);
+    CHECK(red.find("&lt;b&gt;") != std::string::npos);
+    CHECK(red.find("color:#010203\">rgb</span>") != std::string::npos);
+    CHECK(page().eval("(function () { var s = termScreen(10, 2, function () {}); s.feed('ab');"
+                      " return termLineHtml(s.line(0), s.cursor().x); })()")
+              .find("<span class=\"term-cursor\"> </span>") != std::string::npos);
+}
+
+TEST(a_key_pressed_in_the_terminal_sends_what_a_terminal_sends) {
+    const auto key = [](const std::string& event, const std::string& modes = "{}", bool mac = false) {
+        return page().eval("JSON.stringify(termKey(Object.assign({ key: '', ctrlKey: false, altKey: false, shiftKey: false,"
+                           " metaKey: false }, " + event + "), Object.assign({ appCursor: false }, " + modes + "), "
+                           + (mac ? "true" : "false") + "))");
+    };
+    CHECK_EQ(key("{ key: 'Enter' }"), std::string("\"\\r\""));
+    CHECK_EQ(key("{ key: 'Backspace' }"), std::string("\"\x7f\""));
+    CHECK_EQ(key("{ key: 'ArrowUp' }"), std::string("\"\\u001b[A\""));
+    CHECK_EQ(key("{ key: 'ArrowUp' }", "{ appCursor: true }"), std::string("\"\\u001bOA\""));
+    CHECK_EQ(key("{ key: 'ArrowLeft', ctrlKey: true }"), std::string("\"\\u001b[1;5D\""));
+    CHECK_EQ(key("{ key: 'c', ctrlKey: true }"), std::string("\"\\u0003\""));
+    CHECK_EQ(key("{ key: 'u', ctrlKey: true }"), std::string("\"\\u0015\""));
+    CHECK_EQ(key("{ key: 'b', altKey: true }"), std::string("\"\\u001bb\""));
+    CHECK_EQ(key("{ key: 'b', altKey: true }", "{}", true), std::string("null"));   // Option types on a Mac
+    CHECK_EQ(key("{ key: 'F5' }"), std::string("\"\\u001b[15~\""));
+    CHECK_EQ(key("{ key: 'Tab', shiftKey: true }"), std::string("\"\\u001b[Z\""));
+    // Text is the input event's, and Ctrl and a number the window's.
+    CHECK_EQ(key("{ key: 'a' }"), std::string("null"));
+    CHECK_EQ(key("{ key: '1', ctrlKey: true }"), std::string("null"));
+}
+
+TEST(the_terminal_pane_has_a_tab_for_each_shell_and_a_place_for_the_one_shown) {
+    const char* const with =
+        "(function (term) { var t = state.term, p = state.chatPane, tree = state.tree, project = state.snapshot.project;"
+        " state.term = term; state.chatPane = 'terminal'; state.tree = { entries: [{ name: 'a.py' }] };"
+        " state.snapshot.project = { open: true, root: '/w', name: 'w' };"
+        " var out = views.chat(); state.term = t; state.chatPane = p; state.tree = tree; state.snapshot.project = project;"
+        " return out; })";
+    const std::string two = std::string(with)
+        + "({ list: [{ id: 3, shell: 'bash', cwd: '~/w', title: '', running: true },"
+          " { id: 4, shell: 'zsh', cwd: '~/w', title: 'vim <x>', running: false, status: 1 }], active: 4, error: '' })";
+    const std::string pane = page().eval(two);
+    CHECK(pane.find("data-pane=\"terminal\"") != std::string::npos);
+    CHECK(pane.find(">bash<") != std::string::npos);
+    CHECK(pane.find("vim &lt;x&gt; (ended)") != std::string::npos);
+    CHECK(pane.find("<div class=\"term-host\" data-term=\"4\" data-sig=\"term-4\"></div>") != std::string::npos);
+    CHECK(pane.find("Ended with status 1") != std::string::npos);
+    CHECK_EQ(drawn(two), std::string("ok"));
+    const std::string none = page().eval(std::string(with) + "({ list: [], active: 0, error: 'no pseudo-terminal' })");
+    CHECK(none.find("data-act=\"term-new\">Open a terminal<") != std::string::npos);
+    CHECK(none.find("no pseudo-terminal") != std::string::npos);
+}
+
 TEST(a_mistake_after_the_first_draw_keeps_the_window) {
     // A scroll landing between a conversation getting shorter and the draw
     // that notices ended the whole window once.
@@ -3020,9 +3269,9 @@ TEST(the_code_pane_is_an_editor) {
     CHECK_EQ(drawn("modalView({ kind: 'quick-open', query: 'todo', at: 0 })"), "ok");
     CHECK_EQ(drawn("modalView({ kind: 'code-name', title: 'New file', verb: 'Create', value: 'src/', error: 'taken' })"), "ok");
 
-    // The terminal opens under the editor.
-    page().eval("state.code.run.open = true; state.code.run.output = '$ ls\\nsrc'");
-    CHECK(page().eval("views.chat()").find("id=\"run-command\"") != std::string::npos);
+    // The terminal opens under the editor: the Terminal pane's own.
+    page().eval("state.code.run.open = true");
+    CHECK(page().eval("views.chat()").find("class=\"ide-run\"><div class=\"term-pane\">") != std::string::npos);
     page().eval("state.code.run.open = false");
 
     // What it knows about a file's way of writing.

@@ -327,3 +327,67 @@ TEST(a_datasets_pages_on_disk_are_known_by_their_names) {
     CHECK(bench_rows::folder("openai/gsm8k", "main", "train") != folder);
     CHECK(bench_rows::folder("openai/gsm8k", "socratic", "test") != folder);
 }
+
+TEST(a_reply_cut_short_leaves_what_was_read_in_the_cache) {
+    // Only where a model is named, as above. A round cut short (Stop, a
+    // thought too long, a loop) aborts the decode it is in, and the whole
+    // prompt was read again by the next round: a long conversation's worth,
+    // forty seconds of it on a processor. What was read stays read.
+    const char* named = std::getenv("CRUCIBLE_TEST_MODEL");
+    if (named == nullptr || *named == '\0') {
+        return;
+    }
+    TempDir dir;
+    ModelHost host(dir.path() / "llama.log");
+    ModelParams params;
+    params.model       = named;
+    params.path        = named;
+    params.n_ctx       = 4096;
+    params.temperature = 0.0F;
+    params.max_tokens  = 64;
+    std::string  error;
+    LoadedModel* model = host.acquire_expert("cut", params, {}, {}, error);
+    CHECK(model != nullptr);
+    if (model == nullptr) {
+        std::printf("      %s\n", error.c_str());
+        return;
+    }
+    std::string question = "Here is a list of fruit:";
+    for (int i = 0; i < 60; ++i) {
+        question += " apple, pear, plum, fig,";
+    }
+    question += " Which fruit comes first? Explain at length.";
+    const std::vector<ChatMessage> messages{{"user", question}};
+
+    // Cut a few words in, from inside the decode, as Stop does.
+    int          words = 0;
+    ChatSink     cut;
+    cut.on_text = [&words](std::string_view) { ++words; };
+    cut.cancel  = [&words] { return words >= 4; };
+    const ChatResult first = model->chat(ChatRequest{messages, params, ""}, cut);
+    CHECK(first.stats.canceled);
+    CHECK(first.stats.prompt_tokens > 300);
+
+    // Asked again, the prompt is read from where the cut left it: all of
+    // it, or on a model with a recurrent state, from the checkpoint near its
+    // end.
+    ChatSink         whole;
+    const ChatResult second = model->chat(ChatRequest{messages, params, ""}, whole);
+    CHECK(!second.stats.canceled);
+    CHECK(second.stats.prompt_reused + 40 >= second.stats.prompt_tokens);
+    // And what it says then is what it says read from cold.
+    ChatSink         cold;
+    std::string      fresh;
+    std::string      kept;
+    whole.on_text = [&kept](std::string_view text) { kept += text; };
+    model->chat(ChatRequest{messages, params, ""}, whole);
+    host.release_experts();
+    LoadedModel* again = host.acquire_expert("cut", params, {}, {}, error);
+    CHECK(again != nullptr);
+    if (again != nullptr) {
+        cold.on_text = [&fresh](std::string_view text) { fresh += text; };
+        again->chat(ChatRequest{messages, params, ""}, cold);
+        CHECK_EQ(kept, fresh);
+    }
+    llama_log_set(nullptr, nullptr);
+}

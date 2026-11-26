@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// The file dialog on macOS: NSOpenPanel.
+// The file dialog on macOS: NSOpenPanel, and NSSavePanel for a place to save.
 //
 // Through the Objective-C runtime rather than in an Objective-C++ file, which
 // is how the webview underneath this talks to Cocoa as well. It keeps the
@@ -43,9 +43,58 @@ id ns_string(const std::string& text) {
 /// an Objective-C one.
 constexpr long kModalResponseOK = 1;
 
+/// A URL's path, as UTF-8. Empty for nil.
+std::string path_of(id url) {
+    const id path = url != nullptr ? send<id>(url, "path") : nullptr;
+    const char* text = path != nullptr ? send<const char*>(path, "UTF8String") : nullptr;
+    return text != nullptr ? std::string(text) : std::string();
+}
+
+/// Where a panel opens: `start`, when there is one.
+void start_in(id panel, const std::string& start) {
+    if (start.empty()) {
+        return;
+    }
+    const id url = send<id, id, BOOL>(class_named("NSURL"), "fileURLWithPath:isDirectory:", ns_string(start), YES);
+    if (url != nullptr) {
+        send<void, id>(panel, "setDirectoryURL:", url);
+    }
+}
+
+/// NSSavePanel: a name and a folder, and it asks before replacing a file
+/// itself.
+void save(const Request& request, std::function<void(Answer)>& done) {
+    Answer answer;
+    const id panel = send<id>(class_named("NSSavePanel"), "savePanel");
+    if (panel == nullptr) {
+        answer.supported = false;
+        done(std::move(answer));
+        return;
+    }
+    send<void, BOOL>(panel, "setCanCreateDirectories:", YES);
+    if (!request.title.empty()) {
+        send<void, id>(panel, "setMessage:", ns_string(request.title));
+    }
+    if (!request.name.empty()) {
+        send<void, id>(panel, "setNameFieldStringValue:", ns_string(request.name));
+    }
+    start_in(panel, request.start);
+    if (send<long>(panel, "runModal") == kModalResponseOK) {
+        answer.path = path_of(send<id>(panel, "URL"));
+        if (!answer.path.empty()) {
+            answer.paths.push_back(answer.path);
+        }
+    }
+    done(std::move(answer));
+}
+
 }  // namespace
 
 void pick(void* /*window*/, const Request& request, std::function<void(Answer)> done) {
+    if (request.save) {
+        save(request, done);
+        return;
+    }
     Answer answer;
 
     const id panel = send<id>(class_named("NSOpenPanel"), "openPanel");
@@ -67,13 +116,7 @@ void pick(void* /*window*/, const Request& request, std::function<void(Answer)> 
         // where an open panel says what it is for.
         send<void, id>(panel, "setMessage:", ns_string(request.title));
     }
-    if (!request.start.empty()) {
-        const id start = send<id, id, BOOL>(class_named("NSURL"), "fileURLWithPath:isDirectory:",
-                                            ns_string(request.start), YES);
-        if (start != nullptr) {
-            send<void, id>(panel, "setDirectoryURL:", start);
-        }
-    }
+    start_in(panel, request.start);
     // No file-type filter. The API for one changed in macOS 11 and again in
     // 12, and a panel that shows every file is a smaller problem than one
     // that will not compile on half the machines it is built for.
@@ -85,12 +128,9 @@ void pick(void* /*window*/, const Request& request, std::function<void(Answer)> 
         const id urls = send<id>(panel, "URLs");
         const unsigned long count = urls != nullptr ? send<unsigned long>(urls, "count") : 0;
         for (unsigned long i = 0; i < count; ++i) {
-            const id url  = send<id, unsigned long>(urls, "objectAtIndex:", i);
-            const id path = url != nullptr ? send<id>(url, "path") : nullptr;
-            if (path != nullptr) {
-                if (const char* text = send<const char*>(path, "UTF8String")) {
-                    answer.paths.emplace_back(text);
-                }
+            std::string path = path_of(send<id, unsigned long>(urls, "objectAtIndex:", i));
+            if (!path.empty()) {
+                answer.paths.push_back(std::move(path));
             }
         }
         if (!answer.paths.empty()) {

@@ -10,6 +10,7 @@
 #include "crucible/llm/loaded_model.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -163,7 +164,7 @@ ChatResult LoadedModel::chat(const ChatRequest& request, const ChatSink& sink) {
     }
     ChatResult result;
     result.stats = generate(format_chat(request.messages, /*add_assistant_prefix=*/true),
-                            request.params, sink.on_text, sink.cancel);
+                            request.params, sink.on_text, sink.cancel, {}, sink.on_reading);
     return result;
 }
 
@@ -180,13 +181,16 @@ std::uint64_t LoadedModel::params() const { return llama_model_n_params(model_);
 std::uint64_t LoadedModel::bytes()  const { return llama_model_size(model_); }
 
 bool LoadedModel::takes_effort() const {
-    const char* tmpl = llama_model_chat_template(model_, nullptr);
-    if (tmpl == nullptr) {
-        return false;
+    return reasoning().takes_effort();
+}
+
+reasoning::Profile LoadedModel::reasoning() const {
+    const std::lock_guard<std::recursive_mutex> lock(use_);
+    if (!reasoning_) {
+        const char* tmpl = llama_model_chat_template(model_, nullptr);
+        reasoning_       = reasoning::from_template(tmpl != nullptr ? std::string(tmpl) : std::string());
     }
-    const std::string_view text(tmpl);
-    return text.find("reasoning_effort") != std::string_view::npos
-        || text.find("<|channel|>") != std::string_view::npos;
+    return *reasoning_;
 }
 
 std::string LoadedModel::format_chat(const std::vector<ChatMessage>& messages,
@@ -311,6 +315,18 @@ std::size_t LoadedModel::reuse_prefix(const std::vector<llama_token>& tokens) {
     llama_memory_t memory = llama_get_memory(ctx_);
 
     const std::size_t common = detail::reusable_prefix(cached_, tokens);
+    // After a decode that did not finish, only the checkpoint is the truth:
+    // the state is put back as it was there, whatever else would do.
+    if (std::exchange(rewind_, false)) {
+        if (common > 0 && checkpoint_.tokens == cached_.size() && checkpoint_.tokens <= common
+            && put_back(ctx_, checkpoint_.state, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)
+            && llama_memory_seq_rm(memory, 0, static_cast<llama_pos>(checkpoint_.tokens), -1)) {
+            return checkpoint_.tokens;
+        }
+        llama_memory_clear(memory, true);
+        forget();
+        return 0;
+    }
     if (common > 0 && common == cached_.size()) {
         // Nothing to remove when the new prompt simply continues the old one,
         // which is what a conversation growing by a turn looks like. Even a
@@ -372,6 +388,28 @@ void LoadedModel::keep_checkpoint() {
 void LoadedModel::forget() {
     cached_.clear();
     checkpoint_ = {};
+    rewind_     = false;
+}
+
+void LoadedModel::keep_what_was_read() {
+    if (!llama_model_is_recurrent(model_) && !llama_model_is_hybrid(model_)) {
+        // llama.cpp takes the positions of a micro-batch it did not finish
+        // back out of the cache itself; this cut makes sure of it, and of the
+        // rest of a decode of several.
+        if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, static_cast<llama_pos>(cached_.size()), -1)) {
+            forget();
+        }
+        return;
+    }
+    // A recurrent state cannot be cut back, and may have been half changed.
+    // It goes back to the checkpoint taken near the end of the prompt, and
+    // the next round reads on from there; with none, the model starts over.
+    if (checkpoint_.tokens > 0 && checkpoint_.tokens <= cached_.size() && !checkpoint_.state.empty()) {
+        cached_.resize(checkpoint_.tokens);
+        rewind_ = true;
+    } else {
+        forget();
+    }
 }
 
 bool LoadedModel::read(const std::vector<llama_token>& tokens, std::size_t from, std::size_t to,
@@ -606,11 +644,12 @@ GenerationStats LoadedModel::generate(const std::string& prompt,
                                       const ModelParams& params,
                                       const TokenCallback& on_token,
                                       const CancelCallback& cancel,
-                                      const std::string& grammar) {
+                                      const std::string& grammar,
+                                      const ProgressCallback& on_reading) {
     const std::lock_guard<std::recursive_mutex> lock(use_);
     GenerationStats stats;
     const detail::Aborting aborting(ctx_, cancel);
-    if (read_prompt(prompt, params, cancel, stats)) {
+    if (read_prompt(prompt, params, cancel, stats, on_reading)) {
         sample(params, on_token, cancel, grammar, stats);
     }
     return stats;
@@ -622,11 +661,18 @@ namespace {
 constexpr std::size_t kCheckpointBack = 32;
 }  // namespace
 
-bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& params, const CancelCallback& cancel,
-                              GenerationStats& stats) {
-    const llama_vocab* vocab = llama_model_get_vocab(model_);
+std::vector<llama_token> LoadedModel::prompt_tokens(const std::string& prompt) const {
+    return tokenize(llama_model_get_vocab(model_), prompt, true);
+}
 
-    std::vector<llama_token> tokens = tokenize(vocab, prompt, true);
+bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& params, const CancelCallback& cancel,
+                              GenerationStats& stats, const ProgressCallback& on_reading) {
+    return read_tokens(prompt_tokens(prompt), params, cancel, stats, on_reading);
+}
+
+bool LoadedModel::read_tokens(std::vector<llama_token> tokens, [[maybe_unused]] const ModelParams& params,
+                              const CancelCallback& cancel, GenerationStats& stats,
+                              const ProgressCallback& on_reading) {
     if (tokens.empty()) {
         llama_memory_clear(llama_get_memory(ctx_), true);
         forget();
@@ -650,11 +696,10 @@ bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& para
 
     // --- prompt ingestion --------------------------------------------------
     const auto prompt_start = Clock::now();
-    // No more than the context was made for. A model loaded before Batch was
-    // raised keeps its old context, and a larger chunk than that is an assert
-    // in llama_decode that ends the program.
-    const int batch_size =
-        std::max(1, std::min(params.n_batch, static_cast<int>(llama_n_batch(ctx_))));
+    // As much as the context was made to take in one decode, and no more: a
+    // larger chunk than that is an assert in llama_decode that ends the
+    // program. That is several micro-batches (see context_params_for).
+    const int batch_size = std::max(1, static_cast<int>(llama_n_batch(ctx_)));
     // A cache that cannot be cut goes back only as far as its checkpoint, and
     // the next prompt has to reach that far. The opening of the reply is not
     // written the same way in the history as at the end of a prompt (LFM2.5's
@@ -670,7 +715,7 @@ bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& para
         if (cancel && cancel()) {
             stats.canceled = true;
             stats.prompt_ms = ms_since(prompt_start);
-            forget();  // the cache holds part of a prompt nobody will finish
+            keep_what_was_read();
             return false;
         }
         const std::size_t until = offset < mark ? mark : tokens.size();
@@ -680,12 +725,17 @@ bool LoadedModel::read_prompt(const std::string& prompt, const ModelParams& para
         if (llama_decode(ctx_, batch) != 0) {
             stats.canceled  = cancel && cancel();   // aborted from inside, by Stop
             stats.prompt_ms = ms_since(prompt_start);
-            forget();
+            keep_what_was_read();
             return false;
         }
         cached_.insert(cached_.end(), tokens.begin() + static_cast<long>(offset),
                        tokens.begin() + static_cast<long>(offset) + count);
         offset += static_cast<std::size_t>(count);
+        // Said only of a prompt that takes more than one batch: one that is
+        // read in one goes too quickly for a figure to mean anything.
+        if (on_reading && tokens.size() - reused > static_cast<std::size_t>(batch_size)) {
+            on_reading(static_cast<float>(offset - reused) / static_cast<float>(tokens.size() - reused));
+        }
         if (offset == mark && mark < tokens.size()) {
             keep_checkpoint();
         }
@@ -742,7 +792,7 @@ void LoadedModel::sample(const ModelParams& params, const TokenCallback& on_toke
         llama_batch batch = llama_batch_get_one(&next, 1);
         if (llama_decode(ctx_, batch) != 0) {
             stats.canceled = cancel && cancel();
-            forget();
+            keep_what_was_read();
             break;
         }
         cached_.push_back(next);

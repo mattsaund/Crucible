@@ -247,6 +247,25 @@ h2 {
 /* Inside the thinking fold before the thinking has started. */
 .thought .waiting { color: var(--faint); letter-spacing: .2em; animation: waiting 1.4s ease-in-out infinite; }
 @keyframes waiting { 50% { opacity: .35; } }
+
+/* What a turn still arriving is doing this moment, at its foot: a turning
+   ring, what it is doing and to what, how much and for how long, and under
+   it the last lines of a file being written or of a command's output. */
+.doing { display: flex; align-items: center; gap: .55rem; margin: .7rem 0 .3rem; color: var(--dim);
+         font-size: .92em; min-width: 0; }
+.doing-label { color: var(--text); flex: none; }
+.doing-detail { font-family: var(--code); font-size: .95em; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; min-width: 0; }
+.doing-num, .doing .elapsed { color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
+.doing .spin { width: .8rem; height: .8rem; flex: none; border-radius: 50%;
+               border: 2px solid var(--panel-edge); border-top-color: var(--flame);
+               animation: turning .9s linear infinite; }
+@keyframes turning { to { transform: rotate(360deg); } }
+.doing-tail { margin: .35rem 0 .6rem; border: 1px solid var(--panel-edge); border-radius: 8px;
+              background: var(--panel); overflow: hidden; }
+.doing-tail pre { margin: 0; padding: .55rem .75rem; max-height: 21em; overflow: hidden;
+                  white-space: pre; font-size: .86em; line-height: 1.5; }
+.doing-tail.output pre { color: var(--dim); }
 .failed { color: var(--error); }
 .empty { color: var(--faint); text-align: center; margin-top: 18vh; }
 .status { color: var(--faint); }
@@ -700,6 +719,14 @@ button.picker:hover:not(:disabled), button.picker[aria-expanded="true"] {
   background: var(--hover); color: var(--text);
 }
 button.picker:disabled { color: var(--faint); cursor: default; }
+/* The thinking switch: lit while the model thinks, gray with a line through
+   its bulb while it does not, and held lit where it cannot be turned off. It
+   gives way in a narrow window as the menus beside it do. */
+.box-bar button.picker.think { min-width: 0; flex-shrink: 1; }
+button.picker.think.on { color: var(--text); }
+button.picker.think.on svg { color: var(--flame); }
+button.picker.think.on:disabled { color: var(--dim); }
+button.picker.think.on:disabled svg { color: var(--dim); }
 .popmenu.picks { min-width: 17rem; max-height: 22rem; overflow-y: auto; }
 .popmenu .mi-caption { color: var(--faint); font-size: 11px; letter-spacing: .08em; padding: .45rem .65rem .2rem; }
 .popmenu .mi-label { flex: none; }
@@ -884,6 +911,43 @@ label.check input { width: auto; flex: none; accent-color: var(--flame); }
 .shelf-meta { color: var(--faint); font-size: .88em; margin: .1rem 0 .55rem; }
 .shelf-acts { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
 .shelf-saved { color: var(--dim); font-size: .88em; margin-top: .45rem; overflow-wrap: anywhere; }
+.shelf-card button.shelf-name { display: block; text-align: left; color: var(--text); font-size: 1em;
+                                padding: 0; margin: 0; }
+.shelf-card button.shelf-name:hover { background: none; color: var(--flame-lit); }
+
+/* One thing on the shelf, shown on it: a PDF in the window's own reader, a
+   picture, a player, a document's words, a table, what is in an archive. */
+.viewer-head { flex-wrap: wrap; gap: .35rem .7rem; padding: .35rem .8rem; }
+.viewer-head .shelf-title { flex: 1 1 8rem; min-width: 0; margin: 0; padding: 0;
+                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-head .shelf-saved { flex-basis: 100%; margin: 0; }
+.viewer-mode { display: inline-flex; border: 1px solid var(--panel-edge); border-radius: 6px; overflow: hidden; }
+.viewer-mode button { background: none; border: 0; padding: .2rem .65rem; color: var(--faint); cursor: pointer;
+                      font: inherit; font-size: .88em; }
+.viewer-mode button[aria-pressed="true"] { color: var(--text); background: var(--raised); }
+.viewer-mode button:disabled { cursor: default; opacity: .5; }
+.viewer { min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.viewer-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #FFFFFF; }
+.viewer-note { margin: auto; padding: 2rem 1rem; color: var(--faint); text-align: center; }
+.viewer-picture, .viewer-player { flex: 1; min-height: 0; display: grid; place-items: center; padding: 1rem; }
+.viewer-picture img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px;
+  background: repeating-conic-gradient(#26262A 0 25%, #1C1C20 0 50%) 0 0 / 16px 16px; }
+.viewer-player video { max-width: 100%; max-height: 100%; border-radius: 4px; }
+.viewer-player audio { width: min(100%, 32rem); }
+.viewer-doc { padding: 1rem 1.2rem; }
+.viewer-words { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.viewer-code { padding: .6rem .8rem; }
+.viewer-plain { margin: 0; padding: 1rem 1.2rem; white-space: pre; font-family: var(--code); font-size: .88em; }
+.viewer-cut { color: var(--faint); font-size: .88em; padding: .4rem 1.2rem 1rem; }
+.viewer-table { overflow: auto; padding: .6rem .8rem; }
+.viewer-table table { border-collapse: collapse; font-size: .9em; }
+.viewer-table th, .viewer-table td { border: 1px solid var(--panel-edge); padding: .25rem .55rem; text-align: left;
+                                     white-space: nowrap; max-width: 24rem; overflow: hidden; text-overflow: ellipsis; }
+.viewer-table th { position: sticky; top: 0; color: var(--text); background: var(--raised); }
+.viewer-list { padding: .6rem 1rem; font-family: var(--code); font-size: .88em; }
+.viewer-entry { display: flex; gap: 1rem; padding: .2rem 0; border-bottom: 1px solid var(--panel-edge); }
+.viewer-entry-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.viewer-entry-size { flex: none; color: var(--faint); }
 body.dragging-x iframe { pointer-events: none; }
 /* Each side lays itself out alone. A token arriving in the conversation
    otherwise made the page measure a long file open beside it, thousands of
@@ -1178,8 +1242,41 @@ button.tree-row.dir:hover { background: var(--hover); color: var(--text); }
 }
 .ide-editor.plain .code-editor { color: var(--text); }
 .ide-status { display: flex; align-items: center; gap: 1.1rem; padding: .35rem .2rem 0; font-size: .85em; color: var(--faint); white-space: nowrap; overflow: hidden; }
-.ide-run { margin-top: .5rem; flex: none; max-height: 40%; overflow: auto; }
-.ide-run input { flex: 1; font-family: var(--code); }
+.ide-run { margin-top: .5rem; flex: none; height: 40%; min-height: 9rem; display: flex; flex-direction: column;
+           border: 1px solid var(--panel-edge); border-radius: 6px; overflow: hidden; }
+
+/* --- the terminal ----------------------------------------------------------------- */
+/* Shells in the project: their tabs, and the one chosen. The screen itself is
+   drawn by term.js into .term-host, outside what the views draw. */
+.shelf #pane-body:has(> .term-pane) { padding: 0; overflow: hidden; }
+.term-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ide-run > .term-pane { flex: 1; height: auto; }
+.term-bar { display: flex; align-items: center; gap: .15rem; flex: none; padding: 0 .4rem; overflow-x: auto;
+            border-bottom: 1px solid var(--panel-edge); }
+.term-tab { display: flex; align-items: center; flex: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.term-tab.here { border-bottom-color: var(--flame); }
+.term-tab-name { background: none; border: 0; color: var(--faint); font: inherit; font-size: .9em; cursor: pointer;
+                 padding: .35rem .15rem .35rem .55rem; max-width: 14rem; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; }
+.term-tab.here .term-tab-name, .term-tab-name:hover { color: var(--text); }
+.term-tab-close { background: none; border: 0; color: var(--faint); cursor: pointer; padding: .3rem .4rem;
+                  display: inline-grid; place-items: center; border-radius: 4px; }
+.term-tab-close:hover { color: var(--text); background: var(--hover); }
+.term-bar .term-new { margin-left: .2rem; }
+.term-host { flex: 1; min-height: 0; position: relative; }
+.term-empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: .8rem; }
+.term-error { color: var(--error); max-width: 30rem; text-align: center; }
+.term-ended { flex: none; padding: .35rem .8rem; color: var(--dim); font-size: .88em; border-top: 1px solid var(--panel-edge); }
+.term { --term-fg: #ECECEC; --term-bg: var(--panel); position: absolute; inset: 0;
+        color: var(--term-fg); background: var(--term-bg); font-family: var(--code); font-size: 13px; line-height: 1.3; }
+.term-scroll { position: absolute; inset: 0; overflow-x: hidden; overflow-y: auto; padding: .4rem .6rem; }
+.term-row { white-space: pre; height: 1.3em; overflow: hidden; }
+.term-back[hidden] { display: none; }
+.term-input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; margin: 0;
+              opacity: 0; resize: none; overflow: hidden; }
+.term-measure { position: absolute; top: 0; left: 0; visibility: hidden; pointer-events: none; }
+.term-cursor { outline: 1px solid var(--flame); outline-offset: -1px; }
+.term.focused .term-cursor { background: var(--flame); color: var(--ink); outline: 0; }
 .search-form { gap: .3rem; }
 .search-form input { flex: 1; min-width: 0; }
 .search-results { margin-top: .4rem; }

@@ -67,10 +67,15 @@ struct OpenChat {
     /// OpenAI's JSON mode. Empty for anything.
     std::string schema;
 
-    /// How hard a reasoning model thinks: "low", "medium" or "high", "none"
-    /// for not at all where the template can be told so, or empty to leave it
-    /// to the model.
+    /// How hard a reasoning model thinks: a word on reasoning::scale(), which
+    /// the template is given as the nearest level it takes, "none" for not at
+    /// all where the template can be told so, or empty to leave it to the
+    /// model.
     std::string effort;
+
+    /// Whether to think: "on", "off" (as "none" above), or empty for the
+    /// model's own default. Only where the template can switch it.
+    std::string thinking;
 
     ModelParams params;
 };
@@ -96,6 +101,9 @@ struct OpenChatSink {
     /// read: anything said after this comes from the model, not from what
     /// was asked.
     std::function<void()> on_start;
+
+    /// How far through reading the prompt it is, 0..1: see ChatSink.
+    ProgressCallback on_reading;
 };
 
 struct OpenChatResult {

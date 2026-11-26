@@ -214,6 +214,41 @@ struct PendingEdit {
     std::string after;   ///< the file as it would be
 };
 
+/// What a turn is doing this moment, when that is worth watching apart from a
+/// reply arriving: the prompt being read, a file being written, a command
+/// running, a search. Without it a turn writing a long file through a tool,
+/// or running a script that makes a PDF, showed nothing at all for minutes:
+/// the tool's arguments are not the reply, and a command's output came back
+/// only once it was done. Drawn above the reply while it lasts.
+struct Activity {
+    /// read | think | write | run | search | check
+    std::string kind;
+
+    /// What it is doing, in a few words: "Reading the prompt", "Writing".
+    std::string label;
+
+    /// What it is doing it to: a file, a command, a query. May be empty.
+    std::string detail;
+
+    /// When it began, in milliseconds since the epoch, for the time beside it.
+    std::int64_t since = 0;
+
+    /// How far along, 0..1, where that is measured; negative where it is not.
+    float progress = -1.0F;
+
+    /// How much has been written so far, and in how many lines.
+    std::uint64_t bytes = 0;
+    std::uint32_t lines = 0;
+
+    /// The last of what is being written or printed: a file's text as the
+    /// model writes it, a command's output as it prints it. A few thousand
+    /// bytes at most, and always whole UTF-8.
+    std::string tail;
+
+    /// What `tail` is colored as: a file name, or "shell" for output.
+    std::string language;
+};
+
 /// A model in this machine's memory, as the right-hand panel lists it.
 struct LocalModel {
     std::string   seat;              ///< the expert it was loaded for; empty for the delegator
@@ -226,6 +261,13 @@ struct LocalModel {
 struct Snapshot {
     Mood        mood = Mood::Idle;
     std::string status;
+
+    /// When the mood or the status last changed, in milliseconds since the
+    /// epoch: how long whatever the status line says has been going on.
+    std::int64_t status_since = 0;
+
+    /// What the turn is doing this moment, or nothing. See Activity.
+    std::optional<Activity> activity;
 
     /// Who the seats are, for this frame.
     ///
@@ -403,6 +445,22 @@ public:
     /// engine, and reset to 0 when the turn ends.
     void set_live_rate(double tokens_per_second);
 
+    /// Say what the turn is doing now, in place of whatever it said before.
+    /// Its time goes on counting from the one before when the two are the
+    /// same thing (the same kind and detail), so a file being written does
+    /// not start again at every piece of it; `since` is set to now otherwise,
+    /// when it is not given.
+    void set_activity(Activity activity);
+
+    /// More of a command's output, kept to the last few thousand bytes.
+    void activity_output(std::string_view chunk);
+
+    /// How far along the activity is, 0..1.
+    void activity_progress(float progress);
+
+    /// Nothing worth showing apart is going on.
+    void clear_activity();
+
     /// Seed the project total from disk. Called once, at startup.
     void set_project_usage(TokenUsage usage);
 
@@ -436,6 +494,8 @@ private:
     mutable std::mutex                   mutex_;
     Mood                                 mood_ = Mood::Idle;
     std::string                          status_;
+    std::int64_t                         status_since_ = 0;
+    std::optional<Activity>              activity_;
     std::shared_ptr<const Roster>        roster_ =
         std::make_shared<const Roster>(Roster::bare());
     std::vector<SeatState>               seats_ =

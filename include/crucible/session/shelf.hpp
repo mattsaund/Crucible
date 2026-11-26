@@ -16,6 +16,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "crucible/util/zip.hpp"
+
 namespace crucible::shelf {
 
 /// One thing an expert made.
@@ -54,5 +56,28 @@ std::filesystem::path download_target(const std::string& name);
 
 /// `relative` under `root`, or empty when it would reach outside it.
 std::filesystem::path inside(const std::filesystem::path& root, const std::string& relative);
+
+/// The files of a build as an archive holds them: everything under `root`
+/// but version control, dependencies and caches (the folders made_since
+/// passes over) and links, named from `root` with forward slashes, sorted.
+/// It stops at one more than `limit`, which is how a caller knows there
+/// were too many.
+std::vector<util::zip::Entry> archive_of(const std::filesystem::path& root, std::size_t limit = 20000);
+
+/// What a build downloaded as one file is called: `name`, made safe for a
+/// file name, with ".zip".
+std::string archive_name(const std::string& name);
+
+/// The build at `root` as one archive at `target`. Empty when it was
+/// written, else why not.
+std::string save_archive(const std::filesystem::path& root, const std::filesystem::path& target);
+
+/// `file` copied to `target`, over whatever is there: a Save as, whose
+/// dialog asked about that already. Empty when it was saved, else why not.
+std::string save_copy(const std::filesystem::path& file, const std::filesystem::path& target);
+
+/// The type the shelf's viewer is handed `path` as, where the window draws
+/// it itself: a PDF, a picture, a recording, a film. Empty for anything else.
+std::string media_type(const std::filesystem::path& path);
 
 }  // namespace crucible::shelf

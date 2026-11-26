@@ -10,10 +10,15 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <fstream>
+#include <map>
+#include <mutex>
 
+#include "crucible/llm/reasoning.hpp"
 #include "crucible/llm/remote_model.hpp"
 #include "crucible/routing/expert.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/gguf.hpp"
 
 namespace crucible::api {
 namespace {
@@ -87,6 +92,132 @@ Reply expert_set(const json& params, Host& host) {
     seat(seated, edited, model, provider);
     edited.experts[id] = seated;
 
+    const std::string refused = host.apply_config(std::move(edited));
+    return refused.empty() ? good() : bad(refused);
+}
+
+// ---------------------------------------------------------------------------
+// How hard each expert thinks
+// ---------------------------------------------------------------------------
+
+/// The chat template a model on this machine was made with: a GGUF's own,
+/// or an MLX folder's, which is in chat_template.jinja or in
+/// tokenizer_config.json. Empty when it has none to read.
+std::string template_of(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+        if (std::ifstream jinja(path / "chat_template.jinja", std::ios::binary); jinja) {
+            return std::string(std::istreambuf_iterator<char>(jinja), std::istreambuf_iterator<char>());
+        }
+        std::ifstream config(path / "tokenizer_config.json", std::ios::binary);
+        const json    doc = json::parse(config, nullptr, /*allow_exceptions=*/false);
+        const auto    found = doc.is_object() ? doc.find("chat_template") : doc.end();
+        if (!doc.is_object() || found == doc.end()) {
+            return {};
+        }
+        if (found->is_string()) {
+            return found->get<std::string>();
+        }
+        // A list of named templates, of which "default" is the chat's.
+        if (found->is_array()) {
+            for (const json& one : *found) {
+                if (one.is_object() && one.value("name", std::string()) == "default") {
+                    return one.value("template", std::string());
+                }
+            }
+        }
+        return {};
+    }
+    const std::optional<gguf::File> header = gguf::File::read(path);
+    return header ? header->text("tokenizer.chat_template") : std::string();
+}
+
+/// What a model on this machine takes, read from its template and kept for
+/// as long as the file is the same: rendering a template a dozen times is a
+/// moment, and the box asks every time an expert is chosen in it.
+reasoning::Profile local_profile(const std::filesystem::path& path) {
+    static std::mutex mutex;
+    static std::map<std::string, std::pair<std::filesystem::file_time_type, reasoning::Profile>> known;
+    std::error_code ec;
+    const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(path, ec);
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (const auto found = known.find(path.string()); found != known.end() && found->second.first == stamp) {
+            return found->second.second;
+        }
+    }
+    reasoning::Profile profile = reasoning::from_template(template_of(path));
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (known.size() > 64) {
+        known.clear();
+    }
+    known[path.string()] = {stamp, profile};
+    return profile;
+}
+
+/// What the box can offer for one expert's model: the effort levels it
+/// takes and whether its thinking can be switched, with what the seat has
+/// set of its own. With no expert, the box's own setting, for whichever one
+/// the delegator chooses. A lookup: a template is read, or a Claude's Models
+/// API is asked, the first time.
+Reply reasoning_profile(const json& params, const Scene& scene) {
+    const std::string id = params.value("expert", std::string{});
+    if (id.empty()) {
+        reasoning::Profile box;
+        box.levels   = reasoning::scale();
+        box.thinking = reasoning::Thinking::Optional;
+        box.source   = "box";
+        json out          = reasoning::to_json(box);
+        out["effort"]     = scene.config.reasoning_effort;
+        out["thinking_set"] = scene.config.thinking;
+        return good(std::move(out));
+    }
+    if (!scene.config.roster.find(id)) {
+        return bad("there is no expert called \"" + id + "\"");
+    }
+    const ModelParams& seat = scene.config.expert(id);
+    reasoning::Profile profile;
+    if (seat.remote()) {
+        if (const Provider* provider = scene.config.provider(seat.provider)) {
+            profile = remote::provider_profile(*provider, seat.model);
+        }
+    } else if (!seat.path.empty()) {
+        profile = local_profile(seat.path);
+    }
+    json out            = reasoning::to_json(profile);
+    out["expert"]       = id;
+    out["model"]        = seat.model;
+    out["effort"]       = seat.effort;
+    out["thinking_set"] = seat.thinking;
+    return good(std::move(out));
+}
+
+/// Set how hard one expert thinks, and whether: `effort`, a word on the
+/// scale or empty for the box's setting, and `thinking`, "on", "off" or
+/// empty, either or both. What the box's menus do while it is set to that
+/// expert.
+Reply expert_reasoning(const json& params, Host& host) {
+    const auto id = params.value("id", std::string{});
+    Config edited = host.config();
+    if (!edited.roster.find(id)) {
+        return bad("there is no expert called \"" + id + "\"");
+    }
+    ModelParams seated = edited.experts.count(id) != 0 ? edited.experts[id] : edited.defaults;
+    if (params.contains("effort")) {
+        const std::string effort = params.value("effort", std::string{});
+        if (!effort.empty() && reasoning::rank(effort) < 0) {
+            return bad("\"" + effort + "\" is not an effort");
+        }
+        seated.effort = effort;
+    }
+    if (params.contains("thinking")) {
+        const std::string thinking = params.value("thinking", std::string{});
+        if (!thinking.empty() && thinking != "on" && thinking != "off") {
+            return bad("thinking is on or off");
+        }
+        seated.thinking = thinking;
+    }
+    edited.experts[id] = seated;
     const std::string refused = host.apply_config(std::move(edited));
     return refused.empty() ? good() : bad(refused);
 }
@@ -491,6 +622,8 @@ void roster_methods(std::vector<Method>& table) {
     table.push_back({"expert.add",      nullptr, expert_add});
     table.push_back({"expert.set",      nullptr, expert_set});
     table.push_back({"expert.edit",     nullptr, expert_edit});
+    table.push_back({"expert.reasoning", nullptr, expert_reasoning});
+    table.push_back({"reasoning.profile", reasoning_profile, nullptr});
     table.push_back({"expert.remove",   nullptr, expert_remove});
     table.push_back({"providers",       providers, nullptr});
     table.push_back({"provider.save",   nullptr, provider_save});

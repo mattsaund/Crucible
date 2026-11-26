@@ -502,6 +502,15 @@ class OneRound(unittest.TestCase):
         plain = run(ScriptedCore([said("Hi.")]), effort="high")
         self.assertNotIn("Reasoning:", plain.opened["system"])
 
+    def test_the_effort_is_the_level_the_core_says_the_seat_takes(self):
+        # The core turns the seat's own effort, or the box's, into the nearest
+        # level the model takes, and that is the line: gpt-oss has no "max".
+        core = run(ScriptedCore([said("Hi.")], seat={"takes_effort": True, "effort": "high"}), effort="max")
+        self.assertTrue(core.opened["system"].startswith("You are helpful.\n\nReasoning: high\n\n"))
+        # The model's own default, said as no level at all.
+        unset = run(ScriptedCore([said("Hi.")], seat={"takes_effort": True, "effort": ""}), effort="max")
+        self.assertNotIn("Reasoning:", unset.opened["system"])
+
     def test_without_tools_or_search_a_turn_is_one_round_whatever_it_says(self):
         core = run(ScriptedCore([said("READ: notes.txt")], seat={"workshop": False, "tools": ""}))
         self.assertEqual(len(core.sent), 1)

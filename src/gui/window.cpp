@@ -21,6 +21,7 @@
 //   - the file dialog is the platform's own, shown without blocking.
 #include "app.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -71,6 +72,7 @@ extern const unsigned int  kMarkSvg_size;
 #include "crucible/api/surface.hpp"
 #include "crucible/app/starter.hpp"
 #include "crucible/tools/page_storage.hpp"
+#include "crucible/tools/terminal.hpp"
 #include "crucible/util/resources.hpp"
 #include "crucible/config/paths.hpp"
 #include "crucible/util/format.hpp"
@@ -411,7 +413,7 @@ int App::run() {
             // was when something changed.
             std::string snapshot;
             try {
-                snapshot = surface->page_snapshot();
+                snapshot = surface->page_snapshot(/*grown=*/true);
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "snapshot failed: %s\n", e.what());
                 return;
@@ -562,6 +564,76 @@ int App::run() {
                                                 ? dialogs::show_folder(folder.string())
                                                 : folder.string() + " is not there";
                   view.resolve(id, 0, json{{"error", error}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+              },
+              nullptr);
+
+    // --- saving something on the shelf where somebody chooses -----------------
+    //
+    // The platform's save dialog, and the copy made here: the page names what
+    // to save, a thing on the shelf or the build as one archive, and never
+    // where it goes, so nothing the page is shown can write anywhere with it.
+    // Where there is no dialog the page is told so, and downloads instead.
+    view.bind("saveAs",
+              [this, &view, gate, token, refused](const std::string& id, const std::string& arguments, void*) {
+                  if (argument(arguments, 1) != token) {
+                      refused(id);
+                      return;
+                  }
+                  const auto answer = [&view, gate, id](const json& reply) {
+                      const std::lock_guard<std::mutex> lock(gate->mutex);
+                      if (gate->open) {
+                          view.resolve(id, 0, reply.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+                      }
+                  };
+                  const json                  wanted = first_argument(arguments);
+                  const std::filesystem::path root   = project_root();
+                  const bool                  build  = wanted.is_object() && wanted.value("build", false);
+                  std::filesystem::path       file;
+                  std::string                 name;
+                  if (build) {
+                      name = shelf::archive_name(wanted.value("name", std::string{}));
+                  } else {
+                      const std::string path = wanted.is_object() ? wanted.value("path", std::string{}) : std::string();
+                      const std::vector<shelf::Entry> entries = shelf_entries();
+                      std::error_code                 ec;
+                      file = shelf::inside(root, path);
+                      if (std::none_of(entries.begin(), entries.end(),
+                                       [&path](const shelf::Entry& e) { return e.path == path; })
+                          || file.empty() || !std::filesystem::is_regular_file(file, ec)) {
+                          answer(json{{"error", path + " is not on the shelf"}});
+                          return;
+                      }
+                      name = file.filename().string();
+                  }
+                  if (root.empty()) {
+                      answer(json{{"error", "there is no build here"}});
+                      return;
+                  }
+                  dialogs::Request request;
+                  request.save  = true;
+                  request.name  = name;
+                  request.title = build ? std::string("Save the build") : "Save " + name;
+                  request.start = shelf::downloads_dir().string();
+                  const auto handle = view.window();
+                  dialogs::pick(handle.ok() ? handle.value() : nullptr, request,
+                                [this, answer, build, root, file](dialogs::Answer chosen) {
+                                    if (!chosen.supported) {
+                                        answer(json{{"supported", false}});
+                                        return;
+                                    }
+                                    if (chosen.path.empty()) {
+                                        answer(json{{"saved", ""}});
+                                        return;
+                                    }
+                                    // An archive of a large build takes a while: not on
+                                    // the thread that draws.
+                                    workers_.post([answer, build, root, file, to = std::filesystem::path(chosen.path)] {
+                                        const std::string error = build ? shelf::save_archive(root, to)
+                                                                        : shelf::save_copy(file, to);
+                                        answer(error.empty() ? json{{"saved", format::short_path(to)}}
+                                                             : json{{"error", "could not save it: " + error}});
+                                    });
+                                });
               },
               nullptr);
 
@@ -783,6 +855,8 @@ int App::run() {
         gate->open = false;
     }
     engine_->stop();
+    // No shell outlives the window it was opened in.
+    tools::terminal::close_all();
     set_wake(nullptr);
     return 0;
 #endif

@@ -219,4 +219,100 @@ std::filesystem::path inside(const std::filesystem::path& root, const std::strin
     return joined;
 }
 
+std::vector<util::zip::Entry> archive_of(const std::filesystem::path& root, std::size_t limit) {
+    std::vector<util::zip::Entry> out;
+    std::error_code               ec;
+    if (root.empty() || !std::filesystem::is_directory(root, ec)) {
+        return out;
+    }
+    for (std::filesystem::recursive_directory_iterator it{
+             root, std::filesystem::directory_options::skip_permission_denied, ec},
+         end;
+         it != end && !ec && out.size() <= limit; it.increment(ec)) {
+        const std::filesystem::directory_entry& entry = *it;
+        std::error_code                         each;
+        // A link is left out, to a folder or a file: what it points at can be
+        // anywhere, and an archive of the build holds the build.
+        if (entry.is_symlink(each)) {
+            continue;
+        }
+        if (entry.is_directory(each)) {
+            if (skipped(entry.path().filename().string())) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (!entry.is_regular_file(each)) {
+            continue;
+        }
+        const std::filesystem::path relative = entry.path().lexically_relative(root);
+        out.push_back(util::zip::Entry{entry.path(), relative.generic_string()});
+    }
+    std::sort(out.begin(), out.end(), [](const util::zip::Entry& a, const util::zip::Entry& b) { return a.name < b.name; });
+    return out;
+}
+
+std::string archive_name(const std::string& name) {
+    std::string out;
+    for (const char c : name) {
+        // What no file system takes in a name, and what would start a path.
+        out += std::string_view("\\/:*?\"<>|").find(c) != std::string_view::npos || static_cast<unsigned char>(c) < 32
+                   ? '-'
+                   : c;
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.')) {
+        out.pop_back();
+    }
+    return (out.empty() ? std::string("build") : out) + ".zip";
+}
+
+std::string save_archive(const std::filesystem::path& root, const std::filesystem::path& target) {
+    constexpr std::size_t kMostFiles = 20000;
+    const std::vector<util::zip::Entry> files = archive_of(root, kMostFiles);
+    if (files.empty()) {
+        return "there is nothing in it to save";
+    }
+    if (files.size() > kMostFiles) {
+        return "it has more than " + std::to_string(kMostFiles) + " files";
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(target.parent_path(), ec);
+    return util::zip::write(target, files);
+}
+
+std::string save_copy(const std::filesystem::path& file, const std::filesystem::path& target) {
+    std::error_code ec;
+    // Saved over itself is saved.
+    if (std::filesystem::equivalent(file, target, ec) && !ec) {
+        return {};
+    }
+    std::filesystem::create_directories(target.parent_path(), ec);
+    ec.clear();
+    std::filesystem::copy_file(file, target, std::filesystem::copy_options::overwrite_existing, ec);
+    return ec ? "could not save it to " + target.string() + ": " + ec.message() : std::string();
+}
+
+std::string media_type(const std::filesystem::path& path) {
+    static const std::vector<std::pair<std::string, std::string>> types{
+        {"pdf", "application/pdf"},
+        {"png", "image/png"}, {"jpg", "image/jpeg"}, {"jpeg", "image/jpeg"}, {"gif", "image/gif"},
+        {"webp", "image/webp"}, {"bmp", "image/bmp"}, {"ico", "image/x-icon"}, {"avif", "image/avif"},
+        // What only a Mac's WebKit draws.
+#if defined(__APPLE__)
+        {"tif", "image/tiff"}, {"tiff", "image/tiff"}, {"heic", "image/heic"},
+#endif
+        {"mp3", "audio/mpeg"}, {"wav", "audio/wav"}, {"flac", "audio/flac"}, {"ogg", "audio/ogg"},
+        {"opus", "audio/ogg"}, {"m4a", "audio/mp4"}, {"aac", "audio/aac"},
+        {"mp4", "video/mp4"}, {"m4v", "video/mp4"}, {"webm", "video/webm"}, {"mov", "video/quicktime"},
+        {"mkv", "video/x-matroska"}, {"avi", "video/x-msvideo"},
+    };
+    const std::string ext = extension_of(path);
+    for (const auto& [name, type] : types) {
+        if (name == ext) {
+            return type;
+        }
+    }
+    return {};
+}
+
 }  // namespace crucible::shelf

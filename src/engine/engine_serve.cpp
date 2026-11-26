@@ -448,9 +448,13 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
             out.error  = "This model reads no pictures";
             return out;
         }
-        const std::vector<ChatMessage> messages =
-            !ask.effort.empty() && ask.effort != "none" && model.takes_effort() ? with_effort(ask.messages, ask.effort)
-                                                                              : ask.messages;
+        // A model here reads its effort from the system message, as the level
+        // nearest the one asked that it takes; a provider's is sent it as a
+        // field of the request.
+        const std::string level = ask.effort == "none" || params.remote()
+                                      ? std::string()
+                                      : reasoning::nearest(model.reasoning().levels, ask.effort);
+        const std::vector<ChatMessage> messages = !level.empty() ? with_effort(ask.messages, level) : ask.messages;
         // Measured before it is sent rather than cut to fit: a model that
         // silently loses the start of a conversation, its instructions with
         // it, answers some other question. This waits for whoever is
@@ -497,8 +501,10 @@ serve::Answer Engine::serve_with(ChatModel& model, LoadedModel* local, ModelPara
             chat_sink.on_text = [&](std::string_view chunk) { answer(chunk); };
         }
         chat_sink.on_reasoning = [&](std::string_view chunk) { reason(chunk); };
-        const std::string_view effort = ask.effort == "none" ? std::string_view() : std::string_view(ask.effort);
-        const ChatResult result = model.chat(ChatRequest{messages, params, effort}, chat_sink);
+        // "none" is no thinking, where the model can be told so.
+        const bool             none   = ask.effort == "none";
+        const std::string_view effort = none ? std::string_view() : std::string_view(ask.effort);
+        const ChatResult result = model.chat(ChatRequest{messages, params, effort, none ? "off" : ""}, chat_sink);
         sort(filter.flush());
         if (!result.error.empty()) {
             out.status = 502;
