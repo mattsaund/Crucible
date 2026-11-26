@@ -155,11 +155,13 @@ TEST(a_build_saved_as_one_archive_is_one_every_archive_program_reads) {
     std::filesystem::create_directories(build / "node_modules" / "left-pad");
     std::filesystem::create_directories(build / ".git");
     {
-        std::ofstream(build / "index.html") << "<h1>Hi</h1>\n" << std::string(5000, 'x');
-        std::ofstream(build / "css" / "style.css") << "body { color: red; }\n";
-        std::ofstream(build / "node_modules" / "left-pad" / "index.js") << "module.exports = 1;\n";
-        std::ofstream(build / ".git" / "HEAD") << "ref: refs/heads/main\n";
-        std::ofstream(build / "empty.txt");
+        // Binary, so a Windows run writes the same bytes as any other.
+        const auto binary = std::ios::binary;
+        std::ofstream(build / "index.html", binary) << "<h1>Hi</h1>\n" << std::string(5000, 'x');
+        std::ofstream(build / "css" / "style.css", binary) << "body { color: red; }\n";
+        std::ofstream(build / "node_modules" / "left-pad" / "index.js", binary) << "module.exports = 1;\n";
+        std::ofstream(build / ".git" / "HEAD", binary) << "ref: refs/heads/main\n";
+        std::ofstream(build / "empty.txt", binary);
     }
     const std::filesystem::path target = temp.path() / "out" / "site.zip";
     CHECK_EQ(shelf::save_archive(build, target), std::string());
@@ -203,7 +205,7 @@ TEST(the_shelf_viewer_is_told_how_to_show_each_kind_of_thing) {
     const TempDir temp;
     const std::filesystem::path root = temp.path();
     {
-        std::ofstream(root / "notes.md") << "# Plan\n\nSome *words*.\n";
+        std::ofstream(root / "notes.md", std::ios::binary) << "# Plan\n\nSome *words*.\n";
         std::ofstream(root / "report.pdf", std::ios::binary) << "%PDF-1.4\n%%EOF\n";
         std::ofstream(root / "clip.mp4", std::ios::binary) << std::string(10, '\0');
         std::ofstream(root / "blob.bin", std::ios::binary) << std::string("\x00\x01\x02", 3);

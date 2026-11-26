@@ -500,8 +500,9 @@ int start(const std::shared_ptr<Term>& term, const Options& options, std::string
             ::signal(sig, SIG_DFL);
         }
 #endif
+        // Unqualified: a Mac's sigemptyset is a macro.
         sigset_t none;
-        ::sigemptyset(&none);
+        sigemptyset(&none);
         ::sigprocmask(SIG_SETMASK, &none, nullptr);
         if (!cwd.empty()) {
             [[maybe_unused]] const int moved = ::chdir(cwd.c_str());

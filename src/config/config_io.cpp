@@ -12,10 +12,12 @@
 #include "crucible/config/config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <optional>
 #include <random>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <nlohmann/json.hpp>
@@ -135,7 +137,7 @@ void read_model_params(const json& obj, ModelParams& params,
 /// Keep `value` when it is one of `allowed` or empty, and say so and empty it
 /// otherwise: an effort or a thinking setting nobody can be asked for is the
 /// model's own default, not a request a template might refuse.
-void keep_one_of(std::string& value, std::initializer_list<std::string_view> allowed, std::string_view context,
+void keep_one_of(std::string& value, std::span<const std::string_view> allowed, std::string_view context,
                  std::string_view key, std::vector<std::string>& warnings) {
     if (value.empty() || std::find(allowed.begin(), allowed.end(), value) != allowed.end()) {
         return;
@@ -147,8 +149,8 @@ void keep_one_of(std::string& value, std::initializer_list<std::string_view> all
 
 /// The words an effort may be: the scale in llm/reasoning.hpp, which config
 /// does not reach down to.
-constexpr std::initializer_list<std::string_view> kEfforts{"minimal", "low", "medium", "high", "xhigh", "max"};
-constexpr std::initializer_list<std::string_view> kThinking{"on", "off"};
+constexpr std::array<std::string_view, 6> kEfforts{"minimal", "low", "medium", "high", "xhigh", "max"};
+constexpr std::array<std::string_view, 2> kThinking{"on", "off"};
 
 /// Identity fields for one seat.
 ///
