@@ -10,18 +10,23 @@
 // are here.
 
 const CHAT_PANES = [
-  ['chat',    'Chat',    'The conversation'],
-  ['code',    'Code',    'The project\'s files'],
-  ['source',  'Source',  'Version control'],
-  ['preview', 'Preview', 'What it shows'],
+  ['chat',     'Chat',     'The conversation'],
+  ['code',     'Code',     'The project\'s files'],
+  ['source',   'Source',   'Version control'],
+  ['preview',  'Preview',  'What it shows'],
+  ['terminal', 'Terminal', 'A shell in the project'],
 ];
 
 // 'chat' is the shelf collapsed, 'shelf' its list of what the experts made,
 // and the others the build entered from it.
 state.chatPane = 'chat';
-// The shelf's list, as `shelf` answers it, and the download last saved.
+// The shelf's list, as `shelf` answers it, the download or save last made
+// and the one under way.
 state.shelf = null;
 state.shelfSaved = null;
+state.shelfSaving = '';
+// The thing on it in the viewer, or null. See viewerView.
+state.viewer = null;
 // The pane it opens on.
 state.shelfTab = 'code';
 // How much of the width it takes, in percent. Remembered with the window's
@@ -44,10 +49,11 @@ function folderShown() {
   return !!(state.tree.entries && state.tree.entries.length);
 }
 
-/// The pane on screen: the list, or the one chosen in a build while there is
-/// a folder to show.
+/// The pane on screen: the list, one thing on it in the viewer, or the one
+/// chosen in a build while there is a folder to show.
 function shownPane() {
   if (state.chatPane === 'shelf') return 'shelf';
+  if (state.chatPane === 'view') return state.viewer ? 'view' : 'shelf';
   return folderShown() ? state.chatPane : 'chat';
 }
 
@@ -64,7 +70,8 @@ function paneNav() {
 
 function setPane(pane) {
   if (pane === 'chat') shelfOpenedFor = promptKey();
-  else if (pane !== 'shelf') state.shelfTab = pane;
+  else if (pane !== 'shelf' && pane !== 'view') state.shelfTab = pane;
+  if (pane !== 'view') closeViewer();
   state.chatPane = pane;
   render();
   enterPane(pane);
@@ -94,7 +101,7 @@ function shelfView() {
   const pane = shownPane();
   return `<div class="splitter" id="splitter-shelf" data-act="shelf-edge" title="Drag to resize"></div>
     <section class="shelf" aria-label="Shelf">
-      ${pane === 'shelf' || pane === 'chat' ? shelfList()
+      ${pane === 'shelf' || pane === 'chat' ? shelfList() : pane === 'view' ? viewerView()
         : `<div class="shelf-head">${paneNav()}
              <button class="action small back" data-act="back-to-shelf">Back to shelf</button></div>${shelfBody(pane)}`}
     </section>`;
@@ -122,30 +129,242 @@ function shelfList() {
   const build = listing.build;
   const items = listing.items || [];
   if (!build && !items.length) return `${head}<div class="shelf-empty">Nothing</div>`;
-  const saved = state.shelfSaved;
   const card = build ? `<div class="shelf-card build">
       <div class="shelf-kind">Build</div>
       ${build.name ? `<div class="shelf-name">${escape(build.name)}</div>` : ''}
       <div class="shelf-meta">${apart(build.files ? `${build.files} file${build.files === 1 ? '' : 's'}` : '',
                                       build.updated ? ago(build.updated) : '')}</div>
       <div class="shelf-acts"><button class="action" data-act="build-enter">Enter build</button>
-        ${build.project ? '' : '<button class="link" data-act="build-remove">Delete</button>'}</div></div>` : '';
+        ${keepButtons(BUILD)}
+        ${build.project ? '' : '<button class="link" data-act="build-remove">Delete</button>'}</div>
+      ${savedLine(BUILD)}</div>` : '';
   const rest = items.map((item) => `<div class="shelf-card" title="${escape(item.path)}">
       <div class="shelf-kind">${escape(SHELF_KINDS[item.kind] || 'File')}</div>
-      <div class="shelf-name">${escape(item.name)}</div>
+      <button class="shelf-name link" data-act="shelf-view" data-path="${escape(item.path)}">${escape(item.name)}</button>
       <div class="shelf-meta">${apart(bytes(item.bytes), ago(item.added))}</div>
-      <div class="shelf-acts"><button class="action" data-act="shelf-download" data-path="${escape(item.path)}">Download</button>
+      <div class="shelf-acts"><button class="action" data-act="shelf-view" data-path="${escape(item.path)}">View</button>
+        ${keepButtons(item.path)}
         <button class="link" data-act="shelf-delete" data-path="${escape(item.path)}" data-name="${escape(item.name)}">Delete</button></div>
-      ${saved && saved.path === item.path ? `<div class="shelf-saved">${apart(`Saved to ${escape(saved.to)}`,
-          window.showDownloads ? '<button class="link" data-act="shelf-show-downloads">Show</button>' : '')}</div>` : ''}
+      ${savedLine(item.path)}
     </div>`).join('');
   return `${head}<div class="shelf-list">${card}${rest}</div>`;
+}
+
+/// What stands for the build where a thing on the shelf is named by its
+/// path, which is never one: a path on the shelf is relative.
+const BUILD = '/build';
+
+/// Download, into the downloads folder as a browser would, and Save as,
+/// where the platform's own dialog says. The build goes as one archive.
+/// `small` for the viewer's bar.
+function keepButtons(path, small) {
+  const saving = state.shelfSaving === path;
+  return `<button class="action${small ? ' small' : ''}" data-act="shelf-download" data-path="${escape(path)}" ${
+      saving ? 'disabled' : ''}>${saving ? 'Saving...' : 'Download'}</button>
+    ${window.saveAs ? `<button class="link" data-act="shelf-save" data-path="${escape(path)}" ${saving ? 'disabled' : ''}>Save as</button>` : ''}`;
+}
+
+/// Where the last download or save of `path` went.
+function savedLine(path) {
+  const saved = state.shelfSaved;
+  if (!saved || saved.path !== path) return '';
+  return `<div class="shelf-saved">${apart(`Saved to ${escape(saved.to)}`,
+    saved.downloads && window.showDownloads ? '<button class="link" data-act="shelf-show-downloads">Show</button>' : '')}</div>`;
 }
 
 /// Read the list again.
 function loadShelf() {
   return guard(async () => { state.shelf = await call('shelf'); });
 }
+
+// --- the viewer -------------------------------------------------------------------------
+//
+// One thing on the shelf, shown on the shelf: a PDF in the window's own
+// reader, a picture, a recording or a film played, a document's words, a
+// table as a table, what is in an archive. What the window draws itself
+// comes in pieces (shelf.bytes) and is handed to it as a blob, which lasts as
+// long as the viewer is on it. A PDF can be read as its words as well, which
+// is what is shown where the window has no reader for one.
+
+/// What the window draws from the bytes themselves.
+const DRAWN = ['pdf', 'image', 'audio', 'video'];
+
+/// The most of a text that is colored, or set as a table or as Markdown.
+/// Past it, a text is shown plain: coloring a few megabytes holds the window.
+const VIEW_COLORED = 200000;
+
+/// The most rows of a table shown.
+const VIEW_ROWS = 1000;
+
+/// Show `path` in the viewer.
+async function openViewer(path) {
+  closeViewer();
+  const v = state.viewer = { path, name: path.split('/').pop(), loading: true, mode: 'page', got: 0 };
+  state.chatPane = 'view';
+  render();
+  try {
+    const seen = await call('shelf.view', { path });
+    if (state.viewer !== v) return;
+    Object.assign(v, seen);
+    if (DRAWN.includes(seen.show)) {
+      if (seen.show === 'pdf' && navigator.pdfViewerEnabled === false) await viewerWords(v);
+      else v.url = await blobOf(v, seen.mime);
+    }
+  } catch (error) {
+    v.error = error.message;
+  }
+  // Put away while it was read: the blob goes with it.
+  if (state.viewer !== v) {
+    if (v.url) URL.revokeObjectURL(v.url);
+    return;
+  }
+  v.loading = false;
+  render();
+}
+
+/// The bytes of what is in the viewer `v`, read in pieces, as a blob's URL.
+async function blobOf(v, mime) {
+  const parts = [];
+  for (let at = 0; ;) {
+    const piece = await call('shelf.bytes', { path: v.path, at });
+    if (state.viewer !== v) return '';
+    parts.push(fromBase64(piece.data));
+    at = v.got = piece.next;
+    if (piece.done) break;
+    render();
+  }
+  return URL.createObjectURL(new Blob(parts, { type: mime }));
+}
+
+function fromBase64(text) {
+  const raw = atob(text);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+/// A document's words, read out of it once.
+async function viewerWords(v) {
+  v.mode = 'text';
+  if (v.words !== undefined) return;
+  v.words = null;
+  render();
+  const got = await call('shelf.view', { path: v.path, text: true });
+  v.words = got.text || '';
+  v.wordsNote = got.note || '';
+  v.wordsCut = !!got.cut;
+}
+
+function closeViewer() {
+  if (state.viewer && state.viewer.url) URL.revokeObjectURL(state.viewer.url);
+  state.viewer = null;
+}
+
+function viewerView() {
+  const v = state.viewer;
+  const pdf = v.show === 'pdf' && !v.loading && !v.error;
+  const modes = pdf ? `<div class="viewer-mode" role="group" aria-label="Show">
+      <button data-act="viewer-mode" data-mode="page" aria-pressed="${v.mode === 'page'}" ${v.url ? '' : 'disabled'}>Page</button>
+      <button data-act="viewer-mode" data-mode="text" aria-pressed="${v.mode === 'text'}">Text</button></div>` : '';
+  return `<div class="shelf-head viewer-head">
+      <button class="action small" data-act="back-to-shelf">Back to shelf</button>
+      <span class="shelf-title viewer-title" title="${escape(v.path)}">${escape(v.name || '')}</span>
+      ${modes}<div class="shelf-acts">${keepButtons(v.path, true)}</div>${savedLine(v.path)}</div>
+    ${region('viewer-body', `<div id="viewer-body" class="viewer">${viewerBody(v)}</div>`)}`;
+}
+
+function viewerBody(v) {
+  const note = (text) => `<div class="viewer-note">${text}</div>`;
+  if (v.error) return note(escape(v.error));
+  if (v.loading) return note(v.got && v.bytes ? `Reading... ${Math.min(100, Math.round((v.got / v.bytes) * 100))}%` : 'Reading...');
+  if (v.show === 'pdf' && v.mode === 'text') {
+    return v.words === null ? note('Reading the words...') : wordsView(v.words, v.wordsNote, v.wordsCut);
+  }
+  const url = escape(v.url || '');
+  const name = escape(v.name || '');
+  switch (v.show) {
+    case 'pdf': return `<iframe class="viewer-frame" src="${url}" title="${name}"></iframe>`;
+    case 'image': return `<div class="viewer-picture"><img src="${url}" alt="${name}"></div>`;
+    case 'audio': return `<div class="viewer-player"><audio controls src="${url}"></audio></div>`;
+    case 'video': return `<div class="viewer-player"><video controls src="${url}"></video></div>`;
+    case 'text': return textView(v);
+    case 'document': return wordsView(v.text || '', v.note, v.cut);
+    case 'archive': return archiveView(v);
+    default: return note(apart(escape(SHELF_KINDS[v.kind] || 'File'), bytes(v.bytes), escape(v.note || 'Nothing to show here')));
+  }
+}
+
+/// What is said under something shown only in part.
+const viewerCut = (...said) => {
+  const parts = said.filter(Boolean);
+  return parts.length ? `<div class="viewer-cut">${apart(...parts.map(escape))}</div>` : '';
+};
+
+/// A file's own text: Markdown set, a table as one, code colored.
+function textView(v) {
+  const text = v.text || '';
+  const lang = String(v.language || '').toLowerCase();
+  const cut = viewerCut(v.cut ? 'Only the start of it is shown' : '');
+  if (text.length > VIEW_COLORED) return `<pre class="viewer-plain">${escape(text)}</pre>${cut}`;
+  if (lang === 'md' || lang === 'markdown') return `<div class="viewer-doc md">${markdown(text)}</div>${cut}`;
+  if (lang === 'csv' || lang === 'tsv') return tableView(text, lang === 'tsv' ? '\t' : ',') + cut;
+  return `<div class="viewer-code">${codeBlock(text, languageOf(v.name || '') || lang)}</div>${cut}`;
+}
+
+/// A document's words, as they were read out of it.
+function wordsView(text, note, cut) {
+  return `<div class="viewer-doc viewer-words">${escape(text || '')}</div>${
+    viewerCut(note || '', cut ? 'Only the start of it is shown' : '')}`;
+}
+
+/// The rows of a table written as CSV (or TSV, with `sep` a tab), at most
+/// `most` of them. Quoted cells keep their commas, quotes and line breaks.
+function tableRows(text, sep, most) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  const end = () => { row.push(cell.replace(/\r$/, '')); cell = ''; };
+  for (let i = 0; i < text.length && rows.length < most; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c !== '"') cell += c;
+      else if (text[i + 1] === '"') { cell += '"'; i++; } else quoted = false;
+    } else if (c === '"' && cell === '') quoted = true;
+    else if (c === sep) end();
+    else if (c === '\n') { end(); rows.push(row); row = []; } else cell += c;
+  }
+  if ((cell || row.length) && rows.length < most) { end(); rows.push(row); }
+  return rows;
+}
+
+function tableView(text, sep) {
+  const rows = tableRows(text, sep, VIEW_ROWS + 1);
+  const more = rows.length > VIEW_ROWS;
+  const [head = [], ...body] = rows.slice(0, VIEW_ROWS);
+  const cells = (row, tag) => row.map((c) => `<${tag}>${escape(c)}</${tag}>`).join('');
+  return `<div class="viewer-table"><table><thead><tr>${cells(head, 'th')}</tr></thead>
+      <tbody>${body.map((row) => `<tr>${cells(row, 'td')}</tr>`).join('')}</tbody></table></div>${
+    viewerCut(more ? `The first ${VIEW_ROWS} rows` : '')}`;
+}
+
+/// What is in an archive, and how large each is.
+function archiveView(v) {
+  const entries = v.entries || [];
+  const rows = entries.map((e) => `<div class="viewer-entry"><span class="viewer-entry-name">${escape(e.name)}</span>
+      <span class="viewer-entry-size">${bytes(e.bytes)}</span></div>`).join('');
+  const more = (v.count || 0) - entries.length;
+  return `<div class="viewer-list">${rows || '<div class="viewer-note">Empty</div>'}</div>${
+    viewerCut(more > 0 ? `and ${count(more, 'more file')}` : '')}`;
+}
+
+actions['shelf-view'] = (button) => openViewer(button.dataset.path);
+actions['viewer-mode'] = (button) => guard(async () => {
+  const v = state.viewer;
+  if (!v) return;
+  if (button.dataset.mode === 'text') await viewerWords(v);
+  else if (v.url) v.mode = 'page';
+});
 
 actions['build-enter'] = () => {
   const build = (state.shelf || {}).build || {};
@@ -160,10 +379,38 @@ actions['build-enter'] = () => {
   }
 };
 actions['back-to-shelf'] = () => setPane('shelf');
-actions['shelf-download'] = (button) => guard(async () => {
-  const got = await call('shelf.download', { path: button.dataset.path });
-  state.shelfSaved = { path: button.dataset.path, to: got.saved };
-});
+
+/// Keep `path` (or the build): `how` is 'download' or 'save'. One at a
+/// time, and the card says so while it goes: an archive of a large build
+/// takes a moment.
+async function keepIt(path, how) {
+  if (state.shelfSaving) return;
+  const build = path === BUILD;
+  const name = ((state.shelf || {}).build || {}).name || '';
+  state.shelfSaving = path;
+  render();
+  try {
+    await guard(async () => {
+      if (how === 'save' && window.saveAs) {
+        const got = await window.saveAs(build ? { build: true, name } : { path }, window.crucibleToken || '');
+        if (got.error) throw new Error(got.error);
+        // No dialog to show on this desktop: into the downloads folder.
+        if (got.supported !== false) {
+          if (got.saved) state.shelfSaved = { path, to: got.saved };
+          return;
+        }
+      }
+      const got = build ? await call('shelf.archive', { name }) : await call('shelf.download', { path });
+      state.shelfSaved = { path, to: got.saved, downloads: true };
+    });
+  } finally {
+    state.shelfSaving = '';
+    render();
+  }
+}
+
+actions['shelf-download'] = (button) => keepIt(button.dataset.path, 'download');
+actions['shelf-save'] = (button) => keepIt(button.dataset.path, 'save');
 actions['shelf-show-downloads'] = () => { if (window.showDownloads) window.showDownloads(); };
 actions['shelf-delete'] = async (button) => {
   const sure = await confirmIt({ title: `Delete ${button.dataset.name}?`, body: 'The file is deleted.',
@@ -204,7 +451,8 @@ onSnapshot.push(() => {
 let shelfMade = { pane: '', html: '' };
 function shelfBody(pane) {
   if (!shelfKept || shelfMade.pane !== pane) {
-    const body = pane === 'code' ? codePane() : pane === 'source' ? sourcePane() : previewView();
+    const body = pane === 'code' ? codePane() : pane === 'source' ? sourcePane()
+               : pane === 'terminal' ? termPane() : previewView();
     shelfMade = { pane, html: `<div id="pane-body">${body}</div>` };
   }
   return region('pane-body', shelfMade.html);
@@ -284,6 +532,7 @@ function enterPane(pane) {
   }
   if (pane === 'source' && !state.source) loadSource();
   if (pane === 'preview' && !state.preview.pages) enterPreview();
+  if (pane === 'terminal') enterTerminal();
 }
 
 entering.chat = () => enterPane(shownPane());
@@ -464,7 +713,10 @@ onSnapshot.push(() => {
   const was = shelfSession;
   shelfSession = session;
   state.shelfSaved = null;
-  if (was) state.chatPane = 'chat';
+  if (was) {
+    closeViewer();
+    state.chatPane = 'chat';
+  }
   loadShelf();
 });
 

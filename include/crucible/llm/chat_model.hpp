@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "crucible/config/config.hpp"
+#include "crucible/llm/reasoning.hpp"
 
 namespace crucible {
 
@@ -72,14 +73,19 @@ struct ChatRequest {
     const std::vector<ChatMessage>& messages;
     const ModelParams&              params;
 
-    /// How hard a reasoning model should think: low | medium | high, or empty
-    /// to leave it to the model.
+    /// How hard a reasoning model should think: a word on reasoning::scale(),
+    /// or empty to leave it to the model. Each model is sent the nearest level
+    /// it takes (reasoning::nearest).
     ///
     /// Here rather than in the system prompt because the two kinds of model
     /// want it in different places. A local one reads it as a line of the
     /// prompt, which the engine writes; a provider takes it as a field of the
     /// request, and a stray "Reasoning: high" in its system prompt is noise.
     std::string_view effort;
+
+    /// Whether a model that can think or not should: "on", "off", or empty
+    /// for its own default. Not sent to a model that cannot be switched.
+    std::string_view thinking = {};
 };
 
 /// Where an answer goes as it arrives.
@@ -93,6 +99,11 @@ struct ChatSink {
     TokenCallback on_reasoning;
 
     CancelCallback cancel;
+
+    /// How far through reading the prompt a model on this machine is, 0..1,
+    /// when there is more than one batch of it to read. Before the first
+    /// word, on a long prompt, that is the only thing happening.
+    ProgressCallback on_reading;
 };
 
 /// How a round of answering went.
@@ -151,6 +162,10 @@ public:
     /// be ignored -- or, for a model on this machine, written into its system
     /// prompt as a line it would read as an instruction about something else.
     virtual bool takes_effort() const { return false; }
+
+    /// The levels it takes and whether its thinking can be switched, as well
+    /// as it is known. See llm/reasoning.hpp.
+    virtual reasoning::Profile reasoning() const { return {}; }
 };
 
 }  // namespace crucible

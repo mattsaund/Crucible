@@ -31,7 +31,7 @@ state.code = {
   side: 'files',     // 'files' or 'search'
   find: null,        // the find bar: { mode: 'find'|'replace'|'line', query, replace, matchCase, at }
   search: { query: '', results: null, cut: false, matchCase: false, busy: false },
-  run: { open: false, command: '', output: '', running: false, history: [], back: -1 },
+  run: { open: false },   // the terminal, under the editor
   serial: 0,         // a number per tab, so each has a textarea of its own
 };
 
@@ -357,16 +357,9 @@ function statusView(tab) {
       <button class="link small" data-act="run-toggle" aria-pressed="${state.code.run.open}">Terminal</button></div>`;
 }
 
+/// The terminal, under the editor: the Terminal pane's, the same shells.
 function terminalView() {
-  const r = state.code.run;
-  if (!r.open) return '';
-  return `<div class="ide-run">
-      <form class="row" data-submit="run-command">
-        <span class="status">$</span>
-        <input id="run-command" data-draft data-key="run-key" value="${escape(r.command)}" placeholder="a command, in the project"
-               aria-label="Command" autocomplete="off" spellcheck="false">
-        <button class="action small" ${r.running ? 'disabled' : ''}>${r.running ? 'Running...' : 'Run'}</button></form>
-      ${r.output ? codeBlock(r.output, 'shell') : ''}</div>`;
+  return state.code.run.open ? `<div class="ide-run">${termPane()}</div>` : '';
 }
 
 /// The Code pane: the files on one side, the open ones on the other.
@@ -943,35 +936,7 @@ actions['quick-pick'] = (button) => { closeModal(); guard(() => openFile(button.
 actions['run-toggle'] = () => {
   state.code.run.open = !state.code.run.open;
   render();
-  if (state.code.run.open) setTimeout(() => { const box = document.getElementById('run-command'); if (box) box.focus(); }, 0);
-};
-actions['run-command'] = (form) => guard(async () => {
-  const r = state.code.run;
-  const command = form.querySelector('input').value.trim();
-  if (!command || r.running) return;
-  r.command = '';
-  r.history.push(command);
-  r.back = -1;
-  r.running = true;
-  r.output = `$ ${command}\n`;
-  form.querySelector('input').value = '';
-  render();
-  try {
-    const got = await call('project.run', { command, timeout: 600 });
-    r.output = `$ ${command}\n${got.output || ''}${got.ok ? '' : `\n(${got.summary})`}`;
-  } finally {
-    r.running = false;
-    // What it may have made or changed.
-    loadTree();
-    refreshTabs();
-  }
-});
-actions['run-key'] = (input, event) => {
-  const r = state.code.run;
-  if (!r.history.length || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
-  event.preventDefault();
-  r.back = event.key === 'ArrowUp' ? Math.min(r.history.length - 1, r.back + 1) : Math.max(-1, r.back - 1);
-  input.value = r.back < 0 ? '' : r.history[r.history.length - 1 - r.back];
+  if (state.code.run.open) enterTerminal();
 };
 
 // --- keys that work anywhere in the pane ----------------------------------------------------------

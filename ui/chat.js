@@ -50,6 +50,58 @@ function liveWho(turn) {
     expert.provider ? `<span>answered by ${escape(expert.provider)}</span>` : ''}</div>`;
 }
 
+/// How long since `since` (milliseconds since the epoch), as the line beside
+/// an activity says it: "12s", "3 min".
+function elapsed(since) {
+  return since ? span(Math.max(0, Date.now() - since) / 1000) : '';
+}
+
+/// The most of a file being written or a command's output shown under the
+/// activity: its last lines, the ones arriving.
+const DOING_LINES = 14;
+
+/// What the turn still arriving is doing this moment, at its foot, where the
+/// next thing it does will appear: reading the prompt and how far through,
+/// thinking and for how long, a file being written with how much of it
+/// there is and its last lines as they come, a command with what it has
+/// printed. A model writing a page through a tool, or a script making a PDF,
+/// showed nothing at all for minutes before this. From the engine's state, as
+/// liveWho is: see Activity in engine/state.hpp.
+function liveActivity() {
+  const a = state.snapshot.activity;
+  if (!a || !state.snapshot.busy) return '';
+  const numbers = [];
+  if (typeof a.progress === 'number' && a.progress >= 0) numbers.push(`${Math.round(a.progress * 100)}%`);
+  if (a.kind === 'write' && a.bytes) numbers.push(bytes(a.bytes), count(a.lines || 0, 'line'));
+  else if (a.kind === 'run' && a.lines) numbers.push(count(a.lines, 'line'));
+  const head = `<div class="doing" data-kind="${escape(a.kind || '')}">
+      <span class="spin" aria-hidden="true"></span>
+      <span class="doing-label">${escape(a.label || '')}</span>${
+      a.detail ? `<span class="doing-detail" title="${escape(a.detail)}">${escape(a.detail)}</span>` : ''}${
+      numbers.map((n) => `<span class="doing-num">${escape(n)}</span>`).join('')}
+      <span class="elapsed" data-since="${Number(a.since) || 0}">${elapsed(a.since)}</span></div>`;
+  if (!a.tail) return head;
+  const lines = String(a.tail).split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const shown = lines.slice(-DOING_LINES).join('\n');
+  const lang = a.kind === 'run' ? 'shell' : languageOf(a.language || '') || a.language || '';
+  return `${head}<div class="doing-tail${a.kind === 'run' ? ' output' : ''}"><pre><code>${
+    a.kind === 'run' ? escape(shown) : highlight(shown, lang)}</code></pre></div>`;
+}
+
+/// The times beside an activity, kept counting between pushes: a command
+/// that prints nothing for a minute brings no push to redraw them. Written
+/// straight into the elements, once a second while something runs.
+if (typeof setInterval === 'function') {
+  setInterval(() => {
+    if (!state.snapshot.busy || typeof document.querySelectorAll !== 'function') return;
+    for (const clock of document.querySelectorAll('.elapsed[data-since]')) {
+      const text = elapsed(Number(clock.getAttribute('data-since')));
+      if (clock.textContent !== text) clock.textContent = text;
+    }
+  }, 1000);
+}
+
 /// What the turn cost, under it.
 function turnMeta(turn) {
   const bits = [];
@@ -65,8 +117,26 @@ function turnMeta(turn) {
 /// because a write to your project is not a footnote to the sentence that
 /// follows it.
 function turnActions(turn) {
-  return (turn.actions || []).map((a) => `<div class="act">${
-    escape(a.summary)}${pictureChip(a.picture)}${actionBody(a)}</div>`).join('');
+  return (turn.actions || []).map(actionView).join('');
+}
+
+/// Each action's markup, by what it is made from. A turn still arriving is
+/// drawn again for every push, and every file it had written with it, colored
+/// and matched line by line each time: a long page written early in a turn
+/// was most of what each push of the rest of it cost. Signed as well, so the
+/// patcher passes over one that is on screen already.
+const actionsMade = new Map();
+let actionSerial = 0;
+function actionView(a) {
+  const key = `${a.summary}\u0000${a.language || ''}\u0000${a.picture || ''}\u0000${a.body || ''}`;
+  let html = actionsMade.get(key);
+  if (html === undefined) {
+    if (actionsMade.size > 400) actionsMade.clear();
+    html = `<div class="act" data-sig="act${++actionSerial}">${
+      escape(a.summary)}${pictureChip(a.picture)}${actionBody(a)}</div>`;
+    actionsMade.set(key, html);
+  }
+  return html;
 }
 
 /// A picture an action or a step produced -- a screenshot, a picture it
@@ -164,7 +234,8 @@ function turnView(turn, index, busy, where) {
     : '';
   return `${turnControls(turn, index, busy)}
       ${attachedChips(turn.attachments)}${turn.prompt ? `<div class="said">${escape(turn.prompt)}</div>` : ''}
-      ${turn.streaming ? liveWho(turn) : turnWho(turn)}${thought}${turnActions(turn)}${reply}${turnMeta(turn)}`;
+      ${turn.streaming ? liveWho(turn) : turnWho(turn)}${thought}${turnActions(turn)}${reply}${
+      live ? liveActivity() : ''}${turnMeta(turn)}`;
 }
 
 /// The markup for every turn, remembered.
@@ -432,11 +503,18 @@ function tallyView() {
 
 // --- who answers, and how hard it thinks -----------------------------------------------
 //
-// Two menus beside the plus, opening upward like it. The first is where a
-// prompt goes: to the delegator, which picks an expert for each one, or
-// straight to one expert -- what `/physics` does for a single prompt, kept
-// until it is changed back. The second is how hard a reasoning model thinks;
-// a model with no such setting is never sent it.
+// Two menus beside the plus, opening upward like it, and a switch. The first
+// menu is where a prompt goes: to the delegator, which picks an expert for
+// each one, or straight to one expert, as `/physics` does for a single
+// prompt, kept until it is changed back. The second is how hard a reasoning
+// model thinks, and the switch whether it thinks at all.
+//
+// Both follow the model. With an expert chosen they offer exactly what its
+// model takes (see llm/reasoning.hpp): GPT OSS's three levels, Claude's five,
+// none for a model with no effort to set, and a switch only where thinking
+// can be switched, held on where it cannot be turned off. What is chosen is
+// that expert's own. With the delegator, they set the box's, which every
+// expert without one of its own is given as the nearest level it takes.
 
 const PICK = {
   route: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
@@ -453,9 +531,81 @@ const PICK = {
   up: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor"
     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.5M3.8 7.5 8 3.3l4.2 4.2"/></svg>`,
   stop: '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>',
+  think: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
+    stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12.5h4M6.5 14.5h3"/>
+    <path d="M5.6 10.5C4.3 9.6 3.5 8.3 3.5 6.8a4.5 4.5 0 0 1 9 0c0 1.5-.8 2.8-2.1 3.7"/></svg>`,
+  unthink: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
+    stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12.5h4M6.5 14.5h3"/>
+    <path d="M5.6 10.5C4.3 9.6 3.5 8.3 3.5 6.8a4.5 4.5 0 0 1 9 0c0 1.5-.8 2.8-2.1 3.7"/><path d="M2.5 2.5l11 11"/></svg>`,
 };
 
-const EFFORTS = [['', 'Default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']];
+/// The words on the effort scale, as the menu says them, lowest first: what
+/// the core calls reasoning::scale().
+const EFFORT_NAMES = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+const SCALE = Object.keys(EFFORT_NAMES);
+
+/// What each expert's model takes, by expert and model: a reasoning.profile
+/// answer, or 'asking' while the question is out. A change of model asks
+/// again, since it is a different model.
+const profiles = {};
+
+function profileKey(id) {
+  const seat = (state.snapshot.experts || []).find((e) => e.id === id) || {};
+  return `${id}|${seat.provider || ''}|${seat.model || ''}`;
+}
+
+/// The profile of `id`'s model, or null while it is asked for. The box's
+/// own, for the delegator, is the whole scale and a switch.
+function profileOf(id) {
+  if (!id) return { levels: SCALE, thinking: 'optional', thinks_unasked: true, standard: '', source: 'box' };
+  const key = profileKey(id);
+  const known = profiles[key];
+  if (known && known !== 'asking') return known;
+  if (!known) {
+    profiles[key] = 'asking';
+    call('reasoning.profile', { expert: id })
+      .then((got) => { profiles[key] = got; })
+      .catch(() => { profiles[key] = { levels: [], thinking: 'none', standard: '' }; })
+      .finally(render);
+  }
+  return null;
+}
+
+/// What an expert has set of its own, from the config: its effort and its
+/// thinking, each empty for "as the box says".
+function seatSetting(id) {
+  const seat = ((state.config && state.config.experts) || []).find((e) => e.id === id) || {};
+  return { effort: seat.effort || '', thinking: seat.thinking || '' };
+}
+
+/// The level `wanted` comes to on a model that takes `levels`: what the core's
+/// reasoning::nearest does, so the menu says what will be sent.
+function nearestLevel(levels, wanted) {
+  if (!wanted || !levels || !levels.length) return '';
+  if (levels.includes(wanted)) return wanted;
+  const asked = SCALE.indexOf(wanted);
+  if (asked < 0) return '';
+  let best = '';
+  let gap = Infinity;
+  for (const level of levels) {
+    const distance = Math.abs(SCALE.indexOf(level) - asked);
+    if (distance < gap || (distance === gap && SCALE.indexOf(level) > SCALE.indexOf(best))) {
+      gap = distance;
+      best = level;
+    }
+  }
+  return best;
+}
+
+/// Whether the model with `profile` thinks, as `id` is set: its own switch,
+/// else the box's, else what it does unasked.
+function thinkingOn(id, profile) {
+  if (!profile || profile.thinking === 'none') return false;
+  if (profile.thinking === 'always') return true;
+  const own = id ? seatSetting(id).thinking : '';
+  const set = own || state.snapshot.thinking || '';
+  return set ? set === 'on' : profile.thinks_unasked !== false;
+}
 
 /// The experts a prompt can be sent to straight: every seat with a model.
 function pickableExperts() {
@@ -503,17 +653,46 @@ function routePicker(mode) {
       target ? `Everything goes to ${label}` : trouble || 'The delegator picks the expert', !target && !!trouble)}${menu}</div>`;
 }
 
+/// How hard it thinks: the levels the chosen expert's model takes, or with
+/// the delegator, the whole scale for the box's own setting. Nothing for a
+/// model that takes no effort.
 function effortPicker(mode) {
-  const current = state.snapshot.reasoning_effort || '';
-  const chosen = EFFORTS.find((e) => e[0] === current) || EFFORTS[0];
-  const open = state.menu === `effort:${mode}`;
+  const target = routeTarget();
+  const profile = profileOf(target);
+  const levels = profile ? profile.levels || [] : [];
+  if (target && profile && !levels.length) return '';
+  const box = state.snapshot.reasoning_effort || '';
+  // The expert's own, when it has one; the box's otherwise, which it gets
+  // as the nearest level it takes.
+  const own = target ? seatSetting(target).effort : box;
+  const standard = (profile && profile.standard) || '';
+  const fallback = (target && nearestLevel(levels, box)) || standard;
+  const effective = own ? nearestLevel(levels, own) || own : fallback;
+  const label = own ? `${EFFORT_NAMES[effective] || 'Default'} effort`
+              : effective ? `${EFFORT_NAMES[effective]} effort` : 'Default effort';
+  const open = state.menu === `effort:${mode}` && !!profile;
+  const defaultHint = fallback ? EFFORT_NAMES[fallback] : '';
   const menu = open ? `<div class="popmenu picks" role="menu">
-      <div class="mi-caption">REASONING EFFORT</div>
-      ${EFFORTS.map(([value, label]) => menuItem('effort-pick', value, label, '', value === current)).join('')}
-      <div class="mi-note">Reasoning models only</div>
+      <div class="mi-caption">EFFORT</div>
+      ${menuItem('effort-pick', '', 'Default', defaultHint, !own)}
+      ${levels.map((value) => menuItem('effort-pick', value, EFFORT_NAMES[value] || value, '', own === value
+          || (!!own && !levels.includes(own) && nearestLevel(levels, own) === value))).join('')}
     </div>` : '';
-  return `<div class="menu-wrap">${pickerButton('effort', mode, PICK.effort, `${chosen[1]} effort`,
-      '')}${menu}</div>`;
+  return `<div class="menu-wrap">${pickerButton('effort', mode, PICK.effort, profile ? label : 'Effort',
+      target ? '' : 'For every expert')}${menu}</div>`;
+}
+
+/// Whether it thinks: a switch for a model whose thinking can be switched,
+/// held on for one that always thinks, and nothing for one that never does.
+function thinkingSwitch() {
+  const target = routeTarget();
+  const profile = profileOf(target);
+  if (!profile || profile.thinking === 'none' || !profile.thinking) return '';
+  const on = thinkingOn(target, profile);
+  const held = profile.thinking === 'always';
+  return `<button type="button" class="picker think${on ? ' on' : ''}" data-act="thinking-toggle"
+      aria-pressed="${on}"${held ? ' disabled' : ''} title="${held ? 'Always thinks' : on ? 'Thinking on' : 'Thinking off'}">${
+      on ? PICK.think : PICK.unthink}<span class="label">${on ? 'Thinking' : 'No thinking'}</span></button>`;
 }
 
 actions['route-menu']  = () => toggleMenu('route');
@@ -529,10 +708,44 @@ actions['route-pick'] = (item) => {
 
 actions['effort-pick'] = (item) => {
   state.menu = null;
-  // Said at once; the setting is written behind it.
-  state.snapshot.reasoning_effort = item.dataset.value || '';
-  configure({ reasoning_effort: item.dataset.value || '' });
+  const value = item.dataset.value || '';
+  const target = routeTarget();
+  if (!target) {
+    // Said at once; the setting is written behind it.
+    state.snapshot.reasoning_effort = value;
+    configure({ reasoning_effort: value });
+    return;
+  }
+  setSeatReasoning(target, { effort: value });
 };
+
+actions['thinking-toggle'] = () => {
+  const target = routeTarget();
+  const profile = profileOf(target);
+  if (!profile || profile.thinking !== 'optional') return;
+  const next = thinkingOn(target, profile) ? 'off' : 'on';
+  if (!target) {
+    // The box's: back to each model's own way rather than "on", which
+    // would switch on the ones that do not think unless asked.
+    const value = next === 'off' ? 'off' : '';
+    state.snapshot.thinking = value;
+    configure({ thinking: value });
+    return;
+  }
+  setSeatReasoning(target, { thinking: next });
+};
+
+/// Set what one expert has of its own, said at once on screen and written
+/// behind it.
+function setSeatReasoning(id, change) {
+  const seat = ((state.config && state.config.experts) || []).find((e) => e.id === id);
+  if (seat) Object.assign(seat, change);
+  render();
+  guard(async () => {
+    await call('expert.reasoning', Object.assign({ id }, change));
+    state.config = await call('config');
+  });
+}
 
 /// The box everything is typed into.
 ///
@@ -573,6 +786,7 @@ function composerView() {
             ${attachButton('chat')}
             ${routePicker('chat')}
             ${effortPicker('chat')}
+            ${thinkingSwitch()}
             <span class="spacer"></span>
             ${buttons}
           </div>

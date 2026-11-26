@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <initializer_list>
@@ -548,6 +549,252 @@ std::optional<CallInText> call_in_text(std::string_view answer) {
         }
     }
     return std::nullopt;
+}
+
+namespace {
+
+/// `code` as UTF-8, for a \u escape.
+void append_utf8(std::string& out, std::uint32_t code) {
+    if (code < 0x80) {
+        out += static_cast<char>(code);
+    } else if (code < 0x800) {
+        out += static_cast<char>(0xC0 | (code >> 6));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else if (code < 0x10000) {
+        out += static_cast<char>(0xE0 | (code >> 12));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (code >> 18));
+        out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    }
+}
+
+/// Four hex digits at `at`, or -1 when there are not four there yet.
+long hex4(std::string_view text, std::size_t at) {
+    if (at + 4 > text.size()) {
+        return -1;
+    }
+    long value = 0;
+    for (std::size_t i = at; i < at + 4; ++i) {
+        const char c = text[i];
+        const int  digit = c >= '0' && c <= '9' ? c - '0'
+                         : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                         : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                : -1;
+        if (digit < 0) {
+            return -1;
+        }
+        value = value * 16 + digit;
+    }
+    return value;
+}
+
+/// The JSON string whose opening quote is at `at`, decoded as far as it goes,
+/// and `at` moved past its closing quote. `closed` says whether it had one.
+/// An escape cut off at the end is left out until the rest of it comes.
+std::string read_string(std::string_view text, std::size_t& at, bool& closed) {
+    std::string out;
+    closed = false;
+    ++at;   // the opening quote
+    while (at < text.size()) {
+        const char c = text[at];
+        if (c == '"') {
+            ++at;
+            closed = true;
+            return out;
+        }
+        if (c != '\\') {
+            out += c;
+            ++at;
+            continue;
+        }
+        if (at + 1 >= text.size()) {
+            break;
+        }
+        const char e = text[at + 1];
+        if (e == 'u') {
+            long code = hex4(text, at + 2);
+            if (code < 0) {
+                break;
+            }
+            std::size_t used = 6;
+            // A surrogate pair is one character in two escapes.
+            if (code >= 0xD800 && code < 0xDC00) {
+                if (at + 12 > text.size()) {
+                    break;
+                }
+                const long low = text[at + 6] == '\\' && text[at + 7] == 'u' ? hex4(text, at + 8) : -1;
+                if (low >= 0xDC00 && low < 0xE000) {
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    used = 12;
+                }
+            }
+            append_utf8(out, static_cast<std::uint32_t>(code));
+            at += used;
+            continue;
+        }
+        switch (e) {
+            case 'n': out += '\n'; break;
+            case 't': out += '\t'; break;
+            case 'r': out += '\r'; break;
+            case 'b': out += '\b'; break;
+            case 'f': out += '\f'; break;
+            default:  out += e;    break;   // \" \\ \/
+        }
+        at += 2;
+    }
+    return out;
+}
+
+}  // namespace
+
+std::optional<std::string> partial_argument(std::string_view text, std::string_view key) {
+    std::size_t at = 0;
+    const auto skip_space = [&] {
+        while (at < text.size() && std::isspace(static_cast<unsigned char>(text[at])) != 0) {
+            ++at;
+        }
+    };
+    skip_space();
+    if (at >= text.size() || text[at] != '{') {
+        return std::nullopt;
+    }
+    ++at;
+    for (;;) {
+        skip_space();
+        if (at >= text.size() || text[at] == '}') {
+            return std::nullopt;
+        }
+        if (text[at] == ',') {
+            ++at;
+            continue;
+        }
+        if (text[at] != '"') {
+            return std::nullopt;   // not the JSON a model writes
+        }
+        bool              closed = false;
+        const std::string name   = read_string(text, at, closed);
+        if (!closed) {
+            return std::nullopt;
+        }
+        skip_space();
+        if (at >= text.size() || text[at] != ':') {
+            return std::nullopt;
+        }
+        ++at;
+        skip_space();
+        if (at >= text.size()) {
+            return name == key ? std::optional<std::string>(std::string()) : std::nullopt;
+        }
+        if (text[at] == '"') {
+            std::string value = read_string(text, at, closed);
+            if (name == key) {
+                return value;
+            }
+            if (!closed) {
+                return std::nullopt;
+            }
+            continue;
+        }
+        // A number, a word, an object or a list: passed over to the comma
+        // after it, and its text for the key wanted.
+        const std::size_t start     = at;
+        int               depth     = 0;
+        bool              in_string = false;
+        for (; at < text.size(); ++at) {
+            const char c = text[at];
+            if (in_string) {
+                if (c == '\\') {
+                    ++at;
+                } else if (c == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                in_string = true;
+            } else if (c == '{' || c == '[') {
+                ++depth;
+            } else if (c == '}' || c == ']') {
+                if (depth == 0) {
+                    break;
+                }
+                --depth;
+            } else if (c == ',' && depth == 0) {
+                break;
+            }
+        }
+        if (name == key) {
+            return std::string(trimmed(text.substr(start, at - start)));
+        }
+    }
+}
+
+std::optional<WritingInText> writing_in_text(std::string_view answer) {
+    // The last WRITE or EDIT at the start of a line, as the lines a model is
+    // told to write put them.
+    std::size_t found = std::string_view::npos;
+    std::string verb;
+    for (const auto& [word, name] : {std::pair<std::string_view, const char*>{"WRITE:", "write"},
+                                     std::pair<std::string_view, const char*>{"EDIT:", "edit"}}) {
+        for (std::size_t at = answer.rfind(word); at != std::string_view::npos;
+             at = at == 0 ? std::string_view::npos : answer.rfind(word, at - 1)) {
+            std::size_t line = at;
+            while (line > 0 && (answer[line - 1] == ' ' || answer[line - 1] == '\t')) {
+                --line;
+            }
+            if (line == 0 || answer[line - 1] == '\n') {
+                if (found == std::string_view::npos || at > found) {
+                    found = at;
+                    verb  = name;
+                }
+                break;
+            }
+        }
+    }
+    if (found == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::size_t colon = answer.find(':', found);
+    std::size_t       end   = answer.find('\n', colon);
+    WritingInText     writing;
+    writing.verb = verb;
+    writing.path = std::string(trimmed(answer.substr(colon + 1, (end == std::string_view::npos ? answer.size() : end) - colon - 1)));
+    if (writing.path.empty() || end == std::string_view::npos) {
+        return writing.path.empty() ? std::nullopt : std::optional<WritingInText>(writing);
+    }
+    std::string_view body = answer.substr(end + 1);
+    // A WRITE's contents are in a fenced block: what is inside it, and the
+    // fence that closes it says it is done.
+    if (verb == "write") {
+        const std::size_t fence = body.find("```");
+        if (fence == std::string_view::npos) {
+            return writing;
+        }
+        const std::size_t open_end = body.find('\n', fence);
+        if (open_end == std::string_view::npos) {
+            return writing;
+        }
+        body = body.substr(open_end + 1);
+        if (const std::size_t close = body.find("\n```"); close != std::string_view::npos) {
+            body         = body.substr(0, close + 1);
+            writing.done = true;
+        } else if (body.rfind("```", 0) == 0) {
+            body         = {};
+            writing.done = true;
+        }
+    } else {
+        // An EDIT's last block has closed when its REPLACE marker comes after
+        // the last SEARCH.
+        const std::size_t search  = body.rfind("<<<<<<< SEARCH");
+        const std::size_t replace = body.rfind(">>>>>>> REPLACE");
+        writing.done = replace != std::string_view::npos && (search == std::string_view::npos || replace > search);
+    }
+    writing.text = std::string(body);
+    return writing;
 }
 
 }  // namespace crucible::tools

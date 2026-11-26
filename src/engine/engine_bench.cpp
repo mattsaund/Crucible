@@ -620,7 +620,10 @@ json Engine::serve_bench(const std::string& method, const json& params) {
         asked.repeat_penalty = 1.0F;
         asked.seed           = 1234;
         asked.max_tokens     = std::clamp(params.value("max_tokens", 2048), 16, 32768);
-        const std::string effort = params.value("effort", std::string());
+        // The level the model takes nearest the one the run asked for: a
+        // template may refuse the rest outright.
+        const std::string effort =
+            reasoning::nearest(bench->model->reasoning().levels, params.value("effort", std::string()));
         const bool        steer  = !effort.empty() && bench->model->takes_effort();
         const bool        sorted = bench->model->reasons_inline();
         std::vector<BatchChat::Ask> asks;

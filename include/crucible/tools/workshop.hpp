@@ -52,6 +52,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <regex>
 #include <string>
@@ -199,6 +200,12 @@ struct WorkshopSettings {
     /// project is minutes; a command that has not finished in this long is
     /// stuck, and a prompt that waits forever on it has stopped working.
     int run_timeout_seconds = 120;
+
+    /// Each line a command prints, as it prints it, for whoever is watching
+    /// the turn: RUN and PYTHON say what they are doing while they do it, not
+    /// only once they are done. Called on a thread of the command's own, and
+    /// left empty by everything that is not watched.
+    std::function<void(std::string_view)> on_output;
 
     /// How much of a command's output comes back to the model.
     ///

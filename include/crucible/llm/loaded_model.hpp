@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -101,10 +102,15 @@ public:
 
     bool reasons_inline() const override { return true; }
 
-    /// gpt-oss's: its chat template is the harmony format, which reads
-    /// `Reasoning: <level>` from the system message. See
+    /// A template that reads an effort: gpt-oss's harmony format, which
+    /// reads `Reasoning: <level>` from the system message, and those that
+    /// take `reasoning_effort` as a variable (Qwen 3.8, Inkling 2 Mini). See
     /// Config::reasoning_effort.
     bool takes_effort() const override;
+
+    /// What this model's chat template takes, found by rendering it the
+    /// first time it is asked (reasoning::from_template) and kept.
+    reasoning::Profile reasoning() const override;
 
     /// When a projector was found beside the model and it reads pictures --
     /// a vision model, Qwen2.5-VL or Gemma 3 with its mmproj file. See
@@ -130,7 +136,8 @@ public:
                              const ModelParams& params,
                              const TokenCallback& on_token,
                              const CancelCallback& cancel,
-                             const std::string& grammar = {});
+                             const std::string& grammar = {},
+                             const ProgressCallback& on_reading = {});
 
     /// How likely the model finds each of `labels` as the continuation of
     /// `prompt`, as a natural log-probability.
@@ -235,9 +242,19 @@ private:
     /// generate()'s first half: `prompt` read into the cache from where the
     /// cache already holds it. False when there is nothing to sample from --
     /// an empty prompt, a decode that failed, or `cancel` -- with `stats`
-    /// saying which.
+    /// saying which. `on_reading` hears how far along it is after each batch,
+    /// when there is more than one to read.
     bool read_prompt(const std::string& prompt, const ModelParams& params, const CancelCallback& cancel,
-                     GenerationStats& stats);
+                     GenerationStats& stats, const ProgressCallback& on_reading = {});
+
+    /// The same for a prompt tokenized already, by prompt_tokens. open_chat
+    /// measures a prompt against the context before it reads it, and a long
+    /// conversation tokenized twice a round was a cost of its own.
+    bool read_tokens(std::vector<llama_token> tokens, const ModelParams& params, const CancelCallback& cancel,
+                     GenerationStats& stats, const ProgressCallback& on_reading = {});
+
+    /// `prompt` as read_prompt reads it: its special tokens, a BOS among them.
+    std::vector<llama_token> prompt_tokens(const std::string& prompt) const;
 
     /// What open_chat holds an answer to, and how its pieces are handed on:
     /// the parts of a chat template's plan that are about sampling.
@@ -320,6 +337,12 @@ private:
     /// checkpoint_ go, and the next prompt starts from cold.
     void forget();
 
+    /// After a decode that did not finish, Stop or a round cut short among the
+    /// reasons: the cache still holds what cached_ says it does, everything
+    /// read before it, and the next round reads on from there rather than from
+    /// the start. A long conversation was read again whole after every cut.
+    void keep_what_was_read();
+
     llama_model*   model_ = nullptr;
     llama_context* ctx_   = nullptr;
     std::string    path_;
@@ -366,6 +389,9 @@ private:
     std::shared_ptr<common_chat_templates> templates_;
     std::string                            templates_error_;
     bool                                   templates_tried_ = false;
+
+    /// What reasoning() found, once it has been asked. Under use_.
+    mutable std::optional<reasoning::Profile> reasoning_;
 
     /// The context embed() reads in, made the first time it is asked, and
     /// how many tokens it reads at once.
@@ -415,6 +441,12 @@ private:
         std::vector<std::uint8_t> state;
     };
     Checkpoint checkpoint_;
+
+    /// What the memory holds past checkpoint_ is not to be trusted: a decode
+    /// that did not finish may have half changed a recurrent state. cached_
+    /// ends at the checkpoint, and the next prompt is read on from it once
+    /// it is put back. See keep_what_was_read.
+    bool rewind_ = false;
 };
 
 }  // namespace crucible

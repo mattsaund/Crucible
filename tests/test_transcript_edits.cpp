@@ -177,3 +177,37 @@ TEST(a_frame_shares_the_turns_that_did_not_change_and_keeps_its_own_copy_of_the_
     // Every revision is its own.
     CHECK(first.turns[0].revision != first.turns[1].revision);
 }
+
+TEST(what_a_turn_is_doing_keeps_its_time_and_the_last_of_what_it_prints) {
+    crucible::AppState state;
+    crucible::Activity running;
+    running.kind   = "run";
+    running.label  = "Running";
+    running.detail = "make";
+    running.since  = 1000;
+    state.set_activity(running);
+    // The same thing said again goes on counting from when it began.
+    crucible::Activity again = running;
+    again.since = 0;
+    state.set_activity(again);
+    const crucible::Snapshot same = state.snapshot();
+    CHECK(same.activity.has_value() && same.activity->since == 1000);
+    // Output is counted, and only the last of it kept.
+    for (int line = 0; line < 2000; ++line) {
+        state.activity_output("compiling unit " + std::to_string(line) + "\n");
+    }
+    const crucible::Activity seen = *state.snapshot().activity;
+    CHECK_EQ(seen.lines, std::uint32_t{2000});
+    CHECK(seen.tail.size() <= 4096);
+    CHECK(seen.tail.find("compiling unit 1999\n") != std::string::npos);
+    CHECK(seen.tail.find("compiling unit 0\n") == std::string::npos);
+    // Something else starts its own time, and a turn that is over takes it away.
+    crucible::Activity other;
+    other.kind  = "read";
+    other.label = "Reading the prompt";
+    state.set_activity(other);
+    CHECK(state.snapshot().activity->since != 1000);
+    state.set_busy(true);
+    state.set_busy(false);
+    CHECK(!state.snapshot().activity.has_value());
+}

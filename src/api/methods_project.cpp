@@ -4,11 +4,16 @@
 #include "methods.hpp"
 
 #include <algorithm>
+#include <fstream>
+
+#include <miniz.h>
 
 #include "crucible/config/paths.hpp"
 #include "crucible/session/shelf.hpp"
 #include "crucible/session/store.hpp"
+#include "crucible/tools/attachments.hpp"
 #include "crucible/util/format.hpp"
+#include "crucible/util/text.hpp"
 
 namespace crucible::api {
 namespace {
@@ -143,6 +148,181 @@ Reply shelf_download(const json& params, Host& host) {
     return good(json{{"saved", format::short_path(target)}});
 }
 
+// --- looking at one, and keeping the build ---------------------------------------
+//
+// Lookups, on a worker: a document's words take a moment to read out, and an
+// archive of a build longer. They are handed the project and no more, so
+// what they reach is what project.read does, the files inside it.
+
+/// The most of a file's own text the viewer is sent, and of a document's
+/// words: what a person reads in a pane, many times over.
+constexpr std::size_t kViewText = std::size_t{1} << 20;
+
+/// The largest thing the viewer draws from its bytes. Past it, a film is
+/// downloaded and watched in a program made for it.
+constexpr std::uintmax_t kViewBytes = std::uintmax_t{256} << 20;
+
+/// How much of it each shelf.bytes sends: a few megabytes, so no one reply
+/// holds the window up, and few enough of them for a film.
+constexpr std::size_t kBytesPiece = std::size_t{4} << 20;
+
+/// What is in an archive the shelf can open: zip, and the formats that are
+/// zip underneath.
+bool zip_family(const std::filesystem::path& file) {
+    const std::string ext = format::to_lower(file.extension().string());
+    for (const char* one : {".zip", ".jar", ".whl", ".apk", ".xpi", ".epub", ".nupkg", ".vsix"}) {
+        if (ext == one) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The file `path` names inside the project, or why there is none.
+bool shelf_file(const json& params, const Scene& scene, std::filesystem::path& file, Reply& refusal) {
+    const auto path = params.value("path", std::string{});
+    if (path.empty()) {
+        refusal = bad("it needs a path");
+        return false;
+    }
+    file = shelf::inside(scene.project, path);
+    std::error_code ec;
+    if (scene.project.empty() || file.empty() || !std::filesystem::is_regular_file(file, ec)) {
+        refusal = bad(path + " is not there any more");
+        return false;
+    }
+    return true;
+}
+
+/// One thing on the shelf, as the viewer shows it (ui/panes.js), by `show`:
+/// "pdf", "image", "audio" and "video" are drawn by the window from their
+/// bytes, which shelf.bytes sends; "text" and "document" come with their
+/// words; "archive" with what is in it; "none" is only what it is. With
+/// `text`, a document's words whatever it is: a PDF's, read out of it.
+Reply shelf_view(const json& params, const Scene& scene) {
+    std::filesystem::path file;
+    Reply                 refusal;
+    if (!shelf_file(params, scene, file, refusal)) {
+        return refusal;
+    }
+    std::error_code      ec;
+    const std::uintmax_t size = std::filesystem::file_size(file, ec);
+    json out{{"path", params.value("path", std::string{})}, {"name", file.filename().string()},
+             {"kind", shelf::kind_of(file)}, {"bytes", size}, {"show", "none"}};
+    const auto words = [&out](const attach::Text& text) {
+        out["text"] = text.body;
+        out["cut"]  = text.cut;
+        if (!text.note.empty()) {
+            out["note"] = text.note;
+        }
+    };
+    if (params.value("text", false)) {
+        out["show"] = "document";
+        words(attach::read(file, kViewText));
+        return good(std::move(out));
+    }
+    if (const std::string type = shelf::media_type(file); !type.empty()) {
+        if (size > kViewBytes) {
+            out["note"] = "too large to show here";
+            return good(std::move(out));
+        }
+        out["mime"] = type;
+        out["show"] = type == "application/pdf" ? std::string("pdf") : type.substr(0, type.find('/'));
+        return good(std::move(out));
+    }
+    if (zip_family(file)) {
+        json         entries = json::array();
+        mz_zip_archive zip{};
+        if (mz_zip_reader_init_file(&zip, file.string().c_str(), 0) != 0) {
+            // Its files, the first two thousand of them listed and all counted.
+            std::size_t   files = 0;
+            const mz_uint count = mz_zip_reader_get_num_files(&zip);
+            for (mz_uint i = 0; i < count; ++i) {
+                if (mz_zip_reader_is_file_a_directory(&zip, i) != 0) {
+                    continue;
+                }
+                ++files;
+                mz_zip_archive_file_stat stat;
+                if (entries.size() < 2000 && mz_zip_reader_file_stat(&zip, i, &stat) != 0) {
+                    entries.push_back(json{{"name", crucible::detail::scrub_utf8(stat.m_filename)},
+                                           {"bytes", stat.m_uncomp_size}});
+                }
+            }
+            out["count"] = files;
+            mz_zip_reader_end(&zip);
+            out["show"]    = "archive";
+            out["entries"] = std::move(entries);
+        }
+        return good(std::move(out));
+    }
+    const attach::Kind kind = attach::kind_of(file);
+    if (kind == attach::Kind::Document && !attach::is_markup_source(file)) {
+        const attach::Text text = attach::read(file, kViewText);
+        if (!text.body.empty()) {
+            out["show"] = "document";
+        }
+        words(text);
+        return good(std::move(out));
+    }
+    // Its own text, when it is text: no NUL in the first of it, which no
+    // text has and nearly every other file does.
+    std::ifstream in(file, std::ios::binary);
+    std::string   body(static_cast<std::size_t>(std::min<std::uintmax_t>(size, kViewText)), '\0');
+    in.read(body.data(), static_cast<std::streamsize>(body.size()));
+    body.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+    if (body.substr(0, 8192).find('\0') != std::string::npos) {
+        return good(std::move(out));
+    }
+    const std::string ext = format::to_lower(file.extension().string());
+    out["show"]     = "text";
+    out["language"] = ext.size() > 1 ? ext.substr(1) : std::string();
+    out["cut"]      = size > body.size();
+    out["text"]     = crucible::detail::scrub_utf8(body);
+    return good(std::move(out));
+}
+
+/// A piece of one thing on the shelf, from `at`, as base64: what the viewer
+/// puts a page, a picture or a film together from.
+Reply shelf_bytes(const json& params, const Scene& scene) {
+    std::filesystem::path file;
+    Reply                 refusal;
+    if (!shelf_file(params, scene, file, refusal)) {
+        return refusal;
+    }
+    std::error_code      ec;
+    const std::uintmax_t size = std::filesystem::file_size(file, ec);
+    if (ec || size > kViewBytes) {
+        return bad("too large to show here");
+    }
+    const std::uintmax_t at = std::min<std::uintmax_t>(params.value("at", std::uintmax_t{0}), size);
+    std::ifstream        in(file, std::ios::binary);
+    std::string          piece(static_cast<std::size_t>(std::min<std::uintmax_t>(size - at, kBytesPiece)), '\0');
+    in.seekg(static_cast<std::streamoff>(at));
+    in.read(piece.data(), static_cast<std::streamsize>(piece.size()));
+    if (!in && !in.eof()) {
+        return bad("could not read " + file.filename().string());
+    }
+    piece.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+    const std::uintmax_t next = at + piece.size();
+    return good(json{{"data", format::base64(piece)}, {"at", at}, {"next", next}, {"total", size},
+                     {"done", next >= size || piece.empty()}});
+}
+
+/// The build as one archive in the downloads folder, named `name` (the
+/// build's, as the shelf shows it), under a name not taken there.
+Reply shelf_archive(const json& params, const Scene& scene) {
+    if (scene.project.empty()) {
+        return bad("there is no build here");
+    }
+    const std::filesystem::path target =
+        shelf::download_target(shelf::archive_name(format::trim(params.value("name", std::string{}))));
+    if (const std::string error = shelf::save_archive(scene.project, target); !error.empty()) {
+        return bad("could not save it: " + error);
+    }
+    std::error_code ec;
+    return good(json{{"saved", format::short_path(target)}, {"bytes", std::filesystem::file_size(target, ec)}});
+}
+
 Reply trust_clear(const json&, Host& host) {
     if (const std::string error = host.clear_trust(); !error.empty()) {
         return bad(error);
@@ -230,6 +410,9 @@ void project_methods(std::vector<Method>& table) {
     table.push_back({"shelf",          nullptr, shelf_list});
     table.push_back({"shelf.remove",   nullptr, shelf_remove});
     table.push_back({"shelf.download", nullptr, shelf_download});
+    table.push_back({"shelf.view",     shelf_view, nullptr});
+    table.push_back({"shelf.bytes",    shelf_bytes, nullptr});
+    table.push_back({"shelf.archive",  shelf_archive, nullptr});
     table.push_back({"projects",     projects, nullptr});
     table.push_back({"browse",       browse, nullptr});
 }

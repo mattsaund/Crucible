@@ -420,6 +420,7 @@ set(CRUCIBLE_UI_FILES
     ${CRUCIBLE_UI_DIR}/preview.js
     ${CRUCIBLE_UI_DIR}/panes.js
     ${CRUCIBLE_UI_DIR}/code.js
+    ${CRUCIBLE_UI_DIR}/term.js
     ${CRUCIBLE_UI_DIR}/create.js
     ${CRUCIBLE_UI_DIR}/history.js
     ${CRUCIBLE_UI_DIR}/models.js

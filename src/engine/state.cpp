@@ -10,9 +10,45 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 
+#include "crucible/util/text.hpp"
+
 namespace crucible {
+namespace {
+
+/// Now, in milliseconds since the epoch: what the page measures a time
+/// against, on the same machine's clock.
+std::int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+/// The most of a file being written or of a command's output an activity
+/// carries: the last forty lines or so of either, pushed to the page every
+/// frame it changes.
+constexpr std::size_t kActivityTail = 4096;
+
+/// The last `most` bytes of `text`, from the start of a line where there is
+/// one in reach and never through a character.
+std::string last_of(const std::string& text, std::size_t most) {
+    if (text.size() <= most) {
+        return text;
+    }
+    std::size_t from = text.size() - most;
+    const std::size_t line = text.find('\n', from);
+    if (line != std::string::npos && line + 1 < text.size() && line - from < most / 4) {
+        from = line + 1;
+    }
+    while (from < text.size() && (static_cast<unsigned char>(text[from]) & 0xC0U) == 0x80U) {
+        ++from;
+    }
+    return text.substr(from);
+}
+
+}  // namespace
 
 std::string_view mood_label(Mood mood) {
     switch (mood) {
@@ -40,6 +76,8 @@ Snapshot AppState::snapshot() const {
     Snapshot copy;
     copy.mood     = mood_;
     copy.status   = status_;
+    copy.status_since = status_since_;
+    copy.activity = activity_;
     copy.roster   = roster_;
     copy.bench    = bench_;
     copy.pending_edit = pending_edit_;
@@ -67,6 +105,9 @@ Snapshot AppState::snapshot() const {
 
 void AppState::set_mood(Mood mood, std::string status) {
     const std::lock_guard<std::mutex> lock(mutex_);
+    if (mood != mood_ || status != status_ || status_since_ == 0) {
+        status_since_ = now_ms();
+    }
     mood_   = mood;
     status_ = std::move(status);
 }
@@ -327,6 +368,39 @@ void AppState::set_live_rate(double tokens_per_second) {
     live_rate_ = tokens_per_second;
 }
 
+void AppState::set_activity(Activity activity) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (activity.since == 0) {
+        activity.since = activity_ && activity_->kind == activity.kind && activity_->detail == activity.detail
+                             ? activity_->since
+                             : now_ms();
+    }
+    activity.tail = last_of(detail::scrub_utf8(activity.tail), kActivityTail);
+    activity_     = std::move(activity);
+}
+
+void AppState::activity_output(std::string_view chunk) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!activity_) {
+        return;
+    }
+    activity_->bytes += chunk.size();
+    activity_->lines += static_cast<std::uint32_t>(std::count(chunk.begin(), chunk.end(), '\n'));
+    activity_->tail = last_of(activity_->tail + detail::scrub_utf8(chunk), kActivityTail);
+}
+
+void AppState::activity_progress(float progress) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (activity_) {
+        activity_->progress = progress;
+    }
+}
+
+void AppState::clear_activity() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    activity_.reset();
+}
+
 void AppState::set_project_usage(TokenUsage usage) {
     const std::lock_guard<std::mutex> lock(mutex_);
     project_usage_ = usage;
@@ -427,6 +501,10 @@ void AppState::set_session_usage(TokenUsage usage) {
 void AppState::set_busy(bool busy) {
     const std::lock_guard<std::mutex> lock(mutex_);
     busy_ = busy;
+    // Whatever the turn was doing is over with it.
+    if (!busy) {
+        activity_.reset();
+    }
 }
 
 bool AppState::busy() const {

@@ -115,6 +115,17 @@ struct ModelParams {
     int   max_tokens     = 2048;   ///< hard cap per reply; -1 = until EOG
     std::uint32_t seed   = 0xFFFFFFFFU;  ///< 0xFFFFFFFF = random each run
 
+    // Reasoning
+    //
+    // How hard this seat's model thinks, and whether it thinks at all, when
+    // it is asked through the box. Empty for either is "as the box says"
+    // (Config::reasoning_effort and Config::thinking). A seat's own because
+    // no two models take the same levels: GPT OSS at high and Claude at max
+    // are both the most each takes. See llm/reasoning.hpp. Written only for
+    // an expert, and only when set.
+    std::string effort;     ///< a word on reasoning::scale(), or empty
+    std::string thinking;   ///< "on", "off", or empty
+
     /// Fill any field this entry left at its default from `base`.
     /// The model is never inherited -- an expert without its own file is unfilled.
     void inherit_from(const ModelParams& base);
@@ -256,6 +267,10 @@ struct RoutingConfig {
     /// Off once meant a load of each model for every prompt: the delegator
     /// freed before every expert and every expert freed after its answer. On
     /// cards wired for one lane that was half a minute and more per prompt.
+    ///
+    /// Either way, an expert chosen in the box sends the delegator away until
+    /// the box is set back to it: nothing is routed meanwhile, and the
+    /// person who chose that expert wants its memory for it (Engine::choose).
     bool keep_delegator_loaded = false;
 };
 
@@ -554,19 +569,25 @@ struct Config {
     UiConfig      ui;
     ServerConfig  server;
 
-    /// How hard a reasoning model should think: low | medium | high.
+    /// How hard a reasoning model should think: a word on reasoning::scale()
+    /// (minimal, low, medium, high, xhigh, max), or empty for each model's
+    /// own default. The box's setting, for every seat without one of its own
+    /// (ModelParams::effort), and turned into the nearest level each model
+    /// takes (reasoning::nearest).
     ///
-    /// Appended to the system prompt as `Reasoning: <level>`, which is where
-    /// gpt-oss expects it. llama.cpp does not run the model's own jinja
-    /// template -- it recognizes the harmony format and applies a built-in
-    /// formatter that emits no system preamble at all -- so the line has to be
-    /// written into the system message rather than passed as a template
-    /// argument. Measured on gpt-oss-20b: high produces more working than low
-    /// on every prompt that produced any.
-    ///
-    /// A model that does not know the convention reads one more line of system
-    /// prompt and carries on.
+    /// A model on this machine is given it the way its template reads it: as
+    /// `reasoning_effort` to a template that takes one, or, through the lines
+    /// every model can be told to write, as `Reasoning: <level>` in the
+    /// system message, where gpt-oss expects it. A provider's is sent it as a
+    /// field of the request. Measured on gpt-oss-20b: high produces more
+    /// working than low on every prompt that produced any.
     std::string reasoning_effort = "medium";
+
+    /// Whether a model that can think or not should: "on", "off", or empty
+    /// for its own default. The box's setting, for every seat without one of
+    /// its own (ModelParams::thinking). A model that cannot be switched is
+    /// never asked.
+    std::string thinking;
 
     std::string system_prompt =
         "You are Crucible, a focused local expert. Answer precisely and completely, "

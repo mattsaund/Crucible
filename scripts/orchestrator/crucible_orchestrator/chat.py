@@ -318,7 +318,10 @@ def system_prompt(params, seat, tools=True):
     and what the seated model can do. Without `tools`, the same with none
     offered: the round that answers from what the turn found."""
     text = params.get("system_prompt", "")
-    effort = params.get("effort", "")
+    # The level the seated model takes nearest the one asked of its seat, as
+    # the core worked it out (gpt-oss reads low, medium or high). The box's
+    # setting as it stands for a core that does not say.
+    effort = seat["effort"] if "effort" in seat else params.get("effort", "")
     if effort and not seat.get("remote") and seat.get("takes_effort") and not seat.get("native"):
         # Where a local reasoning model looks for it. A provider takes it as a
         # field of the request instead, which the core sends with each round.

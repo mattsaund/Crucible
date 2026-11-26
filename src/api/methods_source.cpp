@@ -27,6 +27,7 @@
 #include "crucible/tools/attachments.hpp"
 #include "crucible/tools/git.hpp"
 #include "crucible/tools/preview.hpp"
+#include "crucible/tools/terminal.hpp"
 #include "crucible/tools/workshop.hpp"
 #include "crucible/util/format.hpp"
 #include "crucible/util/platform.hpp"
@@ -894,6 +895,91 @@ Reply process_stop(const json& params, Host& host) {
     return good();
 }
 
+// ---------------------------------------------------------------------------
+// Terminals
+// ---------------------------------------------------------------------------
+//
+// Lookups, though they start and type into shells: they touch nothing of the
+// session's, so they run beside it on a worker, and nothing the snapshot
+// shows changes with them, so they do not wake the window to push it again.
+// The page reads a terminal many times a second while it prints, and types
+// into it as fast as keys are pressed. It sends one write at a time, in
+// order, since workers would not keep two in it. See tools/terminal.hpp.
+
+/// A shell in the project, `cols` by `rows`.
+Reply term_open(const json& params, const Scene& scene) {
+    std::filesystem::path root;
+    Reply refusal;
+    if (!project_of(scene, root, refusal)) {
+        return refusal;
+    }
+    tools::terminal::Options options;
+    options.cwd  = root;
+    options.cols = params.value("cols", 80);
+    options.rows = params.value("rows", 24);
+    std::string error;
+    const int   id = tools::terminal::open(options, error);
+    if (id == 0) {
+        return bad(error);
+    }
+    for (const tools::terminal::Info& one : tools::terminal::list()) {
+        if (one.id == id) {
+            return good(json{{"id", id}, {"shell", one.shell}, {"cwd", format::short_path(one.cwd)}});
+        }
+    }
+    return good(json{{"id", id}});
+}
+
+Reply term_write(const json& params, const Scene&) {
+    if (!tools::terminal::write(params.value("id", 0), params.value("data", std::string{}))) {
+        return bad("that terminal has ended");
+    }
+    return good();
+}
+
+Reply term_resize(const json& params, const Scene&) {
+    if (!tools::terminal::resize(params.value("id", 0), params.value("cols", 80), params.value("rows", 24))) {
+        return bad("that terminal has ended");
+    }
+    return good();
+}
+
+/// What it has printed from `since`, and where to read on from.
+Reply term_read(const json& params, const Scene&) {
+    const std::optional<tools::terminal::Output> out =
+        tools::terminal::read(params.value("id", 0), params.value("since", std::uint64_t{0}));
+    if (!out) {
+        return bad("there is no such terminal");
+    }
+    json reply{{"data", out->data}, {"next", out->next}, {"running", out->running}};
+    if (out->lost) {
+        reply["lost"] = true;
+    }
+    if (!out->running) {
+        reply["status"] = out->status;
+    }
+    return good(std::move(reply));
+}
+
+Reply term_close(const json& params, const Scene&) {
+    if (!tools::terminal::close(params.value("id", 0))) {
+        return bad("there is no such terminal");
+    }
+    return good();
+}
+
+Reply term_list(const json&, const Scene&) {
+    json out = json::array();
+    for (const tools::terminal::Info& one : tools::terminal::list()) {
+        json each{{"id", one.id}, {"shell", one.shell}, {"cwd", format::short_path(one.cwd)}, {"running", one.running}};
+        if (!one.running) {
+            each["status"] = one.status;
+        }
+        out.push_back(std::move(each));
+    }
+    return good(json{{"terminals", std::move(out)}});
+}
+
 }  // namespace
 
 void source_methods(std::vector<Method>& table) {
@@ -929,6 +1015,12 @@ void source_methods(std::vector<Method>& table) {
     table.push_back({"mcp.status",         nullptr, mcp_status});
     table.push_back({"processes",          nullptr, processes});
     table.push_back({"process.stop",       nullptr, process_stop});
+    table.push_back({"term.open",          term_open, nullptr});
+    table.push_back({"term.write",         term_write, nullptr});
+    table.push_back({"term.resize",        term_resize, nullptr});
+    table.push_back({"term.read",          term_read, nullptr});
+    table.push_back({"term.close",         term_close, nullptr});
+    table.push_back({"term.list",          term_list, nullptr});
 }
 
 }  // namespace crucible::api

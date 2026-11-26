@@ -1232,3 +1232,51 @@ TEST(an_edit_can_say_which_of_two_identical_lines_it_means) {
     // Text that only looks like a marker with a line stays text.
     CHECK(tools::parse_edit_blocks("<<<<<<< SEARCH line x\na\n=======\nb\n>>>>>>> REPLACE\n", error).empty());
 }
+
+TEST(a_call_still_being_written_is_read_as_far_as_it_goes) {
+    // A page's contents arrive a token at a time, and are shown as they do:
+    // the arguments are not JSON until the call is finished.
+    const std::string whole = R"({"path": "site/index.html", "content": "<h1>Hi</h1>\n<p>\"quoted\" \u00e9</p>"})";
+    CHECK_EQ(tools::partial_argument(whole, "path").value_or("?"), std::string("site/index.html"));
+    CHECK_EQ(tools::partial_argument(whole, "content").value_or("?"),
+             std::string("<h1>Hi</h1>\n<p>\"quoted\" \xc3\xa9</p>"));
+    // Cut off in the middle of the contents, and in the middle of an escape.
+    CHECK_EQ(tools::partial_argument(R"({"path": "a.py", "content": "print(1)\nprin)", "content").value_or("?"),
+             std::string("print(1)\nprin"));
+    CHECK_EQ(tools::partial_argument(R"({"path": "a.py", "content": "x\)", "content").value_or("?"),
+             std::string("x"));
+    CHECK_EQ(tools::partial_argument(R"({"path": "a.py", "content": "x\u00)", "content").value_or("?"),
+             std::string("x"));
+    // A key not written yet, and one whose value has not started.
+    CHECK(!tools::partial_argument(R"({"path": "a.py")", "content").has_value());
+    CHECK_EQ(tools::partial_argument(R"({"path": "a.py", "content": )", "content").value_or("?"), std::string());
+    CHECK(!tools::partial_argument(R"({"pa)", "path").has_value());
+    // A number, and a key after an object.
+    CHECK_EQ(tools::partial_argument(R"({"at_line": 12, "path": "b.css"})", "at_line").value_or("?"),
+             std::string("12"));
+    CHECK_EQ(tools::partial_argument(R"({"o": {"x": [1, "}"]}, "path": "c")", "path").value_or("?"),
+             std::string("c"));
+    CHECK(!tools::partial_argument("not json", "path").has_value());
+}
+
+TEST(a_file_being_written_in_the_lines_a_model_is_told_to_write_is_seen_as_it_is) {
+    const auto writing = tools::writing_in_text("I will make it.\n\nWRITE: app.js\n```js\nconst a = 1;\nconst b");
+    CHECK(writing.has_value());
+    if (writing) {
+        CHECK_EQ(writing->verb, std::string("write"));
+        CHECK_EQ(writing->path, std::string("app.js"));
+        CHECK_EQ(writing->text, std::string("const a = 1;\nconst b"));
+    }
+    CHECK(writing && !writing->done);
+    // Finished, the fence is not part of it.
+    const auto done = tools::writing_in_text("WRITE: a.txt\n```\nhello\n```\n");
+    CHECK(done.has_value() && done->text == "hello\n" && done->done);
+    // An EDIT's blocks, open and then closed.
+    const auto edit = tools::writing_in_text("EDIT: style.css\n<<<<<<< SEARCH\na\n");
+    CHECK(edit.has_value() && edit->verb == "edit" && edit->path == "style.css" && !edit->done);
+    const auto edited = tools::writing_in_text("EDIT: style.css\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n");
+    CHECK(edited.has_value() && edited->done);
+    // A mention in a sentence is not a write, and nor is a reply without one.
+    CHECK(!tools::writing_in_text("Then I will WRITE: the file.").has_value());
+    CHECK(!tools::writing_in_text("Nothing to write here.").has_value());
+}

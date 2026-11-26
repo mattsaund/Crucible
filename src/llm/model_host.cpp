@@ -771,10 +771,27 @@ llama_model_params model_params_for(const ModelParams& params,
     return model_params;
 }
 
+/// llama.cpp's micro-batch, the most a card computes at once, and how many
+/// of them one decode is handed. See context_params_for.
+constexpr int kMicroBatch   = 512;
+constexpr int kMicroBatches = 4;
+
 llama_context_params context_params_for(const ModelParams& params) {
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx           = static_cast<std::uint32_t>(std::max(0, params.n_ctx));
-    context_params.n_batch         = static_cast<std::uint32_t>(std::max(1, params.n_batch));
+    // What the cards compute at once, the micro-batch, is what it always was:
+    // Batch, up to llama.cpp's 512. What one decode is handed is four of
+    // them, as llama-server hands it. A long prompt is read in a quarter of
+    // the decodes, a few percent sooner (gpt-oss and LFM2.5 over a 5060 Ti
+    // and a 3060, 8K tokens: 3%), and on cards that copy to each other
+    // directly llama.cpp pipelines the four, the first card starting the
+    // next while the second finishes this one. It costs no memory, measured
+    // on the same cards: the compute buffers are the micro-batch's, and the
+    // outputs are reserved as a batch asks for them, which reading a prompt
+    // does for its last token alone.
+    const int micro = std::clamp(params.n_batch, 1, kMicroBatch);
+    context_params.n_ubatch        = static_cast<std::uint32_t>(micro);
+    context_params.n_batch         = static_cast<std::uint32_t>(std::max(params.n_batch, micro * kMicroBatches));
     context_params.n_threads       = resolve_threads(params.n_threads);
     context_params.n_threads_batch = resolve_batch_threads(params.n_threads);
     context_params.flash_attn_type = !params.flash_attn                ? LLAMA_FLASH_ATTN_TYPE_DISABLED

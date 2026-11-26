@@ -284,12 +284,22 @@ std::string add_expert(Host& host, const std::string& name, const std::string& b
 /// once, the way any other caller does.
 class PageTurns {
 public:
-    /// The turns as a JSON array, as text.
-    std::string turns_json(const TurnList& turns);
+    /// The turns as a JSON array, as text. With `grown`, a turn that has
+    /// gone further since the page was sent it (the reply still arriving, a
+    /// token at a time) goes as what it adds: `from` the revision the
+    /// page has, `reply_add` and `reasoning_add` the text since, its actions
+    /// from `actions_from` on, and its small parts whole. A reply was sent
+    /// whole up to thirty times a second while it streamed, its thinking
+    /// and every file it wrote with it. Only for a page that puts one back
+    /// (ui/shell.js, resolveTurns).
+    std::string turns_json(const TurnList& turns, bool grown = false);
 
 private:
     std::mutex                        mutex_;
     std::unordered_set<std::uint64_t> sent_;
+
+    /// The turns as last sent, by place: what a turn is sent as growing from.
+    std::vector<TurnList::Shared> last_;
 };
 
 /// The large parts of the snapshot as the page was last sent them: an edit
@@ -343,8 +353,9 @@ public:
 
     /// The same for the window's own page, with the turns it already has
     /// sent as stubs and the large parts it already has left out. See
-    /// PageTurns and PageParts.
-    std::string page_snapshot();
+    /// PageTurns and PageParts. `grown` sends the turn still arriving as what
+    /// it adds, for a page that puts it back together.
+    std::string page_snapshot(bool grown = false);
 
     /// Every method this build understands, for `methods` and for the tests
     /// that keep the documentation honest.

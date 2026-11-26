@@ -98,6 +98,106 @@ constexpr std::size_t kLoopLook = 16;
 /// out, in tokens: enough to think and still say the next step.
 constexpr int kCheckpointThinking = 768;
 
+/// How often what a call is writing is looked at again while it streams. The
+/// page is drawn thirty times a second at most, and a file's text is read
+/// from the start each time: often enough to watch, rarely enough to cost
+/// nothing on a long one.
+constexpr std::chrono::milliseconds kWatchEvery{120};
+
+/// `text`'s lines, counting one that has not ended yet.
+std::uint32_t lines_in(const std::string& text) {
+    if (text.empty()) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>(std::count(text.begin(), text.end(), '\n') + (text.back() == '\n' ? 0 : 1));
+}
+
+/// A file being written, as the turn shows it while it is: its name, how
+/// much of it there is so far, and the last of it.
+Activity writing(std::string label, std::string path, const std::string& text) {
+    Activity doing;
+    doing.kind     = "write";
+    doing.label    = std::move(label);
+    doing.detail   = path;
+    doing.bytes    = text.size();
+    doing.lines    = lines_in(text);
+    doing.tail     = text;
+    doing.language = std::move(path);
+    return doing;
+}
+
+/// What a call the model is in the middle of writing is doing, from its
+/// name and its arguments so far (which are not JSON until it is done).
+Activity call_being_written(const std::string& name, const std::string& arguments) {
+    const auto field = [&arguments](const char* key) {
+        return tools::partial_argument(arguments, key).value_or(std::string());
+    };
+    if (name == "write_file") {
+        return writing("Writing", field("path"), field("content"));
+    }
+    if (name == "edit_file") {
+        return writing("Editing", field("path"), field("replace"));
+    }
+    Activity doing;
+    doing.kind = "write";
+    if (name == "run_python") {
+        doing          = writing("Writing Python", "", field("code"));
+        doing.language = "python";
+    } else if (name == "run_command" || name == "start_process") {
+        doing.label  = "Writing a command";
+        doing.detail = field("command");
+    } else if (name == "render_page") {
+        doing.label  = "Drawing";
+        doing.detail = field("page");
+    } else if (name == "web_search") {
+        doing.kind   = "search";
+        doing.label  = "Searching";
+        doing.detail = field("query");
+    } else if (name == "hand_off") {
+        doing.kind  = "check";
+        doing.label = "Handing on";
+    } else {
+        doing.label = name.empty() ? std::string("Calling a tool") : "Calling " + name;
+    }
+    return doing;
+}
+
+/// What a tool is doing while it runs, by its kind.
+Activity running(const tools::ToolCall& call) {
+    Activity doing;
+    doing.kind   = "run";
+    doing.detail = call.argument;
+    switch (call.kind) {
+        case tools::ToolKind::Run:
+            doing.label    = "Running";
+            doing.language = "shell";
+            break;
+        case tools::ToolKind::Python:
+            doing.label    = "Running Python";
+            doing.detail   = call.content.substr(0, call.content.find('\n'));
+            doing.language = "shell";
+            break;
+        case tools::ToolKind::Write:  doing.kind = "write"; doing.label = "Saving"; break;
+        case tools::ToolKind::Edit:   doing.kind = "write"; doing.label = "Editing"; break;
+        case tools::ToolKind::Read:   doing.kind = "read";  doing.label = "Reading"; break;
+        case tools::ToolKind::List:   doing.kind = "read";  doing.label = "Looking in"; break;
+        case tools::ToolKind::Find:   doing.kind = "read";  doing.label = "Finding"; break;
+        case tools::ToolKind::Render: doing.label = "Drawing"; break;
+        case tools::ToolKind::Fetch:  doing.kind = "search"; doing.label = "Fetching"; break;
+        case tools::ToolKind::Git:    doing.label = "git"; doing.language = "shell"; break;
+        case tools::ToolKind::Gh:     doing.label = "gh"; doing.language = "shell"; break;
+        case tools::ToolKind::Start:  doing.label = "Starting"; break;
+        case tools::ToolKind::Mcp:    doing.label = "Using"; break;
+        default:
+            doing.label = std::string(tools::tool_kind_name(call.kind));
+            if (!doing.label.empty()) {
+                doing.label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(doing.label[0])));
+            }
+            break;
+    }
+    return doing;
+}
+
 }  // namespace
 
 tools::ToolCall Engine::call_from(const json& params) {
@@ -230,6 +330,11 @@ struct Engine::ChatTurn {
     bool                   native = false;
     nlohmann::ordered_json native_tools;
 
+    /// What the seated model takes of an effort and a thinking switch, and
+    /// what the box asked of this seat (its own setting, or the box's).
+    reasoning::Profile reasoning;
+    reasoning::Asked   asked_for;
+
     /// The conversation as the turn opened it: the instructions, the exchanges
     /// before this one, and the question, fitted to the context. A round is
     /// this and the turn's own exchanges, which the orchestrator sends.
@@ -278,7 +383,15 @@ void Engine::handle(const Request& request) {
     chat->pinned      = request.pinned;
     chat->config      = this->config();
 
-    state_.set_mood(Mood::Routing, "Crucible is reading the prompt");
+    // A prompt sent to one expert is that expert's from the start: nothing
+    // routes it, and the delegator is not loaded for it. Said so above the
+    // reply at once, rather than "Delegator" turning while nothing chooses.
+    if (request.pinned && chat->config.roster.find(*request.pinned)) {
+        state_.set_linked(*request.pinned);
+        state_.set_mood(Mood::Thinking, expert_label(chat->config.roster, *request.pinned) + " is reading the prompt");
+    } else {
+        state_.set_mood(Mood::Routing, "Crucible is reading the prompt");
+    }
     if (wake_) {
         wake_();
     }
@@ -422,9 +535,18 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         chat->native_tools           = chat->native
                                            ? tools::native_tools(chat->workshop, chat->config.tools.web_search)
                                            : nlohmann::ordered_json();
+        chat->reasoning              = model.reasoning();
+        chat->asked_for              = reasoning::asked_of(chat->config, chat->params);
         const std::string lines      = tools::workshop_instructions(chat->workshop);
+        // The effort a model here reads from its system message, when it is
+        // told the lines rather than offered the tools (see system_prompt in
+        // chat.py): the level it takes nearest the one asked.
+        const std::string effort =
+            chat->params.remote() ? std::string() : reasoning::nearest(chat->reasoning.levels, chat->asked_for.effort);
         return json{{"ok", true}, {"remote", chat->params.remote()},
                     {"sees_images", model.sees_images()}, {"takes_effort", model.takes_effort()},
+                    {"effort", effort},
+                    {"thinking", std::string(reasoning::thinking_word(chat->reasoning.thinking))},
                     {"workshop", chat->workshop.enabled},
                     {"native", chat->native},
                     {"tools", chat->native ? tools::native_instructions(chat->workshop) : lines},
@@ -564,9 +686,39 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // step's words, which read as a command still running long after it
         // had finished, or as a load still going while it read the prompt.
         state_.set_mood(Mood::Thinking, name + " is thinking");
+        // And above the reply, what this round is doing until the reply
+        // itself says: reading the prompt, then thinking, then writing a file
+        // through a call. A round nobody sees says only what it is for.
+        if (quiet) {
+            Activity checking;
+            checking.kind  = "check";
+            checking.label = quick ? "Choosing the next step" : "Checking the work";
+            state_.set_activity(std::move(checking));
+        } else {
+            Activity reading;
+            reading.kind  = "read";
+            reading.label = chat->params.remote() ? "Waiting" : "Reading the prompt";
+            state_.set_activity(std::move(reading));
+        }
         if (wake_) {
             wake_();
         }
+        // What is being written: a call in the model's own format, a piece at
+        // a time, or a WRITE in the lines it was told to write. Looked at
+        // again no more often than kWatchEvery.
+        Clock::time_point watched{};
+        int               call_index = -1;
+        std::string       call_name;
+        std::string       call_args;
+        bool              writing_text = false;
+        const auto        due = [&watched](bool now) {
+            const Clock::time_point at = Clock::now();
+            if (!now && at - watched < kWatchEvery) {
+                return false;
+            }
+            watched = at;
+            return true;
+        };
 
         // The two things a piece of output can be, wherever it came from.
         const auto take = [&](std::string_view thought, std::string_view said) {
@@ -583,6 +735,12 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                     if (first_thought && chat->thought_shown) {
                         state_.append_reasoning(turn, "\n\n");
                     }
+                    if (first_thought && answer.empty() && call_index < 0) {
+                        Activity thinking;
+                        thinking.kind  = "think";
+                        thinking.label = "Thinking";
+                        state_.set_activity(std::move(thinking));
+                    }
                     first_thought       = false;
                     chat->thought_shown = true;
                     state_.append_reasoning(turn, thought);
@@ -596,6 +754,8 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                     first_answer = false;
                     if (!quiet) {
                         state_.set_mood(Mood::Talking, name + " is answering");
+                        // The reply says what is happening now, as it arrives.
+                        state_.clear_activity();
                         if (paragraph) {
                             state_.append_reply(turn, "\n\n");
                         }
@@ -604,6 +764,28 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                 answer += said;
                 if (!quiet) {
                     state_.append_reply(turn, said);
+                    // A file written in the lines every model can be told to
+                    // write: said above the reply as it is written, with how
+                    // much of it there is.
+                    // Only once a line has ended, which is when a WRITE line
+                    // can have been finished, and then while one is written.
+                    const bool worth_looking = writing_text || said.find('\n') != std::string_view::npos;
+                    if (worth_looking && due(false)) {
+                        const std::optional<tools::WritingInText> text = tools::writing_in_text(answer);
+                        if (text && !text->done) {
+                            // Its text is on screen already, in the reply as it
+                            // streams: said here is which file, how much and
+                            // how long, and not the text a second time.
+                            writing_text = true;
+                            Activity doing = writing(text->verb == "edit" ? "Editing" : "Writing", text->path,
+                                                     text->text);
+                            doing.tail.clear();
+                            state_.set_activity(std::move(doing));
+                        } else if (writing_text) {
+                            writing_text = false;
+                            state_.clear_activity();
+                        }
+                    }
                 }
             }
             if (chat->streamed_chunks % kLoopLook == 0 && !looped) {
@@ -627,6 +809,17 @@ json Engine::serve_turn(const std::string& method, const json& params) {
 
         ChatSink sink;
         sink.cancel = [&cancel, &looped, &overthought] { return looped || overthought || cancel(); };
+        // How far through a long prompt the model is, as it reads it: a 32K
+        // context on a model split over cards is many seconds before a word.
+        sink.on_reading = [this, quiet](float done) {
+            if (quiet) {
+                return;
+            }
+            state_.activity_progress(done);
+            if (wake_) {
+                wake_();
+            }
+        };
         if (model.reasons_inline()) {
             // A reasoning model writes its working before its answer, and on
             // some of them the markers between the two are ordinary visible
@@ -642,18 +835,23 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         // both ways at once, and both are reasoning.
         sink.on_reasoning = [&](std::string_view thought) { take(thought, {}); };
 
-        // Thinking left out where the template can leave it out. gpt-oss's
-        // cannot, and writes its effort into the system message, so a
-        // different one reads the whole prompt again and again for the round
-        // after: the checkpoint keeps it and has the room to think instead.
-        // Only a round that has already thought too long is worth that.
-        std::string effort = chat->config.reasoning_effort;
-        int         most   = params.value("most", 0);
+        // How hard it thinks, as the box asked of this seat. The checkpoint
+        // and the round after one that thought too long think less: not at
+        // all where the template can leave it out, and at the lowest level
+        // it takes where it cannot. gpt-oss's cannot, and writes its effort
+        // into the system message, so a different one reads the whole prompt
+        // again and again for the round after: the checkpoint keeps its level
+        // and has the room to think instead. Only a round that has already
+        // thought too long is worth that.
+        const reasoning::Profile& profile  = chat->reasoning;
+        std::string               effort   = chat->asked_for.effort;
+        std::string               thinking = chat->asked_for.thinking;
+        int                       most     = params.value("most", 0);
         if (native && (quick || rush)) {
-            if (!model.takes_effort()) {
-                effort = "none";
-            } else if (rush) {
-                effort = "low";
+            if (profile.can_switch() && (quick || !profile.takes_effort())) {
+                thinking = "off";
+            } else if (rush && profile.takes_effort()) {
+                effort = profile.levels.front();
             } else if (most > 0) {
                 most = std::max(most, kCheckpointThinking);
             }
@@ -678,12 +876,35 @@ json Engine::serve_turn(const std::string& method, const json& params) {
             open.must_call           = quick && params.value("tools", true) ? std::string(tools::kHandOffTool)
                                                                             : std::string();
             open.effort              = effort;
+            open.thinking            = thinking;
             open.params              = asked_params;
             OpenChatSink open_sink;
             open_sink.cancel   = sink.cancel;
+            open_sink.on_reading = sink.on_reading;
             open_sink.on_delta = [&](const OpenChatDelta& delta) {
                 if (!delta.reasoning.empty() || !delta.content.empty()) {
                     take(delta.reasoning, delta.content);
+                }
+                // A call being written: its arguments are no part of the
+                // reply, and a page's contents were minutes of nothing on
+                // screen. Said above the reply as they come.
+                if (delta.call >= 0 && !quiet) {
+                    if (delta.call != call_index) {
+                        call_index = delta.call;
+                        call_name.clear();
+                        call_args.clear();
+                        watched = {};
+                    }
+                    if (!delta.tool.name.empty()) {
+                        call_name = delta.tool.name;
+                    }
+                    call_args += delta.tool.arguments;
+                    if (due(false)) {
+                        state_.set_activity(call_being_written(call_name, call_args));
+                        if (wake_) {
+                            wake_();
+                        }
+                    }
                 }
             };
             const OpenChatResult result = dynamic_cast<LoadedModel&>(model).open_chat(open, open_sink);
@@ -699,7 +920,7 @@ json Engine::serve_turn(const std::string& method, const json& params) {
                 calls.push_back(json{{"id", call.id}, {"name", call.name}, {"arguments", call.arguments}});
             }
         } else {
-            outcome = model.chat(ChatRequest{messages, asked_params, chat->config.reasoning_effort}, sink);
+            outcome = model.chat(ChatRequest{messages, asked_params, effort, thinking}, sink);
         }
         const GenerationStats& pass = outcome.stats;
 
@@ -766,6 +987,8 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         if (tools::resolve_in_root(chat->workshop.root, call.argument)) {
             state_.set_reply(turn, params.value("reply", std::string()));
         }
+        // The question is what is on screen now, not what was being written.
+        state_.clear_activity();
         return json{{"approved", ask_about_edit(call, chat->workshop, cancel)}};
     }
     if (method == "turn.tool") {
@@ -773,7 +996,21 @@ json Engine::serve_turn(const std::string& method, const json& params) {
         if (call.kind == tools::ToolKind::None) {
             throw std::runtime_error("no such tool: " + params.value("call", json::object()).value("kind", std::string()));
         }
-        const tools::ToolResult result = tools::run_tool(call, chat->workshop, search_settings(chat->config), cancel);
+        // Said above the reply while it runs, and what a command prints with
+        // it as it prints it: a script making a PDF was a minute of nothing.
+        state_.set_activity(running(call));
+        if (wake_) {
+            wake_();
+        }
+        tools::WorkshopSettings watched = chat->workshop;
+        watched.on_output = [this](std::string_view line) {
+            state_.activity_output(line);
+            if (wake_) {
+                wake_();
+            }
+        };
+        const tools::ToolResult result = tools::run_tool(call, watched, search_settings(chat->config), cancel);
+        state_.clear_activity();
         // The pictures it made, kept for the rounds that follow under a name
         // the orchestrator hands back with the message they go with.
         std::string pictures;
@@ -792,8 +1029,17 @@ json Engine::serve_turn(const std::string& method, const json& params) {
     if (method == "turn.search") {
         const tools::SearchSettings settings = search_settings(chat->config);
         const std::string query = params.value("query", std::string());
+        Activity searching;
+        searching.kind   = "search";
+        searching.label  = "Searching";
+        searching.detail = query;
+        state_.set_activity(std::move(searching));
+        if (wake_) {
+            wake_();
+        }
         std::string error;
         const std::vector<tools::SearchResult> results = tools::search(query, settings, error);
+        state_.clear_activity();
         return json{{"count", results.size()}, {"error", error}, {"provider", settings.provider},
                     {"text", tools::format_for_model(query, results)}};
     }

@@ -132,6 +132,24 @@ void read_model_params(const json& obj, ModelParams& params,
 }
 
 
+/// Keep `value` when it is one of `allowed` or empty, and say so and empty it
+/// otherwise: an effort or a thinking setting nobody can be asked for is the
+/// model's own default, not a request a template might refuse.
+void keep_one_of(std::string& value, std::initializer_list<std::string_view> allowed, std::string_view context,
+                 std::string_view key, std::vector<std::string>& warnings) {
+    if (value.empty() || std::find(allowed.begin(), allowed.end(), value) != allowed.end()) {
+        return;
+    }
+    warnings.emplace_back(std::string(context) + "." + std::string(key) + ": \"" + value
+                          + "\" is not a setting it takes (keeping the default)");
+    value.clear();
+}
+
+/// The words an effort may be: the scale in llm/reasoning.hpp, which config
+/// does not reach down to.
+constexpr std::initializer_list<std::string_view> kEfforts{"minimal", "low", "medium", "high", "xhigh", "max"};
+constexpr std::initializer_list<std::string_view> kThinking{"on", "off"};
+
 /// Identity fields for one seat.
 ///
 /// Always written in full. This used to omit them for a seat that matched one
@@ -267,6 +285,10 @@ json config_to_json(const Config& config) {
         if (params.repeat_penalty != base.repeat_penalty) { entry["repeat_penalty"] = tidy(params.repeat_penalty); }
         if (params.repeat_last_n  != base.repeat_last_n)  { entry["repeat_last_n"]  = params.repeat_last_n; }
         if (params.max_tokens     != base.max_tokens)     { entry["max_tokens"]     = params.max_tokens; }
+        // A seat's own effort and thinking, only when it has them: empty is
+        // "as the box says", which is what most seats are.
+        if (!params.effort.empty())   { entry["effort"]   = params.effort; }
+        if (!params.thinking.empty()) { entry["thinking"] = params.thinking; }
 
         experts.push_back(std::move(entry));
     }
@@ -297,6 +319,7 @@ json config_to_json(const Config& config) {
         {"models_dir",    config.models_dir},
         {"system_prompt", config.system_prompt},
         {"reasoning_effort", config.reasoning_effort},
+        {"thinking",      config.thinking},
         {"router",        model_params_to_json(config.router)},
         {"defaults",      model_params_to_json(config.defaults, /*include_model=*/false)},
         {"experts",       experts},
@@ -541,6 +564,7 @@ void write_default_config(const std::filesystem::path& file) {
         {"models_dir", paths::models_dir().string()},
         {"system_prompt", defaults.system_prompt},
         {"reasoning_effort", defaults.reasoning_effort},
+        {"thinking", defaults.thinking},
         {"router", model_params_to_json(router_defaults)},
         {"defaults", model_params_to_json(defaults.defaults, /*include_model=*/false)},
         {"experts", experts},
@@ -637,6 +661,9 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
 
     read_field(doc, "system_prompt", config.system_prompt, "config", warnings);
     read_field(doc, "reasoning_effort", config.reasoning_effort, "config", warnings);
+    keep_one_of(config.reasoning_effort, kEfforts, "config", "reasoning_effort", warnings);
+    read_field(doc, "thinking", config.thinking, "config", warnings);
+    keep_one_of(config.thinking, kThinking, "config", "thinking", warnings);
     read_field(doc, "models_dir",    config.models_dir,    "config", warnings);
 
     if (const auto it = doc.find("defaults"); it != doc.end() && it->is_object()) {
@@ -704,6 +731,14 @@ Config config_from_json(const json& doc, std::vector<std::string>& warnings) {
             if (params.remote() && !entry->contains("max_tokens")) {
                 params.max_tokens = -1;
             }
+            // The seat's own effort and thinking, never inherited: "defaults"
+            // describes how to load and sample, and has neither.
+            params.effort.clear();
+            params.thinking.clear();
+            read_field(*entry, "effort",   params.effort,   id, warnings);
+            read_field(*entry, "thinking", params.thinking, id, warnings);
+            keep_one_of(params.effort, kEfforts, id, "effort", warnings);
+            keep_one_of(params.thinking, kThinking, id, "thinking", warnings);
             config.experts[id] = std::move(params);
 
             Expert expert;

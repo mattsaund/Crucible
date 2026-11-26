@@ -58,4 +58,23 @@ struct CallInText {
 /// something is still a reply.
 std::optional<CallInText> call_in_text(std::string_view answer);
 
+/// The value of `key` in a call's arguments as far as the model has written
+/// them: a JSON object cut off anywhere, and a string's text decoded as far
+/// as it goes. Nothing while the key has not been written. For watching a
+/// call being written, which is not JSON until it is finished: a page's
+/// contents arrive a token at a time, and are shown as they do.
+std::optional<std::string> partial_argument(std::string_view arguments, std::string_view key);
+
+/// What is being written in the lines every model can be told to write, as
+/// far as `answer` has got: a WRITE or an EDIT line (`verb`, "write" or
+/// "edit"), the file it names, and the text of the fenced block after it.
+/// `done` once the block has closed. Nothing when the reply has none.
+struct WritingInText {
+    std::string verb;
+    std::string path;
+    std::string text;
+    bool        done = false;
+};
+std::optional<WritingInText> writing_in_text(std::string_view answer);
+
 }  // namespace crucible::tools

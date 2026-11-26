@@ -925,7 +925,8 @@ void stop_runs() {
 
 Ran run(const std::vector<std::string>& argv, const std::filesystem::path& cwd,
         const std::vector<std::string>& extra_env, int timeout_seconds,
-        const std::function<bool()>& stop, std::size_t keep) {
+        const std::function<bool()>& stop, std::size_t keep,
+        const std::function<void(std::string_view)>& on_line) {
     Ran        ran;
     if (g_runs_stopped.load()) {
         ran.error = "Crucible is closing";
@@ -950,6 +951,9 @@ Ran run(const std::vector<std::string>& argv, const std::filesystem::path& cwd,
         std::string line;
         while (child.read_line(line)) {
             line += '\n';
+            if (on_line) {
+                on_line(line);
+            }
             if (head.size() + line.size() <= keep / 2) {
                 head += line;
                 continue;

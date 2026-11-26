@@ -563,8 +563,16 @@ struct Captured {
 };
 
 Captured capture(const std::vector<std::string>& argv, const std::filesystem::path& cwd,
-                 int timeout_seconds, const CancelCallback& cancel) {
-    util::Ran ran = util::run(argv, cwd, {}, timeout_seconds, cancel);
+                 int timeout_seconds, const CancelCallback& cancel,
+                 const std::function<void(std::string_view)>& on_output = {}) {
+    // Each line to whoever is watching as it comes, in UTF-8 as the rest is.
+    std::function<void(std::string_view)> watched;
+    if (on_output) {
+        watched = [&on_output](std::string_view line) {
+            on_output(crucible::detail::console_to_utf8(std::string(line)));
+        };
+    }
+    util::Ran ran = util::run(argv, cwd, {}, timeout_seconds, cancel, std::size_t{4} << 20, watched);
     Captured  captured;
     captured.started   = ran.started;
     captured.timed_out = ran.timed_out;
@@ -1219,7 +1227,7 @@ ToolResult do_run(const ToolCall& call, const WorkshopSettings& settings,
             return failure(call.shell + " is not installed on this machine");
         }
     }
-    const Captured captured = capture(argv, settings.root, settings.run_timeout_seconds, cancel);
+    const Captured captured = capture(argv, settings.root, settings.run_timeout_seconds, cancel, settings.on_output);
     const std::string shown = (call.shell.empty() ? "$ " : call.shell + "$ ") + call.argument;
     return command_result(shown, captured, settings);
 }
@@ -1250,7 +1258,7 @@ ToolResult do_python(const ToolCall& call, const WorkshopSettings& settings,
     // `import json` finds. The project is still the working directory, which
     // is what the snippet is for.
     const Captured captured = capture({settings.python.string(), "-I", file.string()}, settings.root,
-                                      settings.run_timeout_seconds, cancel);
+                                      settings.run_timeout_seconds, cancel, settings.on_output);
     std::string first = code.substr(0, code.find('\n'));
     if (first.size() > 60) {
         first.resize(60);

@@ -50,8 +50,22 @@ struct ModelFacts {
     int  max_output        = 0;      ///< 0 when unknown
     bool adaptive_thinking = false;  ///< takes thinking: {type: "adaptive"}
     bool effort            = false;  ///< takes an effort: Claude's output_config.effort,
-                                     ///< or reasoning_effort at Gemini's door
+                                     ///< or reasoning_effort at a door that takes one
+                                     ///< for every model, as Gemini's does
     bool server_fallback   = false;  ///< can re-run a declined request on another model
+
+    // What Anthropic's Models API says of thinking beyond adaptive.
+    bool thinking_off      = false;  ///< takes thinking: {type: "disabled"}
+    bool between_tools     = false;  ///< takes thinking: {type: "between_tools"}
+    bool thinking_budget   = false;  ///< takes thinking: {type: "enabled", budget_tokens}
+
+    /// The levels it takes and its thinking, from the same answer. Its
+    /// `source` is "provider" when the Models API said so.
+    reasoning::Profile reasoning;
+
+    /// Set when the answer came from Anthropic's Models API, rather than
+    /// nothing being known.
+    bool described = false;
 };
 
 /// What a provider turned out not to accept.
@@ -79,6 +93,19 @@ struct Quirks {
     // Either: Claude's output_config through a gateway, or reasoning_effort
     // to a Gemini model that does not think.
     bool no_effort        = false;
+
+    /// The efforts a provider said it takes, when it refused one and listed
+    /// them: "Supported values are: 'low', 'medium', and 'high'". In the
+    /// scale's order. Empty until one was refused. Unlike the rest, this is
+    /// what was learned rather than a switch.
+    std::vector<std::string> efforts;
+
+    /// The provider refused "none" as an effort: thinking stays on there.
+    bool no_none          = false;
+
+    /// The provider refused the field that switches thinking on or off:
+    /// DeepSeek's `thinking`, a local server's `chat_template_kwargs`.
+    bool no_think_switch  = false;
 };
 
 /// Hands out the model behind a seat, and stops the requests that should stop.
@@ -136,6 +163,13 @@ private:
 /// named by hand.
 std::vector<std::string> list_models(const Provider& provider, std::string& error);
 
+/// What the box can offer for `model` at `provider`: its effort levels and
+/// whether its thinking can be switched. Anthropic's Models API is asked once
+/// for each model and the answer kept for the session; every other provider's
+/// model is known by its name (reasoning::from_name). Any thread; blocks for
+/// the one request at most.
+reasoning::Profile provider_profile(const Provider& provider, std::string_view model);
+
 // --- exposed for the tests -------------------------------------------------
 //
 // Everything below is a pure function of its arguments. The part of this file
@@ -172,9 +206,22 @@ ModelFacts facts_from_listing(std::string_view body, std::string_view model);
 std::string anthropic_body(std::string_view model, const ChatRequest& request,
                            const ModelFacts& facts, const Quirks& quirks);
 
-/// The body of a chat-completions request.
+/// The body of a chat-completions request. `endpoint` is where it goes,
+/// which decides how thinking is switched there: DeepSeek and OpenRouter
+/// each have a field of their own, and a server on your own network is told
+/// through the model's template.
 std::string openai_body(std::string_view model, const ChatRequest& request,
-                        const ModelFacts& facts, const Quirks& quirks);
+                        const ModelFacts& facts, const Quirks& quirks, std::string_view endpoint = {});
+
+/// What a model at a provider takes, as the request would be shaped: what
+/// the Models API said of a Claude, what is known of the rest by name, and
+/// in either case what the provider has refused since.
+reasoning::Profile profile_of(std::string_view kind, std::string_view endpoint, std::string_view model,
+                              const ModelFacts& facts, const Quirks& quirks);
+
+/// How many tokens of thinking a Claude that takes a budget rather than an
+/// effort is given for `level`, kept under `limit`, the reply's whole cap.
+int thinking_budget(std::string_view level, int limit);
 
 /// One model's part of a request that more than one model ran: the one asked,
 /// which declined, and the one that answered in its place. Each is billed

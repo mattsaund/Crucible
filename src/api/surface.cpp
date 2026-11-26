@@ -190,7 +190,7 @@ std::string Surface::snapshot() {
     return text_of(state_json(true));
 }
 
-std::string Surface::page_snapshot() {
+std::string Surface::page_snapshot(bool grown) {
     AppState* state = host_.state();
     if (state == nullptr) {
         return "{}";
@@ -207,7 +207,7 @@ std::string Surface::page_snapshot() {
         return text;
     }
     text.pop_back();
-    text += (text.size() > 1 ? ",\"turns\":" : "\"turns\":") + page_turns_->turns_json(frame.turns) + "}";
+    text += (text.size() > 1 ? ",\"turns\":" : "\"turns\":") + page_turns_->turns_json(frame.turns, grown) + "}";
     return text;
 }
 
@@ -269,6 +269,7 @@ json Surface::state_json_of(const Snapshot& frame, bool with_turns) {
     };
     out["auto_edits"]     = config.tools.auto_edits;
     out["reasoning_effort"] = config.reasoning_effort;
+    out["thinking"]         = config.thinking;
     out["session"]          = host_.session_id();
     out["session_name"]     = host_.session_name();
     out["names_filed"]      = host_.names_filed();
