@@ -53,6 +53,7 @@ what they are doing, and effort and thinking that follow each model.
   as llama-server reads it, and tokenized once instead of twice. The window
   is sent only what a streaming reply adds, not the whole reply each time,
   and the files a turn wrote are drawn once instead of on every token.
+- **llama.cpp b12721** is built in, the version 1.6.0 could already update to.
 
 ## 1.6.0 (2026-11-25)
 
