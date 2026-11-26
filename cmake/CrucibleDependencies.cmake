@@ -41,7 +41,7 @@ find_package(Threads REQUIRED)
 # the tag it was first configured with and went on building that one. The
 # override below builds against another. (runtimes.yml reads the tag from the
 # first line here that names it.)
-set(CRUCIBLE_LLAMA_TAG b12701)
+set(CRUCIBLE_LLAMA_TAG b12721)
 set(CRUCIBLE_LLAMA_TAG_OVERRIDE "" CACHE STRING "llama.cpp git tag to build against instead of this version's")
 if(CRUCIBLE_LLAMA_TAG_OVERRIDE)
     set(CRUCIBLE_LLAMA_TAG ${CRUCIBLE_LLAMA_TAG_OVERRIDE})
